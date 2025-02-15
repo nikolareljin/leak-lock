@@ -26,6 +26,30 @@ function scanProject() {
     });
 }
 
+// activate method
+function activate(context) {
+    // Display the sidebar with options about scanning the project.
+    const sidebar = showSidebar();
+
+    // Display the sidebar
+    vscode.commands.executeCommand('setContext', 'leak-lock:sidebar', true);
+
+    // Register the command to scan the project: leak-lock.projectScan
+    let disposable = vscode.commands.registerCommand('leak-lock.projectScan', scanProject);
+    context.subscriptions.push(disposable);
+
+    // // Register the command to scan the project: leak-lock.scanProject
+    // const scanProject = vscode.commands.registerCommand('leak-lock.scanProject', function () {
+    //     // The code you place here will be executed
+    //     // every time your command is executed
+    //     vscode.window.showInformationMessage('Scanning project...');
+    //     scanProject();
+    //     vscode.window.showInformationMessage('Project scanned!');
+
+    //     // Display a message box to the user
+    // }
+}
+
 // Display results in the right sidebar:
 // - filename, line number, description of the issue, hash of the commit that introduced the issue, link to the line in the file where the issue was found
 // - update the sidebar every time the file is saved
@@ -34,9 +58,18 @@ function scanProject() {
 function showSidebar() {
     vscode.commands.executeCommand('setContext', 'leak-lock:sidebar', true);
 
+    // Set custom icon for the leak Lock extension which will be displayed in the Primary Sidebar. Should look like a shield. After clicking it, it should display the HTML content for the extension in the left (Primary) sidebar.
+    // Set the icon for the extension in the Primary Sidebar
+    const icon = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
+    icon.text = '$(shield)';
+    icon.tooltip = 'Leak Lock';
+    icon.command = 'leak-lock.projectScan';
+    icon.show();
+
+    // Create a new Webview Panel
     const panel = vscode.window.createWebviewPanel(
-        'devToolsSidebar',
-        'Dev Tools',
+        'leak-lock',
+        'Code Scan',
         vscode.ViewColumn.Two,
         {
             enableScripts: true
@@ -85,5 +118,6 @@ function deactivate() {
 
 module.exports = {
     scanProject,
-    deactivate
+    deactivate,
+    activate
 };
