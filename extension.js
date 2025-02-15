@@ -50,7 +50,7 @@ function activate(context) {
 	const SidebarProvider = require('./sidebarProvider');
 
 	// Add SidebarProvider with custom icon.
-	const sidebarProvider = new SidebarProvider(context.extensionUri);
+	// const sidebarProvider = new SidebarProvider(context.extensionUri);
 
 	// Register the SidebarProvider
 	SidebarProvider.register(context);
