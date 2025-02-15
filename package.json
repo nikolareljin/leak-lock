@@ -28,6 +28,7 @@
     ]
   },
   "scripts": {
+    "bfg": "java -jar bfg.jar",
     "lint": "eslint .",
     "pretest": "yarn run lint",
     "test": "vscode-test",
