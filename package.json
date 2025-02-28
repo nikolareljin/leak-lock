@@ -1,0 +1,48 @@
+{
+  "name": "leak-lock",
+  "displayName": "leak-lock",
+  "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "leak-lock.helloWorld",
+        "title": "Hello World"
+      },
+      {
+        "command": "leak-lock.fileScan",
+        "title": "File Scan"
+      },
+      {
+        "command": "leak-lock.projectScan",
+        "title": "Project Scan"
+      }
+    ]
+  },
+  "scripts": {
+    "bfg": "java -jar bfg.jar",
+    "lint": "eslint .",
+    "pretest": "yarn run lint",
+    "test": "vscode-test",
+    "build": "babel src --out-dir dist"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.96.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "eslint": "^9.16.0"
+  },
+  "dependencies": {
+    "globals": "^15.15.0"
+  }
+}
