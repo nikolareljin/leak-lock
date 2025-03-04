@@ -35,6 +35,45 @@ function installDependencies() {
 	});
 }
 
+// Function that will render the icon in the Sidebar. 
+// When clicked, it will display the left sidebar and the content of the extension.
+function renderSidebar() {
+	// Create and show panel
+	const panel = vscode.window.createWebviewPanel(
+		'leak-lock', // Identifies the type of the webview. Used internally
+		'Leak Lock', // Title of the panel displayed to the user
+		vscode.ViewColumn.One, // Editor column to show the new webview panel in.
+		{} // Webview options. More on these later.
+	);
+
+	// Get path to resource on disk
+	const onDiskPath = vscode.Uri.file(
+		vscode.window.activeTextEditor.document.fileName
+	);
+
+	// And get the special URI to use with the webview
+	const resourcePath = onDiskPath.with({ scheme: 'vscode-resource' });
+
+	// Set the HTML content of the webview
+	panel.webview.html = getWebviewContent(resourcePath);
+}
+
+function getWebviewContent(resourcePath) {
+	return `<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Leak Lock</title>
+	</head>
+	<body>
+		<h1>Welcome to Leak Lock</h1>
+		<p>Resource Path: ${resourcePath}</p>
+	</body>
+	</html>`;
+}
+
+
 /**
  * @param {vscode.ExtensionContext} context
  */
@@ -55,13 +94,9 @@ function activate(context) {
 	// Register the SidebarProvider
 	SidebarProvider.register(context);
 
-	// Setup custom image for the extension in the Primary Sidebar
-	const icon = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
-	icon.text = '$(shield)';
-	icon.tooltip = 'Leak Lock';
-	icon.command = 'leak-lock.projectScan';
-	icon.show();
-
+	// Register the command to render the Sidebar
+	const disposableSidebar = vscode.commands.registerCommand('leak-lock.renderSidebar', renderSidebar);
+	context.subscriptions.push(disposableSidebar);
 	
 	// Use the console to output diagnostic information (console.log) and errors (console.error)
 	// This line of code will only be executed once when your extension is activated
@@ -115,3 +150,5 @@ module.exports = {
 	activate,
 	deactivate
 }
+
+
