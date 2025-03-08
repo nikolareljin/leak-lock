@@ -35,8 +35,10 @@ function installDependencies() {
 	});
 }
 
-// Function that will render the icon in the Sidebar. 
-// When clicked, it will display the left sidebar and the content of the extension.
+/**
+ * Function that will render the icon in the Sidebar. 
+ * When clicked, it will display the left sidebar and the content of the extension.
+ */
 function renderSidebar() {
 	// Create and show panel
 	const panel = vscode.window.createWebviewPanel(
@@ -52,12 +54,17 @@ function renderSidebar() {
 	);
 
 	// And get the special URI to use with the webview
-	const resourcePath = onDiskPath.with({ scheme: 'vscode-resource' });
+	const resourcePath = onDiskPath.with({ scheme: 'vscode-resource' }).toString();
 
 	// Set the HTML content of the webview
 	panel.webview.html = getWebviewContent(resourcePath);
 }
 
+/**
+ * Render the content of the webview
+ * @param {string} resourcePath 
+ * @returns 
+ */
 function getWebviewContent(resourcePath) {
 	return `<!DOCTYPE html>
 	<html lang="en">
@@ -85,14 +92,14 @@ function activate(context) {
 	// 	"bfg": "java -jar bfg.jar"
 	// }
 
-	// Import the SidebarProvider
-	const SidebarProvider = require('./sidebarProvider');
+	// // Import the SidebarProvider
+	// const SidebarProvider = require('./sidebarProvider');
 
-	// Add SidebarProvider with custom icon.
-	// const sidebarProvider = new SidebarProvider(context.extensionUri);
+	// // Add SidebarProvider with custom icon.
+	// // const sidebarProvider = new SidebarProvider(context.extensionUri);
 
-	// Register the SidebarProvider
-	SidebarProvider.register(context);
+	// // Register the SidebarProvider
+	// SidebarProvider.register(context);
 
 	// Register the command to render the Sidebar
 	const disposableSidebar = vscode.commands.registerCommand('leak-lock.renderSidebar', renderSidebar);
@@ -105,41 +112,39 @@ function activate(context) {
 	// The command has been defined in the package.json file
 	// Now provide the implementation of the command with  registerCommand
 	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('leak-lock.helloWorld', function () {
-		// The code you place here will be executed every time your command is executed
+	// const disposable = vscode.commands.registerCommand('leak-lock.helloWorld', function () {
+	// 	// The code you place here will be executed every time your command is executed
 
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from leak-lock!');
-	});
+	// 	// Display a message box to the user
+	// 	vscode.window.showInformationMessage('Hello World from leak-lock!');
+	// });
 
 	// Make a call of security-scan.js
 	// const fileScan = require('./file-scan');
 	// fileScan.activate(context);
 
-	const projectScan = require('./project-scan');
-	projectScan.activate(context);
+	// const projectScan = require('./project-scan');
+	// projectScan.activate(context);
 
-	context.subscriptions.push(disposable);
+	// context.subscriptions.push(disposable);
 
 	// Register the command to scan the files: leak-lock.scanFiles
 	// Register the command to scan the credentials: leak-lock.scanCredentials
 	// Register the command to clean up the files: leak-lock.cleanUpFiles
 
 
-	const scanFiles = vscode.commands.registerCommand('leak-lock.scanFiles', function () {
-		// The code you place here will be executed
-		// every time your command is executed
-		vscode.window.showInformationMessage('Scanning files...');
+	// const scanFiles = vscode.commands.registerCommand('leak-lock.scanFiles', function () {
+	// 	// The code you place here will be executed
+	// 	// every time your command is executed
+	// 	vscode.window.showInformationMessage('Scanning files...');
 
-		// // Call the file-scan.js
-		// securityScan.scanFiles();
+	// 	// // Call the file-scan.js
+	// 	// securityScan.scanFiles();
 
-		// // Display a message box to the user
-		// vscode.window.showInformationMessage('Files scanned!');
-	});
-
-
-	context.subscriptions.push(scanFiles);
+	// 	// // Display a message box to the user
+	// 	// vscode.window.showInformationMessage('Files scanned!');
+	// });
+	// context.subscriptions.push(scanFiles);
 
 }
 
@@ -150,5 +155,6 @@ module.exports = {
 	activate,
 	deactivate
 }
+
 
 
