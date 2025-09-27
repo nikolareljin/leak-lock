@@ -1,3 +1,7 @@
 node_modules
 .vscode-test/
 *.vsix
+bfg.jar
+secrets-replacements.txt
+scan_*.json
+np.*
