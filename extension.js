@@ -10,29 +10,29 @@ const dockerImage = 'ghcr.io/praetorian-inc/noseyparker:latest';
 /**
  * Install the dependencies required for the extension.
  */
-function installDependencies() {
-	// command to download bfg tool from URL
-	// curl -LJO https://repo1.maven.org/maven2/com/madgag/bfg/1.13.0/bfg-1.13.0.jar
-	// Do this as JS command
+async function installDependencies() {
 	const { exec } = require('child_process');
-	exec('curl -L -o bfg.jar https://search.maven.org/classic/remote_content?g=com.madgag&a=bfg&v=LATEST', (err, stdout, stderr) => {
-		if (err) {
-			console.error(err);
-			return;
-		}
-		console.log(stdout);
-	});
-
-	// Prepare Praetorian Security Scanner (docker). Pull the image locally.
-	// docker pull praetorianinc/security-scanner
-	// Do this as JS command
-	exec('docker pull ghcr.io/praetorian-inc/noseyparker:latest', (err, stdout, stderr) => {
-		if (err) {
-			console.error(err);
-			return;
-		}
-		console.log(stdout);
-	});
+	const util = require('util');
+	const execAsync = util.promisify(exec);
+	
+	try {
+		vscode.window.showInformationMessage('Installing Leak Lock dependencies...');
+		
+		// Download BFG tool
+		console.log('Downloading BFG tool...');
+		await execAsync('curl -L -o bfg.jar https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar');
+		console.log('BFG tool downloaded successfully');
+		
+		// Pull Nosey Parker Docker image
+		console.log('Pulling Nosey Parker Docker image...');
+		await execAsync('docker pull ghcr.io/praetorian-inc/noseyparker:latest');
+		console.log('Nosey Parker Docker image pulled successfully');
+		
+		vscode.window.showInformationMessage('Leak Lock dependencies installed successfully!');
+	} catch (error) {
+		console.error('Failed to install dependencies:', error);
+		vscode.window.showWarningMessage(`Failed to install some dependencies: ${error.message}. You can install them manually.`);
+	}
 }
 
 /**
@@ -40,72 +40,62 @@ function installDependencies() {
  */
 function activate(context) {
 	console.log('Activating extension "leak-lock" ... ');
-	// Download locally bfg tool (jar file) and set symlink to "bfg" locally in the project
-	// Add the following to the package.json:
-	// "scripts": {
-	// 	"bfg": "java -jar bfg.jar"
-	// }
+	
+	// Install dependencies on first activation
+	installDependencies();
 
 	// Import the SidebarProvider
 	const SidebarProvider = require('./sidebarProvider');
 
-	// Add SidebarProvider with custom icon.
-	// const sidebarProvider = new SidebarProvider(context.extensionUri);
-
 	// Register the SidebarProvider
 	SidebarProvider.register(context);
 
-	// Setup custom image for the extension in the Primary Sidebar
+	// Setup custom icon for the extension in the Status Bar
 	const icon = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
 	icon.text = '$(shield)';
-	icon.tooltip = 'Leak Lock';
-	icon.command = 'leak-lock.projectScan';
+	icon.tooltip = 'Leak Lock - Click to scan repository';
+	icon.command = 'leak-lock.scanRepository';
 	icon.show();
 
-	
 	// Use the console to output diagnostic information (console.log) and errors (console.error)
 	// This line of code will only be executed once when your extension is activated
 	console.log('Congratulations, your extension "leak-lock" is now active!');
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with  registerCommand
-	// The commandId parameter must match the command field in package.json
+	// Register commands
 	const disposable = vscode.commands.registerCommand('leak-lock.helloWorld', function () {
-		// The code you place here will be executed every time your command is executed
-
-		// Display a message box to the user
 		vscode.window.showInformationMessage('Hello World from leak-lock!');
 	});
 
-	// Make a call of security-scan.js
-	// const fileScan = require('./file-scan');
-	// fileScan.activate(context);
+	// Register scan repository command
+	const scanRepositoryCommand = vscode.commands.registerCommand('leak-lock.scanRepository', function () {
+		// Show the sidebar view
+		vscode.commands.executeCommand('workbench.view.extension.leak-lock');
+		vscode.window.showInformationMessage('Repository scanning started. Check the Leak Lock sidebar for results.');
+	});
 
+	// Register fix secrets command
+	const fixSecretsCommand = vscode.commands.registerCommand('leak-lock.fixSecrets', function () {
+		vscode.window.showInformationMessage('Fix secrets functionality available in the Leak Lock sidebar.');
+	});
+
+	// Make a call of project-scan.js for backward compatibility
 	const projectScan = require('./project-scan');
 	projectScan.activate(context);
 
-	context.subscriptions.push(disposable);
+	// Add all commands to subscriptions
+	context.subscriptions.push(
+		disposable,
+		scanRepositoryCommand,
+		fixSecretsCommand,
+		icon
+	);
 
-	// Register the command to scan the files: leak-lock.scanFiles
-	// Register the command to scan the credentials: leak-lock.scanCredentials
-	// Register the command to clean up the files: leak-lock.cleanUpFiles
-
-
+	// Register the legacy scan files command
 	const scanFiles = vscode.commands.registerCommand('leak-lock.scanFiles', function () {
-		// The code you place here will be executed
-		// every time your command is executed
-		vscode.window.showInformationMessage('Scanning files...');
-
-		// // Call the file-scan.js
-		// securityScan.scanFiles();
-
-		// // Display a message box to the user
-		// vscode.window.showInformationMessage('Files scanned!');
+		vscode.window.showInformationMessage('Use the new "Scan Repository" command from the Leak Lock sidebar instead.');
 	});
 
-
 	context.subscriptions.push(scanFiles);
-
 }
 
 // This method is called when your extension is deactivated
