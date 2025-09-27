@@ -24,6 +24,39 @@
       {
         "command": "leak-lock.projectScan",
         "title": "Project Scan"
+      },
+      {
+        "command": "leak-lock.scanRepository",
+        "title": "Scan Repository",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "leak-lock.fixSecrets",
+        "title": "Fix Secrets"
+      }
+    ],
+    "views": {
+      "leak-lock": [
+        {
+          "id": "leak-lock.sidebar",
+          "name": "Scanner",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "leak-lock",
+          "title": "Leak Lock",
+          "icon": "./media/shield.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "leak-lock.sidebar",
+        "contents": "Welcome to Leak Lock - Secure your code repositories.\n[Scan Repository](command:leak-lock.scanRepository)\nMake sure Docker is installed and running to use this extension."
       }
     ]
   },
