@@ -50,50 +50,27 @@ class LeakLockPanel {
         );
 
         LeakLockPanel.currentPanel = new LeakLockPanel(extensionUri);
-        LeakLockPanel.currentPanel._initializePanel(panel);
-    }
+        LeakLockPanel.currentPanel._panel = panel;
+        LeakLockPanel.currentPanel._setupPanelListeners();
+        LeakLockPanel.currentPanel._panel.webview.html = LeakLockPanel.currentPanel._getHtmlForWebview();
 
-    _initializePanel(panel) {
-        this._panel = panel;
-        
-        // Set up panel disposal listener
-        this._setupPanelListeners();
-        
-        // Check dependencies on startup
-        this._checkDependenciesOnStartup();
-        
-        // Auto-select current workspace if it's a git repository
-        this._autoSelectWorkspaceIfGitRepo();
-        
-        this._panel.webview.html = this._getHtmlForWebview();
-        
         // Handle messages from the webview
-        this._panel.webview.onDidReceiveMessage(
+        panel.webview.onDidReceiveMessage(
             message => {
                 switch (message.command) {
-                    case 'scan':
-                        this._scanRepository(message.useWorkspace);
-                        break;
                     case 'fix':
-                        this._fixSecrets(message.replacements);
-                        break;
-                    case 'selectDirectory':
-                        this._selectDirectory();
-                        break;
-                    case 'installDependencies':
-                        this._installDependencies();
+                        LeakLockPanel.currentPanel._generateFixCommand(message.replacements);
                         break;
                     case 'runBFG':
-                        this._runBFGCommand(message.replacements);
+                        LeakLockPanel.currentPanel._runBFGCommand(message.replacements);
                         break;
                     case 'openFile':
-                        this._openFileAtLine(message.file, message.line);
-                        break;
-                    case 'resetDependencies':
-                        this._resetDependencyStatus();
+                        LeakLockPanel.currentPanel._openFile(message.file, message.line);
                         break;
                 }
-            }
+            },
+            undefined,
+            []
         );
     }
 
@@ -122,14 +99,14 @@ class LeakLockPanel {
                         flex-direction: column;
                         gap: 20px;
                     }
-                    .scan-section {
+                    .scan-header {
                         margin-bottom: 20px;
                         padding: 15px;
                         border: 1px solid var(--vscode-panel-border);
                         border-radius: 6px;
                         background-color: var(--vscode-editor-background);
                     }
-                    .scan-button, .fix-button, .select-button, .install-button, .run-button {
+                    .scan-button, .fix-button, .run-button {
                         background-color: var(--vscode-button-background);
                         color: var(--vscode-button-foreground);
                         border: none;
@@ -139,7 +116,7 @@ class LeakLockPanel {
                         margin: 5px 5px 5px 0;
                         font-size: 0.9em;
                     }
-                    .scan-button:hover, .fix-button:hover, .select-button:hover, .install-button:hover, .run-button:hover {
+                    .scan-button:hover, .fix-button:hover, .run-button:hover {
                         background-color: var(--vscode-button-hoverBackground);
                     }
                     .scan-button:disabled, .fix-button:disabled, .run-button:disabled {
@@ -147,55 +124,6 @@ class LeakLockPanel {
                         color: var(--vscode-button-secondaryForeground);
                         cursor: not-allowed;
                         opacity: 0.6;
-                    }
-                    .setup-section, .directory-section {
-                        margin-bottom: 15px;
-                        padding: 10px;
-                        border: 1px solid var(--vscode-panel-border);
-                        border-radius: 4px;
-                        background-color: var(--vscode-editor-inactiveSelectionBackground);
-                    }
-                    .setup-complete-section {
-                        margin-bottom: 15px;
-                        padding: 12px;
-                        border: 2px solid var(--vscode-button-background);
-                        border-radius: 6px;
-                        background-color: var(--vscode-editor-selectionHighlightBackground);
-                    }
-                    .setup-complete-info {
-                        font-size: 0.85em;
-                        color: var(--vscode-button-foreground);
-                        margin: 8px 0;
-                        font-weight: 500;
-                    }
-                    .setup-info {
-                        font-size: 0.8em;
-                        color: var(--vscode-descriptionForeground);
-                        margin: 5px 0;
-                    }
-                    .selected-directory {
-                        font-family: monospace;
-                        font-size: 0.8em;
-                        background-color: var(--vscode-textCodeBlock-background);
-                        padding: 4px 8px;
-                        border-radius: 3px;
-                        margin-top: 8px;
-                        border: 1px solid var(--vscode-input-border);
-                    }
-                    .file-link {
-                        color: var(--vscode-textLink-foreground);
-                        cursor: pointer;
-                        text-decoration: underline;
-                    }
-                    .file-link:hover {
-                        color: var(--vscode-textLink-activeForeground);
-                    }
-                    .run-section {
-                        margin-top: 20px;
-                        padding: 15px;
-                        border: 2px solid var(--vscode-button-background);
-                        border-radius: 6px;
-                        background-color: var(--vscode-editor-selectionHighlightBackground);
                     }
                     .run-button {
                         background-color: var(--vscode-button-background);
@@ -244,88 +172,52 @@ class LeakLockPanel {
                     .hidden {
                         display: none;
                     }
+                    .spinner {
+                        border: 2px solid var(--vscode-progressBar-background);
+                        border-top: 2px solid var(--vscode-progressBar-foreground);
+                        border-radius: 50%;
+                        width: 16px;
+                        height: 16px;
+                        animation: spin 1s linear infinite;
+                    }
+                    @keyframes spin {
+                        0% { transform: rotate(0deg); }
+                        100% { transform: rotate(360deg); }
+                    }
+                    .scanning-indicator {
+                        display: flex;
+                        align-items: center;
+                        padding: 10px;
+                        background: var(--vscode-inputValidation-infoBackground);
+                        border-left: 3px solid var(--vscode-inputValidation-infoBorder);
+                        border-radius: 3px;
+                        margin-bottom: 15px;
+                    }
                 </style>
             </head>
             <body>
                 <div class="main-container">
-                    <div class="scan-section">
-                        <h2>🛡️ Leak Lock Scanner</h2>
-                    ${!this._dependenciesInstalled ? `
-                    <div class="setup-section">
-                        <h3>📋 Setup</h3>
-                        <button class="install-button" onclick="installDependencies()">
-                            🔧 Install Dependencies
-                        </button>
-                        <p class="setup-info">Install Docker, BFG tool, and Nosey Parker image.</p>
-                    </div>
-                    ` : `
-                    <div class="setup-complete-section">
-                        <h3>✅ Setup Complete</h3>
-                        <p class="setup-complete-info">
-                            🐳 Docker running • 🔧 BFG tool ready • 🔍 Nosey Parker available
+                    <div class="scan-header">
+                        <h2>🛡️ Security Scan Results</h2>
+                        <p style="color: var(--vscode-descriptionForeground); margin: 5px 0 15px 0; font-size: 0.9em;">
+                            Use the <strong>Control Panel</strong> in the sidebar to install dependencies and select directories to scan.
                         </p>
-                        <div style="margin-top: 8px;">
-                            <button class="install-button" onclick="installDependencies()" style="font-size: 0.8em; padding: 4px 12px; margin-right: 8px;">
-                                🔄 Reinstall
-                            </button>
-                            <button class="install-button" onclick="resetDependencies()" style="font-size: 0.8em; padding: 4px 12px; background-color: var(--vscode-button-secondaryBackground);">
-                                � Reset Status
-                            </button>
-                        </div>
-                    </div>
-                    `}
-                    
-                    <div class="directory-section">
-                        <h3>📁 Scan Directory</h3>
-                        ${this._selectedDirectory ? `
-                            <div class="selected-directory" style="margin-bottom: 10px; padding: 8px; background-color: var(--vscode-editor-selectionHighlightBackground); border-radius: 4px;">
-                                <strong>📂 Current Directory:</strong><br>
-                                <code style="font-size: 0.9em;">${this._selectedDirectory}</code>
+                        ${this._isScanning ? `
+                            <div class="scanning-indicator">
+                                <div class="spinner" style="margin-right: 10px;"></div>
+                                <span>🔍 Scanning in progress... Please wait.</span>
                             </div>
-                            <button class="select-button" onclick="selectDirectory()">
-                                � Change Directory
-                            </button>
-                        ` : `
-                            <div class="selected-directory" style="margin-bottom: 10px; color: var(--vscode-errorForeground);">
-                                ⚠️ No directory selected
-                            </div>
-                            <button class="select-button" onclick="selectDirectory()">
-                                📂 Select Directory to Scan
-                            </button>
-                        `}
-                    </div>
-                    
-                    <div class="scan-section">
-                        <h3>🔍 Security Scan</h3>
-                        <button class="scan-button" onclick="scanRepository()" ${!this._selectedDirectory ? 'disabled' : ''}>
-                            ${this._isScanning ? '⏳ Scanning...' : (this._selectedDirectory ? '🔍 Scan Selected Directory' : '🔍 Select Directory First')}
-                        </button>
-                        <button class="scan-button" onclick="scanCurrentWorkspace()" style="margin-left: 10px;">
-                            📂 Scan Current Workspace
-                        </button>
+                        ` : ''}
                     </div>
                 </div>
                 
-                ${hasResults ? this._getResultsHtml() : '<div id="no-results">No scan results yet. Click "Scan" to analyze your repository for secrets.</div>'}
+                ${hasResults ? this._getResultsHtml() : '<div id="no-results">No scan results yet. Use the <strong>Control Panel</strong> in the sidebar to set up dependencies and start scanning.</div>'}
                 
                 <script>
                     const vscode = acquireVsCodeApi();
                     
-                    function installDependencies() {
-                        vscode.postMessage({ command: 'installDependencies' });
-                    }
-                    
-                    function selectDirectory() {
-                        vscode.postMessage({ command: 'selectDirectory' });
-                    }
-                    
-                    function scanRepository() {
-                        vscode.postMessage({ command: 'scan' });
-                    }
-                    
-                    function scanCurrentWorkspace() {
-                        vscode.postMessage({ command: 'scan', useWorkspace: true });
-                    }
+                    // Dependency installation and directory selection 
+                    // is now handled by the sidebar panel
                     
                     function fixSecrets() {
                         const replacements = {};
@@ -368,15 +260,28 @@ class LeakLockPanel {
                             line: line 
                         });
                     }
-                    
-                    function resetDependencies() {
-                        vscode.postMessage({ command: 'resetDependencies' });
-                    }
                 </script>
-                </div>
             </body>
             </html>
         `;
+    }
+
+    // Method to start scan from sidebar
+    startScanFromSidebar(directory, dependenciesReady) {
+        if (directory) {
+            this._selectedDirectory = directory;
+        }
+        this._dependenciesInstalled = dependenciesReady;
+        
+        // Update UI and start scan
+        if (this._panel) {
+            this._panel.webview.html = this._getHtmlForWebview();
+        }
+        
+        // Start the scan if both directory and dependencies are ready
+        if (this._selectedDirectory && this._dependenciesInstalled) {
+            this._scanRepository();
+        }
     }
 
     _getResultsHtml() {
@@ -393,40 +298,52 @@ class LeakLockPanel {
             high: '#ff6b6b',
             medium: '#ffa726',
             low: '#66bb6a',
-            info: '#42a5f5'
+            info: '#42a5f5',
+            warning: '#ff9800'
         };
 
-        const resultsRows = this._scanResults.map((result, index) => `
-            <tr data-secret="${result.secret}" data-file="${result.file}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'};">
-                <td><input type="checkbox" class="secret-checkbox checkbox" checked></td>
-                <td title="${result.file}">
-                    <span class="file-link" onclick="openFile('${result.file}', ${result.line})" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">
-                        📄 ${result.file}
-                    </span>
-                </td>
-                <td style="text-align: center;">
-                    <span class="file-link" onclick="openFile('${result.file}', ${result.line})" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; cursor: pointer;">
-                        ${result.line}
-                    </span>
-                </td>
-                <td>
-                    <span style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;">
-                        ${result.secret}
-                    </span>
-                </td>
-                <td>
-                    <input type="text" class="replacement-input" value="*****" placeholder="Replacement value">
-                </td>
-                <td>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                        <span style="background: ${severityColors[result.severity] || '#666'}; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.7em; text-transform: uppercase;">
-                            ${result.severity}
+        const resultsRows = this._scanResults.map((result, index) => {
+            const isDependency = result.isDependency;
+            const icon = isDependency ? '⚠️' : '📄';
+            const rowStyle = isDependency ? 'opacity: 0.7;' : '';
+            const dependencyNote = isDependency ? ' (dependency directory)' : '';
+            
+            return `
+                <tr data-secret="${result.secret}" data-file="${result.file}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
+                    <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? '' : 'checked'}></td>
+                    <td title="${result.file}${dependencyNote}">
+                        <span class="file-link" onclick="openFile('${result.file}', ${result.line})" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">
+                            ${icon} ${result.file}
                         </span>
-                        <span style="font-size: 0.9em;">${result.description}</span>
-                    </div>
-                </td>
-            </tr>
-        `).join('');
+                        ${isDependency ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(deps)</span>' : ''}
+                    </td>
+                    <td style="text-align: center;">
+                        <span class="file-link" onclick="openFile('${result.file}', ${result.line})" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; cursor: pointer;">
+                            ${result.line}
+                        </span>
+                    </td>
+                    <td>
+                        <span style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;">
+                            ${result.secret}
+                        </span>
+                    </td>
+                    <td>
+                        <input type="text" class="replacement-input" value="*****" placeholder="Replacement value" ${isDependency ? 'disabled' : ''}>
+                    </td>
+                    <td>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="background: ${severityColors[result.severity] || '#666'}; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.7em; text-transform: uppercase;">
+                                ${result.severity}
+                            </span>
+                            <span style="font-size: 0.9em;">
+                                ${result.description}
+                                ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(in dependency)</span>' : ''}
+                            </span>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
 
         const severityCounts = this._scanResults.reduce((counts, result) => {
             counts[result.severity] = (counts[result.severity] || 0) + 1;
@@ -440,12 +357,24 @@ class LeakLockPanel {
                 </span>
             `).join('');
 
+        // Separate regular findings from dependency warnings
+        const regularFindings = this._scanResults.filter(r => !r.isDependency);
+        const dependencyWarnings = this._scanResults.filter(r => r.isDependency);
+
         return `
             <div class="scan-section">
                 <h2>🔍 Scan Results</h2>
-                <div style="margin-bottom: 10px;">
+                <div style="margin-bottom: 15px;">
                     <strong>Found ${this._scanResults.length} potential secrets:</strong>
-                    <div style="margin-top: 8px;">${severitySummary}</div>
+                    <div style="margin-top: 8px;">
+                        <div>${severitySummary}</div>
+                        ${dependencyWarnings.length > 0 ? `
+                            <div style="margin-top: 8px; padding: 8px; background: var(--vscode-inputValidation-warningBackground); border-left: 3px solid ${severityColors.warning}; border-radius: 3px;">
+                                <strong>ℹ️ ${dependencyWarnings.length} findings in dependency directories</strong>
+                                <br><span style="font-size: 0.9em;">These are shown as warnings since they're in dependency folders (node_modules, vendor, etc.) and typically don't need fixing.</span>
+                            </div>
+                        ` : ''}
+                    </div>
                 </div>
                 <table class="results-table">
                     <thead>
@@ -464,7 +393,6 @@ class LeakLockPanel {
                 </table>
                 <div style="margin-top: 15px;">
                     <button class="fix-button" onclick="fixSecrets()">🔧 Generate Fix Command</button>
-                    <button class="scan-button" onclick="scanRepository()" style="margin-left: 10px;">🔄 Scan Again</button>
                 </div>
                 
                 <div class="run-section">
@@ -564,7 +492,7 @@ class LeakLockPanel {
                 
                 // Show completion message
                 if (scanResults.length > 0) {
-                    vscode.window.showWarningMessage(`Scan complete! Found ${scanResults.length} potential secrets. Review them in the sidebar.`);
+                    vscode.window.showWarningMessage(`Scan complete! Found ${scanResults.length} potential secrets. Review them in the panel.`);
                 } else {
                     vscode.window.showInformationMessage('Scan complete! No secrets found in your repository.');
                 }
@@ -581,6 +509,28 @@ class LeakLockPanel {
         }
     }
 
+    _generateFixCommand(replacements) {
+        // This will handle the 'fix' command from webview
+        this._fixSecrets(replacements);
+    }
+
+    _runBFGCommand(replacements) {
+        // This will handle the 'runBFG' command from webview
+        return this._executeBFGCleanup(replacements);
+    }
+
+    _openFile(file, line) {
+        // Open file in editor
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (workspaceFolder) {
+            const filePath = path.isAbsolute(file) ? file : path.join(workspaceFolder.uri.fsPath, file);
+            vscode.window.showTextDocument(vscode.Uri.file(filePath), {
+                selection: new vscode.Range(line - 1, 0, line - 1, 0)
+            });
+        }
+    }
+
+    // Essential utility methods for scanning functionality
     async _checkDockerAvailability() {
         return new Promise((resolve) => {
             exec('docker --version', (error, stdout, stderr) => {
@@ -615,7 +565,7 @@ class LeakLockPanel {
     }
 
     async _initializeDatastore(datastorePath) {
-        // Remove existing datastore if it exists - use our robust cleanup method
+        // Remove existing datastore if it exists
         if (fs.existsSync(datastorePath)) {
             await this._cleanupTempFiles(datastorePath);
         }
@@ -635,13 +585,29 @@ class LeakLockPanel {
 
     async _runNoseyParkerScan(scanPath, datastorePath) {
         return new Promise((resolve, reject) => {
-            // First scan the repository - ensure we scan the mounted directory
-            const scanCommand = `docker run --rm -v "${scanPath}:/scan" -v "${datastorePath}:/datastore" ghcr.io/praetorian-inc/noseyparker:latest scan --datastore /datastore /scan`;
+            // Get dependency handling configuration
+            const config = vscode.workspace.getConfiguration('leakLock');
+            const dependencyHandling = config.get('dependencyHandling') || 'warning';
+            
+            // Build exclusion options for dependency directories if configured to exclude
+            let excludeOptions = '';
+            if (dependencyHandling === 'exclude') {
+                const excludePaths = [
+                    'node_modules', 'vendor', '.git', 'dist', 'build', 'target', 
+                    'venv', 'env', '.venv', '__pycache__', '.tox', 'site-packages',
+                    '.m2', 'lib', 'libs', '.bundle', 'gems', 'packages', 'bin', 'obj',
+                    'out', 'tmp', 'temp', 'cache', '.cache', 'logs', '.logs',
+                    '.vscode', '.idea', '.eclipse', '.settings'
+                ];
+                // Add exclusion flags for each directory
+                excludeOptions = excludePaths.map(path => `--ignore="${path}"`).join(' ');
+            }
+            
+            // First scan the repository
+            const scanCommand = `docker run --rm -v "${scanPath}:/scan" -v "${datastorePath}:/datastore" ghcr.io/praetorian-inc/noseyparker:latest scan --datastore /datastore ${excludeOptions} /scan`;
             
             exec(scanCommand, { maxBuffer: 1024 * 1024 * 10, timeout: 300000 }, (scanError, scanStdout, scanStderr) => {
                 // Nosey Parker may return non-zero exit codes even on successful scans
-                // Exit code 2 means findings were found, which is expected
-                // Only treat it as an error if it's a real failure (not just findings found)
                 if (scanError && scanError.code !== 2 && !scanError.message.includes('exit code 2')) {
                     console.error('Scan error details:', { error: scanError, stdout: scanStdout, stderr: scanStderr });
                     reject(new Error(`Scan failed: ${scanError.message}\nStderr: ${scanStderr}`));
@@ -654,7 +620,6 @@ class LeakLockPanel {
                 exec(reportCommand, { maxBuffer: 1024 * 1024 * 10 }, (reportError, reportStdout, reportStderr) => {
                     if (reportError) {
                         console.warn('Report command failed, trying alternative approach:', reportError.message);
-                        // Fallback to simple format
                         resolve(this._createFallbackResults(scanStdout + scanStderr));
                         return;
                     }
@@ -680,10 +645,8 @@ class LeakLockPanel {
 
         try {
             // Parse JSON output from Nosey Parker report command
-            // The output is a JSON array of findings
             const jsonFindings = JSON.parse(output);
             
-            // Handle the actual Nosey Parker JSON structure (array of findings)
             if (Array.isArray(jsonFindings)) {
                 jsonFindings.forEach(finding => {
                     finding.matches?.forEach(match => {
@@ -691,37 +654,13 @@ class LeakLockPanel {
                         const line = match.location?.source_span?.start?.line || 1;
                         const secretText = match.snippet?.matching || 'unknown';
                         
-                        results.push({
-                            file: this._getRelativeFilePath(filePath),
-                            line: line,
-                            secret: this._truncateSecret(secretText),
-                            description: finding.rule_name || 'Secret detected',
-                            severity: this._getSeverity(finding.rule_name)
-                        });
-                    });
-                });
-            } else if (jsonFindings.findings && Array.isArray(jsonFindings.findings)) {
-                // Handle alternative structure (if wrapped in an object)
-                jsonFindings.findings.forEach(finding => {
-                    finding.matches?.forEach(match => {
-                        results.push({
-                            file: this._getRelativeFilePath(match.location?.path || 'unknown'),
-                            line: match.location?.start_line || 1,
-                            secret: this._truncateSecret(match.snippet || match.content || 'unknown'),
-                            description: finding.rule_name || 'Secret detected',
-                            severity: this._getSeverity(finding.rule_name)
-                        });
-                    });
-                });
-            } else if (jsonFindings.matches && Array.isArray(jsonFindings.matches)) {
-                // Handle yet another alternative structure
-                jsonFindings.matches.forEach(match => {
-                    results.push({
-                        file: this._getRelativeFilePath(match.location?.source_file || match.file || 'unknown'),
-                        line: match.location?.line || match.line || 1,
-                        secret: this._truncateSecret(match.snippet || match.content || match.secret || 'unknown'),
-                        description: match.rule_name || match.type || 'Secret detected',
-                        severity: this._getSeverity(match.rule_name || match.type)
+                        results.push(this._createResult(
+                            filePath,
+                            line,
+                            secretText,
+                            finding.rule_name || 'Secret detected',
+                            finding.rule_name
+                        ));
                     });
                 });
             }
@@ -736,13 +675,13 @@ class LeakLockPanel {
                     const parsed = JSON.parse(line);
                     if (parsed.matches && Array.isArray(parsed.matches)) {
                         parsed.matches.forEach(match => {
-                            results.push({
-                                file: this._getRelativeFilePath(match.location?.source_file || 'unknown'),
-                                line: match.location?.line || 1,
-                                secret: this._truncateSecret(match.snippet || match.content || 'unknown'),
-                                description: match.rule_name || 'Secret detected',
-                                severity: this._getSeverity(match.rule_name)
-                            });
+                            results.push(this._createResult(
+                                match.location?.source_file || 'unknown',
+                                match.location?.line || 1,
+                                match.snippet || match.content || 'unknown',
+                                match.rule_name || 'Secret detected',
+                                match.rule_name
+                            ));
                         });
                     }
                 } catch (lineError) {
@@ -769,13 +708,13 @@ class LeakLockPanel {
             for (const pattern of secretPatterns) {
                 const match = line.match(pattern);
                 if (match) {
-                    results.push({
-                        file: this._getRelativeFilePath(match[1]),
-                        line: parseInt(match[2]) || 1,
-                        secret: '***hidden***',
-                        description: 'Secret detected (details hidden)',
-                        severity: 'medium'
-                    });
+                    results.push(this._createResult(
+                        match[1],
+                        parseInt(match[2]) || 1,
+                        '***hidden***',
+                        'Secret detected (details hidden)',
+                        'unknown'
+                    ));
                     break;
                 }
             }
@@ -783,13 +722,13 @@ class LeakLockPanel {
 
         // If no patterns matched but there's output, create a generic result
         if (results.length === 0 && (output.includes('secret') || output.includes('finding'))) {
-            results.push({
-                file: 'repository',
-                line: 1,
-                secret: '***scan completed***',
-                description: 'Scan completed - check console output for details',
-                severity: 'info'
-            });
+            results.push(this._createResult(
+                'repository',
+                1,
+                '***scan completed***',
+                'Scan completed - check console output for details',
+                'info'
+            ));
         }
 
         return results;
@@ -822,248 +761,74 @@ class LeakLockPanel {
         return 'low';
     }
 
+    _createResult(filePath, line, secret, description, ruleName) {
+        const relativeFile = this._getRelativeFilePath(filePath);
+        const isInDependency = this._isInDependencyDirectory(relativeFile);
+        
+        // Get dependency handling configuration
+        const config = vscode.workspace.getConfiguration('leakLock');
+        const dependencyHandling = config.get('dependencyHandling') || 'warning';
+        
+        // Determine severity based on configuration
+        let severity = this._getSeverity(ruleName);
+        if (isInDependency && dependencyHandling === 'warning') {
+            severity = 'warning';
+        }
+        
+        return {
+            file: relativeFile,
+            line: line,
+            secret: this._truncateSecret(secret),
+            description: description,
+            severity: severity,
+            isDependency: isInDependency,
+            originalSeverity: this._getSeverity(ruleName)
+        };
+    }
+
+    _isInDependencyDirectory(filePath) {
+        // Common dependency and build artifact directories to flag as warnings
+        const dependencyPatterns = [
+            'node_modules/', 'npm-cache/', '.npm/',
+            'venv/', 'env/', '.venv/', '__pycache__/', '.tox/', 'site-packages/',
+            'dist/', 'build/', '*.egg-info/',
+            'target/', '.m2/', 'lib/', 'libs/',
+            'vendor/', '.bundle/', 'gems/',
+            'vendor/', 'composer/',
+            'vendor/', 'go.sum',
+            'target/', 'Cargo.lock',
+            'packages/', 'bin/', 'obj/', 'nuget/',
+            '.git/', '.svn/', '.hg/',
+            'dist/', 'build/', 'out/', 'tmp/', 'temp/',
+            'cache/', '.cache/', 'logs/', '.logs/',
+            '.vscode/', '.idea/', '.eclipse/', '.settings/'
+        ];
+        
+        return dependencyPatterns.some(pattern => {
+            if (pattern.endsWith('/')) {
+                return filePath.includes(pattern);
+            }
+            return filePath.includes('/' + pattern) || filePath.endsWith(pattern);
+        });
+    }
+
     async _cleanupTempFiles(datastorePath) {
         try {
             if (fs.existsSync(datastorePath)) {
-                // First try to change permissions recursively to make files deletable
-                await this._fixPermissions(datastorePath);
-                
-                // Then remove the directory
                 fs.rmSync(datastorePath, { recursive: true, force: true });
             }
         } catch (error) {
-            console.warn('Failed to cleanup temporary files, trying alternative method:', error.message);
-            
-            // Try using Docker to clean up the files with proper permissions
+            console.warn('Failed to cleanup temporary files:', error.message);
+            // Try using Docker to clean up the files
             try {
-                await this._dockerCleanup(datastorePath);
+                const cleanupCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" alpine:latest rm -rf "/workspace/${path.basename(datastorePath)}"`;
+                const { exec } = require('child_process');
+                const util = require('util');
+                const execAsync = util.promisify(exec);
+                await execAsync(cleanupCommand);
             } catch (dockerError) {
                 console.warn('Docker cleanup also failed:', dockerError.message);
-                // Try one more time with sudo-like permissions fix
-                try {
-                    await this._forceCleanup(datastorePath);
-                } catch (finalError) {
-                    console.error('All cleanup methods failed:', finalError.message);
-                    vscode.window.showWarningMessage(
-                        `Could not fully clean up temporary files at ${datastorePath}. ` +
-                        'You may need to manually delete this directory.'
-                    );
-                }
             }
-        }
-    }
-
-    async _fixPermissions(dirPath) {
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execAsync = util.promisify(exec);
-        
-        try {
-            // Try to fix permissions using chmod (works on Unix-like systems)
-            if (process.platform !== 'win32') {
-                await execAsync(`chmod -R 755 "${dirPath}"`);
-            }
-        } catch (error) {
-            // Permission fix failed, but we'll try cleanup anyway
-            console.warn('Could not fix permissions:', error.message);
-        }
-    }
-
-    async _dockerCleanup(datastorePath) {
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execAsync = util.promisify(exec);
-        
-        // Use Docker to remove files with the same user that created them
-        const cleanupCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" alpine:latest rm -rf "/workspace/${path.basename(datastorePath)}"`;
-        
-        await execAsync(cleanupCommand);
-    }
-
-    async _forceCleanup(datastorePath) {
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execAsync = util.promisify(exec);
-        
-        // Last resort: use system commands to force cleanup
-        if (process.platform === 'win32') {
-            // Windows: use rmdir with force
-            await execAsync(`rmdir /s /q "${datastorePath}"`);
-        } else {
-            // Unix-like: use rm with force
-            await execAsync(`rm -rf "${datastorePath}"`);
-        }
-    }
-
-    async _checkDependenciesOnStartup() {
-        try {
-            const { exec } = require('child_process');
-            const util = require('util');
-            const execAsync = util.promisify(exec);
-            
-            // Check Docker
-            await execAsync('docker --version');
-            await execAsync('docker info');
-            
-            // Check if Nosey Parker image exists
-            await execAsync('docker image inspect ghcr.io/praetorian-inc/noseyparker:latest');
-            
-            // Check if BFG tool exists
-            const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-            if (fs.existsSync(bfgPath)) {
-                this._dependenciesInstalled = true;
-                
-                // Update UI if view is available
-                if (this._panel) {
-                    this._panel.webview.html = this._getHtmlForWebview();
-                }
-            }
-        } catch (error) {
-            // Dependencies not fully installed - keep _dependenciesInstalled as false
-            console.log('Dependencies check:', error.message);
-        }
-    }
-
-    _resetDependencyStatus() {
-        this._dependenciesInstalled = false;
-        if (this._panel) {
-            this._panel.webview.html = this._getHtmlForWebview();
-        }
-        vscode.window.showInformationMessage('Dependency status reset. You can reinstall dependencies if needed.');
-    }
-
-    async _autoSelectWorkspaceIfGitRepo() {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) {
-            return;
-        }
-
-        const fs = require('fs');
-        const path = require('path');
-        
-        // Check if the workspace root contains a .git directory
-        const gitPath = path.join(workspaceFolder.uri.fsPath, '.git');
-        if (fs.existsSync(gitPath)) {
-            this._selectedDirectory = workspaceFolder.uri.fsPath;
-            console.log(`Auto-selected workspace directory: ${this._selectedDirectory}`);
-        }
-    }
-
-    async _selectDirectory() {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        const options = {
-            canSelectFolders: true,
-            canSelectFiles: false,
-            canSelectMany: false,
-            openLabel: 'Select Directory to Scan',
-            defaultUri: workspaceFolder ? workspaceFolder.uri : undefined
-        };
-
-        const folderUri = await vscode.window.showOpenDialog(options);
-        if (folderUri && folderUri[0]) {
-            this._selectedDirectory = folderUri[0].fsPath;
-            vscode.window.showInformationMessage(`Selected directory: ${this._selectedDirectory}`);
-            
-            // Update the webview to show the selected directory
-            if (this._panel) {
-                this._panel.webview.html = this._getHtmlForWebview();
-            }
-        }
-    }
-
-    async _installDependencies() {
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execAsync = util.promisify(exec);
-        const path = require('path');
-        
-        try {
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: "Installing Leak Lock dependencies...",
-                cancellable: false
-            }, async (progress) => {
-                
-                progress.report({ increment: 10, message: "Checking system requirements..." });
-                
-                // Check Docker availability
-                try {
-                    await execAsync('docker --version');
-                    await execAsync('docker info');
-                    progress.report({ increment: 20, message: "Docker is available ✓" });
-                } catch (error) {
-                    throw new Error('Docker is not installed or not running. Please install Docker and start the daemon.');
-                }
-                
-                progress.report({ increment: 20, message: "Downloading BFG tool..." });
-                
-                // Download BFG tool to extension directory
-                const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-                const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
-                
-                try {
-                    await execAsync(`curl -L -o "${bfgPath}" "${bfgUrl}"`);
-                    progress.report({ increment: 25, message: "BFG tool downloaded ✓" });
-                } catch (error) {
-                    console.error('Failed to download BFG tool:', error);
-                    vscode.window.showWarningMessage('Failed to download BFG tool. You may need to download it manually.');
-                }
-                
-                progress.report({ increment: 25, message: "Pulling Nosey Parker Docker image..." });
-                
-                // Pull Nosey Parker Docker image
-                try {
-                    await execAsync('docker pull ghcr.io/praetorian-inc/noseyparker:latest');
-                    progress.report({ increment: 0, message: "Nosey Parker image ready ✓" });
-                } catch (error) {
-                    console.error('Failed to pull Nosey Parker image:', error);
-                    throw new Error('Failed to pull Nosey Parker Docker image. Please check your internet connection.');
-                }
-            });
-            
-            vscode.window.showInformationMessage('✅ Dependencies installed successfully!');
-            
-            // Mark dependencies as installed
-            this._dependenciesInstalled = true;
-            
-            // Update the webview to hide the setup section
-            if (this._panel) {
-                this._panel.webview.html = this._getHtmlForWebview();
-            }
-            
-        } catch (error) {
-            console.error('Failed to install dependencies:', error);
-            vscode.window.showErrorMessage(`❌ Failed to install dependencies: ${error.message}`);
-            this._dependenciesInstalled = false;
-        }
-    }
-
-    async _openFileAtLine(file, line) {
-        try {
-            let filePath = file;
-            
-            // Handle relative paths
-            if (!path.isAbsolute(file)) {
-                const scanPath = this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-                if (scanPath) {
-                    filePath = path.join(scanPath, file);
-                }
-            }
-            
-            const uri = vscode.Uri.file(filePath);
-            const document = await vscode.workspace.openTextDocument(uri);
-            const editor = await vscode.window.showTextDocument(document);
-            
-            // Jump to the specific line
-            const position = new vscode.Position(Math.max(0, line - 1), 0);
-            const range = new vscode.Range(position, position);
-            
-            editor.selection = new vscode.Selection(position, position);
-            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
-            
-        } catch (error) {
-            console.error('Failed to open file:', error);
-            vscode.window.showErrorMessage(`Failed to open file: ${file}`);
         }
     }
 
@@ -1101,20 +866,9 @@ class LeakLockPanel {
             );
 
             if (action === 'Show Manual Command') {
-                // Update webview to show the manual command
-                const commandHtml = `
-                    <div class="scan-section">
-                        <h2>Manual Fix Command</h2>
-                        <p>Copy and paste this command in your terminal to fix the secrets:</p>
-                        <div class="manual-command">${manualCommand}</div>
-                        <p><strong>Warning:</strong> This will rewrite your git history. Make sure to backup your repository first!</p>
-                        <p>After running this command, you may need to force push: <code>git push --force-with-lease</code></p>
-                    </div>
-                `;
+                vscode.window.showInformationMessage('Manual fix command generated.');
                 
-                vscode.window.showInformationMessage('Manual fix command generated. Check the Leak Lock sidebar for details.');
-                
-                // For now, we'll just show the command - actual execution should be manual
+                // Create a document with the command
                 const document = await vscode.workspace.openTextDocument({
                     content: `# Leak Lock - Manual Secret Fix Command\n\n${manualCommand}\n\n# Warning: This will rewrite git history!\n# Make sure to backup your repository first.\n# After running, you may need to force push with: git push --force-with-lease`,
                     language: 'bash'
@@ -1136,7 +890,7 @@ class LeakLockPanel {
         }
     }
 
-    async _runBFGCommand(replacements) {
+    async _executeBFGCleanup(replacements) {
         if (!replacements || Object.keys(replacements).length === 0) {
             vscode.window.showWarningMessage('No secrets selected for removal.');
             return;
@@ -1183,7 +937,6 @@ class LeakLockPanel {
                 const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
                 const bfgCommand = `cd "${scanPath}" && java -jar "${bfgPath}" --replace-text "${replacementsFile}"`;
                 
-                const { exec } = require('child_process');
                 const util = require('util');
                 const execAsync = util.promisify(exec);
 
@@ -1244,7 +997,13 @@ class LeakLockPanel {
         }
     }
 
-    // resolveWebviewView
+    // Handle panel disposal
+    _setupPanelListeners() {
+        this._panel.onDidDispose(() => {
+            this.dispose();
+        }, null);
+    }
+
     dispose() {
         if (this._panel) {
             this._panel.dispose();
@@ -1254,13 +1013,6 @@ class LeakLockPanel {
         if (LeakLockPanel.currentPanel === this) {
             LeakLockPanel.currentPanel = null;
         }
-    }
-
-    // Handle panel disposal
-    _setupPanelListeners() {
-        this._panel.onDidDispose(() => {
-            this.dispose();
-        }, null);
     }
 }
 
