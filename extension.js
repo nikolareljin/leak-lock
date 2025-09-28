@@ -150,11 +150,11 @@ function activate(context) {
 	// Import the LeakLockPanel
 	const LeakLockPanel = require('./leakLockPanel');
 
-	// Import and register the welcome view provider
-	const WelcomeViewProvider = require('./welcomeViewProvider');
-	const welcomeProvider = new WelcomeViewProvider(context.extensionUri);
+	// Import and register the sidebar provider
+	const { LeakLockSidebarProvider } = require('./leakLockSidebarProvider');
+	const sidebarProvider = new LeakLockSidebarProvider(context.extensionUri);
 	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider(WelcomeViewProvider.viewType, welcomeProvider)
+		vscode.window.registerWebviewViewProvider('leak-lock.sidebarView', sidebarProvider)
 	);
 
 	// Setup custom icon for the extension in the Status Bar
@@ -191,6 +191,20 @@ function activate(context) {
 		LeakLockPanel.createOrShow(context.extensionUri);
 	});
 
+	// Register start scan command for sidebar integration
+	const startScanCommand = vscode.commands.registerCommand('leak-lock.startScan', function (options) {
+		// Open main panel and trigger scan with provided options
+		LeakLockPanel.createOrShow(context.extensionUri);
+		if (options) {
+			// Use a slight delay to ensure panel is fully initialized
+			setTimeout(() => {
+				if (LeakLockPanel.currentPanel) {
+					LeakLockPanel.currentPanel.startScanFromSidebar(options.directory, options.dependenciesReady);
+				}
+			}, 100);
+		}
+	});
+
 	// Register cleanup command for manual cleanup
 	const cleanupCommand = vscode.commands.registerCommand('leak-lock.cleanup', async function () {
 		const result = await vscode.window.showWarningMessage(
@@ -221,6 +235,7 @@ function activate(context) {
 		scanRepositoryCommand,
 		fixSecretsCommand,
 		openPanelCommand,
+		startScanCommand,
 		cleanupCommand,
 		icon
 	);
