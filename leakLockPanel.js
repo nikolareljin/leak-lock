@@ -1,12 +1,12 @@
-// Sidebar provider that uses the Webview API to display security issues in the sidebar.
+// Main area panel provider that uses the Webview API to display security issues in the main editor area.
 
 const vscode = require('vscode');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-// implements vscode.WebviewViewProvider
-class SidebarProvider {
+// Webview panel provider for main area display
+class LeakLockPanel {
     constructor(extensionUri) {
         this._extensionUri = extensionUri;
         this._scanResults = [];
@@ -15,22 +15,60 @@ class SidebarProvider {
         this._isScanning = false;
         this._scanProgress = null;
         this._dependenciesInstalled = false;
+        this._panel = null;
     }
 
-    resolveWebviewView(webviewView, context, _token) {
-        this._view = webviewView;
-        webviewView.webview.options = {
-            enableScripts: true,
-            localResourceRoots: [this._extensionUri]
-        };
+    static get currentPanel() {
+        return LeakLockPanel._currentPanel;
+    }
+
+    static set currentPanel(panel) {
+        LeakLockPanel._currentPanel = panel;
+    }
+
+    static createOrShow(extensionUri) {
+        const column = vscode.window.activeTextEditor
+            ? vscode.window.activeTextEditor.viewColumn
+            : undefined;
+
+        // If we already have a panel, show it
+        if (LeakLockPanel.currentPanel) {
+            LeakLockPanel.currentPanel._panel.reveal(column);
+            return;
+        }
+
+        // Otherwise, create a new panel
+        const panel = vscode.window.createWebviewPanel(
+            'leakLockPanel',
+            'Leak Lock Scanner',
+            column || vscode.ViewColumn.One,
+            {
+                enableScripts: true,
+                localResourceRoots: [extensionUri],
+                retainContextWhenHidden: true
+            }
+        );
+
+        LeakLockPanel.currentPanel = new LeakLockPanel(extensionUri);
+        LeakLockPanel.currentPanel._initializePanel(panel);
+    }
+
+    _initializePanel(panel) {
+        this._panel = panel;
+        
+        // Set up panel disposal listener
+        this._setupPanelListeners();
         
         // Check dependencies on startup
         this._checkDependenciesOnStartup();
         
-        webviewView.webview.html = this._getHtmlForWebview();
+        // Auto-select current workspace if it's a git repository
+        this._autoSelectWorkspaceIfGitRepo();
+        
+        this._panel.webview.html = this._getHtmlForWebview();
         
         // Handle messages from the webview
-        webviewView.webview.onDidReceiveMessage(
+        this._panel.webview.onDidReceiveMessage(
             message => {
                 switch (message.command) {
                     case 'scan':
@@ -74,14 +112,22 @@ class SidebarProvider {
                         font-family: var(--vscode-font-family);
                         color: var(--vscode-foreground);
                         background-color: var(--vscode-editor-background);
-                        padding: 10px;
+                        padding: 20px;
                         margin: 0;
+                        max-width: 1200px;
+                        margin: 0 auto;
+                    }
+                    .main-container {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 20px;
                     }
                     .scan-section {
                         margin-bottom: 20px;
-                        padding: 10px;
+                        padding: 15px;
                         border: 1px solid var(--vscode-panel-border);
-                        border-radius: 4px;
+                        border-radius: 6px;
+                        background-color: var(--vscode-editor-background);
                     }
                     .scan-button, .fix-button, .select-button, .install-button, .run-button {
                         background-color: var(--vscode-button-background);
@@ -201,8 +247,9 @@ class SidebarProvider {
                 </style>
             </head>
             <body>
-                <div class="scan-section">
-                    <h2>🛡️ Leak Lock Scanner</h2>
+                <div class="main-container">
+                    <div class="scan-section">
+                        <h2>🛡️ Leak Lock Scanner</h2>
                     ${!this._dependenciesInstalled ? `
                     <div class="setup-section">
                         <h3>📋 Setup</h3>
@@ -229,19 +276,29 @@ class SidebarProvider {
                     `}
                     
                     <div class="directory-section">
-                        <h3>📁 Directory Selection</h3>
-                        <button class="select-button" onclick="selectDirectory()">
-                            📂 Select Directory to Scan
-                        </button>
-                        <div class="selected-directory" id="selected-dir">
-                            ${this._selectedDirectory ? `Selected: ${this._selectedDirectory}` : 'No directory selected'}
-                        </div>
+                        <h3>📁 Scan Directory</h3>
+                        ${this._selectedDirectory ? `
+                            <div class="selected-directory" style="margin-bottom: 10px; padding: 8px; background-color: var(--vscode-editor-selectionHighlightBackground); border-radius: 4px;">
+                                <strong>📂 Current Directory:</strong><br>
+                                <code style="font-size: 0.9em;">${this._selectedDirectory}</code>
+                            </div>
+                            <button class="select-button" onclick="selectDirectory()">
+                                � Change Directory
+                            </button>
+                        ` : `
+                            <div class="selected-directory" style="margin-bottom: 10px; color: var(--vscode-errorForeground);">
+                                ⚠️ No directory selected
+                            </div>
+                            <button class="select-button" onclick="selectDirectory()">
+                                📂 Select Directory to Scan
+                            </button>
+                        `}
                     </div>
                     
                     <div class="scan-section">
                         <h3>🔍 Security Scan</h3>
                         <button class="scan-button" onclick="scanRepository()" ${!this._selectedDirectory ? 'disabled' : ''}>
-                            ${this._isScanning ? '⏳ Scanning...' : '🔍 Start Security Scan'}
+                            ${this._isScanning ? '⏳ Scanning...' : (this._selectedDirectory ? '🔍 Scan Selected Directory' : '🔍 Select Directory First')}
                         </button>
                         <button class="scan-button" onclick="scanCurrentWorkspace()" style="margin-left: 10px;">
                             📂 Scan Current Workspace
@@ -316,6 +373,7 @@ class SidebarProvider {
                         vscode.postMessage({ command: 'resetDependencies' });
                     }
                 </script>
+                </div>
             </body>
             </html>
         `;
@@ -438,8 +496,8 @@ class SidebarProvider {
             this._isScanning = true;
             
             // Update UI to show scanning state
-            if (this._view) {
-                this._view.webview.html = this._getHtmlForWebview();
+            if (this._panel) {
+                this._panel.webview.html = this._getHtmlForWebview();
             }
             
             // Show progress
@@ -500,8 +558,8 @@ class SidebarProvider {
                 this._scanResults = scanResults;
                 
                 // Update the webview
-                if (this._view) {
-                    this._view.webview.html = this._getHtmlForWebview();
+                if (this._panel) {
+                    this._panel.webview.html = this._getHtmlForWebview();
                 }
                 
                 // Show completion message
@@ -517,8 +575,8 @@ class SidebarProvider {
         } finally {
             this._isScanning = false;
             // Update UI to remove scanning state
-            if (this._view) {
-                this._view.webview.html = this._getHtmlForWebview();
+            if (this._panel) {
+                this._panel.webview.html = this._getHtmlForWebview();
             }
         }
     }
@@ -557,12 +615,12 @@ class SidebarProvider {
     }
 
     async _initializeDatastore(datastorePath) {
-        return new Promise((resolve, reject) => {
-            // Remove existing datastore if it exists
-            if (fs.existsSync(datastorePath)) {
-                fs.rmSync(datastorePath, { recursive: true, force: true });
-            }
+        // Remove existing datastore if it exists - use our robust cleanup method
+        if (fs.existsSync(datastorePath)) {
+            await this._cleanupTempFiles(datastorePath);
+        }
 
+        return new Promise((resolve, reject) => {
             const initCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" ghcr.io/praetorian-inc/noseyparker:latest datastore init --datastore "/workspace/${path.basename(datastorePath)}"`;
             
             exec(initCommand, (error, stdout, stderr) => {
@@ -767,10 +825,73 @@ class SidebarProvider {
     async _cleanupTempFiles(datastorePath) {
         try {
             if (fs.existsSync(datastorePath)) {
+                // First try to change permissions recursively to make files deletable
+                await this._fixPermissions(datastorePath);
+                
+                // Then remove the directory
                 fs.rmSync(datastorePath, { recursive: true, force: true });
             }
         } catch (error) {
-            console.warn('Failed to cleanup temporary files:', error.message);
+            console.warn('Failed to cleanup temporary files, trying alternative method:', error.message);
+            
+            // Try using Docker to clean up the files with proper permissions
+            try {
+                await this._dockerCleanup(datastorePath);
+            } catch (dockerError) {
+                console.warn('Docker cleanup also failed:', dockerError.message);
+                // Try one more time with sudo-like permissions fix
+                try {
+                    await this._forceCleanup(datastorePath);
+                } catch (finalError) {
+                    console.error('All cleanup methods failed:', finalError.message);
+                    vscode.window.showWarningMessage(
+                        `Could not fully clean up temporary files at ${datastorePath}. ` +
+                        'You may need to manually delete this directory.'
+                    );
+                }
+            }
+        }
+    }
+
+    async _fixPermissions(dirPath) {
+        const { exec } = require('child_process');
+        const util = require('util');
+        const execAsync = util.promisify(exec);
+        
+        try {
+            // Try to fix permissions using chmod (works on Unix-like systems)
+            if (process.platform !== 'win32') {
+                await execAsync(`chmod -R 755 "${dirPath}"`);
+            }
+        } catch (error) {
+            // Permission fix failed, but we'll try cleanup anyway
+            console.warn('Could not fix permissions:', error.message);
+        }
+    }
+
+    async _dockerCleanup(datastorePath) {
+        const { exec } = require('child_process');
+        const util = require('util');
+        const execAsync = util.promisify(exec);
+        
+        // Use Docker to remove files with the same user that created them
+        const cleanupCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" alpine:latest rm -rf "/workspace/${path.basename(datastorePath)}"`;
+        
+        await execAsync(cleanupCommand);
+    }
+
+    async _forceCleanup(datastorePath) {
+        const { exec } = require('child_process');
+        const util = require('util');
+        const execAsync = util.promisify(exec);
+        
+        // Last resort: use system commands to force cleanup
+        if (process.platform === 'win32') {
+            // Windows: use rmdir with force
+            await execAsync(`rmdir /s /q "${datastorePath}"`);
+        } else {
+            // Unix-like: use rm with force
+            await execAsync(`rm -rf "${datastorePath}"`);
         }
     }
 
@@ -793,8 +914,8 @@ class SidebarProvider {
                 this._dependenciesInstalled = true;
                 
                 // Update UI if view is available
-                if (this._view) {
-                    this._view.webview.html = this._getHtmlForWebview();
+                if (this._panel) {
+                    this._panel.webview.html = this._getHtmlForWebview();
                 }
             }
         } catch (error) {
@@ -805,18 +926,37 @@ class SidebarProvider {
 
     _resetDependencyStatus() {
         this._dependenciesInstalled = false;
-        if (this._view) {
-            this._view.webview.html = this._getHtmlForWebview();
+        if (this._panel) {
+            this._panel.webview.html = this._getHtmlForWebview();
         }
         vscode.window.showInformationMessage('Dependency status reset. You can reinstall dependencies if needed.');
     }
 
+    async _autoSelectWorkspaceIfGitRepo() {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            return;
+        }
+
+        const fs = require('fs');
+        const path = require('path');
+        
+        // Check if the workspace root contains a .git directory
+        const gitPath = path.join(workspaceFolder.uri.fsPath, '.git');
+        if (fs.existsSync(gitPath)) {
+            this._selectedDirectory = workspaceFolder.uri.fsPath;
+            console.log(`Auto-selected workspace directory: ${this._selectedDirectory}`);
+        }
+    }
+
     async _selectDirectory() {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         const options = {
             canSelectFolders: true,
             canSelectFiles: false,
             canSelectMany: false,
-            openLabel: 'Select Directory to Scan'
+            openLabel: 'Select Directory to Scan',
+            defaultUri: workspaceFolder ? workspaceFolder.uri : undefined
         };
 
         const folderUri = await vscode.window.showOpenDialog(options);
@@ -825,8 +965,8 @@ class SidebarProvider {
             vscode.window.showInformationMessage(`Selected directory: ${this._selectedDirectory}`);
             
             // Update the webview to show the selected directory
-            if (this._view) {
-                this._view.webview.html = this._getHtmlForWebview();
+            if (this._panel) {
+                this._panel.webview.html = this._getHtmlForWebview();
             }
         }
     }
@@ -887,8 +1027,8 @@ class SidebarProvider {
             this._dependenciesInstalled = true;
             
             // Update the webview to hide the setup section
-            if (this._view) {
-                this._view.webview.html = this._getHtmlForWebview();
+            if (this._panel) {
+                this._panel.webview.html = this._getHtmlForWebview();
             }
             
         } catch (error) {
@@ -1094,8 +1234,8 @@ class SidebarProvider {
 
             // Clear scan results since they may no longer be relevant
             this._scanResults = [];
-            if (this._view) {
-                this._view.webview.html = this._getHtmlForWebview();
+            if (this._panel) {
+                this._panel.webview.html = this._getHtmlForWebview();
             }
 
         } catch (error) {
@@ -1105,29 +1245,26 @@ class SidebarProvider {
     }
 
     // resolveWebviewView
-    revive(panel) { // vscode.WebviewView
-        this._view = panel;
-    }
-
-    static register(context) {
-        const provider = new SidebarProvider(context.extensionUri);
-        vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, provider);
-    }
-
-    static viewType = 'leak-lock.sidebar';
-
-    static show(context) {
-        vscode.commands.executeCommand('workbench.view.extension.leak-lock-sidebar-view');
-    }
-
-    static revive(context) {
-        vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, new SidebarProvider(context.extensionUri));
-    }
-
     dispose() {
-        this._view = undefined;
+        if (this._panel) {
+            this._panel.dispose();
+        }
+        
+        // Clean up static reference
+        if (LeakLockPanel.currentPanel === this) {
+            LeakLockPanel.currentPanel = null;
+        }
     }
 
+    // Handle panel disposal
+    _setupPanelListeners() {
+        this._panel.onDidDispose(() => {
+            this.dispose();
+        }, null);
+    }
 }
 
-module.exports = SidebarProvider;
+// Initialize static property
+LeakLockPanel._currentPanel = null;
+
+module.exports = LeakLockPanel;
