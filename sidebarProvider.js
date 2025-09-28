@@ -14,6 +14,7 @@ class SidebarProvider {
         this._selectedDirectory = null;
         this._isScanning = false;
         this._scanProgress = null;
+        this._dependenciesInstalled = false;
     }
 
     resolveWebviewView(webviewView, context, _token) {
@@ -22,6 +23,9 @@ class SidebarProvider {
             enableScripts: true,
             localResourceRoots: [this._extensionUri]
         };
+        
+        // Check dependencies on startup
+        this._checkDependenciesOnStartup();
         
         webviewView.webview.html = this._getHtmlForWebview();
         
@@ -46,6 +50,9 @@ class SidebarProvider {
                         break;
                     case 'openFile':
                         this._openFileAtLine(message.file, message.line);
+                        break;
+                    case 'resetDependencies':
+                        this._resetDependencyStatus();
                         break;
                 }
             }
@@ -101,6 +108,19 @@ class SidebarProvider {
                         border: 1px solid var(--vscode-panel-border);
                         border-radius: 4px;
                         background-color: var(--vscode-editor-inactiveSelectionBackground);
+                    }
+                    .setup-complete-section {
+                        margin-bottom: 15px;
+                        padding: 12px;
+                        border: 2px solid var(--vscode-button-background);
+                        border-radius: 6px;
+                        background-color: var(--vscode-editor-selectionHighlightBackground);
+                    }
+                    .setup-complete-info {
+                        font-size: 0.85em;
+                        color: var(--vscode-button-foreground);
+                        margin: 8px 0;
+                        font-weight: 500;
                     }
                     .setup-info {
                         font-size: 0.8em;
@@ -183,6 +203,7 @@ class SidebarProvider {
             <body>
                 <div class="scan-section">
                     <h2>🛡️ Leak Lock Scanner</h2>
+                    ${!this._dependenciesInstalled ? `
                     <div class="setup-section">
                         <h3>📋 Setup</h3>
                         <button class="install-button" onclick="installDependencies()">
@@ -190,6 +211,22 @@ class SidebarProvider {
                         </button>
                         <p class="setup-info">Install Docker, BFG tool, and Nosey Parker image.</p>
                     </div>
+                    ` : `
+                    <div class="setup-complete-section">
+                        <h3>✅ Setup Complete</h3>
+                        <p class="setup-complete-info">
+                            🐳 Docker running • 🔧 BFG tool ready • 🔍 Nosey Parker available
+                        </p>
+                        <div style="margin-top: 8px;">
+                            <button class="install-button" onclick="installDependencies()" style="font-size: 0.8em; padding: 4px 12px; margin-right: 8px;">
+                                🔄 Reinstall
+                            </button>
+                            <button class="install-button" onclick="resetDependencies()" style="font-size: 0.8em; padding: 4px 12px; background-color: var(--vscode-button-secondaryBackground);">
+                                � Reset Status
+                            </button>
+                        </div>
+                    </div>
+                    `}
                     
                     <div class="directory-section">
                         <h3>📁 Directory Selection</h3>
@@ -273,6 +310,10 @@ class SidebarProvider {
                             file: file, 
                             line: line 
                         });
+                    }
+                    
+                    function resetDependencies() {
+                        vscode.postMessage({ command: 'resetDependencies' });
                     }
                 </script>
             </body>
@@ -733,6 +774,43 @@ class SidebarProvider {
         }
     }
 
+    async _checkDependenciesOnStartup() {
+        try {
+            const { exec } = require('child_process');
+            const util = require('util');
+            const execAsync = util.promisify(exec);
+            
+            // Check Docker
+            await execAsync('docker --version');
+            await execAsync('docker info');
+            
+            // Check if Nosey Parker image exists
+            await execAsync('docker image inspect ghcr.io/praetorian-inc/noseyparker:latest');
+            
+            // Check if BFG tool exists
+            const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+            if (fs.existsSync(bfgPath)) {
+                this._dependenciesInstalled = true;
+                
+                // Update UI if view is available
+                if (this._view) {
+                    this._view.webview.html = this._getHtmlForWebview();
+                }
+            }
+        } catch (error) {
+            // Dependencies not fully installed - keep _dependenciesInstalled as false
+            console.log('Dependencies check:', error.message);
+        }
+    }
+
+    _resetDependencyStatus() {
+        this._dependenciesInstalled = false;
+        if (this._view) {
+            this._view.webview.html = this._getHtmlForWebview();
+        }
+        vscode.window.showInformationMessage('Dependency status reset. You can reinstall dependencies if needed.');
+    }
+
     async _selectDirectory() {
         const options = {
             canSelectFolders: true,
@@ -805,9 +883,18 @@ class SidebarProvider {
             
             vscode.window.showInformationMessage('✅ Dependencies installed successfully!');
             
+            // Mark dependencies as installed
+            this._dependenciesInstalled = true;
+            
+            // Update the webview to hide the setup section
+            if (this._view) {
+                this._view.webview.html = this._getHtmlForWebview();
+            }
+            
         } catch (error) {
             console.error('Failed to install dependencies:', error);
             vscode.window.showErrorMessage(`❌ Failed to install dependencies: ${error.message}`);
+            this._dependenciesInstalled = false;
         }
     }
 
