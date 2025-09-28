@@ -8,30 +8,133 @@ const vscode = require('vscode');
 const dockerImage = 'ghcr.io/praetorian-inc/noseyparker:latest';
 
 /**
- * Install the dependencies required for the extension.
+ * Check if dependencies are already installed
  */
-async function installDependencies() {
+async function checkDependencies() {
 	const { exec } = require('child_process');
 	const util = require('util');
 	const execAsync = util.promisify(exec);
+	const fs = require('fs');
+	const path = require('path');
+	
+	const dependencies = {
+		docker: false,
+		noseyparker: false,
+		bfg: false,
+		java: false
+	};
 	
 	try {
-		vscode.window.showInformationMessage('Installing Leak Lock dependencies...');
+		// Check Docker
+		await execAsync('docker --version');
+		// await execAsync('docker info');
+		dependencies.docker = true;
 		
-		// Download BFG tool
-		console.log('Downloading BFG tool...');
-		await execAsync('curl -L -o bfg.jar https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar');
-		console.log('BFG tool downloaded successfully');
+		// Check Nosey Parker image
+		await execAsync('docker image inspect ghcr.io/praetorian-inc/noseyparker:latest');
+		dependencies.noseyparker = true;
+	} catch (error) {
+		console.log('Docker or Nosey Parker not available');
+	}
+	
+	try {
+		// Check Java
+		await execAsync('java -version');
+		dependencies.java = true;
+	} catch (error) {
+		console.log('Java not available');
+	}
+	
+	// Check BFG tool
+	const bfgPath = path.join(__dirname, 'bfg.jar');
+	if (fs.existsSync(bfgPath)) {
+		dependencies.bfg = true;
+	}
+	
+	return dependencies;
+}
+
+/**
+ * Install the dependencies required for the extension.
+ */
+async function installDependencies(forceReinstall = false) {
+	const { exec } = require('child_process');
+	const util = require('util');
+	const execAsync = util.promisify(exec);
+	const path = require('path');
+	
+	try {
+		// Check existing dependencies first
+		if (!forceReinstall) {
+			const deps = await checkDependencies();
+			const missing = Object.entries(deps).filter(([key, value]) => !value).map(([key]) => key);
+			
+			if (missing.length === 0) {
+				console.log('All dependencies already installed');
+				return true;
+			}
+			
+			console.log('Missing dependencies:', missing.join(', '));
+		}
 		
-		// Pull Nosey Parker Docker image
-		console.log('Pulling Nosey Parker Docker image...');
-		await execAsync('docker pull ghcr.io/praetorian-inc/noseyparker:latest');
-		console.log('Nosey Parker Docker image pulled successfully');
+		await vscode.window.withProgress({
+			location: vscode.ProgressLocation.Notification,
+			title: "Installing Leak Lock dependencies...",
+			cancellable: false
+		}, async (progress) => {
+			
+			progress.report({ increment: 10, message: "Checking system requirements..." });
+			
+			// Check Docker availability
+			try {
+				await execAsync('docker --version');
+				await execAsync('docker info');
+				progress.report({ increment: 20, message: "Docker is available ✓" });
+			} catch (error) {
+				throw new Error('Docker is not installed or not running. Please install Docker and start the daemon.');
+			}
+			
+			// Check Java availability
+			try {
+				await execAsync('java -version');
+				progress.report({ increment: 10, message: "Java is available ✓" });
+			} catch (error) {
+				vscode.window.showWarningMessage('Java is not installed. BFG tool may not work properly. Please install Java.');
+			}
+			
+			progress.report({ increment: 20, message: "Downloading BFG tool..." });
+			
+			// Download BFG tool to extension directory
+			const bfgPath = path.join(__dirname, 'bfg.jar');
+			const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
+			
+			try {
+				await execAsync(`curl -L -o "${bfgPath}" "${bfgUrl}"`);
+				progress.report({ increment: 20, message: "BFG tool downloaded ✓" });
+			} catch (error) {
+				console.error('Failed to download BFG tool:', error);
+				vscode.window.showWarningMessage('Failed to download BFG tool. You may need to download it manually.');
+			}
+			
+			progress.report({ increment: 20, message: "Pulling Nosey Parker Docker image..." });
+			
+			// Pull Nosey Parker Docker image
+			try {
+				await execAsync('docker pull ghcr.io/praetorian-inc/noseyparker:latest');
+				progress.report({ increment: 0, message: "Nosey Parker image ready ✓" });
+			} catch (error) {
+				console.error('Failed to pull Nosey Parker image:', error);
+				throw new Error('Failed to pull Nosey Parker Docker image. Please check your internet connection.');
+			}
+		});
 		
-		vscode.window.showInformationMessage('Leak Lock dependencies installed successfully!');
+		vscode.window.showInformationMessage('✅ Leak Lock dependencies installed successfully!');
+		return true;
+		
 	} catch (error) {
 		console.error('Failed to install dependencies:', error);
-		vscode.window.showWarningMessage(`Failed to install some dependencies: ${error.message}. You can install them manually.`);
+		vscode.window.showErrorMessage(`❌ Failed to install dependencies: ${error.message}`);
+		return false;
 	}
 }
 
