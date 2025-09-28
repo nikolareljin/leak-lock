@@ -44,6 +44,26 @@
         "title": "Clean Up Leak Lock Dependencies"
       }
     ],
+    "configuration": {
+      "title": "Leak Lock",
+      "properties": {
+        "leakLock.dependencyHandling": {
+          "type": "string",
+          "default": "warning",
+          "enum": [
+            "warning",
+            "exclude",
+            "normal"
+          ],
+          "enumDescriptions": [
+            "Show dependency findings as warnings (recommended)",
+            "Completely exclude dependency directories from scanning",
+            "Treat dependency findings the same as regular findings"
+          ],
+          "description": "How to handle secrets found in dependency directories (node_modules, vendor, etc.)"
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -56,8 +76,8 @@
     "views": {
       "leak-lock": [
         {
-          "id": "leak-lock.welcome",
-          "name": "Scanner",
+          "id": "leak-lock.sidebarView",
+          "name": "Control Panel",
           "type": "webview"
         }
       ]
