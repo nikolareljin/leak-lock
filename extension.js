@@ -147,11 +147,15 @@ function activate(context) {
 	// Install dependencies on first activation
 	installDependencies();
 
-	// Import the SidebarProvider
-	const SidebarProvider = require('./sidebarProvider');
+	// Import the LeakLockPanel
+	const LeakLockPanel = require('./leakLockPanel');
 
-	// Register the SidebarProvider
-	SidebarProvider.register(context);
+	// Import and register the welcome view provider
+	const WelcomeViewProvider = require('./welcomeViewProvider');
+	const welcomeProvider = new WelcomeViewProvider(context.extensionUri);
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider(WelcomeViewProvider.viewType, welcomeProvider)
+	);
 
 	// Setup custom icon for the extension in the Status Bar
 	const icon = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
@@ -169,16 +173,42 @@ function activate(context) {
 		vscode.window.showInformationMessage('Hello World from leak-lock!');
 	});
 
-	// Register scan repository command
+	// Register scan repository command - now opens main area panel
 	const scanRepositoryCommand = vscode.commands.registerCommand('leak-lock.scanRepository', function () {
-		// Show the sidebar view
-		vscode.commands.executeCommand('workbench.view.extension.leak-lock');
-		vscode.window.showInformationMessage('Repository scanning started. Check the Leak Lock sidebar for results.');
+		// Open the leak detection panel in main area
+		LeakLockPanel.createOrShow(context.extensionUri);
+		vscode.window.showInformationMessage('Leak Lock scanner opened in main area.');
 	});
 
 	// Register fix secrets command
 	const fixSecretsCommand = vscode.commands.registerCommand('leak-lock.fixSecrets', function () {
-		vscode.window.showInformationMessage('Fix secrets functionality available in the Leak Lock sidebar.');
+		LeakLockPanel.createOrShow(context.extensionUri);
+		vscode.window.showInformationMessage('Fix secrets functionality available in the Leak Lock panel.');
+	});
+
+	// Register open panel command
+	const openPanelCommand = vscode.commands.registerCommand('leak-lock.openPanel', function () {
+		LeakLockPanel.createOrShow(context.extensionUri);
+	});
+
+	// Register cleanup command for manual cleanup
+	const cleanupCommand = vscode.commands.registerCommand('leak-lock.cleanup', async function () {
+		const result = await vscode.window.showWarningMessage(
+			'This will remove all Leak Lock dependencies including Docker images and tools. Continue?',
+			{ modal: true },
+			'Yes, Clean Up'
+		);
+		
+		if (result === 'Yes, Clean Up') {
+			await vscode.window.withProgress({
+				location: vscode.ProgressLocation.Notification,
+				title: "Cleaning up Leak Lock dependencies...",
+				cancellable: false
+			}, async () => {
+				await cleanupDependencies();
+			});
+			vscode.window.showInformationMessage('Leak Lock cleanup completed!');
+		}
 	});
 
 	// Make a call of project-scan.js for backward compatibility
@@ -190,6 +220,8 @@ function activate(context) {
 		disposable,
 		scanRepositoryCommand,
 		fixSecretsCommand,
+		openPanelCommand,
+		cleanupCommand,
 		icon
 	);
 
@@ -202,7 +234,95 @@ function activate(context) {
 }
 
 // This method is called when your extension is deactivated
-function deactivate() { }
+async function deactivate() {
+	try {
+		await cleanupDependencies();
+	} catch (error) {
+		console.error('Error during extension cleanup:', error);
+	}
+}
+
+/**
+ * Clean up all installed dependencies when extension is uninstalled
+ */
+async function cleanupDependencies() {
+	const { exec } = require('child_process');
+	const util = require('util');
+	const execAsync = util.promisify(exec);
+	const fs = require('fs');
+	const path = require('path');
+	
+	console.log('Starting Leak Lock extension cleanup...');
+	
+	try {
+		// 1. Remove Nosey Parker Docker image
+		try {
+			console.log('Removing Nosey Parker Docker image...');
+			await execAsync('docker rmi ghcr.io/praetorian-inc/noseyparker:latest');
+			console.log('✓ Nosey Parker Docker image removed');
+		} catch (error) {
+			console.log('Nosey Parker Docker image not found or already removed');
+		}
+		
+		// 2. Remove BFG tool
+		const bfgPath = path.join(__dirname, 'bfg.jar');
+		if (fs.existsSync(bfgPath)) {
+			try {
+				fs.unlinkSync(bfgPath);
+				console.log('✓ BFG tool removed');
+			} catch (error) {
+				console.log('Could not remove BFG tool:', error.message);
+			}
+		}
+		
+		// 3. Clean up temporary files and directories
+		const tempPaths = [
+			path.join(__dirname, 'temp'),
+			path.join(__dirname, 'scan-results'),
+			path.join(__dirname, 'replacements.txt'),
+			path.join(__dirname, '.noseyparker')
+		];
+		
+		for (const tempPath of tempPaths) {
+			if (fs.existsSync(tempPath)) {
+				try {
+					if (fs.statSync(tempPath).isDirectory()) {
+						fs.rmSync(tempPath, { recursive: true, force: true });
+					} else {
+						fs.unlinkSync(tempPath);
+					}
+					console.log(`✓ Cleaned up: ${tempPath}`);
+				} catch (error) {
+					console.log(`Could not clean up ${tempPath}:`, error.message);
+				}
+			}
+		}
+		
+		// 4. Remove any Docker volumes created by the extension
+		try {
+			const { stdout } = await execAsync('docker volume ls -q --filter label=leak-lock');
+			if (stdout.trim()) {
+				const volumes = stdout.trim().split('\n');
+				for (const volume of volumes) {
+					try {
+						await execAsync(`docker volume rm ${volume}`);
+						console.log(`✓ Removed Docker volume: ${volume}`);
+					} catch (error) {
+						console.log(`Could not remove volume ${volume}:`, error.message);
+					}
+				}
+			}
+		} catch (error) {
+			console.log('No Docker volumes to clean up or Docker not available');
+		}
+		
+		console.log('✅ Leak Lock extension cleanup completed');
+		
+	} catch (error) {
+		console.error('Error during cleanup:', error);
+		// Don't throw error to avoid breaking extension deactivation
+	}
+}
 
 module.exports = {
 	activate,

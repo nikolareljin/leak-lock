@@ -33,17 +33,17 @@
       {
         "command": "leak-lock.fixSecrets",
         "title": "Fix Secrets"
+      },
+      {
+        "command": "leak-lock.openPanel",
+        "title": "Open Leak Lock Scanner",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "leak-lock.cleanup",
+        "title": "Clean Up Leak Lock Dependencies"
       }
     ],
-    "views": {
-      "leak-lock": [
-        {
-          "id": "leak-lock.sidebar",
-          "name": "Scanner",
-          "type": "webview"
-        }
-      ]
-    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -53,12 +53,15 @@
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "leak-lock.sidebar",
-        "contents": "Welcome to Leak Lock - Secure your code repositories.\n[Scan Repository](command:leak-lock.scanRepository)\nMake sure Docker is installed and running to use this extension."
-      }
-    ]
+    "views": {
+      "leak-lock": [
+        {
+          "id": "leak-lock.welcome",
+          "name": "Scanner",
+          "type": "webview"
+        }
+      ]
+    }
   },
   "scripts": {
     "bfg": "java -jar bfg.jar",
