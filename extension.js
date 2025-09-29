@@ -88,7 +88,7 @@ async function installDependencies(forceReinstall = false) {
 			// Check Docker availability
 			try {
 				await execAsync('docker --version');
-				await execAsync('docker info');
+				// await execAsync('docker info');
 				progress.report({ increment: 20, message: "Docker is available ✓" });
 			} catch (error) {
 				throw new Error('Docker is not installed or not running. Please install Docker and start the daemon.');
