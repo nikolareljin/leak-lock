@@ -600,7 +600,7 @@ class LeakLockPanel {
                     '.vscode', '.idea', '.eclipse', '.settings'
                 ];
                 // Add exclusion flags for each directory
-                excludeOptions = excludePaths.map(path => `--ignore="${path}"`).join(' ');
+                excludeOptions = excludePaths.map(excludePath => `--ignore="${excludePath}"`).join(' ');
             }
             
             // First scan the repository
