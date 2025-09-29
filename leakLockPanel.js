@@ -471,7 +471,7 @@ class LeakLockPanel {
                 icon = '⚠️';
                 iconTooltip = 'Dependency directory';
             } else if (isGitHistory) {
-                icon = '�';
+                icon = '🕒';
                 iconTooltip = 'Git history (past commit/branch)';
             }
 
