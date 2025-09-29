@@ -67,6 +67,13 @@ class LeakLockPanel {
                     case 'openFile':
                         LeakLockPanel.currentPanel._openFile(message.file, message.line);
                         break;
+                    case 'requestNewScan':
+                        // Trigger new scan via command
+                        vscode.commands.executeCommand('leak-lock.startScan');
+                        break;
+                    case 'openSecurityGuide':
+                        LeakLockPanel.currentPanel._openSecurityGuide();
+                        break;
                 }
             },
             undefined,
@@ -193,6 +200,145 @@ class LeakLockPanel {
                         border-radius: 3px;
                         margin-bottom: 15px;
                     }
+                    
+                    /* Scanning Progress Styles */
+                    .scanning-progress {
+                        text-align: center;
+                        padding: 30px;
+                        background: var(--vscode-editor-background);
+                        border: 1px solid var(--vscode-panel-border);
+                        border-radius: 8px;
+                        margin: 20px 0;
+                    }
+                    
+                    .progress-message {
+                        margin: 15px 0;
+                        font-size: 1.1em;
+                        color: var(--vscode-foreground);
+                    }
+                    
+                    .progress-stages {
+                        display: flex;
+                        justify-content: center;
+                        gap: 10px;
+                        margin-top: 20px;
+                        flex-wrap: wrap;
+                    }
+                    
+                    .stage {
+                        padding: 4px 8px;
+                        background: var(--vscode-button-secondaryBackground);
+                        border-radius: 12px;
+                        font-size: 0.8em;
+                        opacity: 0.5;
+                        transition: all 0.3s ease;
+                    }
+                    
+                    .stage.active {
+                        background: var(--vscode-button-background);
+                        color: var(--vscode-button-foreground);
+                        opacity: 1;
+                        transform: scale(1.05);
+                    }
+                    
+                    /* Empty Results Styles */
+                    .empty-results {
+                        text-align: center;
+                        padding: 40px 20px;
+                        background: var(--vscode-editor-background);
+                        border: 2px dashed var(--vscode-panel-border);
+                        border-radius: 12px;
+                        margin: 20px 0;
+                    }
+                    
+                    .empty-icon {
+                        font-size: 4em;
+                        margin-bottom: 20px;
+                        opacity: 0.8;
+                    }
+                    
+                    .empty-results h2 {
+                        color: #4caf50;
+                        margin-bottom: 15px;
+                        font-size: 1.5em;
+                    }
+                    
+                    .empty-results p {
+                        margin-bottom: 30px;
+                        color: var(--vscode-descriptionForeground);
+                        font-size: 1.1em;
+                        line-height: 1.5;
+                    }
+                    
+                    .scan-summary {
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                        gap: 15px;
+                        margin: 30px 0;
+                        max-width: 600px;
+                        margin-left: auto;
+                        margin-right: auto;
+                    }
+                    
+                    .summary-item {
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                        padding: 10px;
+                        background: var(--vscode-textCodeBlock-background);
+                        border-radius: 6px;
+                    }
+                    
+                    .summary-icon {
+                        font-size: 1.2em;
+                    }
+                    
+                    .next-steps {
+                        margin: 40px auto;
+                        max-width: 500px;
+                        text-align: left;
+                        background: var(--vscode-textCodeBlock-background);
+                        padding: 20px;
+                        border-radius: 8px;
+                    }
+                    
+                    .next-steps h3 {
+                        margin-bottom: 15px;
+                        color: var(--vscode-foreground);
+                    }
+                    
+                    .next-steps ul {
+                        margin: 0;
+                        padding-left: 20px;
+                    }
+                    
+                    .next-steps li {
+                        margin-bottom: 8px;
+                        line-height: 1.4;
+                    }
+                    
+                    .action-buttons {
+                        display: flex;
+                        gap: 15px;
+                        justify-content: center;
+                        flex-wrap: wrap;
+                        margin-top: 30px;
+                    }
+                    
+                    .secondary-button {
+                        background: var(--vscode-button-secondaryBackground);
+                        color: var(--vscode-button-secondaryForeground);
+                        border: none;
+                        padding: 12px 24px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 1em;
+                        transition: background-color 0.2s;
+                    }
+                    
+                    .secondary-button:hover {
+                        background: var(--vscode-button-secondaryHoverBackground);
+                    }
                 </style>
             </head>
             <body>
@@ -211,7 +357,7 @@ class LeakLockPanel {
                     </div>
                 </div>
                 
-                ${hasResults ? this._getResultsHtml() : '<div id="no-results">No scan results yet. Use the <strong>Control Panel</strong> in the sidebar to set up dependencies and start scanning.</div>'}
+                ${this._getScanResultsSection()}
                 
                 <script>
                     const vscode = acquireVsCodeApi();
@@ -258,6 +404,18 @@ class LeakLockPanel {
                             command: 'openFile', 
                             file: file, 
                             line: line 
+                        });
+                    }
+                    
+                    function requestNewScan() {
+                        vscode.postMessage({
+                            command: 'requestNewScan'
+                        });
+                    }
+                    
+                    function openSecurityGuide() {
+                        vscode.postMessage({
+                            command: 'openSecurityGuide'
                         });
                     }
                 </script>
@@ -421,92 +579,178 @@ class LeakLockPanel {
 
     async _scanRepository(useWorkspace = false) {
         try {
+            // Show scanning in progress
             this._isScanning = true;
-            
-            // Update UI to show scanning state
-            if (this._panel) {
-                this._panel.webview.html = this._getHtmlForWebview();
-            }
-            
-            // Show progress
-            vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: "Scanning for secrets...",
-                cancellable: false
-            }, async (progress) => {
-                
-                // Determine scan path
-                let scanPath;
-                if (useWorkspace) {
-                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-                    if (!workspaceFolder) {
-                        vscode.window.showErrorMessage('No workspace folder found. Please open a folder first.');
-                        return;
-                    }
-                    scanPath = workspaceFolder.uri.fsPath;
-                } else {
-                    if (!this._selectedDirectory) {
-                        vscode.window.showErrorMessage('No directory selected. Please select a directory to scan first.');
-                        return;
-                    }
-                    scanPath = this._selectedDirectory;
-                }
-                
-                progress.report({ increment: 10, message: "Checking Docker availability..." });
-                
-                // Check if Docker is available
-                const dockerCheck = await this._checkDockerAvailability();
-                if (!dockerCheck.available) {
-                    vscode.window.showErrorMessage(`Docker not available: ${dockerCheck.error}`);
+            this._scanResults = [];
+            this._updateWebviewContent();
+
+            // Determine scan path
+            let scanPath;
+            if (useWorkspace) {
+                const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                if (!workspaceFolder) {
+                    vscode.window.showErrorMessage('No workspace folder found. Please open a folder first.');
+                    this._isScanning = false;
+                    this._updateWebviewContent();
                     return;
                 }
-
-                progress.report({ increment: 20, message: "Pulling Nosey Parker image..." });
-                
-                // Pull the latest Nosey Parker image
-                await this._pullNoseyParkerImage();
-
-                progress.report({ increment: 30, message: "Initializing datastore..." });
-                
-                // Create temporary datastore
-                const tempDatastore = path.join(scanPath, '.noseyparker-temp');
-                await this._initializeDatastore(tempDatastore);
-
-                progress.report({ increment: 20, message: "Scanning for secrets..." });
-                
-                // Run the actual scan
-                const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
-                
-                progress.report({ increment: 20, message: "Processing results..." });
-                
-                // Clean up temporary datastore
-                await this._cleanupTempFiles(tempDatastore);
-                
-                // Update results
-                this._scanResults = scanResults;
-                
-                // Update the webview
-                if (this._panel) {
-                    this._panel.webview.html = this._getHtmlForWebview();
+                scanPath = workspaceFolder.uri.fsPath;
+            } else {
+                if (!this._selectedDirectory) {
+                    vscode.window.showErrorMessage('No directory selected. Please select a directory to scan first.');
+                    this._isScanning = false;
+                    this._updateWebviewContent();
+                    return;
                 }
-                
-                // Show completion message
-                if (scanResults.length > 0) {
-                    vscode.window.showWarningMessage(`Scan complete! Found ${scanResults.length} potential secrets. Review them in the panel.`);
-                } else {
-                    vscode.window.showInformationMessage('Scan complete! No secrets found in your repository.');
-                }
-            });
+                scanPath = this._selectedDirectory;
+            }
+            
+            // Update progress: Checking Docker
+            this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
+            this._updateWebviewContent();
+            
+            // Check if Docker is available
+            const dockerCheck = await this._checkDockerAvailability();
+            if (!dockerCheck.available) {
+                vscode.window.showErrorMessage(`Docker not available: ${dockerCheck.error}`);
+                this._isScanning = false;
+                this._updateWebviewContent();
+                return;
+            }
+
+            // Update progress: Pulling image
+            this._scanProgress = { stage: 'pull', message: 'Pulling Nosey Parker image...' };
+            this._updateWebviewContent();
+            
+            // Pull the latest Nosey Parker image
+            await this._pullNoseyParkerImage();
+
+            // Update progress: Initializing
+            this._scanProgress = { stage: 'init', message: 'Initializing datastore...' };
+            this._updateWebviewContent();
+            
+            // Create temporary datastore
+            const tempDatastore = path.join(scanPath, '.noseyparker-temp');
+            await this._initializeDatastore(tempDatastore);
+
+            // Update progress: Scanning
+            this._scanProgress = { stage: 'scan', message: 'Scanning for secrets...' };
+            this._updateWebviewContent();
+            
+            // Run the actual scan
+            const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
+            
+            // Update progress: Processing
+            this._scanProgress = { stage: 'process', message: 'Processing results...' };
+            this._updateWebviewContent();
+            
+            // Clean up temporary datastore
+            await this._cleanupTempFiles(tempDatastore);
+            
+            // Update results
+            this._scanResults = scanResults;
+            this._isScanning = false;
+            this._scanProgress = null;
+            
+            // Update the webview
+            this._updateWebviewContent();
+            
+            // Show completion message
+            if (scanResults.length > 0) {
+                vscode.window.showWarningMessage(`Scan complete! Found ${scanResults.length} potential secrets. Review them in the main panel.`);
+            } else {
+                vscode.window.showInformationMessage('🎉 Scan complete! No secrets found in your repository. Your code looks secure!');
+            }
         } catch (error) {
             console.error('Scan error:', error);
-            vscode.window.showErrorMessage(`Scan failed: ${error.message}`);
-        } finally {
             this._isScanning = false;
-            // Update UI to remove scanning state
-            if (this._panel) {
-                this._panel.webview.html = this._getHtmlForWebview();
-            }
+            this._scanProgress = null;
+            this._updateWebviewContent();
+            vscode.window.showErrorMessage(`Scan failed: ${error.message}`);
         }
+    }
+
+    // Add method to update webview content
+    _updateWebviewContent() {
+        if (this._panel) {
+            this._panel.webview.html = this._getHtmlForWebview();
+        }
+    }
+
+    _getScanResultsSection() {
+        // Show scanning progress
+        if (this._isScanning) {
+            return `
+                <div class="scan-section">
+                    <h2>🔍 Scanning Repository</h2>
+                    <div class="scanning-progress">
+                        <div class="spinner"></div>
+                        <p class="progress-message">${this._scanProgress?.message || 'Scanning in progress...'}</p>
+                        <div class="progress-stages">
+                            <span class="stage ${this._scanProgress?.stage === 'docker' ? 'active' : ''}">Docker Check</span>
+                            <span class="stage ${this._scanProgress?.stage === 'pull' ? 'active' : ''}">Pull Image</span>
+                            <span class="stage ${this._scanProgress?.stage === 'init' ? 'active' : ''}">Initialize</span>
+                            <span class="stage ${this._scanProgress?.stage === 'scan' ? 'active' : ''}">Scan Files</span>
+                            <span class="stage ${this._scanProgress?.stage === 'process' ? 'active' : ''}">Process Results</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show results or empty state
+        if (!this._scanResults || this._scanResults.length === 0) {
+            return `
+                <div class="scan-section">
+                    <div class="empty-results">
+                        <div class="empty-icon">🛡️</div>
+                        <h2>No Security Issues Found!</h2>
+                        <p>Great news! Your repository scan completed successfully with no secrets or credentials detected.</p>
+                        
+                        <div class="scan-summary">
+                            <div class="summary-item">
+                                <span class="summary-icon">✅</span>
+                                <span>No API keys found</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon">✅</span>
+                                <span>No passwords detected</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon">✅</span>
+                                <span>No private keys found</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-icon">✅</span>
+                                <span>No database credentials detected</span>
+                            </div>
+                        </div>
+
+                        <div class="next-steps">
+                            <h3>🎯 Keep Your Repository Secure</h3>
+                            <ul>
+                                <li>Run scans regularly, especially before commits</li>
+                                <li>Set up pre-commit hooks for automatic scanning</li>
+                                <li>Review dependency updates for potential secrets</li>
+                                <li>Train your team on secure coding practices</li>
+                            </ul>
+                        </div>
+
+                        <div class="action-buttons">
+                            <button class="scan-button" onclick="requestNewScan()">
+                                🔄 Scan Again
+                            </button>
+                            <button class="secondary-button" onclick="openSecurityGuide()">
+                                📚 Security Best Practices
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show actual results (existing logic)
+        return this._getResultsHtml();
     }
 
     _generateFixCommand(replacements) {
@@ -1002,6 +1246,55 @@ class LeakLockPanel {
         this._panel.onDidDispose(() => {
             this.dispose();
         }, null);
+    }
+
+    _openSecurityGuide() {
+        const guideContent = `# 🛡️ Security Best Practices Guide
+
+## Preventing Secrets in Code
+
+### 1. Environment Variables
+- Use \`.env\` files for local development
+- Add \`.env\` to your \`.gitignore\` file
+- Use environment variables in production
+
+### 2. Configuration Management
+- Use dedicated secret management tools (Azure Key Vault, AWS Secrets Manager, etc.)
+- Separate configuration from code
+- Use different configs for different environments
+
+### 3. Pre-commit Hooks
+- Set up git hooks to scan before commits
+- Use tools like \`pre-commit\` with secret scanning
+- Reject commits that contain secrets
+
+### 4. Code Reviews
+- Review all code changes for potential secrets
+- Use pull request templates with security checklists
+- Train team members on secret detection
+
+### 5. Regular Scanning
+- Run Leak Lock scans regularly
+- Integrate security scanning in CI/CD pipelines
+- Monitor for new secret patterns
+
+### 6. Incident Response
+- Have a plan for when secrets are discovered
+- Rotate compromised credentials immediately
+- Use BFG or similar tools to clean git history
+
+## Tools and Resources
+- [OWASP Security Guidelines](https://owasp.org/)
+- [GitHub Secret Scanning](https://docs.github.com/en/code-security/secret-scanning)
+- [Pre-commit Hooks](https://pre-commit.com/)
+`;
+
+        vscode.workspace.openTextDocument({
+            content: guideContent,
+            language: 'markdown'
+        }).then(doc => {
+            vscode.window.showTextDocument(doc);
+        });
     }
 
     dispose() {
