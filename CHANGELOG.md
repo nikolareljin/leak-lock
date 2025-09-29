@@ -48,6 +48,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - **Scan Results Display**: Improved table layout and formatting in main editor area
 
 ### Fixed
+- **Directory Validation**: Removed overly restrictive working directory limitation that prevented scanning external directories
+- **Path Security**: Replaced blanket CWD restriction with targeted protection against sensitive system directories
+- **Arbitrary Directory Scanning**: Users can now scan any accessible directory outside the VS Code workspace
 - **Main Panel Corruption**: Resolved HTML corruption issues and restored clean implementation
 - **Dependency Verification**: Enhanced dependency checking with proper error handling
 - **Git Integration**: Improved workspace folder detection and repository handling
