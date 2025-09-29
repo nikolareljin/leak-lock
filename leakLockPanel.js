@@ -1409,7 +1409,8 @@ class LeakLockPanel {
                     }
                 } catch (lineError) {
                     // Skip invalid JSON lines, but log for debugging
-                    console.warn('Failed to parse JSON line:', line, lineError.message);
+                    // Avoid logging full line content to prevent leaking sensitive data
+                    console.warn('Failed to parse JSON line at index', lines.indexOf(line), '-', lineError.message);
                 }
             });
         }
