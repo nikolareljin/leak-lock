@@ -28,8 +28,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
-        run: npm test
+      - name: Run tests in headless mode
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          xvfb-run -a -s '-screen 0 1024x768x24' npm test
+        env:
+          DISPLAY: ':99'
+          CI: true
 
       - name: Run linter
         run: npm run lint
