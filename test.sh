@@ -180,7 +180,7 @@ print_section "Testing Dependency Installation"
 
 if [ -f "package.json" ]; then
     echo -e "${YELLOW}Installing npm dependencies...${NC}"
-    if npm install &> /dev/null; then
+    if npm install > /dev/null; then
         print_test_result 0 "npm dependencies installed successfully"
         
         # Check if node_modules exists
