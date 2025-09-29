@@ -83,7 +83,7 @@ class LeakLockPanel {
 
     _getHtmlForWebview() {
         const hasResults = this._scanResults.length > 0;
-        
+
         return `
             <!DOCTYPE html>
             <html lang="en">
@@ -430,12 +430,12 @@ class LeakLockPanel {
             this._selectedDirectory = directory;
         }
         this._dependenciesInstalled = dependenciesReady;
-        
+
         // Update UI and start scan
         if (this._panel) {
             this._panel.webview.html = this._getHtmlForWebview();
         }
-        
+
         // Start the scan if both directory and dependencies are ready
         if (this._selectedDirectory && this._dependenciesInstalled) {
             this._scanRepository();
@@ -462,21 +462,34 @@ class LeakLockPanel {
 
         const resultsRows = this._scanResults.map((result, index) => {
             const isDependency = result.isDependency;
-            const icon = isDependency ? '⚠️' : '📄';
+            const isGitHistory = result.isGitHistory;
+
+            // Choose appropriate icon and styling
+            let icon = '📄';
+            let iconTooltip = 'Current file';
+            if (isDependency) {
+                icon = '⚠️';
+                iconTooltip = 'Dependency directory';
+            } else if (isGitHistory) {
+                icon = '�';
+                iconTooltip = 'Git history (past commit/branch)';
+            }
+
             const rowStyle = isDependency ? 'opacity: 0.7;' : '';
-            const dependencyNote = isDependency ? ' (dependency directory)' : '';
-            
+            const contextNote = isDependency ? ' (dependency directory)' : (isGitHistory ? ' (git history)' : '');
+
             return `
                 <tr data-secret="${result.secret}" data-file="${result.file}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
                     <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? '' : 'checked'}></td>
-                    <td title="${result.file}${dependencyNote}">
-                        <span class="file-link" onclick="openFile('${result.file}', ${result.line})" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">
+                    <td title="${result.file}${contextNote}">
+                        <span class="file-link" onclick="${isGitHistory ? '' : `openFile('${result.file}', ${result.line})`}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${result.file}
                         </span>
                         ${isDependency ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(deps)</span>' : ''}
+                        ${isGitHistory ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(history)</span>' : ''}
                     </td>
                     <td style="text-align: center;">
-                        <span class="file-link" onclick="openFile('${result.file}', ${result.line})" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; cursor: pointer;">
+                        <span class="file-link" onclick="${isGitHistory ? '' : `openFile('${result.file}', ${result.line})`}" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; ${isGitHistory ? 'cursor: default;' : 'cursor: pointer;'}">
                             ${result.line}
                         </span>
                     </td>
@@ -604,11 +617,11 @@ class LeakLockPanel {
                 }
                 scanPath = this._selectedDirectory;
             }
-            
+
             // Update progress: Checking Docker
             this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
             this._updateWebviewContent();
-            
+
             // Check if Docker is available
             const dockerCheck = await this._checkDockerAvailability();
             if (!dockerCheck.available) {
@@ -621,14 +634,14 @@ class LeakLockPanel {
             // Update progress: Pulling image
             this._scanProgress = { stage: 'pull', message: 'Pulling Nosey Parker image...' };
             this._updateWebviewContent();
-            
+
             // Pull the latest Nosey Parker image
             await this._pullNoseyParkerImage();
 
             // Update progress: Initializing
             this._scanProgress = { stage: 'init', message: 'Initializing datastore...' };
             this._updateWebviewContent();
-            
+
             // Create temporary datastore
             const tempDatastore = path.join(scanPath, '.noseyparker-temp');
             await this._initializeDatastore(tempDatastore);
@@ -636,25 +649,25 @@ class LeakLockPanel {
             // Update progress: Scanning
             this._scanProgress = { stage: 'scan', message: 'Scanning for secrets...' };
             this._updateWebviewContent();
-            
+
             // Run the actual scan
             const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
-            
+
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
             this._updateWebviewContent();
-            
+
             // Clean up temporary datastore
             await this._cleanupTempFiles(tempDatastore);
-            
+
             // Update results
             this._scanResults = scanResults;
             this._isScanning = false;
             this._scanProgress = null;
-            
+
             // Update the webview
             this._updateWebviewContent();
-            
+
             // Show completion message
             if (scanResults.length > 0) {
                 vscode.window.showWarningMessage(`Scan complete! Found ${scanResults.length} potential secrets. Review them in the main panel.`);
@@ -809,17 +822,37 @@ class LeakLockPanel {
     }
 
     async _initializeDatastore(datastorePath) {
-        // Remove existing datastore if it exists
+        // Aggressively remove existing datastore if it exists
         if (fs.existsSync(datastorePath)) {
             await this._cleanupTempFiles(datastorePath);
         }
 
+        // Ensure the parent directory exists
+        const parentDir = path.dirname(datastorePath);
+        if (!fs.existsSync(parentDir)) {
+            fs.mkdirSync(parentDir, { recursive: true });
+        }
+
         return new Promise((resolve, reject) => {
+            // Use a more explicit initialization command that avoids schema conflicts
             const initCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" ghcr.io/praetorian-inc/noseyparker:latest datastore init --datastore "/workspace/${path.basename(datastorePath)}"`;
-            
+
             exec(initCommand, (error, stdout, stderr) => {
                 if (error) {
-                    reject(new Error(`Failed to initialize datastore: ${error.message}`));
+                    // If initialization fails, try to force cleanup and retry once
+                    console.warn('Initial datastore init failed, trying cleanup and retry:', error.message);
+                    this._cleanupTempFiles(datastorePath).then(() => {
+                        // Retry initialization
+                        exec(initCommand, (retryError, retryStdout, retryStderr) => {
+                            if (retryError) {
+                                reject(new Error(`Failed to initialize datastore after retry: ${retryError.message}\nStderr: ${retryStderr}`));
+                            } else {
+                                resolve();
+                            }
+                        });
+                    }).catch(cleanupError => {
+                        reject(new Error(`Failed to initialize datastore and cleanup failed: ${error.message}\nCleanup error: ${cleanupError.message}`));
+                    });
                 } else {
                     resolve();
                 }
@@ -832,24 +865,21 @@ class LeakLockPanel {
             // Get dependency handling configuration
             const config = vscode.workspace.getConfiguration('leakLock');
             const dependencyHandling = config.get('dependencyHandling') || 'warning';
-            
-            // Build exclusion options for dependency directories if configured to exclude
-            let excludeOptions = '';
+
+            // Create ignore file for proper exclusion if needed
+            let ignoreFileOptions = '';
             if (dependencyHandling === 'exclude') {
-                const excludePaths = [
-                    'node_modules', 'vendor', '.git', 'dist', 'build', 'target', 
-                    'venv', 'env', '.venv', '__pycache__', '.tox', 'site-packages',
-                    '.m2', 'lib', 'libs', '.bundle', 'gems', 'packages', 'bin', 'obj',
-                    'out', 'tmp', 'temp', 'cache', '.cache', 'logs', '.logs',
-                    '.vscode', '.idea', '.eclipse', '.settings'
-                ];
-                // Add exclusion flags for each directory
-                excludeOptions = excludePaths.map(excludePath => `--ignore="${excludePath}"`).join(' ');
+                // For now, let's skip file-based exclusions to avoid issues
+                // We'll handle dependency filtering in the results processing instead
+                console.log('Dependency exclusion will be handled in post-processing');
             }
-            
-            // First scan the repository
-            const scanCommand = `docker run --rm -v "${scanPath}:/scan" -v "${datastorePath}:/datastore" ghcr.io/praetorian-inc/noseyparker:latest scan --datastore /datastore ${excludeOptions} /scan`;
-            
+
+            // Ensure git history scanning is explicitly enabled
+            const gitHistoryOption = '--git-history full';
+
+            // First scan the repository with full git history
+            const scanCommand = `docker run --rm -v "${scanPath}:/scan" -v "${datastorePath}:/datastore" ghcr.io/praetorian-inc/noseyparker:latest scan --datastore /datastore ${gitHistoryOption} /scan`;
+
             exec(scanCommand, { maxBuffer: 1024 * 1024 * 10, timeout: 300000 }, (scanError, scanStdout, scanStderr) => {
                 // Nosey Parker may return non-zero exit codes even on successful scans
                 if (scanError && scanError.code !== 2 && !scanError.message.includes('exit code 2')) {
@@ -860,7 +890,7 @@ class LeakLockPanel {
 
                 // Now report the findings in structured format
                 const reportCommand = `docker run --rm -v "${datastorePath}:/datastore" ghcr.io/praetorian-inc/noseyparker:latest report --datastore /datastore --format json`;
-                
+
                 exec(reportCommand, { maxBuffer: 1024 * 1024 * 10 }, (reportError, reportStdout, reportStderr) => {
                     if (reportError) {
                         console.warn('Report command failed, trying alternative approach:', reportError.message);
@@ -880,9 +910,170 @@ class LeakLockPanel {
         });
     }
 
+    /**
+     * Extract file path from Nosey Parker match object, trying multiple possible locations
+     */
+    _extractFilePathFromMatch(match) {
+        // Try multiple possible locations for file path in order of preference
+        const possiblePaths = [
+            match.provenance?.[0]?.path,           // Standard provenance path
+            match.location?.source_file,           // Alternative location field
+            match.source?.file,                    // Another possible source field
+            match.file_path,                       // Direct file path field
+            match.location?.path,                  // Location path
+            match.provenance?.[0]?.source_file,    // Alternative provenance source
+            match.source_path,                     // Source path field
+            match.path,                            // Simple path field
+            match.location?.source_span?.source_id, // Source span ID
+            match.provenance?.[0]?.source_id,      // Provenance source ID
+            match.source_id                        // Direct source ID
+        ];
+
+        // Check for git repository provenance with blob path (git history only)
+        if (match.provenance && Array.isArray(match.provenance)) {
+            for (const prov of match.provenance) {
+                if (prov.kind === 'git_repo' && prov.first_commit && prov.first_commit.blob_path) {
+                    possiblePaths.unshift(prov.first_commit.blob_path); // Add to front of list
+                }
+            }
+        }
+
+        // Return the first non-null, non-undefined, non-empty path
+        for (const path of possiblePaths) {
+            if (path && typeof path === 'string' && path.trim() !== '') {
+                let cleanPath = path.trim();
+
+                // Clean up Docker mount path prefixes
+                if (cleanPath.startsWith('/scan/')) {
+                    cleanPath = cleanPath.substring(6);
+                }
+
+                // If still empty after cleaning, continue to next path
+                if (cleanPath === '') {
+                    continue;
+                }
+
+                return cleanPath;
+            }
+        }
+
+        // Try to extract path from nested objects more aggressively
+        if (match.location && typeof match.location === 'object') {
+            const locationKeys = Object.keys(match.location);
+            for (const key of locationKeys) {
+                if (key.includes('file') || key.includes('path') || key.includes('source')) {
+                    const value = match.location[key];
+                    if (value && typeof value === 'string' && value.trim() !== '') {
+                        let cleanPath = value.trim();
+                        if (cleanPath.startsWith('/scan/')) {
+                            cleanPath = cleanPath.substring(6);
+                        }
+                        if (cleanPath !== '') {
+                            return cleanPath;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Try to extract from provenance more aggressively
+        if (match.provenance && Array.isArray(match.provenance) && match.provenance.length > 0) {
+            const prov = match.provenance[0];
+            if (prov && typeof prov === 'object') {
+                const provKeys = Object.keys(prov);
+                for (const key of provKeys) {
+                    if (key.includes('file') || key.includes('path') || key.includes('source')) {
+                        const value = prov[key];
+                        if (value && typeof value === 'string' && value.trim() !== '') {
+                            let cleanPath = value.trim();
+                            if (cleanPath.startsWith('/scan/')) {
+                                cleanPath = cleanPath.substring(6);
+                            }
+                            if (cleanPath !== '') {
+                                return cleanPath;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If still no valid path found, return a meaningful fallback
+        console.warn('No file path found in match object:', JSON.stringify(match, null, 2));
+        return 'file_path_not_found';
+    }
+
+    /**
+     * Extract actual file path from git history artifacts by analyzing git-related metadata
+     */
+    _extractActualPathFromGitHistory(match, finding) {
+        // Try to extract file path from git commit or object information
+        if (match.provenance && Array.isArray(match.provenance)) {
+            for (const prov of match.provenance) {
+                // Look for git repository information with first_commit data
+                if (prov.kind === 'git_repo' && prov.first_commit) {
+                    const firstCommit = prov.first_commit;
+                    if (firstCommit.blob_path) {
+                        return firstCommit.blob_path;
+                    }
+                }
+
+                // Look for commit information that might contain file paths
+                if (prov.commit_metadata) {
+                    const commitInfo = prov.commit_metadata;
+                    if (commitInfo.file_path || commitInfo.path) {
+                        return commitInfo.file_path || commitInfo.path;
+                    }
+                }
+
+                // Look for blob or tree information
+                if (prov.blob_metadata) {
+                    const blobInfo = prov.blob_metadata;
+                    if (blobInfo.file_path || blobInfo.path) {
+                        return blobInfo.file_path || blobInfo.path;
+                    }
+                }
+            }
+        }
+
+        // Try to extract from finding metadata
+        if (finding && finding.metadata) {
+            if (finding.metadata.file_path || finding.metadata.path) {
+                return finding.metadata.file_path || finding.metadata.path;
+            }
+        }
+
+        // Try to extract from match location with git context
+        if (match.location && match.location.source_span) {
+            const sourceSpan = match.location.source_span;
+            if (sourceSpan.file_path || sourceSpan.path) {
+                return sourceSpan.file_path || sourceSpan.path;
+            }
+        }
+
+        // If all else fails, try to parse git object paths
+        const gitObjectPattern = /\.git\/objects\/[0-9a-f]{2}\/[0-9a-f]{38}/;
+        const gitRefPattern = /\.git\/refs\/(heads|tags|remotes)\/(.+)/;
+
+        if (match.provenance?.[0]?.path) {
+            const path = match.provenance[0].path;
+
+            if (gitRefPattern.test(path)) {
+                const refMatch = path.match(gitRefPattern);
+                return `git-ref:${refMatch[2]} (${refMatch[1]})`;
+            }
+
+            if (gitObjectPattern.test(path)) {
+                return 'git-object (commit/tree/blob)';
+            }
+        }
+
+        return 'unknown';
+    }
+
     _parseNoseyParkerResults(output) {
         const results = [];
-        
+
         if (!output.trim()) {
             return results;
         }
@@ -890,41 +1081,106 @@ class LeakLockPanel {
         try {
             // Parse JSON output from Nosey Parker report command
             const jsonFindings = JSON.parse(output);
-            
+
+            // Debug logging for external directory scanning
+            console.log(`Parsing Nosey Parker results. Selected directory: ${this._selectedDirectory}`);
+            console.log(`Found ${Array.isArray(jsonFindings) ? jsonFindings.length : 0} findings`);
+
             if (Array.isArray(jsonFindings)) {
-                jsonFindings.forEach(finding => {
-                    finding.matches?.forEach(match => {
-                        const filePath = match.provenance?.[0]?.path || 'unknown';
-                        const line = match.location?.source_span?.start?.line || 1;
-                        const secretText = match.snippet?.matching || 'unknown';
-                        
-                        results.push(this._createResult(
+                jsonFindings.forEach((finding, findingIndex) => {
+                    finding.matches?.forEach((match, matchIndex) => {
+                        let filePath = this._extractFilePathFromMatch(match);
+
+                        const line = match.location?.source_span?.start?.line ||
+                            match.location?.line ||
+                            match.line_number ||
+                            1;
+                        const secretText = match.snippet?.matching ||
+                            match.snippet?.before ||
+                            match.content ||
+                            match.text ||
+                            'content_unavailable';
+
+                        // Debug logging for path extraction
+                        if (filePath === 'file_path_not_found') {
+                            console.warn(`Finding ${findingIndex}, Match ${matchIndex}: No file path found in match`);
+                        }
+
+                        // Skip non-git version control artifacts, but allow git history results
+                        if (filePath === 'version-control-artifact' || filePath.includes('/.svn/') || filePath.includes('/.hg/')) {
+                            console.log(`Skipping non-git version control artifact: ${filePath}`);
+                            return; // Skip this result
+                        }
+
+                        // For git history artifacts, try to extract meaningful file information
+                        if (filePath === 'git-history-artifact' || (filePath.includes('/.git/') && !filePath.includes('(git-history)'))) {
+                            console.log(`Found git history artifact, extracting file info: ${filePath}`);
+                            // Try to get file path from git object or commit information
+                            const actualPath = this._extractActualPathFromGitHistory(match, finding);
+                            if (actualPath && actualPath !== 'unknown') {
+                                filePath = actualPath;
+                            } else {
+                                // If we can't extract meaningful path, mark it as git history
+                                filePath = 'git-history-reference';
+                            }
+                        }
+
+                        const result = this._createResult(
                             filePath,
                             line,
                             secretText,
                             finding.rule_name || 'Secret detected',
-                            finding.rule_name
-                        ));
+                            finding.rule_name,
+                            match
+                        );
+                        results.push(result);
                     });
                 });
             }
         } catch (jsonError) {
             console.warn('JSON parsing failed, trying line-by-line:', jsonError.message);
-            
+
             // Try parsing as JSONL (JSON Lines format)
             const lines = output.split('\n').filter(line => line.trim());
-            
+
             lines.forEach(line => {
                 try {
                     const parsed = JSON.parse(line);
                     if (parsed.matches && Array.isArray(parsed.matches)) {
                         parsed.matches.forEach(match => {
+                            let filePath = this._extractFilePathFromMatch(match);
+                            const lineNumber = match.location?.line ||
+                                match.line_number ||
+                                match.location?.source_span?.start?.line ||
+                                1;
+                            const secretText = match.snippet ||
+                                match.content ||
+                                match.text ||
+                                'content_unavailable';
+
+                            // Skip non-git version control artifacts (JSONL parsing)
+                            if (filePath === 'version-control-artifact' || filePath.includes('/.svn/') || filePath.includes('/.hg/')) {
+                                console.log(`Skipping non-git version control artifact (JSONL): ${filePath}`);
+                                return; // Skip this result
+                            }
+
+                            // Handle git history artifacts in JSONL parsing
+                            if (filePath === 'git-history-artifact' || (filePath.includes('/.git/') && !filePath.includes('(git-history)'))) {
+                                const actualPath = this._extractActualPathFromGitHistory(match, parsed);
+                                if (actualPath && actualPath !== 'unknown') {
+                                    filePath = actualPath;
+                                } else {
+                                    filePath = 'git-history-reference';
+                                }
+                            }
+
                             results.push(this._createResult(
-                                match.location?.source_file || 'unknown',
-                                match.location?.line || 1,
-                                match.snippet || match.content || 'unknown',
-                                match.rule_name || 'Secret detected',
-                                match.rule_name
+                                filePath,
+                                lineNumber,
+                                secretText,
+                                match.rule_name || parsed.rule_name || 'Secret detected',
+                                match.rule_name || parsed.rule_name,
+                                match
                             ));
                         });
                     }
@@ -940,24 +1196,50 @@ class LeakLockPanel {
     _createFallbackResults(output) {
         const results = [];
         const lines = output.split('\n');
-        
-        // Look for patterns that might indicate secrets were found
+
+        // Improved patterns that might indicate secrets were found with better file path extraction
         const secretPatterns = [
-            /Found.*secret.*in\s+(.+):(\d+)/i,
-            /(.+):(\d+).*potential.*secret/i,
-            /Secret.*detected.*in\s+(.+):(\d+)/i
+            // Pattern for "Found secret in file:line"
+            /Found.*secret.*in\s+([^\s:]+):(\d+)/i,
+            // Pattern for "file:line potential secret"  
+            /([^\s:]+):(\d+).*potential.*secret/i,
+            // Pattern for "Secret detected in file:line"
+            /Secret.*detected.*in\s+([^\s:]+):(\d+)/i,
+            // Pattern for "/scan/path/to/file:line"
+            /\/scan\/([^\s:]+):(\d+)/i,
+            // Pattern for general file paths with line numbers
+            /([a-zA-Z0-9\/_\-\.]+\.[a-zA-Z0-9]+):(\d+)/i
         ];
 
         lines.forEach(line => {
             for (const pattern of secretPatterns) {
                 const match = line.match(pattern);
                 if (match) {
+                    let filePath = match[1];
+                    // Clean up common Docker mount path prefixes
+                    if (filePath.startsWith('/scan/')) {
+                        filePath = filePath.substring(6);
+                    }
+
+                    // Skip non-git version control artifacts in fallback parsing
+                    if (filePath.includes('/.svn/') || filePath.includes('/.hg/')) {
+                        console.log(`Skipping non-git version control artifact (fallback): ${filePath}`);
+                        continue; // Try next pattern
+                    }
+
+                    // Handle git artifacts in fallback parsing
+                    if (filePath.includes('/.git/') || filePath.startsWith('.git/') || filePath === '.git') {
+                        // In fallback parsing, we don't have detailed match info, so mark as git history
+                        filePath = 'git-history-reference';
+                    }
+
                     results.push(this._createResult(
-                        match[1],
+                        filePath,
                         parseInt(match[2]) || 1,
                         '***hidden***',
                         'Secret detected (details hidden)',
-                        'unknown'
+                        'fallback_detection',
+                        null
                     ));
                     break;
                 }
@@ -967,23 +1249,66 @@ class LeakLockPanel {
         // If no patterns matched but there's output, create a generic result
         if (results.length === 0 && (output.includes('secret') || output.includes('finding'))) {
             results.push(this._createResult(
-                'repository',
+                'scan_output',
                 1,
                 '***scan completed***',
                 'Scan completed - check console output for details',
-                'info'
+                'info',
+                null
             ));
         }
 
+        console.log(`_parseNoseyParkerResults returning ${results.length} total results`);
         return results;
     }
 
     _getRelativeFilePath(filePath) {
+        // If scanning external directory (not workspace), show relative path from selected directory
+        if (this._selectedDirectory) {
+            // If path is absolute and starts with selected directory, make it relative
+            if (filePath.startsWith(this._selectedDirectory)) {
+                return filePath.substring(this._selectedDirectory.length + 1);
+            }
+
+            // If it's a relative path already, prefix with selected directory name for context
+            if (!filePath.startsWith('/') && !filePath.includes(':')) {
+                const dirName = require('path').basename(this._selectedDirectory);
+                return `${dirName}/${filePath}`;
+            }
+        }
+
+        // Fallback to workspace-based path handling
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (workspaceFolder && filePath.startsWith(workspaceFolder.uri.fsPath)) {
             return filePath.substring(workspaceFolder.uri.fsPath.length + 1);
         }
-        return filePath.replace(/^\/scan\//, '').replace(/^\//, '');
+
+        // Clean up Docker mount paths and other prefixes
+        let cleanPath = filePath.replace(/^\/scan\//, '').replace(/^\//, '');
+
+        // Handle .git paths from git history scanning
+        if (cleanPath.includes('/.git/') || cleanPath.startsWith('.git/')) {
+            // Extract project name from .git paths for context
+            const gitMatch = cleanPath.match(/^(.+?)\/\.git\/.+$/);
+            if (gitMatch) {
+                // For git history results, we'll get the actual file path from Nosey Parker's metadata
+                // This is just a fallback - the main logic should extract proper paths
+                return gitMatch[1] + '/.git (git-history)';
+            }
+            return 'git-history-artifact';
+        }
+
+        // Filter out other version control artifacts
+        if (cleanPath.includes('/.svn/') || cleanPath.includes('/.hg/')) {
+            return 'version-control-artifact';
+        }
+
+        // If path is still empty, return the original
+        if (cleanPath === '') {
+            return filePath;
+        }
+
+        return cleanPath;
     }
 
     _truncateSecret(secret) {
@@ -995,39 +1320,56 @@ class LeakLockPanel {
 
     _getSeverity(ruleName) {
         if (!ruleName) return 'medium';
-        
+
         const highRisk = ['api_key', 'secret_key', 'private_key', 'password', 'token'];
         const mediumRisk = ['url', 'connection_string', 'config'];
-        
+
         const lower = ruleName.toLowerCase();
         if (highRisk.some(risk => lower.includes(risk))) return 'high';
         if (mediumRisk.some(risk => lower.includes(risk))) return 'medium';
         return 'low';
     }
 
-    _createResult(filePath, line, secret, description, ruleName) {
+    _createResult(filePath, line, secret, description, ruleName, match = null) {
         const relativeFile = this._getRelativeFilePath(filePath);
         const isInDependency = this._isInDependencyDirectory(relativeFile);
-        
+
+        // Check if this result comes from git history by examining provenance
+        let isGitHistory = false;
+        if (match && match.provenance && Array.isArray(match.provenance)) {
+            isGitHistory = match.provenance.some(prov => prov.kind === 'git_repo');
+        }
+        // Also check legacy path-based detection
+        isGitHistory = isGitHistory || filePath.startsWith('git-ref:') || filePath.startsWith('git-object') || filePath === 'git-history-reference';
+
         // Get dependency handling configuration
         const config = vscode.workspace.getConfiguration('leakLock');
         const dependencyHandling = config.get('dependencyHandling') || 'warning';
-        
+
+        // Enhanced description for git history results
+        let enhancedDescription = description;
+        if (isGitHistory) {
+            enhancedDescription = `${description} (found in git history)`;
+        }
+
         // Determine severity based on configuration
         let severity = this._getSeverity(ruleName);
         if (isInDependency && dependencyHandling === 'warning') {
             severity = 'warning';
         }
-        
-        return {
+
+        const result = {
             file: relativeFile,
             line: line,
             secret: this._truncateSecret(secret),
-            description: description,
+            description: enhancedDescription,
             severity: severity,
             isDependency: isInDependency,
-            originalSeverity: this._getSeverity(ruleName)
+            originalSeverity: this._getSeverity(ruleName),
+            isGitHistory: isGitHistory
         };
+
+        return result;
     }
 
     _isInDependencyDirectory(filePath) {
@@ -1047,7 +1389,7 @@ class LeakLockPanel {
             'cache/', '.cache/', 'logs/', '.logs/',
             '.vscode/', '.idea/', '.eclipse/', '.settings/'
         ];
-        
+
         return dependencyPatterns.some(pattern => {
             if (pattern.endsWith('/')) {
                 return filePath.includes(pattern);
@@ -1057,21 +1399,31 @@ class LeakLockPanel {
     }
 
     async _cleanupTempFiles(datastorePath) {
+        const util = require('util');
+        const execAsync = util.promisify(exec);
+
         try {
             if (fs.existsSync(datastorePath)) {
-                fs.rmSync(datastorePath, { recursive: true, force: true });
+                // Try multiple approaches to remove files
+                try {
+                    fs.rmSync(datastorePath, { recursive: true, force: true });
+                } catch (fsError) {
+                    console.warn('fs.rmSync failed, trying Docker cleanup:', fsError.message);
+
+                    // Use Docker to clean up files that might have been created with root permissions
+                    const cleanupCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" alpine:latest rm -rf "/workspace/${path.basename(datastorePath)}"`;
+                    await execAsync(cleanupCommand);
+                }
             }
         } catch (error) {
-            console.warn('Failed to cleanup temporary files:', error.message);
-            // Try using Docker to clean up the files
+            console.warn('All cleanup attempts failed:', error.message);
+            // Try a final forceful cleanup with sudo-like approach in Docker
             try {
-                const cleanupCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" alpine:latest rm -rf "/workspace/${path.basename(datastorePath)}"`;
-                const { exec } = require('child_process');
-                const util = require('util');
-                const execAsync = util.promisify(exec);
-                await execAsync(cleanupCommand);
-            } catch (dockerError) {
-                console.warn('Docker cleanup also failed:', dockerError.message);
+                const forceCleanupCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" --user root alpine:latest sh -c "rm -rf /workspace/${path.basename(datastorePath)} || true"`;
+                await execAsync(forceCleanupCommand);
+            } catch (finalError) {
+                console.warn('Final forceful cleanup also failed:', finalError.message);
+                // At this point, just log the issue and continue
             }
         }
     }
@@ -1091,10 +1443,10 @@ class LeakLockPanel {
 
             // Create a temporary replacements file for BFG
             const replacementsFile = path.join(workspaceFolder.uri.fsPath, 'secrets-replacements.txt');
-            const replacementLines = Object.entries(replacements).map(([secret, replacement]) => 
+            const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
                 `${secret}==>${replacement}`
             ).join('\n');
-            
+
             fs.writeFileSync(replacementsFile, replacementLines);
 
             // Generate BFG command
@@ -1111,13 +1463,13 @@ class LeakLockPanel {
 
             if (action === 'Show Manual Command') {
                 vscode.window.showInformationMessage('Manual fix command generated.');
-                
+
                 // Create a document with the command
                 const document = await vscode.workspace.openTextDocument({
                     content: `# Leak Lock - Manual Secret Fix Command\n\n${manualCommand}\n\n# Warning: This will rewrite git history!\n# Make sure to backup your repository first.\n# After running, you may need to force push with: git push --force-with-lease`,
                     language: 'bash'
                 });
-                
+
                 vscode.window.showTextDocument(document);
             }
 
@@ -1169,10 +1521,10 @@ class LeakLockPanel {
 
                 // Create a temporary replacements file for BFG
                 const replacementsFile = path.join(scanPath, 'leak-lock-replacements.txt');
-                const replacementLines = Object.entries(replacements).map(([secret, replacement]) => 
+                const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
                     `${secret}==>${replacement}`
                 ).join('\n');
-                
+
                 fs.writeFileSync(replacementsFile, replacementLines);
 
                 progress.report({ increment: 20, message: "Running BFG tool..." });
@@ -1180,7 +1532,7 @@ class LeakLockPanel {
                 // Run BFG command
                 const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
                 const bfgCommand = `cd "${scanPath}" && java -jar "${bfgPath}" --replace-text "${replacementsFile}"`;
-                
+
                 const util = require('util');
                 const execAsync = util.promisify(exec);
 
@@ -1199,7 +1551,7 @@ class LeakLockPanel {
                 try {
                     await execAsync(`cd "${scanPath}" && git reflog expire --expire=now --all`);
                     progress.report({ increment: 15, message: "Running garbage collection..." });
-                    
+
                     await execAsync(`cd "${scanPath}" && git gc --prune=now --aggressive`);
                     progress.report({ increment: 0, message: "Git cleanup completed ✓" });
                 } catch (gitError) {
@@ -1301,7 +1653,7 @@ class LeakLockPanel {
         if (this._panel) {
             this._panel.dispose();
         }
-        
+
         // Clean up static reference
         if (LeakLockPanel.currentPanel === this) {
             LeakLockPanel.currentPanel = null;
