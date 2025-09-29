@@ -109,12 +109,10 @@ jobs:
 
       - name: Create GitHub Release
         if: github.event_name == 'push'
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
-          release_name: Release v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          name: Release v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
           body: |
             ## Changes in this Release
             
@@ -122,16 +120,22 @@ jobs:
             - Enhanced dependency directory handling (node_modules, vendor, etc.)
             - Improved UI with sidebar controls and main area results
             - Dynamic progress indicators during scanning operations
+            - Cross-platform security protection for Windows and Unix systems
+            - Fixed XSS vulnerabilities in file path display
+            - Enhanced path validation with directory traversal protection
             
             ### 🔧 Technical Improvements  
             - Separated installation/setup controls to sidebar
             - Streamlined main panel for scan results and BFG execution
             - Added spinner animations for better user feedback
             - Improved error handling and cleanup operations
+            - Centralized configuration constants for better maintainability
+            - Enhanced dependency installation with detailed instructions
             
             ### 🚀 Deployment
             - Automated publishing pipeline with version management
             - Comprehensive testing before release
+            - Updated GitHub Actions to latest versions
             
             **Installation:** Search for "leak-lock" in VS Code Extensions marketplace
             
@@ -142,10 +146,12 @@ jobs:
             4. Review results and run BFG cleanup as needed
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Extension Package
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: leak-lock-extension
           path: "*.vsix"
