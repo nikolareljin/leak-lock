@@ -1,5 +1,48 @@
 # Change Log
 
+## September 29, 2025
+### Added
+- **Comprehensive Installation Instructions**: Step-by-step guides for installing Docker and Java with platform-specific instructions
+- **Platform-Specific Setup Guides**: Detailed instructions for Windows, macOS, and Linux with direct download links
+- **Visual Progress Indicators**: Real-time scanning progress with animated spinner and stage-by-stage tracking
+- **Enhanced Empty Results Display**: Celebratory interface when no secrets found with security checklist and best practices
+- **Interactive Security Guide**: Built-in security best practices guide accessible from scan results
+- **Advanced Scan Progress**: Five-stage progress tracking (Docker Check → Pull Image → Initialize → Scan Files → Process Results)
+- **Command Injection Security Fixes**: Proper shell path escaping and input validation to prevent security vulnerabilities
+- **Centralized Configuration**: Extracted hardcoded paths to shared config.js for better maintainability
+- **Enhanced Dependency Management**: Smart dependency section that auto-hides when all dependencies are installed
+- **Detailed Dependency Status**: Individual status tracking for Docker, Nosey Parker, Java, and BFG with version information
+- **Improved UI/UX**: Progress indicators, animations, and better visual feedback during operations
+- **Advanced Error Handling**: Comprehensive error messages and recovery suggestions for dependency issues
+- **Package Updates**: Updated package-lock.json with latest dependency versions
+- **Code Quality Improvements**: Replaced magic numbers with named constants for better maintainability
+  - `MAX_PATH_LENGTH = 4096`: Maximum allowed path length for security validation
+  - `MAX_VOLUME_NAME_LENGTH = 255`: Maximum Docker volume name length
+  - `DOCKER_PULL_TIMEOUT = 120000`: Docker image pull timeout (2 minutes)
+  - `SCAN_TIMEOUT = 300000`: Security scan timeout (5 minutes)
+  - `SECRET_TRUNCATE_LENGTH = 50`: Length limit for displaying secrets in UI
+
+### Security
+- **Fixed Critical XSS Vulnerabilities**: Implemented comprehensive HTML escaping to prevent cross-site scripting attacks
+  - Added escapeHtml() and escapeJsonAttribute() functions for proper output encoding
+  - Replaced unsafe onclick handlers with data attributes and event delegation
+  - Applied HTML escaping to all user-controlled data (file paths, secrets, descriptions, progress messages)
+  - Eliminated direct interpolation of user data into HTML onclick attributes
+- **Fixed Critical Path Validation Flaw**: Corrected path traversal detection to check input BEFORE normalization, preventing bypass attempts
+- **Robust Directory Traversal Prevention**: Added comprehensive regex patterns to detect all path traversal attempts (../, ..\, etc.)
+- **Enhanced Working Directory Protection**: Added validation to prevent access outside the current working directory
+- **Improved Path Containment Logic**: Fixed validateDockerPath() to use path.relative() for accurate containment checking
+- **Fixed Docker Command Injection Vulnerabilities**: Comprehensive path validation and sanitization for all Docker volume mounts
+- **Enhanced Path Security**: Added validateDockerPath() and sanitizeDockerVolumeName() functions to prevent directory traversal attacks
+- **Cross-Platform Sensitive Directory Protection**: Implemented platform-aware system directory blocking
+  - Unix/Linux: Protects `/etc`, `/usr/bin`, `/bin`, `/sbin`, `/root`, `/var/run`, `/var/log`, `/sys`, `/proc`, `/boot`, `/dev`
+  - Windows: Protects `C:\Windows`, `C:\Program Files`, `C:\ProgramData`, system user directories, and critical system files
+  - Multi-drive support: Automatically protects system directories on D:, E:, F: drives on Windows
+  - Case-insensitive matching on Windows, case-sensitive on Unix-like systems
+- **Removed Dangerous Root Access**: Eliminated --user root flag from Docker commands to reduce security risks
+- **Added Input Validation**: Path traversal prevention and directory access validation for all user inputs
+- **Enhanced CI Security**: Added npm audit and eslint-plugin-security to CI pipeline
+
 All notable changes to the "leak-lock" extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
@@ -14,12 +57,16 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - **Package Updates**: Updated package-lock.json with latest dependency versions
 
 ### Changed
+- **Dependency Error Handling**: Replaced generic error messages with comprehensive installation instructions and help links
 - **UI Architecture**: Complete reorganization with sidebar-based controls and main area results display
 - **Directory Selection**: Enhanced git repository auto-detection and manual directory selection
 - **Dependency Installation**: Streamlined installation process with better progress tracking
 - **Scan Results Display**: Improved table layout and formatting in main editor area
 
 ### Fixed
+- **Directory Validation**: Removed overly restrictive working directory limitation that prevented scanning external directories
+- **Path Security**: Replaced blanket CWD restriction with targeted protection against sensitive system directories
+- **Arbitrary Directory Scanning**: Users can now scan any accessible directory outside the VS Code workspace
 - **Main Panel Corruption**: Resolved HTML corruption issues and restored clean implementation
 - **Dependency Verification**: Enhanced dependency checking with proper error handling
 - **Git Integration**: Improved workspace folder detection and repository handling
