@@ -15,9 +15,13 @@
 - **Package Updates**: Updated package-lock.json with latest dependency versions
 
 ### Security
-- **Fixed Command Injection Vulnerabilities**: All shell commands now use proper path escaping
-- **Added Input Validation**: Path traversal prevention and directory access validation
-- **Enhanced CI Security**: Added npm audit and eslint-plugin-security to CI pipelineAll notable changes to the "leak-lock" extension will be documented in this file.
+- **Fixed Docker Command Injection Vulnerabilities**: Comprehensive path validation and sanitization for all Docker volume mounts
+- **Enhanced Path Security**: Added validateDockerPath() and sanitizeDockerVolumeName() functions to prevent directory traversal attacks
+- **Removed Dangerous Root Access**: Eliminated --user root flag from Docker commands to reduce security risks
+- **Added Input Validation**: Path traversal prevention and directory access validation for all user inputs
+- **Enhanced CI Security**: Added npm audit and eslint-plugin-security to CI pipeline
+
+All notable changes to the "leak-lock" extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 

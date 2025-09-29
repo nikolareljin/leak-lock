@@ -51,6 +51,82 @@ function runDockerCommand(args, options = {}) {
     });
 }
 
+// Security validation functions
+function validatePath(inputPath) {
+    if (!inputPath || typeof inputPath !== 'string') {
+        throw new Error('Path must be a non-empty string');
+    }
+
+    // Normalize the path to resolve any relative components
+    const normalizedPath = path.resolve(inputPath);
+    
+    // Check for path traversal attempts
+    const pathComponents = normalizedPath.split(path.sep);
+    for (const component of pathComponents) {
+        if (component === '..' || component === '.' || component.includes('\0')) {
+            throw new Error(`Invalid path component detected: ${component}`);
+        }
+    }
+    
+    // Additional security checks
+    if (normalizedPath.includes('..') || 
+        normalizedPath.includes('./') || 
+        normalizedPath.includes('.\\') ||
+        normalizedPath.includes('\0') ||
+        normalizedPath.length > 4096) { // Prevent extremely long paths
+        throw new Error('Path contains dangerous characters or is too long');
+    }
+    
+    return normalizedPath;
+}
+
+function validateDockerPath(inputPath, allowedBasePaths = []) {
+    const validatedPath = validatePath(inputPath);
+    
+    // Ensure the path exists and is accessible
+    if (!fs.existsSync(validatedPath)) {
+        // For directories that don't exist yet, check if parent exists
+        const parentDir = path.dirname(validatedPath);
+        if (!fs.existsSync(parentDir)) {
+            throw new Error(`Parent directory does not exist: ${parentDir}`);
+        }
+    }
+    
+    // If allowed base paths are specified, ensure the path is within them
+    if (allowedBasePaths.length > 0) {
+        const isAllowed = allowedBasePaths.some(basePath => {
+            const normalizedBase = path.resolve(basePath);
+            return validatedPath.startsWith(normalizedBase);
+        });
+        
+        if (!isAllowed) {
+            throw new Error(`Path is outside allowed directories: ${validatedPath}`);
+        }
+    }
+    
+    return validatedPath;
+}
+
+function sanitizeDockerVolumeName(name) {
+    if (!name || typeof name !== 'string') {
+        throw new Error('Volume name must be a non-empty string');
+    }
+    
+    // Allow only alphanumeric characters, hyphens, underscores, and dots
+    // This prevents command injection through volume names
+    const sanitized = name.replace(/[^a-zA-Z0-9._-]/g, '');
+    
+    if (sanitized !== name) {
+        throw new Error(`Volume name contains invalid characters: ${name}`);
+    }
+    
+    if (sanitized.length === 0 || sanitized.length > 255) {
+        throw new Error(`Volume name is invalid length: ${sanitized.length}`);
+    }
+    
+    return sanitized;
+}
+
 // Webview panel provider for main area display
 class LeakLockPanel {
     constructor(extensionUri) {
@@ -643,25 +719,32 @@ class LeakLockPanel {
             this._scanResults = [];
             this._updateWebviewContent();
 
-            // Determine scan path
+            // Determine and validate scan path
             let scanPath;
-            if (useWorkspace) {
-                const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-                if (!workspaceFolder) {
-                    vscode.window.showErrorMessage('No workspace folder found. Please open a folder first.');
-                    this._isScanning = false;
-                    this._updateWebviewContent();
-                    return;
+            try {
+                if (useWorkspace) {
+                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                    if (!workspaceFolder) {
+                        vscode.window.showErrorMessage('No workspace folder found. Please open a folder first.');
+                        this._isScanning = false;
+                        this._updateWebviewContent();
+                        return;
+                    }
+                    scanPath = validateDockerPath(workspaceFolder.uri.fsPath);
+                } else {
+                    if (!this._selectedDirectory) {
+                        vscode.window.showErrorMessage('No directory selected. Please select a directory to scan first.');
+                        this._isScanning = false;
+                        this._updateWebviewContent();
+                        return;
+                    }
+                    scanPath = validateDockerPath(this._selectedDirectory);
                 }
-                scanPath = workspaceFolder.uri.fsPath;
-            } else {
-                if (!this._selectedDirectory) {
-                    vscode.window.showErrorMessage('No directory selected. Please select a directory to scan first.');
-                    this._isScanning = false;
-                    this._updateWebviewContent();
-                    return;
-                }
-                scanPath = this._selectedDirectory;
+            } catch (error) {
+                vscode.window.showErrorMessage(`Invalid scan path: ${error.message}`);
+                this._isScanning = false;
+                this._updateWebviewContent();
+                return;
             }
 
             // Update progress: Checking Docker
@@ -688,8 +771,8 @@ class LeakLockPanel {
             this._scanProgress = { stage: 'init', message: 'Initializing datastore...' };
             this._updateWebviewContent();
 
-            // Create temporary datastore
-            const tempDatastore = path.join(scanPath, '.noseyparker-temp');
+            // Create and validate temporary datastore path
+            const tempDatastore = validateDockerPath(path.join(scanPath, '.noseyparker-temp'), [scanPath]);
             await this._initializeDatastore(tempDatastore);
 
             // Update progress: Scanning
@@ -868,66 +951,83 @@ class LeakLockPanel {
     }
 
     async _initializeDatastore(datastorePath) {
-        // Aggressively remove existing datastore if it exists
-        if (fs.existsSync(datastorePath)) {
-            await this._cleanupTempFiles(datastorePath);
-        }
+        try {
+            // Validate the datastore path
+            const validatedDatastorePath = validateDockerPath(datastorePath);
+            
+            // Aggressively remove existing datastore if it exists
+            if (fs.existsSync(validatedDatastorePath)) {
+                await this._cleanupTempFiles(validatedDatastorePath);
+            }
 
-        // Ensure the parent directory exists
-        const parentDir = path.dirname(datastorePath);
-        if (!fs.existsSync(parentDir)) {
-            fs.mkdirSync(parentDir, { recursive: true });
-        }
+            // Validate and ensure the parent directory exists
+            const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
+            if (!fs.existsSync(parentDir)) {
+                fs.mkdirSync(parentDir, { recursive: true });
+            }
 
-        return new Promise((resolve, reject) => {
-            // Use safe Docker command construction
-            const parentDir = path.dirname(datastorePath);
-            const datastoreName = path.basename(datastorePath);
-            const dockerArgs = [
-                'run', '--rm',
-                '-v', `${parentDir}:/workspace`,
-                'ghcr.io/praetorian-inc/noseyparker:latest',
-                'datastore', 'init',
-                '--datastore', `/workspace/${datastoreName}`
-            ];
+            return new Promise((resolve, reject) => {
+                try {
+                    // Use safe Docker command construction with validation
+                    const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
+                    const datastoreName = sanitizeDockerVolumeName(path.basename(validatedDatastorePath));
+                    
+                    const dockerArgs = [
+                        'run', '--rm',
+                        '-v', `${parentDir}:/workspace`,
+                        'ghcr.io/praetorian-inc/noseyparker:latest',
+                        'datastore', 'init',
+                        '--datastore', `/workspace/${datastoreName}`
+                    ];
 
-            runDockerCommand(dockerArgs).then(() => {
-                resolve();
-            }).catch(error => {
-                // If initialization fails, try to force cleanup and retry once
-                console.warn('Initial datastore init failed, trying cleanup and retry:', error.message);
-                this._cleanupTempFiles(datastorePath).then(() => {
-                    // Retry initialization with same safe arguments
-                    return runDockerCommand(dockerArgs);
-                }).then(() => {
-                    resolve();
-                }).catch(retryError => {
-                    reject(new Error(`Failed to initialize datastore after retry: ${retryError.message}\nStderr: ${retryError.stderr || ''}`));
-                });
+                    runDockerCommand(dockerArgs).then(() => {
+                        resolve();
+                    }).catch(error => {
+                        // If initialization fails, try to force cleanup and retry once
+                        console.warn('Initial datastore init failed, trying cleanup and retry:', error.message);
+                        this._cleanupTempFiles(validatedDatastorePath).then(() => {
+                            // Retry initialization with same safe arguments
+                            return runDockerCommand(dockerArgs);
+                        }).then(() => {
+                            resolve();
+                        }).catch(retryError => {
+                            reject(new Error(`Failed to initialize datastore after retry: ${retryError.message}\nStderr: ${retryError.stderr || ''}`));
+                        });
+                    });
+                } catch (validationError) {
+                    reject(new Error(`Path validation failed: ${validationError.message}`));
+                }
             });
-        });
+        } catch (error) {
+            throw new Error(`Datastore initialization failed: ${error.message}`);
+        }
     }
 
     async _runNoseyParkerScan(scanPath, datastorePath) {
         return new Promise((resolve, reject) => {
-            // Get dependency handling configuration
-            const config = vscode.workspace.getConfiguration('leakLock');
-            const dependencyHandling = config.get('dependencyHandling') || 'warning';
+            try {
+                // Validate paths before using them
+                const validatedScanPath = validateDockerPath(scanPath);
+                const validatedDatastorePath = validateDockerPath(datastorePath);
+                
+                // Get dependency handling configuration
+                const config = vscode.workspace.getConfiguration('leakLock');
+                const dependencyHandling = config.get('dependencyHandling') || 'warning';
 
-            // Create ignore file for proper exclusion if needed
-            if (dependencyHandling === 'exclude') {
-                // For now, let's skip file-based exclusions to avoid issues
-                // We'll handle dependency filtering in the results processing instead
-                console.log('Dependency exclusion will be handled in post-processing');
-            }
+                // Create ignore file for proper exclusion if needed
+                if (dependencyHandling === 'exclude') {
+                    // For now, let's skip file-based exclusions to avoid issues
+                    // We'll handle dependency filtering in the results processing instead
+                    console.log('Dependency exclusion will be handled in post-processing');
+                }
 
-            // Ensure git history scanning is explicitly enabled (built into args below)
+                // Ensure git history scanning is explicitly enabled (built into args below)
 
-            // First scan the repository with full git history using safe Docker command
-            const scanArgs = [
-                'run', '--rm',
-                '-v', `${scanPath}:/scan`,
-                '-v', `${datastorePath}:/datastore`,
+                // First scan the repository with full git history using safe Docker command
+                const scanArgs = [
+                    'run', '--rm',
+                    '-v', `${validatedScanPath}:/scan`,
+                    '-v', `${validatedDatastorePath}:/datastore`,
                 'ghcr.io/praetorian-inc/noseyparker:latest',
                 'scan',
                 '--datastore', '/datastore',
@@ -946,7 +1046,7 @@ class LeakLockPanel {
                 // Now report the findings in structured format using safe Docker command
                 const reportArgs = [
                     'run', '--rm',
-                    '-v', `${datastorePath}:/datastore`,
+                    '-v', `${validatedDatastorePath}:/datastore`,
                     'ghcr.io/praetorian-inc/noseyparker:latest',
                     'report',
                     '--datastore', '/datastore',
@@ -975,7 +1075,7 @@ class LeakLockPanel {
                 // If exit code 2, try to continue with report generation
                 const reportArgs = [
                     'run', '--rm',
-                    '-v', `${datastorePath}:/datastore`,
+                    '-v', `${validatedDatastorePath}:/datastore`,
                     'ghcr.io/praetorian-inc/noseyparker:latest',
                     'report',
                     '--datastore', '/datastore',
@@ -995,6 +1095,9 @@ class LeakLockPanel {
                     resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
                 });
             });
+            } catch (validationError) {
+                reject(new Error(`Path validation failed: ${validationError.message}`));
+            }
         });
     }
 
@@ -1488,41 +1591,36 @@ class LeakLockPanel {
     }
 
     async _cleanupTempFiles(datastorePath) {
-
         try {
-            if (fs.existsSync(datastorePath)) {
+            // Validate the datastore path before any operations
+            const validatedDatastorePath = validateDockerPath(datastorePath);
+            
+            if (fs.existsSync(validatedDatastorePath)) {
                 // Try multiple approaches to remove files
                 try {
-                    fs.rmSync(datastorePath, { recursive: true, force: true });
+                    fs.rmSync(validatedDatastorePath, { recursive: true, force: true });
                 } catch (fsError) {
                     console.warn('fs.rmSync failed, trying Docker cleanup:', fsError.message);
 
                     // Use Docker to clean up files that might have been created with root permissions
+                    // But avoid using --user root for security
+                    const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
+                    const datastoreName = sanitizeDockerVolumeName(path.basename(validatedDatastorePath));
+                    
                     const cleanupArgs = [
                         'run', '--rm',
-                        '-v', `${path.dirname(datastorePath)}:/workspace`,
+                        '-v', `${parentDir}:/workspace`,
                         'alpine:latest',
-                        'rm', '-rf', `/workspace/${path.basename(datastorePath)}`
+                        'rm', '-rf', `/workspace/${datastoreName}`
                     ];
                     await runDockerCommand(cleanupArgs);
                 }
             }
         } catch (error) {
             console.warn('All cleanup attempts failed:', error.message);
-            // Try a final forceful cleanup with sudo-like approach in Docker
-            try {
-                const forceCleanupArgs = [
-                    'run', '--rm',
-                    '-v', `${path.dirname(datastorePath)}:/workspace`,
-                    '--user', 'root',
-                    'alpine:latest',
-                    'sh', '-c', `rm -rf /workspace/${path.basename(datastorePath)} || true`
-                ];
-                await runDockerCommand(forceCleanupArgs);
-            } catch (finalError) {
-                console.warn('Final forceful cleanup also failed:', finalError.message);
-                // At this point, just log the issue and continue
-            }
+            // Instead of using --user root (security risk), just log the failure
+            // Files will be cleaned up when the container terminates or by the OS
+            console.warn(`Unable to cleanup ${datastorePath}. Files may remain until container cleanup.`);
         }
     }
 
