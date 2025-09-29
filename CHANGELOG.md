@@ -1,5 +1,6 @@
-# Chan## September 29, 2025
+# Change Log
 
+## September 29, 2025
 ### Added
 - **Visual Progress Indicators**: Real-time scanning progress with animated spinner and stage-by-stage tracking
 - **Enhanced Empty Results Display**: Celebratory interface when no secrets found with security checklist and best practices
