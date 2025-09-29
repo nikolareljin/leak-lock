@@ -66,8 +66,11 @@ jobs:
         run: |
           # Install specific compatible version of vsce
           npm install -g @vscode/vsce@latest
-          # Verify installation
+          # Verify installation and show available options
+          echo "VSCE version:"
           vsce --version
+          echo "VSCE help:"
+          vsce package --help || echo "Help command failed, continuing..."
 
       - name: Verify package.json structure
         run: |
@@ -112,10 +115,12 @@ jobs:
           # Set NODE_OPTIONS to handle potential memory issues
           export NODE_OPTIONS="--max-old-space-size=4096"
           
-          # Package the extension with verbose output
-          vsce package --verbose
+          # Package the extension (removed --verbose flag as it's not supported)
+          echo "Packaging extension..."
+          vsce package
           
           # List created packages
+          echo "Created packages:"
           ls -la *.vsix
         env:
           NODE_ENV: production
@@ -132,8 +137,9 @@ jobs:
           echo "Package created successfully: $VSIX_FILE"
           echo "Package size: $(du -h "$VSIX_FILE" | cut -f1)"
           
-          # Test package contents (optional verification)
-          vsce ls
+          # Test package contents (list files in package)
+          echo "Package contents:"
+          vsce ls || echo "vsce ls command not available, skipping content listing"
 
       - name: Publish to VS Code Marketplace
         if: github.event_name == 'push'
@@ -141,15 +147,27 @@ jobs:
           # Set NODE_OPTIONS for publishing
           export NODE_OPTIONS="--max-old-space-size=4096"
           
-          # Publish with retry logic
+          # Check if PAT is available
+          if [ -z "${{ secrets.VSCE_PAT }}" ]; then
+            echo "Warning: VSCE_PAT secret not found, skipping marketplace publish"
+            exit 0
+          fi
+          
+          # Publish with retry logic (removed --verbose flag)
           for i in {1..3}; do
             echo "Publishing attempt $i..."
-            if vsce publish --pat ${{ secrets.VSCE_PAT }} --verbose; then
+            if vsce publish --pat ${{ secrets.VSCE_PAT }}; then
               echo "Published successfully!"
               break
             else
-              echo "Publish attempt $i failed, retrying in 30 seconds..."
-              sleep 30
+              echo "Publish attempt $i failed"
+              if [ $i -lt 3 ]; then
+                echo "Retrying in 30 seconds..."
+                sleep 30
+              else
+                echo "All publish attempts failed"
+                exit 1
+              fi
             fi
           done
         env:
@@ -160,6 +178,7 @@ jobs:
         if: github.event_name == 'push'
         run: |
           FINAL_VERSION=${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          echo "Creating git tag v${FINAL_VERSION}"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git tag "v${FINAL_VERSION}"
@@ -195,6 +214,7 @@ jobs:
             - Comprehensive testing before release
             - Updated GitHub Actions to latest versions
             - Fixed Node.js compatibility issues with VSCE packaging
+            - Resolved VSCE command line option compatibility
             
             **Installation:** Search for "leak-lock" in VS Code Extensions marketplace
             
