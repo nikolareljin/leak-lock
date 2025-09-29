@@ -1,9 +1,55 @@
 // Main area panel provider that uses the Webview API to display security issues in the main editor area.
 
 const vscode = require('vscode');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+
+// Helper function to safely escape shell arguments
+function escapeShellArg(arg) {
+    if (typeof arg !== 'string') {
+        throw new Error('Shell argument must be a string');
+    }
+    // Escape single quotes by ending the current quote, adding an escaped quote, and starting a new quote
+    return "'" + arg.replace(/'/g, "'\\''") + "'";
+}
+
+// Helper function to safely construct Docker commands using spawn instead of exec
+function runDockerCommand(args, options = {}) {
+    return new Promise((resolve, reject) => {
+        const dockerProcess = spawn('docker', args, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            ...options
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        dockerProcess.stdout?.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        dockerProcess.stderr?.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        dockerProcess.on('close', (code) => {
+            if (code === 0) {
+                resolve({ stdout, stderr, code });
+            } else {
+                const error = new Error(`Docker command failed with code ${code}`);
+                error.code = code;
+                error.stdout = stdout;
+                error.stderr = stderr;
+                reject(error);
+            }
+        });
+
+        dockerProcess.on('error', (error) => {
+            reject(error);
+        });
+    });
+}
 
 // Webview panel provider for main area display
 class LeakLockPanel {
@@ -834,28 +880,30 @@ class LeakLockPanel {
         }
 
         return new Promise((resolve, reject) => {
-            // Use a more explicit initialization command that avoids schema conflicts
-            const initCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" ghcr.io/praetorian-inc/noseyparker:latest datastore init --datastore "/workspace/${path.basename(datastorePath)}"`;
+            // Use safe Docker command construction
+            const parentDir = path.dirname(datastorePath);
+            const datastoreName = path.basename(datastorePath);
+            const dockerArgs = [
+                'run', '--rm',
+                '-v', `${parentDir}:/workspace`,
+                'ghcr.io/praetorian-inc/noseyparker:latest',
+                'datastore', 'init',
+                '--datastore', `/workspace/${datastoreName}`
+            ];
 
-            exec(initCommand, (error, stdout, stderr) => {
-                if (error) {
-                    // If initialization fails, try to force cleanup and retry once
-                    console.warn('Initial datastore init failed, trying cleanup and retry:', error.message);
-                    this._cleanupTempFiles(datastorePath).then(() => {
-                        // Retry initialization
-                        exec(initCommand, (retryError, retryStdout, retryStderr) => {
-                            if (retryError) {
-                                reject(new Error(`Failed to initialize datastore after retry: ${retryError.message}\nStderr: ${retryStderr}`));
-                            } else {
-                                resolve();
-                            }
-                        });
-                    }).catch(cleanupError => {
-                        reject(new Error(`Failed to initialize datastore and cleanup failed: ${error.message}\nCleanup error: ${cleanupError.message}`));
-                    });
-                } else {
+            runDockerCommand(dockerArgs).then(() => {
+                resolve();
+            }).catch(error => {
+                // If initialization fails, try to force cleanup and retry once
+                console.warn('Initial datastore init failed, trying cleanup and retry:', error.message);
+                this._cleanupTempFiles(datastorePath).then(() => {
+                    // Retry initialization with same safe arguments
+                    return runDockerCommand(dockerArgs);
+                }).then(() => {
                     resolve();
-                }
+                }).catch(retryError => {
+                    reject(new Error(`Failed to initialize datastore after retry: ${retryError.message}\nStderr: ${retryError.stderr || ''}`));
+                });
             });
         });
     }
@@ -867,37 +915,45 @@ class LeakLockPanel {
             const dependencyHandling = config.get('dependencyHandling') || 'warning';
 
             // Create ignore file for proper exclusion if needed
-            let ignoreFileOptions = '';
             if (dependencyHandling === 'exclude') {
                 // For now, let's skip file-based exclusions to avoid issues
                 // We'll handle dependency filtering in the results processing instead
                 console.log('Dependency exclusion will be handled in post-processing');
             }
 
-            // Ensure git history scanning is explicitly enabled
-            const gitHistoryOption = '--git-history full';
+            // Ensure git history scanning is explicitly enabled (built into args below)
 
-            // First scan the repository with full git history
-            const scanCommand = `docker run --rm -v "${scanPath}:/scan" -v "${datastorePath}:/datastore" ghcr.io/praetorian-inc/noseyparker:latest scan --datastore /datastore ${gitHistoryOption} /scan`;
+            // First scan the repository with full git history using safe Docker command
+            const scanArgs = [
+                'run', '--rm',
+                '-v', `${scanPath}:/scan`,
+                '-v', `${datastorePath}:/datastore`,
+                'ghcr.io/praetorian-inc/noseyparker:latest',
+                'scan',
+                '--datastore', '/datastore',
+                '--git-history', 'full',
+                '/scan'
+            ];
 
-            exec(scanCommand, { maxBuffer: 1024 * 1024 * 10, timeout: 300000 }, (scanError, scanStdout, scanStderr) => {
-                // Nosey Parker may return non-zero exit codes even on successful scans
-                if (scanError && scanError.code !== 2 && !scanError.message.includes('exit code 2')) {
-                    console.error('Scan error details:', { error: scanError, stdout: scanStdout, stderr: scanStderr });
-                    reject(new Error(`Scan failed: ${scanError.message}\nStderr: ${scanStderr}`));
-                    return;
-                }
+            // Use a timeout wrapper for the Docker command
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Scan timeout after 5 minutes')), 300000);
+            });
 
-                // Now report the findings in structured format
-                const reportCommand = `docker run --rm -v "${datastorePath}:/datastore" ghcr.io/praetorian-inc/noseyparker:latest report --datastore /datastore --format json`;
+            Promise.race([runDockerCommand(scanArgs), timeoutPromise]).then(({ stdout: scanStdout, stderr: scanStderr }) => {
+                // Continue to report generation - Nosey Parker may return non-zero exit codes even on successful scans
 
-                exec(reportCommand, { maxBuffer: 1024 * 1024 * 10 }, (reportError, reportStdout, reportStderr) => {
-                    if (reportError) {
-                        console.warn('Report command failed, trying alternative approach:', reportError.message);
-                        resolve(this._createFallbackResults(scanStdout + scanStderr));
-                        return;
-                    }
+                // Now report the findings in structured format using safe Docker command
+                const reportArgs = [
+                    'run', '--rm',
+                    '-v', `${datastorePath}:/datastore`,
+                    'ghcr.io/praetorian-inc/noseyparker:latest',
+                    'report',
+                    '--datastore', '/datastore',
+                    '--format', 'json'
+                ];
 
+                runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
                     try {
                         const results = this._parseNoseyParkerResults(reportStdout);
                         resolve(results);
@@ -905,6 +961,38 @@ class LeakLockPanel {
                         console.warn('Failed to parse JSON results, using fallback:', parseError.message);
                         resolve(this._createFallbackResults(reportStdout + scanStdout));
                     }
+                }).catch(reportError => {
+                    console.warn('Report command failed, trying alternative approach:', reportError.message);
+                    resolve(this._createFallbackResults(scanStdout + scanStderr));
+                });
+            }).catch(scanError => {
+                // Handle scan errors, but allow exit code 2 which is common for Nosey Parker
+                if (scanError.code !== 2) {
+                    console.error('Scan error details:', { error: scanError, stdout: scanError.stdout, stderr: scanError.stderr });
+                    reject(new Error(`Scan failed: ${scanError.message}\nStderr: ${scanError.stderr || ''}`));
+                    return;
+                }
+                // If exit code 2, try to continue with report generation
+                const reportArgs = [
+                    'run', '--rm',
+                    '-v', `${datastorePath}:/datastore`,
+                    'ghcr.io/praetorian-inc/noseyparker:latest',
+                    'report',
+                    '--datastore', '/datastore',
+                    '--format', 'json'
+                ];
+
+                runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
+                    try {
+                        const results = this._parseNoseyParkerResults(reportStdout);
+                        resolve(results);
+                    } catch (parseError) {
+                        console.warn('Failed to parse JSON results, using fallback:', parseError.message);
+                        resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
+                    }
+                }).catch(reportError => {
+                    console.warn('Report command also failed:', reportError.message);
+                    resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
                 });
             });
         });
@@ -1184,7 +1272,7 @@ class LeakLockPanel {
                             ));
                         });
                     }
-                } catch (lineError) {
+                } catch {
                     // Skip invalid JSON lines
                 }
             });
@@ -1399,8 +1487,6 @@ class LeakLockPanel {
     }
 
     async _cleanupTempFiles(datastorePath) {
-        const util = require('util');
-        const execAsync = util.promisify(exec);
 
         try {
             if (fs.existsSync(datastorePath)) {
@@ -1411,16 +1497,27 @@ class LeakLockPanel {
                     console.warn('fs.rmSync failed, trying Docker cleanup:', fsError.message);
 
                     // Use Docker to clean up files that might have been created with root permissions
-                    const cleanupCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" alpine:latest rm -rf "/workspace/${path.basename(datastorePath)}"`;
-                    await execAsync(cleanupCommand);
+                    const cleanupArgs = [
+                        'run', '--rm',
+                        '-v', `${path.dirname(datastorePath)}:/workspace`,
+                        'alpine:latest',
+                        'rm', '-rf', `/workspace/${path.basename(datastorePath)}`
+                    ];
+                    await runDockerCommand(cleanupArgs);
                 }
             }
         } catch (error) {
             console.warn('All cleanup attempts failed:', error.message);
             // Try a final forceful cleanup with sudo-like approach in Docker
             try {
-                const forceCleanupCommand = `docker run --rm -v "${path.dirname(datastorePath)}:/workspace" --user root alpine:latest sh -c "rm -rf /workspace/${path.basename(datastorePath)} || true"`;
-                await execAsync(forceCleanupCommand);
+                const forceCleanupArgs = [
+                    'run', '--rm',
+                    '-v', `${path.dirname(datastorePath)}:/workspace`,
+                    '--user', 'root',
+                    'alpine:latest',
+                    'sh', '-c', `rm -rf /workspace/${path.basename(datastorePath)} || true`
+                ];
+                await runDockerCommand(forceCleanupArgs);
             } catch (finalError) {
                 console.warn('Final forceful cleanup also failed:', finalError.message);
                 // At this point, just log the issue and continue
