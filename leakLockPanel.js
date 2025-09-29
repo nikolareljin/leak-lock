@@ -1326,7 +1326,7 @@ class LeakLockPanel {
 
                         // Debug logging for path extraction
                         if (filePath === 'file_path_not_found') {
-                            console.warn(`Finding ${findingIndex}, Match ${matchIndex}: No file path found in match`);
+                            console.warn('No file path found in match');
                         }
 
                         // Skip non-git version control artifacts, but allow git history results
