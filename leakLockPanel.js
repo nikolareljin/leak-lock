@@ -1272,8 +1272,9 @@ class LeakLockPanel {
                             ));
                         });
                     }
-                } catch {
-                    // Skip invalid JSON lines
+                } catch (lineError) {
+                    // Skip invalid JSON lines, but log for debugging
+                    console.warn('Failed to parse JSON line:', line, lineError.message);
                 }
             });
         }
