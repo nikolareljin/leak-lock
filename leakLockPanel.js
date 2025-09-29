@@ -51,6 +51,24 @@ function runDockerCommand(args, options = {}) {
     });
 }
 
+// HTML escaping function to prevent XSS
+function escapeHtml(unsafe) {
+    if (typeof unsafe !== 'string') {
+        return String(unsafe);
+    }
+    return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+// JSON escaping for data attributes
+function escapeJsonAttribute(obj) {
+    return escapeHtml(JSON.stringify(obj));
+}
+
 // Security validation functions
 function validatePath(inputPath) {
     if (!inputPath || typeof inputPath !== 'string') {
@@ -585,6 +603,19 @@ class LeakLockPanel {
                             command: 'openSecurityGuide'
                         });
                     }
+                    
+                    // Safe event delegation for file links
+                    document.addEventListener('click', function(event) {
+                        if (event.target.closest('.file-link.clickable')) {
+                            const link = event.target.closest('.file-link');
+                            const file = link.getAttribute('data-file');
+                            const line = parseInt(link.getAttribute('data-line'));
+                            
+                            if (file && line) {
+                                openFile(file, line);
+                            }
+                        }
+                    });
                 </script>
             </body>
             </html>
@@ -646,23 +677,23 @@ class LeakLockPanel {
             const contextNote = isDependency ? ' (dependency directory)' : (isGitHistory ? ' (git history)' : '');
 
             return `
-                <tr data-secret="${result.secret}" data-file="${result.file}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
+                <tr data-secret="${escapeHtml(result.secret)}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
                     <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? '' : 'checked'}></td>
-                    <td title="${result.file}${contextNote}">
-                        <span class="file-link" onclick="${isGitHistory ? '' : `openFile('${result.file}', ${result.line})`}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
-                            ${icon} ${result.file}
+                    <td title="${escapeHtml(result.file)}${contextNote}">
+                        <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
+                            ${icon} ${escapeHtml(result.file)}
                         </span>
                         ${isDependency ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(deps)</span>' : ''}
                         ${isGitHistory ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(history)</span>' : ''}
                     </td>
                     <td style="text-align: center;">
-                        <span class="file-link" onclick="${isGitHistory ? '' : `openFile('${result.file}', ${result.line})`}" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; ${isGitHistory ? 'cursor: default;' : 'cursor: pointer;'}">
+                        <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; ${isGitHistory ? 'cursor: default;' : 'cursor: pointer;'}">
                             ${result.line}
                         </span>
                     </td>
                     <td>
                         <span style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;">
-                            ${result.secret}
+                            ${escapeHtml(result.secret)}
                         </span>
                     </td>
                     <td>
@@ -671,10 +702,10 @@ class LeakLockPanel {
                     <td>
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <span style="background: ${severityColors[result.severity] || '#666'}; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.7em; text-transform: uppercase;">
-                                ${result.severity}
+                                ${escapeHtml(result.severity)}
                             </span>
                             <span style="font-size: 0.9em;">
-                                ${result.description}
+                                ${escapeHtml(result.description)}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(in dependency)</span>' : ''}
                             </span>
                         </div>
@@ -872,7 +903,7 @@ class LeakLockPanel {
                     <h2>🔍 Scanning Repository</h2>
                     <div class="scanning-progress">
                         <div class="spinner"></div>
-                        <p class="progress-message">${this._scanProgress?.message || 'Scanning in progress...'}</p>
+                        <p class="progress-message">${escapeHtml(this._scanProgress?.message || 'Scanning in progress...')}</p>
                         <div class="progress-stages">
                             <span class="stage ${this._scanProgress?.stage === 'docker' ? 'active' : ''}">Docker Check</span>
                             <span class="stage ${this._scanProgress?.stage === 'pull' ? 'active' : ''}">Pull Image</span>
