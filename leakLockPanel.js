@@ -1244,7 +1244,7 @@ class LeakLockPanel {
 
         // If all else fails, try to parse git object paths
         const gitObjectPattern = /\.git\/objects\/[0-9a-f]{2}\/[0-9a-f]{38}/;
-        const gitRefPattern = /\.git\/refs\/(heads|tags|remotes)\/(.+)/;
+        const gitRefPattern = /\.git\/refs\/(heads|tags|remotes)\/([a-zA-Z0-9._/-]+)/;
 
         if (match.provenance?.[0]?.path) {
             const path = match.provenance[0].path;
