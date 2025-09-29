@@ -5,6 +5,13 @@ const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+// Configuration constants
+const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
+const MAX_VOLUME_NAME_LENGTH = 255; // Maximum Docker volume name length
+const DOCKER_PULL_TIMEOUT = 120000; // Docker pull timeout in milliseconds (2 minutes)
+const SCAN_TIMEOUT = 300000; // Scan timeout in milliseconds (5 minutes)
+const SECRET_TRUNCATE_LENGTH = 50; // Length to truncate secrets for display
+
 // Helper function to safely escape shell arguments
 function escapeShellArg(arg) {
     if (typeof arg !== 'string') {
@@ -81,8 +88,8 @@ function validatePath(inputPath) {
     }
     
     // Check for path length limits
-    if (inputPath.length > 4096) {
-        throw new Error('Path is too long (max 4096 characters)');
+    if (inputPath.length > MAX_PATH_LENGTH) {
+        throw new Error(`Path is too long (max ${MAX_PATH_LENGTH} characters)`);
     }
     
     // Check for suspicious patterns in the original input
@@ -183,7 +190,7 @@ function sanitizeDockerVolumeName(name) {
         throw new Error(`Volume name contains invalid characters: ${name}`);
     }
     
-    if (sanitized.length === 0 || sanitized.length > 255) {
+    if (sanitized.length === 0 || sanitized.length > MAX_VOLUME_NAME_LENGTH) {
         throw new Error(`Volume name is invalid length: ${sanitized.length}`);
     }
     
@@ -1015,7 +1022,7 @@ class LeakLockPanel {
     async _pullNoseyParkerImage() {
         return new Promise((resolve, reject) => {
             const pullCommand = 'docker pull ghcr.io/praetorian-inc/noseyparker:latest';
-            exec(pullCommand, { timeout: 120000 }, (error, stdout, stderr) => {
+            exec(pullCommand, { timeout: DOCKER_PULL_TIMEOUT }, (error, stdout, stderr) => {
                 if (error) {
                     console.warn('Failed to pull latest image, using existing:', error.message);
                     resolve(); // Continue with existing image
@@ -1113,7 +1120,7 @@ class LeakLockPanel {
 
             // Use a timeout wrapper for the Docker command
             const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => reject(new Error('Scan timeout after 5 minutes')), 300000);
+                setTimeout(() => reject(new Error(`Scan timeout after ${SCAN_TIMEOUT / 1000 / 60} minutes`)), SCAN_TIMEOUT);
             });
 
             Promise.race([runDockerCommand(scanArgs), timeoutPromise]).then(({ stdout: scanStdout, stderr: scanStderr }) => {
@@ -1581,8 +1588,8 @@ class LeakLockPanel {
     }
 
     _truncateSecret(secret) {
-        if (secret.length > 50) {
-            return secret.substring(0, 50) + '...';
+        if (secret.length > SECRET_TRUNCATE_LENGTH) {
+            return secret.substring(0, SECRET_TRUNCATE_LENGTH) + '...';
         }
         return secret;
     }
