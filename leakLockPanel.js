@@ -60,12 +60,9 @@ function validatePath(inputPath) {
     // Normalize the path to resolve any relative components
     const normalizedPath = path.resolve(inputPath);
     
-    // Check for path traversal attempts
-    const pathComponents = normalizedPath.split(path.sep);
-    for (const component of pathComponents) {
-        if (component === '..' || component === '.' || component.includes('\0')) {
-            throw new Error(`Invalid path component detected: ${component}`);
-        }
+    // Check for null bytes which are always invalid
+    if (normalizedPath.includes('\0')) {
+        throw new Error('Path contains null bytes');
     }
     
     // Additional security checks
