@@ -999,7 +999,7 @@ class LeakLockPanel {
         }
 
         // If still no valid path found, return a meaningful fallback
-        console.warn('No file path found in match object:', JSON.stringify(match, null, 2));
+        // Log only non-sensitive metadata from match object
         return 'file_path_not_found';
     }
 
