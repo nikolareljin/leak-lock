@@ -2,6 +2,8 @@
 
 ## September 29, 2025
 ### Added
+- **Comprehensive Installation Instructions**: Step-by-step guides for installing Docker and Java with platform-specific instructions
+- **Platform-Specific Setup Guides**: Detailed instructions for Windows, macOS, and Linux with direct download links
 - **Visual Progress Indicators**: Real-time scanning progress with animated spinner and stage-by-stage tracking
 - **Enhanced Empty Results Display**: Celebratory interface when no secrets found with security checklist and best practices
 - **Interactive Security Guide**: Built-in security best practices guide accessible from scan results
@@ -15,6 +17,10 @@
 - **Package Updates**: Updated package-lock.json with latest dependency versions
 
 ### Security
+- **Fixed Critical Path Validation Flaw**: Corrected path traversal detection to check input BEFORE normalization, preventing bypass attempts
+- **Robust Directory Traversal Prevention**: Added comprehensive regex patterns to detect all path traversal attempts (../, ..\, etc.)
+- **Enhanced Working Directory Protection**: Added validation to prevent access outside the current working directory
+- **Improved Path Containment Logic**: Fixed validateDockerPath() to use path.relative() for accurate containment checking
 - **Fixed Docker Command Injection Vulnerabilities**: Comprehensive path validation and sanitization for all Docker volume mounts
 - **Enhanced Path Security**: Added validateDockerPath() and sanitizeDockerVolumeName() functions to prevent directory traversal attacks
 - **Removed Dangerous Root Access**: Eliminated --user root flag from Docker commands to reduce security risks
@@ -35,6 +41,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - **Package Updates**: Updated package-lock.json with latest dependency versions
 
 ### Changed
+- **Dependency Error Handling**: Replaced generic error messages with comprehensive installation instructions and help links
 - **UI Architecture**: Complete reorganization with sidebar-based controls and main area results display
 - **Directory Selection**: Enhanced git repository auto-detection and manual directory selection
 - **Dependency Installation**: Streamlined installation process with better progress tracking
