@@ -1,4 +1,4 @@
-// Sidebar provider for dependency installation and directory selection// Sidebar provider that uses the Webview API to display security issues in the sidebar.
+// Sidebar provider for dependency installation, directory selection, and displaying security issues using the Webview API.
 
 const vscode = require('vscode');
 
