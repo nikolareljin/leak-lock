@@ -148,6 +148,95 @@ class LeakLockSidebarProvider {
                     100% { transform: rotate(360deg); }
                 }
                 
+                /* Installation Instructions Styles */
+                .install-instructions {
+                    margin: 8px 0 15px 20px;
+                    padding: 12px;
+                    background: var(--vscode-textCodeBlock-background);
+                    border-radius: 6px;
+                    border-left: 3px solid var(--vscode-inputValidation-errorBorder);
+                }
+                
+                .error-message {
+                    font-size: 11px;
+                    color: var(--vscode-inputValidation-errorForeground);
+                    margin-bottom: 10px;
+                    font-weight: 600;
+                }
+                
+                .warning-message {
+                    font-size: 11px;
+                    color: var(--vscode-inputValidation-warningForeground);
+                    margin-bottom: 10px;
+                    font-weight: 600;
+                }
+                
+                .install-guide {
+                    font-size: 10px;
+                    line-height: 1.4;
+                }
+                
+                .install-guide strong {
+                    color: var(--vscode-foreground);
+                    font-size: 11px;
+                }
+                
+                .install-steps {
+                    margin: 8px 0;
+                }
+                
+                .install-platform {
+                    margin: 8px 0;
+                    padding: 6px;
+                    background: var(--vscode-editor-background);
+                    border-radius: 4px;
+                }
+                
+                .install-platform strong {
+                    display: block;
+                    margin-bottom: 4px;
+                    color: var(--vscode-textLink-foreground);
+                }
+                
+                .install-platform ol {
+                    margin: 4px 0;
+                    padding-left: 16px;
+                }
+                
+                .install-platform li {
+                    margin: 2px 0;
+                    line-height: 1.3;
+                }
+                
+                .install-platform code {
+                    background: var(--vscode-textCodeBlock-background);
+                    padding: 1px 3px;
+                    border-radius: 2px;
+                    font-family: var(--vscode-editor-font-family);
+                    font-size: 9px;
+                }
+                
+                .help-links, .help-note {
+                    margin-top: 8px;
+                    padding-top: 6px;
+                    border-top: 1px solid var(--vscode-panel-border);
+                    font-size: 10px;
+                }
+                
+                .help-note {
+                    color: var(--vscode-descriptionForeground);
+                    font-style: italic;
+                }
+                
+                .install-instructions a {
+                    color: var(--vscode-textLink-foreground);
+                    text-decoration: none;
+                }
+                
+                .install-instructions a:hover {
+                    text-decoration: underline;
+                }
+                
                 .selected-path {
                     font-family: monospace;
                     font-size: 11px;
@@ -243,8 +332,42 @@ class LeakLockSidebarProvider {
                     ${showSpinner && !this._dependencyStatus?.docker?.installed ? '<div class="spinner"></div>' : ''}
                 </div>
                 ${this._dependencyStatus?.docker?.error ? `
-                    <div style="font-size: 10px; color: var(--vscode-inputValidation-errorForeground); margin-left: 20px; margin-bottom: 5px;">
-                        ${this._dependencyStatus.docker.error}
+                    <div class="install-instructions">
+                        <div class="error-message">❌ ${this._dependencyStatus.docker.error}</div>
+                        <div class="install-guide">
+                            <strong>📥 How to Install Docker:</strong>
+                            <div class="install-steps">
+                                <div class="install-platform">
+                                    <strong>🖥️ Windows:</strong>
+                                    <ol>
+                                        <li>Download <a href="https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe" target="_blank">Docker Desktop for Windows</a></li>
+                                        <li>Run installer and follow setup wizard</li>
+                                        <li>Restart computer if prompted</li>
+                                        <li>Start Docker Desktop from Start Menu</li>
+                                    </ol>
+                                </div>
+                                <div class="install-platform">
+                                    <strong>🍎 macOS:</strong>
+                                    <ol>
+                                        <li>Download <a href="https://desktop.docker.com/mac/main/amd64/Docker.dmg" target="_blank">Docker Desktop for Mac</a></li>
+                                        <li>Double-click Docker.dmg and drag to Applications</li>
+                                        <li>Launch Docker.app from Applications</li>
+                                    </ol>
+                                </div>
+                                <div class="install-platform">
+                                    <strong>🐧 Linux (Ubuntu/Debian):</strong>
+                                    <ol>
+                                        <li><code>curl -fsSL https://get.docker.com -o get-docker.sh</code></li>
+                                        <li><code>sudo sh get-docker.sh</code></li>
+                                        <li><code>sudo usermod -aG docker $USER</code></li>
+                                        <li>Log out and back in, then <code>docker --version</code></li>
+                                    </ol>
+                                </div>
+                            </div>
+                            <div class="help-links">
+                                🔗 <a href="https://docs.docker.com/get-docker/" target="_blank">Official Docker Installation Guide</a>
+                            </div>
+                        </div>
                     </div>
                 ` : ''}
                 ${this._dependencyStatus?.docker?.version ? `
@@ -271,8 +394,46 @@ class LeakLockSidebarProvider {
                     <span><span class="status-icon">${javaStatus}</span>Java Runtime</span>
                 </div>
                 ${this._dependencyStatus?.java?.error ? `
-                    <div style="font-size: 10px; color: var(--vscode-inputValidation-warningForeground); margin-left: 20px; margin-bottom: 5px;">
-                        ${this._dependencyStatus.java.error} (manual BFG commands only)
+                    <div class="install-instructions">
+                        <div class="warning-message">⚠️ ${this._dependencyStatus.java.error}</div>
+                        <div class="install-guide">
+                            <strong>☕ How to Install Java Runtime:</strong>
+                            <div class="install-steps">
+                                <div class="install-platform">
+                                    <strong>🖥️ Windows:</strong>
+                                    <ol>
+                                        <li>Download <a href="https://adoptium.net/temurin/releases/" target="_blank">Eclipse Temurin JDK</a></li>
+                                        <li>Choose Latest LTS version (Java 21)</li>
+                                        <li>Run the .msi installer</li>
+                                        <li>Add to PATH when prompted</li>
+                                        <li>Verify: Open Command Prompt → <code>java -version</code></li>
+                                    </ol>
+                                </div>
+                                <div class="install-platform">
+                                    <strong>🍎 macOS:</strong>
+                                    <ol>
+                                        <li>Using Homebrew: <code>brew install openjdk@21</code></li>
+                                        <li>Or download from <a href="https://adoptium.net/temurin/releases/" target="_blank">Adoptium</a></li>
+                                        <li>Verify: <code>java -version</code></li>
+                                    </ol>
+                                </div>
+                                <div class="install-platform">
+                                    <strong>🐧 Linux (Ubuntu/Debian):</strong>
+                                    <ol>
+                                        <li><code>sudo apt update</code></li>
+                                        <li><code>sudo apt install openjdk-21-jdk</code></li>
+                                        <li>Verify: <code>java -version</code></li>
+                                    </ol>
+                                </div>
+                            </div>
+                            <div class="help-note">
+                                💡 <strong>Note:</strong> Java is optional - needed only for automated BFG cleanup. 
+                                You can still scan for secrets without Java using manual commands.
+                            </div>
+                            <div class="help-links">
+                                🔗 <a href="https://adoptium.net/installation/" target="_blank">Java Installation Guide</a>
+                            </div>
+                        </div>
                     </div>
                 ` : ''}
                 ${this._dependencyStatus?.java?.version ? `
