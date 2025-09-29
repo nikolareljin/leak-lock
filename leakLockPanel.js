@@ -85,14 +85,27 @@ function validatePath(inputPath) {
     // Normalize the path to resolve any relative components
     const normalizedPath = path.resolve(inputPath);
     
-    // Additional security check: ensure the normalized path doesn't escape
-    // the current working directory or go to system directories
-    const cwd = process.cwd();
-    const relativePath = path.relative(cwd, normalizedPath);
-    
-    // If the relative path starts with .., it means it's trying to go outside cwd
-    if (relativePath.startsWith('..')) {
-        throw new Error(`Path attempts to access files outside working directory: ${inputPath}`);
+    // Instead of restricting to current working directory, protect against
+    // access to sensitive system directories only
+    if (path.isAbsolute(normalizedPath)) {
+        const sensitiveDirectories = [
+            '/etc',
+            '/usr/bin', 
+            '/bin',
+            '/sbin',
+            '/root',
+            '/var/run',
+            '/sys',
+            '/proc'
+        ];
+        
+        const isSensitive = sensitiveDirectories.some(sensitiveDir => {
+            return normalizedPath === sensitiveDir || normalizedPath.startsWith(sensitiveDir + '/');
+        });
+        
+        if (isSensitive) {
+            throw new Error(`Access to sensitive system directory not allowed: ${normalizedPath}`);
+        }
     }
     
     return normalizedPath;
