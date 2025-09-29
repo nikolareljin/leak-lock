@@ -12,6 +12,41 @@ const DOCKER_PULL_TIMEOUT = 120000; // Docker pull timeout in milliseconds (2 mi
 const SCAN_TIMEOUT = 300000; // Scan timeout in milliseconds (5 minutes)
 const SECRET_TRUNCATE_LENGTH = 50; // Length to truncate secrets for display
 
+// Cross-platform sensitive system directories
+const SENSITIVE_DIRECTORIES = {
+    // Unix-like systems (Linux, macOS, etc.)
+    unix: [
+        '/etc',
+        '/usr/bin', 
+        '/bin',
+        '/sbin',
+        '/root',
+        '/var/run',
+        '/var/log',
+        '/sys',
+        '/proc',
+        '/boot',
+        '/dev'
+    ],
+    // Windows systems
+    windows: [
+        'C:\\Windows',
+        'C:\\Program Files',
+        'C:\\Program Files (x86)',
+        'C:\\ProgramData',
+        'C:\\System Volume Information',
+        'C:\\Boot',
+        'C:\\Recovery',
+        'C:\\$Recycle.Bin',
+        'C:\\hiberfil.sys',
+        'C:\\pagefile.sys',
+        // Common system user directories
+        'C:\\Users\\Administrator',
+        'C:\\Users\\Default',
+        'C:\\Users\\Public'
+    ]
+};
+
 // Helper function to safely escape shell arguments
 function escapeShellArg(arg) {
     if (typeof arg !== 'string') {
@@ -76,6 +111,32 @@ function escapeJsonAttribute(obj) {
     return escapeHtml(JSON.stringify(obj));
 }
 
+// Get platform-appropriate sensitive directories
+function getSensitiveDirectories() {
+    const isWindows = process.platform === 'win32';
+    
+    if (isWindows) {
+        // On Windows, also check for case variations and different drive letters
+        const windowsDirs = [...SENSITIVE_DIRECTORIES.windows];
+        
+        // Add variations for other common drive letters
+        const driveLetters = ['D:', 'E:', 'F:'];
+        driveLetters.forEach(drive => {
+            windowsDirs.push(
+                `${drive}\\Windows`,
+                `${drive}\\Program Files`,
+                `${drive}\\Program Files (x86)`,
+                `${drive}\\ProgramData`
+            );
+        });
+        
+        return windowsDirs;
+    } else {
+        // Unix-like systems (Linux, macOS, etc.)
+        return SENSITIVE_DIRECTORIES.unix;
+    }
+}
+
 // Security validation functions
 function validatePath(inputPath) {
     if (!inputPath || typeof inputPath !== 'string') {
@@ -113,19 +174,25 @@ function validatePath(inputPath) {
     // Instead of restricting to current working directory, protect against
     // access to sensitive system directories only
     if (path.isAbsolute(normalizedPath)) {
-        const sensitiveDirectories = [
-            '/etc',
-            '/usr/bin', 
-            '/bin',
-            '/sbin',
-            '/root',
-            '/var/run',
-            '/sys',
-            '/proc'
-        ];
+        const sensitiveDirectories = getSensitiveDirectories();
+        const isWindows = process.platform === 'win32';
         
         const isSensitive = sensitiveDirectories.some(sensitiveDir => {
-            return normalizedPath === sensitiveDir || normalizedPath.startsWith(sensitiveDir + '/');
+            // Normalize both paths for comparison
+            const normalizedSensitiveDir = path.resolve(sensitiveDir);
+            
+            if (isWindows) {
+                // Case-insensitive comparison for Windows
+                const normalizedPathLower = normalizedPath.toLowerCase();
+                const sensitivePathLower = normalizedSensitiveDir.toLowerCase();
+                
+                return normalizedPathLower === sensitivePathLower || 
+                       normalizedPathLower.startsWith(sensitivePathLower + path.sep);
+            } else {
+                // Case-sensitive comparison for Unix-like systems
+                return normalizedPath === normalizedSensitiveDir || 
+                       normalizedPath.startsWith(normalizedSensitiveDir + path.sep);
+            }
         });
         
         if (isSensitive) {

@@ -34,6 +34,11 @@
 - **Improved Path Containment Logic**: Fixed validateDockerPath() to use path.relative() for accurate containment checking
 - **Fixed Docker Command Injection Vulnerabilities**: Comprehensive path validation and sanitization for all Docker volume mounts
 - **Enhanced Path Security**: Added validateDockerPath() and sanitizeDockerVolumeName() functions to prevent directory traversal attacks
+- **Cross-Platform Sensitive Directory Protection**: Implemented platform-aware system directory blocking
+  - Unix/Linux: Protects `/etc`, `/usr/bin`, `/bin`, `/sbin`, `/root`, `/var/run`, `/var/log`, `/sys`, `/proc`, `/boot`, `/dev`
+  - Windows: Protects `C:\Windows`, `C:\Program Files`, `C:\ProgramData`, system user directories, and critical system files
+  - Multi-drive support: Automatically protects system directories on D:, E:, F: drives on Windows
+  - Case-insensitive matching on Windows, case-sensitive on Unix-like systems
 - **Removed Dangerous Root Access**: Eliminated --user root flag from Docker commands to reduce security risks
 - **Added Input Validation**: Path traversal prevention and directory access validation for all user inputs
 - **Enhanced CI Security**: Added npm audit and eslint-plugin-security to CI pipeline
