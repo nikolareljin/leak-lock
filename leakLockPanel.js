@@ -57,21 +57,42 @@ function validatePath(inputPath) {
         throw new Error('Path must be a non-empty string');
     }
 
-    // Normalize the path to resolve any relative components
-    const normalizedPath = path.resolve(inputPath);
-    
-    // Check for null bytes which are always invalid
-    if (normalizedPath.includes('\0')) {
+    // Check for dangerous characters in the original input BEFORE normalization
+    if (inputPath.includes('\0')) {
         throw new Error('Path contains null bytes');
     }
     
-    // Additional security checks
-    if (normalizedPath.includes('..') || 
-        normalizedPath.includes('./') || 
-        normalizedPath.includes('.\\') ||
-        normalizedPath.includes('\0') ||
-        normalizedPath.length > 4096) { // Prevent extremely long paths
-        throw new Error('Path contains dangerous characters or is too long');
+    // Check for path length limits
+    if (inputPath.length > 4096) {
+        throw new Error('Path is too long (max 4096 characters)');
+    }
+    
+    // Check for suspicious patterns in the original input
+    const suspiciousPatterns = [
+        /\.\.[/\\]/,     // ../ or ..\
+        /^\.\.$/,        // exactly ".."
+        /[/\\]\.\.$/,    // ends with /.. or \..
+        /^\.\.(?:[/\\]|$)/, // starts with ../ or ..\ or is just ".."
+        /[/\\]\.\.(?:[/\\]|$)/, // contains /../ or \..\
+    ];
+    
+    for (const pattern of suspiciousPatterns) {
+        if (pattern.test(inputPath)) {
+            throw new Error(`Path contains directory traversal attempt: ${inputPath}`);
+        }
+    }
+    
+    // Normalize the path to resolve any relative components
+    const normalizedPath = path.resolve(inputPath);
+    
+    // Additional security check: ensure the normalized path doesn't escape
+    // the current working directory or go to system directories
+    const cwd = process.cwd();
+    const relativePath = path.relative(cwd, normalizedPath);
+    
+    // If the relative path starts with .., it means it's trying to go outside cwd
+    if (relativePath.startsWith('..')) {
+        throw new Error(`Path attempts to access files outside working directory: ${inputPath}`);
     }
     
     return normalizedPath;
@@ -92,8 +113,22 @@ function validateDockerPath(inputPath, allowedBasePaths = []) {
     // If allowed base paths are specified, ensure the path is within them
     if (allowedBasePaths.length > 0) {
         const isAllowed = allowedBasePaths.some(basePath => {
-            const normalizedBase = path.resolve(basePath);
-            return validatedPath.startsWith(normalizedBase);
+            try {
+                // Resolve both paths to handle symlinks and relative paths properly
+                const normalizedBase = path.resolve(basePath);
+                const normalizedValidated = path.resolve(validatedPath);
+                
+                // Use path.relative to check containment more robustly
+                const relativePath = path.relative(normalizedBase, normalizedValidated);
+                
+                // If relative path is empty, it's the same directory (allowed)
+                // If it doesn't start with .., it's within the base path (allowed)
+                // If it starts with .., it's outside the base path (not allowed)
+                return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+            } catch (error) {
+                // If path resolution fails, deny access
+                return false;
+            }
         });
         
         if (!isAllowed) {
