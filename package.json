@@ -1,4 +1,5 @@
 {
+  "publisher": "nikolareljin",
   "name": "leak-lock",
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
@@ -33,16 +34,36 @@
       {
         "command": "leak-lock.fixSecrets",
         "title": "Fix Secrets"
+      },
+      {
+        "command": "leak-lock.openPanel",
+        "title": "Open Leak Lock Scanner",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "leak-lock.cleanup",
+        "title": "Clean Up Leak Lock Dependencies"
       }
     ],
-    "views": {
-      "leak-lock": [
-        {
-          "id": "leak-lock.sidebar",
-          "name": "Scanner",
-          "type": "webview"
+    "configuration": {
+      "title": "Leak Lock",
+      "properties": {
+        "leakLock.dependencyHandling": {
+          "type": "string",
+          "default": "warning",
+          "enum": [
+            "warning",
+            "exclude",
+            "normal"
+          ],
+          "enumDescriptions": [
+            "Show dependency findings as warnings (recommended)",
+            "Completely exclude dependency directories from scanning",
+            "Treat dependency findings the same as regular findings"
+          ],
+          "description": "How to handle secrets found in dependency directories (node_modules, vendor, etc.)"
         }
-      ]
+      }
     },
     "viewsContainers": {
       "activitybar": [
@@ -53,17 +74,19 @@
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "leak-lock.sidebar",
-        "contents": "Welcome to Leak Lock - Secure your code repositories.\n[Scan Repository](command:leak-lock.scanRepository)\nMake sure Docker is installed and running to use this extension."
-      }
-    ]
+    "views": {
+      "leak-lock": [
+        {
+          "id": "leak-lock.sidebarView",
+          "name": "Control Panel",
+          "type": "webview"
+        }
+      ]
+    }
   },
   "scripts": {
     "bfg": "java -jar bfg.jar",
     "lint": "eslint .",
-    "pretest": "yarn run lint",
     "test": "vscode-test",
     "build": "babel src --out-dir dist"
   },
@@ -72,7 +95,7 @@
     "@types/node": "20.x",
     "@types/vscode": "^1.96.0",
     "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.4.1",
+    "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.16.0"
   },
   "dependencies": {

@@ -1,0 +1,146 @@
+name: Publish VS Code Extension
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - '*.md'
+  pull_request:
+    branches: [ main ]
+    types: [ closed ]
+
+jobs:
+  # Job to test the extension before publishing
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run linter
+        run: npm run lint
+        continue-on-error: true # Don't fail pipeline on lint errors
+
+  # Job to build and publish the extension
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for version calculation
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install VSCE (VS Code Extension Manager)
+        run: npm install -g @vscode/vsce
+
+      - name: Get current version
+        id: version
+        run: echo "version=$(node -p -e "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Check if version exists
+        id: check_version
+        run: |
+          # Check if this version already exists as a git tag
+          if git tag -l | grep -q "^v${{ steps.version.outputs.version }}$"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Version ${{ steps.version.outputs.version }} already exists, skipping publish"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Version ${{ steps.version.outputs.version }} is new, will publish"
+          fi
+
+      - name: Bump version
+        if: steps.check_version.outputs.exists == 'true'
+        run: |
+          # Auto-bump patch version if current version already exists
+          npm version patch --no-git-tag-version
+          echo "version=$(node -p -e "require('./package.json').version")" >> $GITHUB_OUTPUT
+        id: new_version
+
+      - name: Package extension
+        run: vsce package
+
+      - name: Publish to VS Code Marketplace
+        if: github.event_name == 'push'
+        run: vsce publish --pat ${{ secrets.VSCE_PAT }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Create Git Tag
+        if: github.event_name == 'push'
+        run: |
+          FINAL_VERSION=${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag "v${FINAL_VERSION}"
+          git push origin "v${FINAL_VERSION}"
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          release_name: Release v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          body: |
+            ## Changes in this Release
+            
+            ### 🛡️ Security Scanning
+            - Enhanced dependency directory handling (node_modules, vendor, etc.)
+            - Improved UI with sidebar controls and main area results
+            - Dynamic progress indicators during scanning operations
+            
+            ### 🔧 Technical Improvements  
+            - Separated installation/setup controls to sidebar
+            - Streamlined main panel for scan results and BFG execution
+            - Added spinner animations for better user feedback
+            - Improved error handling and cleanup operations
+            
+            ### 🚀 Deployment
+            - Automated publishing pipeline with version management
+            - Comprehensive testing before release
+            
+            **Installation:** Search for "leak-lock" in VS Code Extensions marketplace
+            
+            **Usage:** 
+            1. Open the Leak Lock sidebar panel
+            2. Install dependencies and select target directory  
+            3. Click "Start Scan" to analyze for secrets
+            4. Review results and run BFG cleanup as needed
+          draft: false
+          prerelease: false
+
+      - name: Upload Extension Package
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v3
+        with:
+          name: leak-lock-extension
+          path: "*.vsix"
+          retention-days: 30
