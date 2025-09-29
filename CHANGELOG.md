@@ -1,6 +1,22 @@
-# Change Log
+# Chan## September 29, 2025
 
-All notable changes to the "leak-lock" extension will be documented in this file.
+### Added
+- **Visual Progress Indicators**: Real-time scanning progress with animated spinner and stage-by-stage tracking
+- **Enhanced Empty Results Display**: Celebratory interface when no secrets found with security checklist and best practices
+- **Interactive Security Guide**: Built-in security best practices guide accessible from scan results
+- **Advanced Scan Progress**: Five-stage progress tracking (Docker Check → Pull Image → Initialize → Scan Files → Process Results)
+- **Command Injection Security Fixes**: Proper shell path escaping and input validation to prevent security vulnerabilities
+- **Centralized Configuration**: Extracted hardcoded paths to shared config.js for better maintainability
+- **Enhanced Dependency Management**: Smart dependency section that auto-hides when all dependencies are installed
+- **Detailed Dependency Status**: Individual status tracking for Docker, Nosey Parker, Java, and BFG with version information
+- **Improved UI/UX**: Progress indicators, animations, and better visual feedback during operations
+- **Advanced Error Handling**: Comprehensive error messages and recovery suggestions for dependency issues
+- **Package Updates**: Updated package-lock.json with latest dependency versions
+
+### Security
+- **Fixed Command Injection Vulnerabilities**: All shell commands now use proper path escaping
+- **Added Input Validation**: Path traversal prevention and directory access validation
+- **Enhanced CI Security**: Added npm audit and eslint-plugin-security to CI pipelineAll notable changes to the "leak-lock" extension will be documented in this file.
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
