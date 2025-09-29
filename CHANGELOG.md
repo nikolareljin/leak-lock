@@ -15,6 +15,12 @@
 - **Improved UI/UX**: Progress indicators, animations, and better visual feedback during operations
 - **Advanced Error Handling**: Comprehensive error messages and recovery suggestions for dependency issues
 - **Package Updates**: Updated package-lock.json with latest dependency versions
+- **Code Quality Improvements**: Replaced magic numbers with named constants for better maintainability
+  - `MAX_PATH_LENGTH = 4096`: Maximum allowed path length for security validation
+  - `MAX_VOLUME_NAME_LENGTH = 255`: Maximum Docker volume name length
+  - `DOCKER_PULL_TIMEOUT = 120000`: Docker image pull timeout (2 minutes)
+  - `SCAN_TIMEOUT = 300000`: Security scan timeout (5 minutes)
+  - `SECRET_TRUNCATE_LENGTH = 50`: Length limit for displaying secrets in UI
 
 ### Security
 - **Fixed Critical XSS Vulnerabilities**: Implemented comprehensive HTML escaping to prevent cross-site scripting attacks
