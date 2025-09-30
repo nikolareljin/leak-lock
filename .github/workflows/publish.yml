@@ -114,6 +114,9 @@ jobs:
         run: |
           # Set NODE_OPTIONS to handle potential memory issues
           export NODE_OPTIONS="--max-old-space-size=4096"
+
+          # Remove test scripts and test samples.
+          rm ./test*.*
           
           # Package the extension (removed --verbose flag as it's not supported)
           echo "Packaging extension..."
