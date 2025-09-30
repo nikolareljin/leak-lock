@@ -19,7 +19,7 @@ Finally, set up required data:
 ? What's the description of your extension? `Developer tools to help engineers stay cybersecure without interrupting their workflows`
 ? Enable JavaScript type checking in 'jsconfig.json'? `Yes`
 ? Initialize a git repository? `Yes`
-? Which package manager to use? `yarn`
+? Which package manager to use? `npm`
 
 ## Install Docker Desktop 
 
