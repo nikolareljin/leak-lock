@@ -1,7 +1,11 @@
 # GitHub Action Setup for Extension Publishing
 
 ## Overview
-The extension now includes an automated GitHub Action workflow that will automatically publish the VS Code extension to the marketplace when code is merged to the `main` branch.
+This repository includes automated GitHub Actions to build and publish extensions for three IDEs:
+
+- VS Code (Marketplace) — existing `publish.yml`
+- Visual Studio (VSIX to Visual Studio Marketplace) — `publish-ides.yml`
+- IntelliJ Platform (JetBrains Marketplace) — `publish-ides.yml`
 
 ## Setup Required
 
@@ -28,6 +32,31 @@ Add the token as a repository secret:
 5. Value: Paste your VS Code Marketplace token
 6. Click **Add secret**
 
+---
+
+### 3. Visual Studio Marketplace (VSIX) Token + Publisher
+
+Publishing the Visual Studio extension (VSIX) requires a token and publisher ID for the Visual Studio Marketplace.
+
+1. Create a Personal Access Token from Visual Studio Marketplace Publisher portal (with publish permissions)
+2. Add these repository secrets:
+   - `VS_MARKETPLACE_TOKEN` — your Visual Studio Marketplace PAT
+   - `VS_PUBLISHER` — your Publisher ID (short name, not display name)
+
+The workflow builds the VSIX with MSBuild on `windows-latest` and publishes using `VsixPublisher.exe`.
+
+---
+
+### 4. JetBrains Marketplace Token (IntelliJ)
+
+To publish the IntelliJ plugin to JetBrains Marketplace:
+1. Generate a JetBrains Marketplace token
+2. Add these repository secrets:
+   - `JETBRAINS_TOKEN` — publishing token
+   - `JETBRAINS_CHANNEL` — optional channel name (defaults to `default`)
+
+The workflow uses the Gradle IntelliJ Plugin `publishPlugin` task with the token and channel.
+
 ### 3. Publisher Configuration
 Ensure your `package.json` includes the publisher field:
 
@@ -51,6 +80,22 @@ Replace `your-publisher-name` with your actual VS Code Marketplace publisher ID.
 - **Git Tags**: Creates version tags automatically
 - **GitHub Releases**: Creates detailed release notes
 - **Artifacts**: Uploads .vsix package for manual distribution
+
+For Visual Studio and IntelliJ:
+- Builds VSIX on Windows; uploads artifact and publishes if secrets are configured
+- Builds IntelliJ distribution ZIP on Ubuntu; uploads artifact and publishes if secrets are configured
+
+### Tags and Releases
+- A single shared tag `v<version>` is used across all platforms (derived from `package.json`)
+- Each workflow attaches its platform artifacts to the same GitHub Release for `v<version>`:
+  - VS Code `.vsix` (from `publish.yml`)
+  - Visual Studio `.vsix` (from `publish-ides.yml`)
+  - IntelliJ distribution `.zip` (from `publish-ides.yml`)
+
+### Centralized Release Notes
+- Release notes are maintained in `.github/release-notes-template.md`
+- All publish jobs reference the same template via `body_path`
+- To update release text, edit the template once; all platforms will use the new content
 
 ### Version Handling
 The workflow intelligently handles versioning:
@@ -82,14 +127,17 @@ vsce publish --pat YOUR_PAT_TOKEN
 ```
 .github/
 └── workflows/
-    └── publish.yml    # Main publishing workflow
+    ├── publish.yml           # VS Code publishing workflow
+    └── publish-ides.yml      # Visual Studio + IntelliJ publishing
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 1. **Missing VSCE_PAT secret**: Ensure the secret is properly configured in repository settings
-2. **Publisher not found**: Verify the publisher name in `package.json` matches your marketplace publisher
+2. **Publisher not found**: Verify the publisher name in `package.json` matches your VS Code marketplace publisher
+3. **VSIX publisher mismatch**: Ensure `VS_PUBLISHER` matches your Visual Studio Marketplace publisher ID
+4. **JetBrains token missing**: Add `JETBRAINS_TOKEN` to enable IntelliJ publishing
 3. **Version already exists**: The workflow handles this automatically by bumping the version
 4. **Test failures**: Fix failing tests before merging to main
 
@@ -100,9 +148,9 @@ You can test the workflow by:
 3. Publishing only happens on merge to `main`
 
 ## Security Notes
-- The VSCE_PAT token has publish permissions - keep it secure
-- The workflow only runs on the main branch to prevent accidental publishing
-- All tests must pass before publishing occurs
+- Keep tokens (`VSCE_PAT`, `VS_MARKETPLACE_TOKEN`, `JETBRAINS_TOKEN`) secure
+- Workflows run on pushes to `main`; publishing steps execute only if corresponding secrets are present
+- VS Code job runs tests before publishing; fix failures prior to merge
 
 ## Next Steps
 1. Configure the VSCE_PAT secret in your repository

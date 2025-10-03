@@ -7,6 +7,9 @@ Leak Lock plugin for IntelliJ IDEA brings the same scanning and remediation work
 - Parse JSON results and list findings (rule, file, line, preview)
 - Open files at the finding line
 - Run BFG cleanup with generated replacement rules and perform git maintenance
+- Toolbar actions: "Leak Lock: Open Scanner" and "Leak Lock: Scan Project"
+- Status bar indicator with live progress (install, scan, report, BFG)
+- Progress indicators in background tasks with stage messages
 
 ### Requirements
 - IntelliJ IDEA 2022.3+ (Community or Ultimate)
@@ -14,20 +17,31 @@ Leak Lock plugin for IntelliJ IDEA brings the same scanning and remediation work
 - Java Runtime (`java -version` works) for BFG
 
 ### Build & Run
-1. Open `intellij/LeakLockIntelliJ` in IntelliJ IDEA (as a Gradle project)
-2. Let IDEA import the Gradle project; ensure Kotlin plugin is installed
-3. Use Gradle task: `runIde` to launch a sandbox IDE with the plugin loaded
+Option A: One‑click via Gradle Wrapper
+```bash
+cd intellij/LeakLockIntelliJ
+./gradlew runIde   # Windows: gradlew.bat runIde
+```
+
+Option B: From IntelliJ IDEA
+1. Open `intellij/LeakLockIntelliJ` as a Gradle project
+2. Let IDEA import; ensure Kotlin plugin is installed
+3. Run Gradle task: `runIde` to launch a sandbox IDE with the plugin loaded
 4. Open the Tool Window: View → Tool Windows → Leak Lock
 
 Keyboard shortcut
 - Scan Project: Ctrl+Alt+Shift+P (Windows/Linux) or Cmd+Alt+Shift+P (macOS)
 
 ### Usage
-- Click "Install Dependencies" to verify Docker/Java and pull Nosey Parker image
-- Choose a directory (defaults to the current project base dir)
-- Run Scan and review the results table
-- Double-click a result or press "Open File" to navigate
-- Press "Run BFG + Cleanup" to rewrite git history and purge secrets
+- Toolbar: click "Leak Lock: Open Scanner" to open the tool window
+- Toolbar: click "Leak Lock: Scan Project" to immediately scan the current project base dir
+- Tools menu: both actions are available under Tools
+- In the tool window:
+  - Click "Install Dependencies" to verify Docker/Java and pull Nosey Parker image
+  - Choose a directory (defaults to project base dir)
+  - Click "Scan" and review results; progress shows in the status bar and task indicator
+  - Double-click a result or press "Open File" to navigate
+  - Click "Run BFG + Cleanup" to rewrite git history and purge secrets
 
 ### Project Layout
 ```

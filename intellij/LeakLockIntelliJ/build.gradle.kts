@@ -20,7 +20,14 @@ tasks {
         untilBuild.set(null as String?)
         changeNotes.set("Initial Leak Lock IntelliJ plugin")
     }
-    publishPlugin { enabled = false }
+    publishPlugin {
+        // Configure token/channels from environment if provided
+        val tokenProvider = providers.environmentVariable("JETBRAINS_TOKEN")
+        val channelProvider = providers.environmentVariable("JETBRAINS_CHANNEL").orElse("default")
+        token.set(tokenProvider)
+        channels.set(listOf(channelProvider.get()))
+        onlyIf { tokenProvider.isPresent }
+    }
 }
 
 dependencies {

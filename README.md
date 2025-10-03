@@ -11,7 +11,7 @@
 
 ## 🌟 Overview
 
-Leak Lock is a powerful VS Code extension that helps developers secure their repositories by:
+Leak Lock is a powerful developer tool that helps secure repositories by:
 
 - 🔍 **Scanning** git repositories for secrets, API keys, and sensitive data
 - 🛡️ **Detecting** over 100+ types of credentials using Nosey Parker
@@ -175,6 +175,25 @@ npm test
 
 ---
 
+## 🚢 CI/CD Publishing
+
+GitHub Actions build and optionally publish all three extensions:
+- VS Code: `.github/workflows/publish.yml` (requires `VSCE_PAT` secret)
+- Visual Studio (VSIX): `.github/workflows/publish-ides.yml` (requires `VS_MARKETPLACE_TOKEN`, `VS_PUBLISHER`)
+- IntelliJ: `.github/workflows/publish-ides.yml` (requires `JETBRAINS_TOKEN`, optional `JETBRAINS_CHANNEL`)
+
+See `docs/github-action-setup.md` for setup details.
+
+Tags and releases
+- A single shared tag `v<version>` is used for all platforms
+- The release for `v<version>` includes:
+  - VS Code package (.vsix)
+  - Visual Studio VSIX
+  - IntelliJ plugin distribution (.zip)
+
+Release notes
+- Centralized at `.github/release-notes-template.md` and used by all workflows
+
 ## 🧩 Visual Studio
 
 Looking for a native Visual Studio (VSIX) extension with the same functionality?
@@ -184,6 +203,10 @@ Looking for a native Visual Studio (VSIX) extension with the same functionality?
 
 The VSIX extension scans repositories via Dockerized Nosey Parker and performs BFG-based git history cleanup, similar to the VS Code extension UI/flow.
 
+- Access: Tools → Leak Lock → Open Scanner
+- Build: open `visualstudio/LeakLock.VisualStudio.sln`, build, press F5
+- Features: scan current Solution or a chosen directory, open file/line, run BFG + git cleanup
+
 ## 🧩 IntelliJ
 
 Looking for a native IntelliJ Platform plugin with the same functionality?
@@ -192,6 +215,11 @@ Looking for a native IntelliJ Platform plugin with the same functionality?
 - Project path: `intellij/LeakLockIntelliJ`
 
 The IntelliJ plugin offers a tool window that scans via Dockerized Nosey Parker and performs BFG-based git history cleanup, mirroring the core flow of the VS Code/Visual Studio extensions.
+
+- One‑click run: `cd intellij/LeakLockIntelliJ && ./gradlew runIde`
+- Toolbar actions: Leak Lock: Open Scanner, Leak Lock: Scan Project (with shield icon)
+- Status bar indicator: live progress (install, scan, report, BFG)
+- Keyboard shortcut: Scan Project → Ctrl+Alt+Shift+P (Win/Linux), Cmd+Alt+Shift+P (macOS)
 
 ## 🛡️ Security Tools
 
