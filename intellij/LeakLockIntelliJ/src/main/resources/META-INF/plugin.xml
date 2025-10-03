@@ -1,0 +1,30 @@
+<idea-plugin>
+    <id>com.leaklock.intellij</id>
+    <name>Leak Lock for IntelliJ</name>
+    <vendor email="support@leaklock.example" url="https://example.com">Leak Lock</vendor>
+    <description>Detects secrets using Nosey Parker and cleans history using BFG.</description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Leak Lock"
+                    anchor="right"
+                    factoryClass="com.leaklock.intellij.LeakLockToolWindowFactory"
+                    icon="/icons/leaklock.svg"
+                    canCloseContents="true"/>
+        <statusBarWidgetFactory implementation="com.leaklock.intellij.LeakLockStatusBarWidgetFactory"/>
+    </extensions>
+
+    <actions>
+        <action id="LeakLock.ShowToolWindow" class="com.leaklock.intellij.LeakLockToolWindowFactory$ShowAction" text="Leak Lock: Open Scanner" description="Open Leak Lock Tool Window" icon="/icons/leaklock.svg">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="MainToolbarRight" anchor="last"/>
+        </action>
+        <action id="LeakLock.ScanProject" class="com.leaklock.intellij.actions.ScanProjectAction" text="Leak Lock: Scan Project" description="Scan current project directory" icon="/icons/leaklock.svg">
+            <add-to-group group-id="MainToolbarRight" anchor="last"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift P"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift P"/>
+        </action>
+    </actions>
+</idea-plugin>

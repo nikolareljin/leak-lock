@@ -5,7 +5,7 @@
 [![Version](https://img.shields.io/badge/version-0.0.1-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
-[📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
+[📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development) • [🧩 Visual Studio](#visual-studio) • [🧩 IntelliJ](#intellij)
 
 ---
 
@@ -174,6 +174,24 @@ npm test
 ```
 
 ---
+
+## 🧩 Visual Studio
+
+Looking for a native Visual Studio (VSIX) extension with the same functionality?
+
+- See `visualstudio/README.md` for build and usage instructions.
+- Project path: `visualstudio/LeakLock.VSExtension`
+
+The VSIX extension scans repositories via Dockerized Nosey Parker and performs BFG-based git history cleanup, similar to the VS Code extension UI/flow.
+
+## 🧩 IntelliJ
+
+Looking for a native IntelliJ Platform plugin with the same functionality?
+
+- See `intellij/README.md` for build and usage instructions.
+- Project path: `intellij/LeakLockIntelliJ`
+
+The IntelliJ plugin offers a tool window that scans via Dockerized Nosey Parker and performs BFG-based git history cleanup, mirroring the core flow of the VS Code/Visual Studio extensions.
 
 ## 🛡️ Security Tools
 

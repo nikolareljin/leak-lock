@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Id="LeakLock.VSExtension" Version="0.1.0" Language="en-US" Publisher="Leak Lock" />
+    <DisplayName>Leak Lock for Visual Studio</DisplayName>
+    <Description xml:space="preserve">Detects secrets in repositories using Nosey Parker and removes them using BFG.</Description>
+    <Tags>security, secrets, scanning, git, bfg</Tags>
+    <Preview>true</Preview>
+  </Metadata>
+  <Installation InstalledByMsi="false">
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,18.0)" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[17.0,18.0)" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Enterprise" Version="[17.0,18.0)" />
+  </Installation>
+  <Dependencies>
+    <Dependency Id="Microsoft.VisualStudio.MPF.17.0" DisplayName="Visual Studio MPF 17.0" Version="[17.0,)" />
+  </Dependencies>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="Project" d:ProjectName="LeakLock.VSExtension" Path="|%CurrentProject%|" />
+  </Assets>
+</PackageManifest>
+
