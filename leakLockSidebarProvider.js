@@ -55,6 +55,10 @@ class LeakLockSidebarProvider {
                         this._showDependencyDetails = false;
                         this._updateView();
                         break;
+                    case 'openRemoveFiles':
+                        // Open the main panel in Remove Files mode
+                        vscode.commands.executeCommand('leak-lock.openRemoveFiles');
+                        break;
                 }
             },
             undefined,
@@ -259,6 +263,7 @@ class LeakLockSidebarProvider {
             ${this._getDependenciesSection()}
             ${this._getDirectorySection()}
             ${this._getScanSection()}
+            ${this._getRemoveFilesSection()}
             
             <script>
                 const vscode = acquireVsCodeApi();
@@ -285,6 +290,10 @@ class LeakLockSidebarProvider {
                 
                 function hideDependencyDetails() {
                     vscode.postMessage({ command: 'hideDependencyDetails' });
+                }
+
+                function openRemoveFiles() {
+                    vscode.postMessage({ command: 'openRemoveFiles' });
                 }
             </script>
         </body>
@@ -551,6 +560,20 @@ class LeakLockSidebarProvider {
                     ${buttonText}
                 </button>
                 ${!canScan ? '<div class="warning-text">Complete setup steps above first</div>' : scanInfo}
+            </div>
+        `;
+    }
+
+    _getRemoveFilesSection() {
+        return `
+            <div class="section">
+                <h3>🗑️ Remove Files</h3>
+                <div style="font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 8px;">
+                    Remove unwanted files from git repository
+                </div>
+                <button class="scan-button" onclick="openRemoveFiles()">
+                    🗑️ Remove files
+                </button>
             </div>
         `;
     }

@@ -32,12 +32,17 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 - **Activity Bar Integration**: Easy access via shield icon
 - **Smart Directory Selection**: Auto-detects git repositories
 - **Progress Tracking**: Real-time scanning and remediation progress
+- **Remove Files Flow**: Sidebar button opens guided removal UI in main area
+ - **Path-Based Safe Removal**: Exact path deletion across branches with preview
 
 ### 🤖 **Automated Workflow**
 - **One-Click Dependency Install**: Docker, Nosey Parker, BFG tool
 - **Intelligent Scanning**: Context-aware repository analysis
 - **Guided Remediation**: Step-by-step secret removal process
 - **Git History Cleanup**: Automatic history rewriting and cleanup
+- **Granular Deletion Feedback**: Per-item BFG flags and patterns preview
+- **Preview Before Delete**: Show exact matches across branches, remotes, and tags for path-based deletions
+ - **Auto-Fetch Remotes**: Fetches all remotes and tags before preview and execution
 
 ---
 
@@ -71,6 +76,19 @@ code --install-extension leak-lock-0.0.1.vsix
 - **Select Secrets**: Choose which ones to remove
 - **Generate Commands**: Automatic BFG command generation
 - **Execute Cleanup**: One-click git history rewriting
+
+---
+
+### 6. Remove Unwanted Files (New)
+- Open from sidebar: click "🗑️ Remove files"
+- Select repository (git root)
+- Choose multiple files and/or directories
+- Option A (fast): BFG, name-based grouping (single or per-item)
+- Option B (safe): Git path-based, exact paths across branches
+- Click "🔎 Preview matches" for path-based mode to see exact files across branches, remotes, and tags
+- Remotes are fetched automatically to avoid missing references
+- Prepare and review the generated command
+- Final step (red): confirm to run (BFG or Git) and rewrite history
 
 ---
 
@@ -139,6 +157,10 @@ leak-lock/
 - Activity bar sidebar integration
 - Welcome interface and launch button
 
+See also:
+- docs/USER_GUIDE.md — full user guide
+- docs/REMOVE_FILES.md — Remove Files flow details
+
 ---
 
 ## 🛠️ Development
@@ -186,8 +208,15 @@ npm test
 ### **BFG Repo Cleaner**
 - **Purpose**: Git history rewriting and cleanup
 - **Tool**: Java-based command line utility
-- **Capabilities**: Remove secrets from entire git history
+- **Capabilities**: Remove secrets from entire git history, delete files/folders by name
 - **Integration**: Automated command generation and execution
+- **Note**: Deletion matches by filename/folder name across history (not full path)
+
+### **Git (filter-branch)**
+- **Purpose**: Exact path-based history rewriting across branches
+- **Command**: `git filter-branch --index-filter 'git rm -r --cached --ignore-unmatch <path> ...' -- --all`
+- **Preview**: Lists per-branch matches before running
+- **Integration**: Alternative path-safe removal flow in main panel
 
 ---
 
@@ -197,6 +226,7 @@ npm test
 - `leak-lock.openPanel` - Open main scanner interface
 - `leak-lock.scanRepository` - Start repository scanning
 - `leak-lock.fixSecrets` - Open remediation interface
+- `leak-lock.openRemoveFiles` - Open Remove Files flow
 - `leak-lock.cleanup` - Clean up all dependencies
 
 ### **Dependencies**
