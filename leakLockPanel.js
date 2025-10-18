@@ -275,6 +275,23 @@ class LeakLockPanel {
         this._scanProgress = null;
         this._dependenciesInstalled = false;
         this._panel = null;
+        this._lastFetchAt = null;
+
+        // View mode: 'scan' | 'removeFiles'
+        this._viewMode = 'scan';
+        this._removalState = {
+            repoDir: null,
+            targets: [], // { path, type: 'file'|'directory', base }
+            preparedCommand: null,
+            preparedMode: null,
+            preparing: false,
+            running: false,
+            combineMode: 'combined', // 'combined' | 'individual'
+            details: [], // per-target info after prepare
+            deletionMode: 'bfg', // 'bfg' | 'git'
+            preview: null, // { branches/remotes/tags }
+            lastFetchAt: null
+        };
     }
 
     static get currentPanel() {
@@ -333,6 +350,37 @@ class LeakLockPanel {
                     case 'openSecurityGuide':
                         LeakLockPanel.currentPanel._openSecurityGuide();
                         break;
+                    // Remove Files flow
+                    case 'removeFiles.selectRepo':
+                        LeakLockPanel.currentPanel._selectRepoForRemoval();
+                        break;
+                    case 'removeFiles.selectTargets':
+                        LeakLockPanel.currentPanel._selectTargetsForRemoval();
+                        break;
+                    case 'removeFiles.prepare':
+                        LeakLockPanel.currentPanel._prepareBfgRemovalCommand();
+                        break;
+                    case 'removeFiles.run':
+                        LeakLockPanel.currentPanel._runBfgRemoval();
+                        break;
+                    case 'removeFiles.setCombineMode':
+                        LeakLockPanel.currentPanel._setCombineMode(message.mode);
+                        break;
+                    case 'removeFiles.setDeletionMode':
+                        LeakLockPanel.currentPanel._setDeletionMode(message.mode);
+                        break;
+                    case 'removeFiles.preview':
+                        LeakLockPanel.currentPanel._previewMatchesAcrossBranches();
+                        break;
+                    case 'removeFiles.prepareGit':
+                        LeakLockPanel.currentPanel._prepareGitRemovalCommand();
+                        break;
+                    case 'removeFiles.runGit':
+                        LeakLockPanel.currentPanel._runGitRemoval();
+                        break;
+                    case 'removeFiles.refetch':
+                        LeakLockPanel.currentPanel._manualRefetch();
+                        break;
                 }
             },
             undefined,
@@ -342,6 +390,11 @@ class LeakLockPanel {
 
     _getHtmlForWebview() {
         const hasResults = this._scanResults.length > 0;
+
+        // If in Remove Files mode, render that UI instead
+        if (this._viewMode === 'removeFiles') {
+            return this._getRemoveFilesHtml();
+        }
 
         return `
             <!DOCTYPE html>
@@ -677,6 +730,9 @@ class LeakLockPanel {
                             command: 'openSecurityGuide'
                         });
                     }
+                    function refetchNow() {
+                        vscode.postMessage({ command: 'removeFiles.refetch' });
+                    }
                     
                     // Safe event delegation for file links
                     document.addEventListener('click', function(event) {
@@ -694,6 +750,548 @@ class LeakLockPanel {
             </body>
             </html>
         `;
+    }
+
+    // Public: switch to Remove Files UI
+    showRemoveFilesUI() {
+        this._viewMode = 'removeFiles';
+        // Preselect workspace repo if available and looks like a git repo
+        try {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (workspaceFolder) {
+                const candidate = workspaceFolder.uri.fsPath;
+                if (fs.existsSync(path.join(candidate, '.git'))) {
+                    this._removalState.repoDir = candidate;
+                }
+            }
+        } catch {}
+        this._updateWebviewContent();
+    }
+
+    _getRemoveFilesHtml() {
+        const repoDir = this._removalState.repoDir ? escapeHtml(this._removalState.repoDir) : 'No repository selected';
+        const targets = this._removalState.targets;
+        const hasTargets = targets.length > 0;
+        const prepared = this._removalState.preparedCommand;
+        const lastFetchISO = this._removalState.lastFetchAt;
+        let isStale = true;
+        try {
+            if (lastFetchISO) {
+                const last = new Date(lastFetchISO).getTime();
+                isStale = (Date.now() - last) > (15 * 60 * 1000);
+            }
+        } catch {}
+        const fetchColor = isStale ? 'var(--vscode-inputValidation-warningForeground)' : 'var(--vscode-descriptionForeground)';
+        const fetchNote = isStale ? ' (stale)' : '';
+        const fetchTooltip = isStale
+            ? 'Remote refs may be outdated (older than 15 minutes). Fetch to ensure preview and deletions include latest branches and tags.'
+            : 'Remotes fetched recently; preview reflects current branches and tags.';
+
+        const targetsList = hasTargets ? `
+            <ul style="margin: 8px 0 0 0; padding-left: 18px;">
+                ${targets.map(t => `<li><code>${escapeHtml(t.path)}</code> <span style=\"background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding: 0 6px; border-radius: 10px; font-size: 0.8em;\">${t.type}</span></li>`).join('')}
+            </ul>
+        ` : '<div style="color: var(--vscode-descriptionForeground);">No files or directories selected.</div>';
+
+        const preparedBlock = prepared ? `
+            <div id="prepared-command" class="manual-command" style="margin-top: 8px;">${escapeHtml(prepared)}</div>
+            <div style="margin-top:6px;"><button class="button" onclick="copyPrepared()">📋 Copy command</button></div>
+        ` : '';
+
+        return `
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Leak Lock - Remove Files</title>
+                <style>
+                    body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background-color: var(--vscode-editor-background); padding: 20px; margin: 0; }
+                    .section { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+                    .h1 { font-size: 1.3em; margin: 0 0 10px 0; }
+                    .button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 8px 14px; border-radius: 4px; cursor: pointer; }
+                    .button:hover { background: var(--vscode-button-hoverBackground); }
+                    .hint { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+                    .manual-command { background: var(--vscode-textCodeBlock-background); padding: 10px; border-radius: 4px; font-family: monospace; word-break: break-all; }
+                    .danger { color: var(--vscode-errorForeground); font-weight: bold; }
+                    .danger-section { border: 1px solid var(--vscode-inputValidation-errorBorder); background: var(--vscode-inputValidation-errorBackground); padding: 12px; border-radius: 6px; }
+                    .danger-button { background: #c62828; color: #fff; border: none; padding: 10px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; }
+                    .danger-button:hover { background: #b71c1c; }
+                </style>
+            </head>
+            <body>
+                <div class="section">
+                    <div class="h1">🗑️ Remove Unwanted Files</div>
+                    <div class="hint">Remove unwanted files from git repository</div>
+                </div>
+
+                <div class="section">
+                    <div class="h1">1) Select Repository</div>
+                    <div class="hint" style="margin-bottom: 8px;">Choose the git repository root.</div>
+                    <div style="font-family: monospace; background: var(--vscode-textCodeBlock-background); padding: 6px; border-radius: 4px;">${repoDir}</div>
+                    <div style="margin-top: 6px; font-size: 0.9em; color: ${fetchColor}; display:flex; align-items:center; gap:8px;">
+                        <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${this._removalState.lastFetchAt ? escapeHtml(new Date(this._removalState.lastFetchAt).toLocaleString()) : 'never'}${fetchNote}</span>
+                        <button class="button" style="padding:4px 8px;" onclick="refetchNow()" ${!this._removalState.repoDir ? 'disabled' : ''}>⟳ Refetch now</button>
+                    </div>
+                    <div style="margin-top: 8px;"><button class="button" onclick="selectRepoDir()">📂 Select repository directory</button></div>
+                </div>
+
+                <div class="section">
+                    <div class="h1">2) Select Files or Directories</div>
+                    <div class="hint">Select one or more files or directories within the repository.</div>
+                    ${targetsList}
+                    <div style="margin-top: 8px;"><button class="button" onclick="selectTargets()">➕ Select files/directories</button></div>
+                </div>
+
+                <div class="section">
+                    <div class="h1">3) Prepare the BFG command</div>
+                    <div class="hint">Choose how to group deletions, then generate the command.</div>
+                    <div style="margin: 8px 0; display: flex; gap: 16px; align-items: center;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="radio" name="combineMode" value="combined" ${this._removalState.combineMode === 'combined' ? 'checked' : ''} onchange="setCombineMode('combined')"> Single combined command
+                        </label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="radio" name="combineMode" value="individual" ${this._removalState.combineMode === 'individual' ? 'checked' : ''} onchange="setCombineMode('individual')"> One command per item
+                        </label>
+                    </div>
+                    <div style="margin-top: 8px;"><button class="button" onclick="prepareCommand()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>⚙️ Prepare the bfg command</button></div>
+                    ${preparedBlock}
+                    ${prepared ? `
+                        <div style=\"margin-top:12px;\">
+                            <div class=\"h1\" style=\"font-size:1.1em;\">Deletion details</div>
+                            <div class=\"hint\">BFG matches by name across history. Each target below shows the flag and pattern used.</div>
+                            <ul style=\"margin:8px 0 0 0; padding-left:18px;\">
+                                ${this._removalState.details.map(d => `<li><code>${escapeHtml(d.display)}</code> → <span style=\\\"background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding: 0 6px; border-radius: 10px; font-size: 0.8em;\\\">${d.flag}</span> <code>${escapeHtml(d.pattern)}</code></li>`).join('')}
+                            </ul>
+                        </div>
+                    ` : ''}
+                </div>
+
+                <div class="section">
+                    <div class="h1">Alternative: Path-based deletion (Git)</div>
+                    <div class="hint">Exact repo paths across branches, remotes and tags; preview before running.</div>
+                    <div style="margin: 8px 0;"><button class="button" onclick="previewMatches()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>🔎 Preview matches (branches, remotes, tags)</button></div>
+                    ${this._removalState.preview ? `
+                        <div style=\"margin-top:8px;\">\n                            <div class=\"h1\" style=\"font-size:1.1em;\">Local branches</div>
+                            ${this._removalState.preview.branches.length === 0 ? '<div class=\\\'hint\\\'>No matches on local branches.</div>' : ''}
+                            ${this._removalState.preview.branches.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
+                            <div class=\"h1\" style=\"font-size:1.1em; margin-top:10px;\">Remote branches</div>
+                            ${this._removalState.preview.remotes.length === 0 ? '<div class=\\\'hint\\\'>No matches on remote branches.</div>' : ''}
+                            ${this._removalState.preview.remotes.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
+                            <div class=\"h1\" style=\"font-size:1.1em; margin-top:10px;\">Tags</div>
+                            ${this._removalState.preview.tags.length === 0 ? '<div class=\\\'hint\\\'>No matches on tags.</div>' : ''}
+                            ${this._removalState.preview.tags.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
+                        </div>
+                    ` : ''}
+                    <div style="margin-top: 8px;"><button class="button" onclick="prepareGit()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>⚙️ Prepare the git command</button></div>
+                    ${preparedBlock}
+                </div>
+
+                <div class="section danger-section">
+                    <div class="h1 danger">Final Step: Rewrite Git History (BFG)</div>
+                    <div class="hint" style="margin-bottom: 8px;">This will permanently rewrite git history using BFG.</div>
+                    <button class="danger-button" onclick="runRemoval()" ${!prepared || this._removalState.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Confirm and run BFG removal</button>
+                </div>
+                <div class="section danger-section">
+                    <div class="h1 danger">Final Step: Rewrite Git History (Git)</div>
+                    <div class="hint" style="margin-bottom: 8px;">This will permanently rewrite git history using git filter-branch on exact paths across branches.</div>
+                    <button class="danger-button" onclick="runPathRemoval()" ${!prepared || this._removalState.preparedMode !== 'git' ? 'disabled' : ''}>❗ Confirm and run path-based removal</button>
+                </div>
+
+                <script>
+                    const vscode = acquireVsCodeApi();
+                    function selectRepoDir() { vscode.postMessage({ command: 'removeFiles.selectRepo' }); }
+                    function selectTargets() { vscode.postMessage({ command: 'removeFiles.selectTargets' }); }
+                    function prepareCommand() { vscode.postMessage({ command: 'removeFiles.prepare' }); }
+                    function setCombineMode(mode) { vscode.postMessage({ command: 'removeFiles.setCombineMode', mode }); }
+                    function previewMatches() { vscode.postMessage({ command: 'removeFiles.preview' }); }
+                    function prepareGit() { vscode.postMessage({ command: 'removeFiles.prepareGit' }); }
+                    function refetchNow() { vscode.postMessage({ command: 'removeFiles.refetch' }); }
+                    function runRemoval() { vscode.postMessage({ command: 'removeFiles.run' }); }
+                    function runPathRemoval() { vscode.postMessage({ command: 'removeFiles.runGit' }); }
+                    function copyPrepared() {
+                        try {
+                            const el = document.getElementById('prepared-command');
+                            if (!el) return;
+                            const text = el.innerText || el.textContent || '';
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(text);
+                            } else {
+                                const ta = document.createElement('textarea');
+                                ta.value = text;
+                                document.body.appendChild(ta);
+                                ta.select();
+                                document.execCommand('copy');
+                                document.body.removeChild(ta);
+                            }
+                        } catch (e) {}
+                    }
+                </script>
+            </body>
+            </html>
+        `;
+    }
+
+    async _selectRepoForRemoval() {
+        const options = { canSelectFolders: true, canSelectFiles: false, canSelectMany: false, openLabel: 'Select Git Repository Root' };
+        const result = await vscode.window.showOpenDialog(options);
+        if (result && result[0]) {
+            const repoPath = result[0].fsPath;
+            try {
+                const validated = validatePath(repoPath);
+                if (!fs.existsSync(path.join(validated, '.git'))) {
+                    vscode.window.showWarningMessage('Selected folder does not contain a .git directory.');
+                }
+                this._removalState.repoDir = validated;
+                this._removalState.preparedCommand = null;
+            } catch (e) {
+                vscode.window.showErrorMessage(`Invalid repository path: ${e.message}`);
+            }
+            this._updateWebviewContent();
+        }
+    }
+
+    async _selectTargetsForRemoval() {
+        if (!this._removalState.repoDir) {
+            vscode.window.showErrorMessage('Please select a repository first.');
+            return;
+        }
+        const options = { canSelectFolders: true, canSelectFiles: true, canSelectMany: true, openLabel: 'Select files and/or directories to remove' };
+        const result = await vscode.window.showOpenDialog(options);
+        if (result && result.length > 0) {
+            const repo = this._removalState.repoDir;
+            const newTargets = [];
+            for (const uri of result) {
+                try {
+                    const abs = validatePath(uri.fsPath);
+                    const rel = path.relative(repo, abs);
+                    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+                        vscode.window.showWarningMessage(`Skipping selection outside repository: ${abs}`);
+                        continue;
+                    }
+                    const stat = fs.statSync(abs);
+                    const type = stat.isDirectory() ? 'directory' : 'file';
+                    newTargets.push({ path: rel.replace(/\\/g, '/'), type, base: path.basename(abs) });
+                } catch (e) {
+                    vscode.window.showWarningMessage(`Skipping invalid selection: ${uri.fsPath} (${e.message})`);
+                }
+            }
+            const existing = new Map(this._removalState.targets.map(t => [t.path, t]));
+            for (const t of newTargets) existing.set(t.path, t);
+            this._removalState.targets = Array.from(existing.values());
+            this._removalState.preparedCommand = null;
+            this._updateWebviewContent();
+        }
+    }
+
+    _escapeRegex(str) {
+        // Escape regex special chars: . * + ? ^ $ { } ( ) | [ ] \
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    _buildBfgCommand(repoDir, targets) {
+        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const fileNames = targets.filter(t => t.type === 'file').map(t => t.base);
+        const dirNames = targets.filter(t => t.type === 'directory').map(t => t.base);
+
+        const args = [];
+        if (fileNames.length > 0) {
+            const fileRegex = fileNames.map(n => this._escapeRegex(n)).join('|').replace(/"/g, '\\"');
+            args.push(`--delete-files "${fileRegex}"`);
+        }
+        if (dirNames.length > 0) {
+            const dirRegex = dirNames.map(n => this._escapeRegex(n)).join('|').replace(/"/g, '\\"');
+            args.push(`--delete-folders "${dirRegex}"`);
+        }
+        const bfgCmd = `java -jar \"${bfgPath}\" ${args.join(' ')} \"${repoDir}\"`;
+        const full = `cd \"${repoDir}\" && ${bfgCmd} && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
+        return full;
+    }
+
+    async _prepareBfgRemovalCommand() {
+        const repo = this._removalState.repoDir;
+        const targets = this._removalState.targets;
+        if (!repo || !targets || targets.length === 0) {
+            vscode.window.showErrorMessage('Select a repository and at least one file or directory.');
+            return;
+        }
+        try {
+            const validatedRepo = validatePath(repo);
+            this._removalState.preparing = true;
+            this._updateWebviewContent();
+            await this._gitFetchAll(validatedRepo);
+            const mode = this._removalState.combineMode;
+            let cmd;
+            if (mode === 'combined') {
+                cmd = this._buildBfgCommand(validatedRepo, targets);
+            } else {
+                cmd = this._buildIndividualBfgCommands(validatedRepo, targets);
+            }
+            // Build details for granular feedback
+            this._removalState.details = targets.map(t => ({
+                display: t.path,
+                flag: t.type === 'directory' ? '--delete-folders' : '--delete-files',
+                pattern: t.base
+            }));
+            this._removalState.preparedCommand = cmd;
+            this._removalState.preparedMode = 'bfg';
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to prepare command: ${e.message}`);
+        } finally {
+            this._removalState.preparing = false;
+            this._updateWebviewContent();
+        }
+    }
+
+    _setCombineMode(mode) {
+        if (mode !== 'combined' && mode !== 'individual') return;
+        this._removalState.combineMode = mode;
+        // Invalidate prepared command to force regeneration with new mode
+        this._removalState.preparedCommand = null;
+        this._removalState.preparedMode = null;
+        this._updateWebviewContent();
+    }
+
+    _shellEscapeDoubleQuotes(s) {
+        return String(s).replace(/"/g, '\\"');
+    }
+
+    _buildIndividualBfgCommands(repoDir, targets) {
+        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const parts = [];
+        parts.push(`cd \"${this._shellEscapeDoubleQuotes(repoDir)}\"`);
+        for (const t of targets) {
+            const base = this._shellEscapeDoubleQuotes(t.base);
+            const flag = t.type === 'directory' ? '--delete-folders' : '--delete-files';
+            parts.push(`java -jar \"${this._shellEscapeDoubleQuotes(bfgPath)}\" ${flag} \"${base}\" \"${this._shellEscapeDoubleQuotes(repoDir)}\"`);
+        }
+        // Run cleanup once at the end
+        parts.push('git reflog expire --expire=now --all');
+        parts.push('git gc --prune=now --aggressive');
+        return parts.join(' && ');
+    }
+
+    _setDeletionMode(mode) {
+        if (mode !== 'bfg' && mode !== 'git') return;
+        this._removalState.deletionMode = mode;
+        // Clear previous prepared command/preview when switching
+        this._removalState.preparedCommand = null;
+        this._removalState.preparedMode = null;
+        this._updateWebviewContent();
+    }
+
+    async _gitFetchAll(repoPath) {
+        try {
+            const util = require('util');
+            const execAsync = util.promisify(exec);
+            const repoEsc = repoPath.replace(/"/g, '\"');
+            await execAsync(`cd "${repoEsc}" && git fetch --all --tags --prune`);
+            const ts = new Date().toISOString();
+            this._removalState.lastFetchAt = ts;
+            this._lastFetchAt = ts;
+            this._updateWebviewContent();
+        } catch (e) {
+            console.warn('git fetch failed or no remotes:', e.message);
+        }
+    }
+
+
+    async _previewMatchesAcrossBranches() {
+        const repo = this._removalState.repoDir;
+        const targets = this._removalState.targets;
+        if (!repo || !targets || targets.length === 0) {
+            vscode.window.showErrorMessage('Select a repository and at least one file or directory.');
+            return;
+        }
+        try {
+            const util = require('util');
+            const execAsync = util.promisify(exec);
+            const repoEsc = repo.replace(/"/g, '\\"');
+            // List refs
+            const { stdout: brOut } = await execAsync(`cd "${repoEsc}" && git for-each-ref --format='%(refname:short)' refs/heads`);
+            const { stdout: rmOut } = await execAsync(`cd "${repoEsc}" && git for-each-ref --format='%(refname:short)' refs/remotes`);
+            const { stdout: tgOut } = await execAsync(`cd "${repoEsc}" && git for-each-ref --format='%(refname:short)' refs/tags`);
+            const branches = brOut.split('\n').map(s => s.trim()).filter(Boolean);
+            const remotes = rmOut.split('\n').map(s => s.trim()).filter(Boolean).filter(n => !/\bHEAD$/.test(n));
+            const tags = tgOut.split('\n').map(s => s.trim()).filter(Boolean);
+            const pathspecs = targets.map(t => t.type === 'directory' ? `${t.path.replace(/"/g, '\\"')}/` : t.path.replace(/"/g, '\\"'));
+            const results = [];
+            for (const br of branches) {
+                try {
+                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${br.replace(/"/g, '\\"')}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
+                    results.push({ name: br, files });
+                } catch (e) {
+                    results.push({ name: br, files: [] });
+                }
+            }
+            const remoteResults = [];
+            for (const rb of remotes) {
+                try {
+                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${rb.replace(/"/g, '\\"')}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
+                    remoteResults.push({ name: rb, files });
+                } catch (e) {
+                    remoteResults.push({ name: rb, files: [] });
+                }
+            }
+            const tagResults = [];
+            for (const tag of tags) {
+                try {
+                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${tag.replace(/"/g, '\\"')}^{}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
+                    tagResults.push({ name: tag, files });
+                } catch (e) {
+                    tagResults.push({ name: tag, files: [] });
+                }
+            }
+            this._removalState.preview = { branches: results, remotes: remoteResults, tags: tagResults };
+            this._updateWebviewContent();
+        } catch (e) {
+            vscode.window.showErrorMessage(`Preview failed: ${e.message}`);
+        }
+    }
+
+    async _manualRefetch() {
+        // Determine best repo path available
+        let repo = this._removalState.repoDir || this._selectedDirectory;
+        if (!repo && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+            repo = vscode.workspace.workspaceFolders[0].uri.fsPath;
+        }
+        if (!repo) {
+            vscode.window.showErrorMessage('Select a repository or open a workspace first.');
+            return;
+        }
+        try {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Fetching remotes...',
+                cancellable: false
+            }, async () => {
+                await this._gitFetchAll(repo);
+            });
+            vscode.window.showInformationMessage('Fetch complete.');
+        } catch (e) {
+            vscode.window.showWarningMessage(`Fetch encountered issues: ${e.message}`);
+        }
+    }
+
+    _buildGitFilterBranchCommand(repoDir, targets) {
+        const repoEsc = repoDir.replace(/"/g, '\\"');
+        const rmCmds = targets.map(t => {
+            const p = t.path.replace(/"/g, '\\"');
+            return `git rm -r --cached --ignore-unmatch \"${p}\"`;
+        }).join('; ');
+        const indexFilter = rmCmds.length ? rmCmds : 'echo no-op';
+        const cmd = [
+            `cd \"${repoEsc}\"`,
+            `git filter-branch --force --index-filter \"${indexFilter}\" --prune-empty --tag-name-filter cat -- --all`,
+            `git for-each-ref --format=\"delete %(refname)\" refs/original/ | git update-ref --stdin`,
+            `git reflog expire --expire=now --all`,
+            `git gc --prune=now --aggressive`
+        ].join(' && ');
+        return cmd;
+    }
+
+    async _prepareGitRemovalCommand() {
+        const repo = this._removalState.repoDir;
+        const targets = this._removalState.targets;
+        if (!repo || !targets || targets.length === 0) {
+            vscode.window.showErrorMessage('Select a repository and at least one file or directory.');
+            return;
+        }
+        try {
+            const validatedRepo = validatePath(repo);
+            this._removalState.preparing = true;
+            this._updateWebviewContent();
+            await this._gitFetchAll(validatedRepo);
+            const cmd = this._buildGitFilterBranchCommand(validatedRepo, targets);
+            this._removalState.preparedCommand = cmd;
+            this._removalState.preparedMode = 'git';
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to prepare git command: ${e.message}`);
+        } finally {
+            this._removalState.preparing = false;
+            this._updateWebviewContent();
+        }
+    }
+
+    async _runGitRemoval() {
+        const repo = this._removalState.repoDir;
+        const cmd = this._removalState.preparedCommand;
+        if (!repo || !cmd || this._removalState.preparedMode !== 'git') {
+            vscode.window.showErrorMessage('Prepare the git command first.');
+            return;
+        }
+        const proceed = await vscode.window.showWarningMessage(
+            '⚠️ This will permanently rewrite git history using filter-branch to remove the selected paths across all branches. Ensure you have a backup.',
+            { modal: true },
+            'Proceed',
+            'Cancel'
+        );
+        if (proceed !== 'Proceed') return;
+
+        const util = require('util');
+        const execAsync = util.promisify(exec);
+        try {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Running path-based removal (git filter-branch)...',
+                cancellable: false,
+            }, async (progress) => {
+                progress.report({ increment: 10, message: 'Fetching remotes...' });
+                await this._gitFetchAll(repo);
+                progress.report({ increment: 30, message: 'Rewriting history...' });
+                await execAsync(cmd);
+                progress.report({ increment: 60, message: 'Cleanup complete' });
+            });
+            await vscode.window.showInformationMessage('✅ Path-based removal complete. Review changes and force-push if needed.');
+        } catch (e) {
+            vscode.window.showErrorMessage(`Path-based removal failed: ${e.message}`);
+        }
+    }
+
+    async _runBfgRemoval() {
+        const repo = this._removalState.repoDir;
+        const cmd = this._removalState.preparedCommand;
+        if (!repo || !cmd) {
+            vscode.window.showErrorMessage('Nothing to run. Prepare the command first.');
+            return;
+        }
+
+        const proceed = await vscode.window.showWarningMessage(
+            '⚠️ This will permanently rewrite git history to remove the selected files/directories. Ensure you have a backup.',
+            { modal: true },
+            'Proceed',
+            'Cancel'
+        );
+        if (proceed !== 'Proceed') return;
+
+        this._removalState.running = true;
+        this._updateWebviewContent();
+
+        const util = require('util');
+        const execAsync = util.promisify(exec);
+        try {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Running BFG to remove files...',
+                cancellable: false,
+            }, async (progress) => {
+                progress.report({ increment: 10, message: 'Fetching remotes...' });
+                await this._gitFetchAll(repo);
+                progress.report({ increment: 20, message: 'Executing BFG...' });
+                try { await execAsync(cmd); } catch (e) { console.warn('BFG run had issues:', e.message); }
+                progress.report({ increment: 60, message: 'Cleaning git history...' });
+            });
+
+            await vscode.window.showInformationMessage('✅ Removal complete. Review changes and force-push if needed.');
+        } catch (e) {
+            vscode.window.showErrorMessage(`Removal failed: ${e.message}`);
+        } finally {
+            this._removalState.running = false;
+            this._updateWebviewContent();
+        }
     }
 
     // Method to start scan from sidebar
@@ -731,6 +1329,21 @@ class LeakLockPanel {
             info: '#42a5f5',
             warning: '#ff9800'
         };
+
+        // Fetch status for secrets cleanup actions
+        const lastFetchISO = this._lastFetchAt;
+        let isStaleFetch = true;
+        try {
+            if (lastFetchISO) {
+                const last = new Date(lastFetchISO).getTime();
+                isStaleFetch = (Date.now() - last) > (15 * 60 * 1000);
+            }
+        } catch {}
+        const fetchColor = isStaleFetch ? 'var(--vscode-inputValidation-warningForeground)' : 'var(--vscode-descriptionForeground)';
+        const fetchNote = isStaleFetch ? ' (stale)' : '';
+        const fetchTooltip = isStaleFetch
+            ? 'Remote refs may be outdated (older than 15 minutes). Fetch to ensure cleanup considers latest branches and tags.'
+            : 'Remotes fetched recently; cleanup reflects current branches and tags.';
 
         const resultsRows = this._scanResults.map((result, index) => {
             const isDependency = result.isDependency;
@@ -807,6 +1420,10 @@ class LeakLockPanel {
         return `
             <div class="scan-section">
                 <h2>🔍 Scan Results</h2>
+                <div style="margin:6px 0 10px 0; font-size:0.9em; color:${fetchColor}; display:flex; align-items:center; gap:8px;">
+                    <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${this._lastFetchAt ? escapeHtml(new Date(this._lastFetchAt).toLocaleString()) : 'never'}${fetchNote}</span>
+                    <button style="padding:4px 8px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; cursor:pointer;" onclick="refetchNow()">⟳ Refetch now</button>
+                </div>
                 <div style="margin-bottom: 15px;">
                     <strong>Found ${this._scanResults.length} potential secrets:</strong>
                     <div style="margin-top: 8px;">
@@ -1874,7 +2491,10 @@ class LeakLockPanel {
 
                 fs.writeFileSync(replacementsFile, replacementLines);
 
-                progress.report({ increment: 20, message: "Running BFG tool..." });
+                progress.report({ increment: 10, message: "Fetching remotes..." });
+                await this._gitFetchAll(scanPath);
+
+                progress.report({ increment: 10, message: "Running BFG tool..." });
 
                 // Run BFG command
                 const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');

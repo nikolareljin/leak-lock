@@ -45,6 +45,10 @@
         "icon": "$(shield)"
       },
       {
+        "command": "leak-lock.openRemoveFiles",
+        "title": "Open Remove Files"
+      },
+      {
         "command": "leak-lock.cleanup",
         "title": "Clean Up Leak Lock Dependencies"
       }

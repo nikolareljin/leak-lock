@@ -131,6 +131,51 @@ The results appear in a detailed table with the following columns:
 
 ---
 
+## 🗑️ Remove Unwanted Files (New)
+
+Use this guided flow to remove files or directories from your repository history.
+
+### Open the Flow
+
+- In the sidebar, click "🗑️ Remove files"
+- The main panel switches to the Remove Files interface
+
+### Steps
+
+1) Select repository
+- Choose the git repository root directory
+
+2) Select files and/or directories
+- Multi-select is supported
+- Selections must be within the chosen repository
+
+3) Choose removal mode
+- Name-based (BFG): Fast; matches by filename/folder name
+- Path-based (Git): Exact paths; safer when duplicates exist
+
+4) Prepare the command
+- BFG mode: choose grouping (single or per-item) and click "⚙️ Prepare the bfg command"
+- Git mode: click "🔎 Preview matches (branches, remotes, tags)" to see exact files per ref, then "⚙️ Prepare the git command"
+   - The extension automatically fetches remotes and tags before preview/running to avoid missing refs.
+
+5) Granular deletion feedback
+- BFG mode: per selection shows the flag used and name pattern
+- Git mode: shows branch-by-branch exact matches before running
+  - Note: BFG matches by filename/folder name across history; Git mode uses exact repo-relative paths
+
+6) Confirm and run
+- Final steps are highlighted in red
+- Click the appropriate button for BFG or Git to execute and cleanup
+- After completion, review changes and force-push if needed
+
+### Notes and Limitations
+
+- BFG’s deletion semantics are name-based; it does not support full path deletion
+- Directory deletions remove any folder with the given name throughout history
+- Consider running on a backup first and coordinate force-push with your team
+
+---
+
 ## 🎛️ Advanced Features
 
 ### Changing Scan Directory

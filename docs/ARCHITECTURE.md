@@ -31,6 +31,7 @@ Leak Lock follows a modular architecture with clear separation of concerns betwe
 - Results display and processing
 - BFG tool integration
 - User interaction handling
+ - Remove Files flow (repo + file/dir selection, BFG preparation, confirmation)
 ```
 
 **Key Methods:**
@@ -157,6 +158,13 @@ const cleanupCommands = [
     `git gc --prune=now --aggressive`
 ];
 ```
+
+// BFG command generation for file/folder removal
+// Combined mode (single command):
+//   java -jar bfg.jar --delete-files "name1|name2" --delete-folders "dir1|dir2" "<repo>"
+// Individual mode (per-item commands):
+//   java -jar bfg.jar --delete-files "name1" "<repo>" && java -jar bfg.jar --delete-folders "dir1" "<repo>" && ...
+// Note: BFG matches by name across history (not full paths)
 
 ## 📊 State Management
 

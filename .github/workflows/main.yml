@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - master
+permissions:
+  contents: read
 
 jobs:
 
@@ -27,6 +29,9 @@ jobs:
     # - name: Build
     #   run: npm run build
 
+    - name: Mask tokens
+      run: |
+        echo "::add-mask::${{ secrets.VSCE_TOKEN }}"
     - name: Publish
       env:
         VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}

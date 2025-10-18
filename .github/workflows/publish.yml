@@ -11,6 +11,8 @@ on:
     branches: [ main ]
     types: [ closed ]
 
+  # default permissions remain minimal; elevate per-job
+
 jobs:
   # Job to test the extension before publishing
   test:
@@ -45,13 +47,22 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'nikolareljin/leak-lock'
+    permissions:
+      contents: write
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Fetch all history for version calculation
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mask tokens
+        run: |
+          echo "::add-mask::${{ secrets.GITHUB_TOKEN }}"
+          echo "::add-mask::${{ secrets.VSCE_PAT }}"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -179,12 +190,16 @@ jobs:
 
       - name: Create Git Tag
         if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           FINAL_VERSION=${{ steps.new_version.outputs.version || steps.version.outputs.version }}
           echo "Creating git tag v${FINAL_VERSION}"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git tag "v${FINAL_VERSION}"
+          # Ensure remote is authenticated with GITHUB_TOKEN for pushing tags
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "v${FINAL_VERSION}"
 
       - name: Create GitHub Release
