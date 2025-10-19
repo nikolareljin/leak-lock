@@ -192,12 +192,12 @@ function activate(context) {
 	});
 
 	// Register command to open Remove Files flow
-	const openRemoveFilesCommand = vscode.commands.registerCommand('leak-lock.openRemoveFiles', function () {
+	const openRemoveFilesCommand = vscode.commands.registerCommand('leak-lock.openRemoveFiles', function (options) {
 		LeakLockPanel.createOrShow(context.extensionUri);
 		// Ensure panel is initialized before switching mode
 		setTimeout(() => {
 			if (LeakLockPanel.currentPanel && typeof LeakLockPanel.currentPanel.showRemoveFilesUI === 'function') {
-				LeakLockPanel.currentPanel.showRemoveFilesUI();
+				LeakLockPanel.currentPanel.showRemoveFilesUI(options?.directory);
 			}
 		}, 50);
 	});

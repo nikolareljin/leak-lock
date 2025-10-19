@@ -753,18 +753,27 @@ class LeakLockPanel {
     }
 
     // Public: switch to Remove Files UI
-    showRemoveFilesUI() {
+    showRemoveFilesUI(directory) {
         this._viewMode = 'removeFiles';
-        // Preselect workspace repo if available and looks like a git repo
-        try {
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-            if (workspaceFolder) {
-                const candidate = workspaceFolder.uri.fsPath;
-                if (fs.existsSync(path.join(candidate, '.git'))) {
-                    this._removalState.repoDir = candidate;
+        // Prefer directory provided by sidebar selection
+        if (directory) {
+            try {
+                const validated = validatePath(directory);
+                this._removalState.repoDir = validated;
+            } catch {}
+        }
+        // Fallback: workspace repo if available
+        if (!this._removalState.repoDir) {
+            try {
+                const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                if (workspaceFolder) {
+                    const candidate = workspaceFolder.uri.fsPath;
+                    if (fs.existsSync(path.join(candidate, '.git'))) {
+                        this._removalState.repoDir = candidate;
+                    }
                 }
-            }
-        } catch {}
+            } catch {}
+        }
         this._updateWebviewContent();
     }
 
@@ -826,14 +835,14 @@ class LeakLockPanel {
                 </div>
 
                 <div class="section">
-                    <div class="h1">1) Select Repository</div>
-                    <div class="hint" style="margin-bottom: 8px;">Choose the git repository root.</div>
+                    <div class="h1">Repository</div>
+                    <div class="hint" style="margin-bottom: 8px;">Using the directory selected in the sidebar.</div>
                     <div style="font-family: monospace; background: var(--vscode-textCodeBlock-background); padding: 6px; border-radius: 4px;">${repoDir}</div>
                     <div style="margin-top: 6px; font-size: 0.9em; color: ${fetchColor}; display:flex; align-items:center; gap:8px;">
                         <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${this._removalState.lastFetchAt ? escapeHtml(new Date(this._removalState.lastFetchAt).toLocaleString()) : 'never'}${fetchNote}</span>
                         <button class="button" style="padding:4px 8px;" onclick="refetchNow()" ${!this._removalState.repoDir ? 'disabled' : ''}>⟳ Refetch now</button>
                     </div>
-                    <div style="margin-top: 8px;"><button class="button" onclick="selectRepoDir()">📂 Select repository directory</button></div>
+                    ${!this._removalState.repoDir ? `<div class="hint" style="margin-top:8px; color: var(--vscode-inputValidation-warningForeground);">Select a repository in the sidebar Control Panel.</div>` : ''}
                 </div>
 
                 <div class="section">
@@ -900,7 +909,7 @@ class LeakLockPanel {
 
                 <script>
                     const vscode = acquireVsCodeApi();
-                    function selectRepoDir() { vscode.postMessage({ command: 'removeFiles.selectRepo' }); }
+                    // Repo selection is managed from the sidebar; no selection here
                     function selectTargets() { vscode.postMessage({ command: 'removeFiles.selectTargets' }); }
                     function prepareCommand() { vscode.postMessage({ command: 'removeFiles.prepare' }); }
                     function setCombineMode(mode) { vscode.postMessage({ command: 'removeFiles.setCombineMode', mode }); }
