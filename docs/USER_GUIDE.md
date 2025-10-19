@@ -371,14 +371,19 @@ Use this guided flow to remove files or directories from your repository history
 ### External Tools
 
 **Nosey Parker**
-- [Official Documentation](https://github.com/praetorian-inc/noseyparker)
-- Advanced secret detection engine
-- 100+ built-in secret patterns
+- [Project page](https://github.com/praetorian-inc/noseyparker)
+- Advanced secret detection engine with 100+ curated rules
+- Fast and precise; maintained by Praetorian with active community
 
 **BFG Repo Cleaner**
-- [Official Website](https://rtyley.github.io/bfg-repo-cleaner/)
-- Git history rewriting tool
-- Safer alternative to `git filter-branch`
+- [Project page](https://rtyley.github.io/bfg-repo-cleaner/)
+- Git history rewriting tool; safer, faster than `git filter-branch`
+- Ideal for removing large files or secrets across history
+
+### Why Leak Lock
+- Seamlessly integrates Nosey Parker and BFG/git workflows inside VS Code
+- Offers both name‑based (BFG) and path‑exact (git) removal with previews
+- Adds safe defaults, warnings, and copyable commands for clear, auditable changes
 
 ### Security Resources
 

@@ -7,6 +7,7 @@ This document explains the Remove Files feature that helps you remove unwanted f
 - Launch from the sidebar: "🗑️ Remove files"
 - Uses a guided main-panel interface
 - Select repository, pick files/directories, prepare BFG, confirm and run
+- BFG tool: https://rtyley.github.io/bfg-repo-cleaner/ — fast, safe history cleanup
 
 ## Steps
 

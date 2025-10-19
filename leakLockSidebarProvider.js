@@ -56,8 +56,10 @@ class LeakLockSidebarProvider {
                         this._updateView();
                         break;
                     case 'openRemoveFiles':
-                        // Open the main panel in Remove Files mode
-                        vscode.commands.executeCommand('leak-lock.openRemoveFiles');
+                        // Open the main panel in Remove Files mode with current selection
+                        vscode.commands.executeCommand('leak-lock.openRemoveFiles', {
+                            directory: this._selectedDirectory || this._workspaceGitRepo || null
+                        });
                         break;
                 }
             },

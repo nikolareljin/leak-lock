@@ -201,16 +201,25 @@ npm test
 
 ### **Nosey Parker**
 - **Purpose**: Secret detection and scanning
+- **Project**: Nosey Parker by Praetorian — https://github.com/praetorian-inc/noseyparker
 - **Image**: `ghcr.io/praetorian-inc/noseyparker:latest`
-- **Capabilities**: 100+ secret patterns, low false positives
-- **Integration**: Docker containerized execution
+- **Why it’s good**: High-precision detection with 100+ well‑maintained rules, fast scanning, low false positives, and active community support.
+- **Integration**: Containerized execution for portability and consistency across platforms
 
 ### **BFG Repo Cleaner**
 - **Purpose**: Git history rewriting and cleanup
+- **Project**: BFG Repo-Cleaner — https://rtyley.github.io/bfg-repo-cleaner/
 - **Tool**: Java-based command line utility
+- **Why it’s good**: Safer, faster alternative to `git filter-branch` for removing large files or sensitive data from history; robust, battle‑tested, and widely recommended.
 - **Capabilities**: Remove secrets from entire git history, delete files/folders by name
 - **Integration**: Automated command generation and execution
 - **Note**: Deletion matches by filename/folder name across history (not full path)
+
+### Why Leak Lock
+- Seamless integration: Combines Nosey Parker (detection) and BFG/git (removal) into a single VS Code experience.
+- Safer defaults: Previews, path‑based alternative, and confirmation steps reduce risk.
+- Productivity: One panel to scan, review, prepare commands, and execute — no shell juggling.
+- Cross‑platform: Dockerized scanning and built‑in helpers make it reliable on Windows, macOS, and Linux.
 
 ### **Git (filter-branch)**
 - **Purpose**: Exact path-based history rewriting across branches
