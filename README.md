@@ -77,6 +77,9 @@ code --install-extension leak-lock-0.0.1.vsix
 - **Generate Commands**: Automatic BFG command generation
 - **Execute Cleanup**: One-click git history rewriting
 
+<img width="942" height="1307" alt="image" src="https://github.com/user-attachments/assets/1c0ca6c4-1254-4337-b893-ee26c94f95e3" />
+
+
 ---
 
 ### 6. Remove Unwanted Files (New)
