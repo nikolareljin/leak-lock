@@ -17,7 +17,7 @@ const SENSITIVE_DIRECTORIES = {
     // Unix-like systems (Linux, macOS, etc.)
     unix: [
         '/etc',
-        '/usr/bin', 
+        '/usr/bin',
         '/bin',
         '/sbin',
         '/root',
@@ -114,11 +114,11 @@ function escapeJsonAttribute(obj) {
 // Get platform-appropriate sensitive directories
 function getSensitiveDirectories() {
     const isWindows = process.platform === 'win32';
-    
+
     if (isWindows) {
         // On Windows, also check for case variations and different drive letters
         const windowsDirs = [...SENSITIVE_DIRECTORIES.windows];
-        
+
         // Add variations for other common drive letters
         const driveLetters = ['D:', 'E:', 'F:'];
         driveLetters.forEach(drive => {
@@ -129,7 +129,7 @@ function getSensitiveDirectories() {
                 `${drive}\\ProgramData`
             );
         });
-        
+
         return windowsDirs;
     } else {
         // Unix-like systems (Linux, macOS, etc.)
@@ -147,12 +147,12 @@ function validatePath(inputPath) {
     if (inputPath.includes('\0')) {
         throw new Error('Path contains null bytes');
     }
-    
+
     // Check for path length limits
     if (inputPath.length > MAX_PATH_LENGTH) {
         throw new Error(`Path is too long (max ${MAX_PATH_LENGTH} characters)`);
     }
-    
+
     // Check for suspicious patterns in the original input
     const suspiciousPatterns = [
         /\.\.[/\\]/,     // ../ or ..\
@@ -161,51 +161,51 @@ function validatePath(inputPath) {
         /^\.\.(?:[/\\]|$)/, // starts with ../ or ..\ or is just ".."
         /[/\\]\.\.(?:[/\\]|$)/, // contains /../ or \..\
     ];
-    
+
     for (const pattern of suspiciousPatterns) {
         if (pattern.test(inputPath)) {
             throw new Error(`Path contains directory traversal attempt: ${inputPath}`);
         }
     }
-    
+
     // Normalize the path to resolve any relative components
     const normalizedPath = path.resolve(inputPath);
-    
+
     // Instead of restricting to current working directory, protect against
     // access to sensitive system directories only
     if (path.isAbsolute(normalizedPath)) {
         const sensitiveDirectories = getSensitiveDirectories();
         const isWindows = process.platform === 'win32';
-        
+
         const isSensitive = sensitiveDirectories.some(sensitiveDir => {
             // Normalize both paths for comparison
             const normalizedSensitiveDir = path.resolve(sensitiveDir);
-            
+
             if (isWindows) {
                 // Case-insensitive comparison for Windows
                 const normalizedPathLower = normalizedPath.toLowerCase();
                 const sensitivePathLower = normalizedSensitiveDir.toLowerCase();
-                
-                return normalizedPathLower === sensitivePathLower || 
-                       normalizedPathLower.startsWith(sensitivePathLower + path.sep);
+
+                return normalizedPathLower === sensitivePathLower ||
+                    normalizedPathLower.startsWith(sensitivePathLower + path.sep);
             } else {
                 // Case-sensitive comparison for Unix-like systems
-                return normalizedPath === normalizedSensitiveDir || 
-                       normalizedPath.startsWith(normalizedSensitiveDir + path.sep);
+                return normalizedPath === normalizedSensitiveDir ||
+                    normalizedPath.startsWith(normalizedSensitiveDir + path.sep);
             }
         });
-        
+
         if (isSensitive) {
             throw new Error(`Access to sensitive system directory not allowed: ${normalizedPath}`);
         }
     }
-    
+
     return normalizedPath;
 }
 
 function validateDockerPath(inputPath, allowedBasePaths = []) {
     const validatedPath = validatePath(inputPath);
-    
+
     // Ensure the path exists and is accessible
     if (!fs.existsSync(validatedPath)) {
         // For directories that don't exist yet, check if parent exists
@@ -214,7 +214,7 @@ function validateDockerPath(inputPath, allowedBasePaths = []) {
             throw new Error(`Parent directory does not exist: ${parentDir}`);
         }
     }
-    
+
     // If allowed base paths are specified, ensure the path is within them
     if (allowedBasePaths.length > 0) {
         const isAllowed = allowedBasePaths.some(basePath => {
@@ -222,10 +222,10 @@ function validateDockerPath(inputPath, allowedBasePaths = []) {
                 // Resolve both paths to handle symlinks and relative paths properly
                 const normalizedBase = path.resolve(basePath);
                 const normalizedValidated = path.resolve(validatedPath);
-                
+
                 // Use path.relative to check containment more robustly
                 const relativePath = path.relative(normalizedBase, normalizedValidated);
-                
+
                 // If relative path is empty, it's the same directory (allowed)
                 // If it doesn't start with .., it's within the base path (allowed)
                 // If it starts with .., it's outside the base path (not allowed)
@@ -235,12 +235,12 @@ function validateDockerPath(inputPath, allowedBasePaths = []) {
                 return false;
             }
         });
-        
+
         if (!isAllowed) {
             throw new Error(`Path is outside allowed directories: ${validatedPath}`);
         }
     }
-    
+
     return validatedPath;
 }
 
@@ -248,19 +248,19 @@ function sanitizeDockerVolumeName(name) {
     if (!name || typeof name !== 'string') {
         throw new Error('Volume name must be a non-empty string');
     }
-    
+
     // Allow only alphanumeric characters, hyphens, underscores, and dots
     // This prevents command injection through volume names
     const sanitized = name.replace(/[^a-zA-Z0-9._-]/g, '');
-    
+
     if (sanitized !== name) {
         throw new Error(`Volume name contains invalid characters: ${name}`);
     }
-    
+
     if (sanitized.length === 0 || sanitized.length > MAX_VOLUME_NAME_LENGTH) {
         throw new Error(`Volume name is invalid length: ${sanitized.length}`);
     }
-    
+
     return sanitized;
 }
 
@@ -760,7 +760,7 @@ class LeakLockPanel {
             try {
                 const validated = validatePath(directory);
                 this._removalState.repoDir = validated;
-            } catch {}
+            } catch { }
         }
         // Fallback: workspace repo if available
         if (!this._removalState.repoDir) {
@@ -772,7 +772,7 @@ class LeakLockPanel {
                         this._removalState.repoDir = candidate;
                     }
                 }
-            } catch {}
+            } catch { }
         }
         this._updateWebviewContent();
     }
@@ -789,7 +789,7 @@ class LeakLockPanel {
                 const last = new Date(lastFetchISO).getTime();
                 isStale = (Date.now() - last) > (15 * 60 * 1000);
             }
-        } catch {}
+        } catch { }
         const fetchColor = isStale ? 'var(--vscode-inputValidation-warningForeground)' : 'var(--vscode-descriptionForeground)';
         const fetchNote = isStale ? ' (stale)' : '';
         const fetchTooltip = isStale
@@ -846,14 +846,14 @@ class LeakLockPanel {
                 </div>
 
                 <div class="section">
-                    <div class="h1">2) Select Files or Directories</div>
+                    <div class="h1">Select Files or Directories</div>
                     <div class="hint">Select one or more files or directories within the repository.</div>
                     ${targetsList}
                     <div style="margin-top: 8px;"><button class="button" onclick="selectTargets()">➕ Select files/directories</button></div>
                 </div>
 
                 <div class="section">
-                    <div class="h1">3) Prepare the BFG command</div>
+                    <div class="h1">Prepare the BFG command</div>
                     <div class="hint">Choose how to group deletions, then generate the command.</div>
                     <div style="margin: 8px 0; display: flex; gap: 16px; align-items: center;">
                         <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
@@ -1347,7 +1347,7 @@ class LeakLockPanel {
                 const last = new Date(lastFetchISO).getTime();
                 isStaleFetch = (Date.now() - last) > (15 * 60 * 1000);
             }
-        } catch {}
+        } catch { }
         const fetchColor = isStaleFetch ? 'var(--vscode-inputValidation-warningForeground)' : 'var(--vscode-descriptionForeground)';
         const fetchNote = isStaleFetch ? ' (stale)' : '';
         const fetchTooltip = isStaleFetch
@@ -1730,7 +1730,7 @@ class LeakLockPanel {
         try {
             // Validate the datastore path
             const validatedDatastorePath = validateDockerPath(datastorePath);
-            
+
             // Aggressively remove existing datastore if it exists
             if (fs.existsSync(validatedDatastorePath)) {
                 await this._cleanupTempFiles(validatedDatastorePath);
@@ -1747,7 +1747,7 @@ class LeakLockPanel {
                     // Use safe Docker command construction with validation
                     const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
                     const datastoreName = sanitizeDockerVolumeName(path.basename(validatedDatastorePath));
-                    
+
                     const dockerArgs = [
                         'run', '--rm',
                         '-v', `${parentDir}:/workspace`,
@@ -1785,7 +1785,7 @@ class LeakLockPanel {
                 // Validate paths before using them
                 const validatedScanPath = validateDockerPath(scanPath);
                 const validatedDatastorePath = validateDockerPath(datastorePath);
-                
+
                 // Get dependency handling configuration
                 const config = vscode.workspace.getConfiguration('leakLock');
                 const dependencyHandling = config.get('dependencyHandling') || 'warning';
@@ -1804,73 +1804,73 @@ class LeakLockPanel {
                     'run', '--rm',
                     '-v', `${validatedScanPath}:/scan`,
                     '-v', `${validatedDatastorePath}:/datastore`,
-                'ghcr.io/praetorian-inc/noseyparker:latest',
-                'scan',
-                '--datastore', '/datastore',
-                '--git-history', 'full',
-                '/scan'
-            ];
-
-            // Use a timeout wrapper for the Docker command
-            const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => reject(new Error(`Scan timeout after ${SCAN_TIMEOUT / 1000 / 60} minutes`)), SCAN_TIMEOUT);
-            });
-
-            Promise.race([runDockerCommand(scanArgs), timeoutPromise]).then(({ stdout: scanStdout, stderr: scanStderr }) => {
-                // Continue to report generation - Nosey Parker may return non-zero exit codes even on successful scans
-
-                // Now report the findings in structured format using safe Docker command
-                const reportArgs = [
-                    'run', '--rm',
-                    '-v', `${validatedDatastorePath}:/datastore`,
                     'ghcr.io/praetorian-inc/noseyparker:latest',
-                    'report',
+                    'scan',
                     '--datastore', '/datastore',
-                    '--format', 'json'
+                    '--git-history', 'full',
+                    '/scan'
                 ];
 
-                runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
-                    try {
-                        const results = this._parseNoseyParkerResults(reportStdout);
-                        resolve(results);
-                    } catch (parseError) {
-                        console.warn('Failed to parse JSON results, using fallback:', parseError.message);
-                        resolve(this._createFallbackResults(reportStdout + scanStdout));
-                    }
-                }).catch(reportError => {
-                    console.warn('Report command failed, trying alternative approach:', reportError.message);
-                    resolve(this._createFallbackResults(scanStdout + scanStderr));
+                // Use a timeout wrapper for the Docker command
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error(`Scan timeout after ${SCAN_TIMEOUT / 1000 / 60} minutes`)), SCAN_TIMEOUT);
                 });
-            }).catch(scanError => {
-                // Handle scan errors, but allow exit code 2 which is common for Nosey Parker
-                if (scanError.code !== 2) {
-                    console.error('Scan error details:', { error: scanError, stdout: scanError.stdout, stderr: scanError.stderr });
-                    reject(new Error(`Scan failed: ${scanError.message}\nStderr: ${scanError.stderr || ''}`));
-                    return;
-                }
-                // If exit code 2, try to continue with report generation
-                const reportArgs = [
-                    'run', '--rm',
-                    '-v', `${validatedDatastorePath}:/datastore`,
-                    'ghcr.io/praetorian-inc/noseyparker:latest',
-                    'report',
-                    '--datastore', '/datastore',
-                    '--format', 'json'
-                ];
 
-                runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
-                    try {
-                        const results = this._parseNoseyParkerResults(reportStdout);
-                        resolve(results);
-                    } catch (parseError) {
-                        console.warn('Failed to parse JSON results, using fallback:', parseError.message);
+                Promise.race([runDockerCommand(scanArgs), timeoutPromise]).then(({ stdout: scanStdout, stderr: scanStderr }) => {
+                    // Continue to report generation - Nosey Parker may return non-zero exit codes even on successful scans
+
+                    // Now report the findings in structured format using safe Docker command
+                    const reportArgs = [
+                        'run', '--rm',
+                        '-v', `${validatedDatastorePath}:/datastore`,
+                        'ghcr.io/praetorian-inc/noseyparker:latest',
+                        'report',
+                        '--datastore', '/datastore',
+                        '--format', 'json'
+                    ];
+
+                    runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
+                        try {
+                            const results = this._parseNoseyParkerResults(reportStdout);
+                            resolve(results);
+                        } catch (parseError) {
+                            console.warn('Failed to parse JSON results, using fallback:', parseError.message);
+                            resolve(this._createFallbackResults(reportStdout + scanStdout));
+                        }
+                    }).catch(reportError => {
+                        console.warn('Report command failed, trying alternative approach:', reportError.message);
+                        resolve(this._createFallbackResults(scanStdout + scanStderr));
+                    });
+                }).catch(scanError => {
+                    // Handle scan errors, but allow exit code 2 which is common for Nosey Parker
+                    if (scanError.code !== 2) {
+                        console.error('Scan error details:', { error: scanError, stdout: scanError.stdout, stderr: scanError.stderr });
+                        reject(new Error(`Scan failed: ${scanError.message}\nStderr: ${scanError.stderr || ''}`));
+                        return;
+                    }
+                    // If exit code 2, try to continue with report generation
+                    const reportArgs = [
+                        'run', '--rm',
+                        '-v', `${validatedDatastorePath}:/datastore`,
+                        'ghcr.io/praetorian-inc/noseyparker:latest',
+                        'report',
+                        '--datastore', '/datastore',
+                        '--format', 'json'
+                    ];
+
+                    runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
+                        try {
+                            const results = this._parseNoseyParkerResults(reportStdout);
+                            resolve(results);
+                        } catch (parseError) {
+                            console.warn('Failed to parse JSON results, using fallback:', parseError.message);
+                            resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
+                        }
+                    }).catch(reportError => {
+                        console.warn('Report command also failed:', reportError.message);
                         resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
-                    }
-                }).catch(reportError => {
-                    console.warn('Report command also failed:', reportError.message);
-                    resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
+                    });
                 });
-            });
             } catch (validationError) {
                 reject(new Error(`Path validation failed: ${validationError.message}`));
             }
@@ -2371,7 +2371,7 @@ class LeakLockPanel {
         try {
             // Validate the datastore path before any operations
             const validatedDatastorePath = validateDockerPath(datastorePath);
-            
+
             if (fs.existsSync(validatedDatastorePath)) {
                 // Try multiple approaches to remove files
                 try {
@@ -2383,7 +2383,7 @@ class LeakLockPanel {
                     // But avoid using --user root for security
                     const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
                     const datastoreName = sanitizeDockerVolumeName(path.basename(validatedDatastorePath));
-                    
+
                     const cleanupArgs = [
                         'run', '--rm',
                         '-v', `${parentDir}:/workspace`,
