@@ -100,17 +100,36 @@ The extension adds a shield icon to the activity bar for easy access.
 ### Welcome View
 Simple welcome interface in the sidebar with a "Open Scanner" button.
 
+<img width="71" height="653" alt="image" src="https://github.com/user-attachments/assets/7746e552-4017-45fb-b2d3-3f412b2da92b" />
+
+"Leak-Lock" scanner button:
+
+<img width="73" height="74" alt="image" src="https://github.com/user-attachments/assets/2e927619-0825-47b7-9ef3-e825c6ffd520" />
+
+
 ### Main Scanner Interface
+
+<img width="413" height="548" alt="image" src="https://github.com/user-attachments/assets/e6d5630d-0a4a-4ae5-8383-94c88595de02" />
+
 Full-width main area interface showing:
 - Dependency installation status
+
+<img width="422" height="1009" alt="image" src="https://github.com/user-attachments/assets/e1da44be-e827-4006-bada-ebb2095b2127" />
+
 - Directory selection with auto-detection
 - Scanning controls and progress
 - Results display in wide table format
 
 ### Scanning Process
+
+<img width="1701" height="859" alt="image" src="https://github.com/user-attachments/assets/dd8af4e9-c873-4435-9bd5-cbc60584ee73" />
+
 Real-time progress indication during repository scanning with Nosey Parker.
 
 ### Results Display
+
+<img width="2340" height="1215" alt="image" src="https://github.com/user-attachments/assets/bc057139-d659-49f0-b81c-4d76dbe54dba" />
+
 Detailed table showing:
 - Secret type and severity
 - File location and line number
