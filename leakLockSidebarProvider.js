@@ -770,6 +770,9 @@ class LeakLockSidebarProvider {
         if (result && result[0]) {
             this._selectedDirectory = result[0].fsPath;
             this._updateView();
+            vscode.commands.executeCommand('leak-lock.updateRemoveFilesRepo', {
+                directory: this._selectedDirectory
+            });
             
             // Show confirmation message
             const isGitRepo = this._workspaceGitRepo === result[0].fsPath;
@@ -784,6 +787,9 @@ class LeakLockSidebarProvider {
         if (this._workspaceGitRepo) {
             this._selectedDirectory = this._workspaceGitRepo;
             this._updateView();
+            vscode.commands.executeCommand('leak-lock.updateRemoveFilesRepo', {
+                directory: this._selectedDirectory
+            });
             vscode.window.showInformationMessage(`Selected git repository: ${path.basename(this._workspaceGitRepo)}`);
         }
     }

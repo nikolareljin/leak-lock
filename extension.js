@@ -191,6 +191,13 @@ function activate(context) {
 		LeakLockPanel.createOrShow(context.extensionUri);
 	});
 
+	// Update repo shown in Remove Files UI from sidebar selection
+	const updateRemoveFilesRepoCommand = vscode.commands.registerCommand('leak-lock.updateRemoveFilesRepo', function (options) {
+		if (LeakLockPanel.currentPanel && typeof LeakLockPanel.currentPanel.updateRemoveFilesRepoFromSidebar === 'function') {
+			LeakLockPanel.currentPanel.updateRemoveFilesRepoFromSidebar(options?.directory);
+		}
+	});
+
 	// Register command to open Remove Files flow
 	const openRemoveFilesCommand = vscode.commands.registerCommand('leak-lock.openRemoveFiles', function (options) {
 		LeakLockPanel.createOrShow(context.extensionUri);
@@ -247,6 +254,7 @@ function activate(context) {
 		fixSecretsCommand,
 		openPanelCommand,
 		openRemoveFilesCommand,
+		updateRemoveFilesRepoCommand,
 		startScanCommand,
 		cleanupCommand,
 		icon
