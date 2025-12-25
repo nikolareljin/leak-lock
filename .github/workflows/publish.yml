@@ -228,20 +228,24 @@ jobs:
 
       - name: Create Git Tag
         if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           FINAL_VERSION=${{ steps.new_version.outputs.version || steps.version.outputs.version }}
-          echo "Creating git tag v${FINAL_VERSION}"
+          echo "Creating git tag ${FINAL_VERSION}"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git tag "v${FINAL_VERSION}"
-          git push origin "v${FINAL_VERSION}"
+          git tag "${FINAL_VERSION}"
+          # Ensure remote is authenticated with GITHUB_TOKEN for pushing tags
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "${FINAL_VERSION}"
 
       - name: Create GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
-          name: Release v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          tag_name: ${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          name: Release ${{ steps.new_version.outputs.version || steps.version.outputs.version }}
           body: |
             ## Changes in this Release
             
