@@ -357,6 +357,12 @@ class LeakLockPanel {
                     case 'removeFiles.selectTargets':
                         LeakLockPanel.currentPanel._selectTargetsForRemoval(message.kind);
                         break;
+                    case 'removeFiles.removeTarget':
+                        LeakLockPanel.currentPanel._removeTargetForRemoval(message.path);
+                        break;
+                    case 'removeFiles.clearTargets':
+                        LeakLockPanel.currentPanel._clearTargetsForRemoval();
+                        break;
                     case 'removeFiles.prepare':
                         LeakLockPanel.currentPanel._prepareBfgRemovalCommand();
                         break;
@@ -804,7 +810,11 @@ class LeakLockPanel {
 
         const targetsList = hasTargets ? `
             <ul style="margin: 8px 0 0 0; padding-left: 18px;">
-                ${targets.map(t => `<li><code>${escapeHtml(t.path)}</code> <span style=\"background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding: 0 6px; border-radius: 10px; font-size: 0.8em;\">${t.type}</span></li>`).join('')}
+                ${targets.map(t => `<li style="margin: 4px 0;">
+                    <code>${escapeHtml(t.path)}</code>
+                    <span style=\"background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding: 0 6px; border-radius: 10px; font-size: 0.8em;\">${t.type}</span>
+                    <button class="button" style="margin-left: 8px; padding: 2px 8px;" onclick="removeTarget('${escapeHtml(t.path)}')">Remove</button>
+                </li>`).join('')}
             </ul>
         ` : '<div style="color: var(--vscode-descriptionForeground);">No files or directories selected.</div>';
 
@@ -864,6 +874,7 @@ class LeakLockPanel {
                         <button class="button" onclick="selectTargets('both')">➕ Select files/directories</button>
                         <button class="button" onclick="selectTargets('files')">📄 Select files</button>
                         <button class="button" onclick="selectTargets('folders')">📁 Select directories</button>
+                        <button class="button" onclick="clearTargets()" ${hasTargets ? '' : 'disabled'}>🧹 Clear selections</button>
                     </div>
                 </div>
 
@@ -927,6 +938,8 @@ class LeakLockPanel {
                     const vscode = acquireVsCodeApi();
                     // Repo selection is managed from the sidebar; no selection here
                     function selectTargets(kind) { vscode.postMessage({ command: 'removeFiles.selectTargets', kind }); }
+                    function removeTarget(path) { vscode.postMessage({ command: 'removeFiles.removeTarget', path }); }
+                    function clearTargets() { vscode.postMessage({ command: 'removeFiles.clearTargets' }); }
                     function prepareCommand() { vscode.postMessage({ command: 'removeFiles.prepare' }); }
                     function setCombineMode(mode) { vscode.postMessage({ command: 'removeFiles.setCombineMode', mode }); }
                     function previewMatches() { vscode.postMessage({ command: 'removeFiles.preview' }); }
@@ -1027,6 +1040,31 @@ class LeakLockPanel {
             this._removalState.preparedCommand = null;
             this._updateWebviewContent();
         }
+    }
+
+    _removeTargetForRemoval(targetPath) {
+        if (!targetPath) {
+            return;
+        }
+        const beforeCount = this._removalState.targets.length;
+        this._removalState.targets = this._removalState.targets.filter(t => t.path !== targetPath);
+        if (this._removalState.targets.length !== beforeCount) {
+            this._removalState.preparedCommand = null;
+            this._removalState.preparedMode = null;
+            this._removalState.details = [];
+            this._updateWebviewContent();
+        }
+    }
+
+    _clearTargetsForRemoval() {
+        if (this._removalState.targets.length === 0) {
+            return;
+        }
+        this._removalState.targets = [];
+        this._removalState.preparedCommand = null;
+        this._removalState.preparedMode = null;
+        this._removalState.details = [];
+        this._updateWebviewContent();
     }
 
     _escapeRegex(str) {
