@@ -1719,16 +1719,14 @@ class LeakLockPanel {
             return;
         }
         const util = require('util');
-        const execAsync = util.promisify(exec);
+        const execFileAsync = util.promisify(require('child_process').execFile);
         try {
-            const scanEsc = scanPath.replace(/"/g, '\\"');
-            const { stdout: rootOut } = await execAsync(`git -C "${scanEsc}" rev-parse --show-toplevel`);
+            const { stdout: rootOut } = await execFileAsync('git', ['-C', scanPath, 'rev-parse', '--show-toplevel']);
             const repoRoot = rootOut.trim();
             if (!repoRoot) {
                 return;
             }
-            const repoEsc = repoRoot.replace(/"/g, '\\"');
-            const { stdout: filesOut } = await execAsync(`git -C "${repoEsc}" ls-files -z`);
+            const { stdout: filesOut } = await execFileAsync('git', ['-C', repoRoot, 'ls-files', '-z']);
             const tracked = filesOut.split('\0').filter(Boolean);
             this._scanRepoRoot = repoRoot;
             this._trackedFiles = new Set(tracked);
