@@ -2817,8 +2817,8 @@ class LeakLockPanel {
                 progress.report({ increment: 40, message: "Running git filter-repo..." });
                 const util = require('util');
                 const execAsync = util.promisify(exec);
-                const repoEsc = scanPath.replace(/"/g, '\\"');
-                const fileEsc = replacementsFile.replace(/"/g, '\\"');
+                const repoEsc = this._shellEscapeDoubleQuotes(scanPath);
+                const fileEsc = this._shellEscapeDoubleQuotes(replacementsFile);
                 await execAsync(`cd "${repoEsc}" && git filter-repo --replace-text "${fileEsc}" --force`);
 
                 progress.report({ increment: 20, message: "Expiring reflog..." });
