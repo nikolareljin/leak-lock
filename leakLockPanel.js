@@ -1357,9 +1357,9 @@ class LeakLockPanel {
     }
 
     _buildGitFilterBranchCommand(repoDir, targets) {
-        const repoEsc = repoDir.replace(/"/g, '\\\\\"');
+        const repoEsc = this._shellEscapeDoubleQuotes(repoDir);
         const rmCmds = targets.map(t => {
-            const p = t.path.replace(/"/g, '\\\\\"');
+            const p = this._shellEscapeDoubleQuotes(t.path);
             return `git rm -r --cached --ignore-unmatch \"${p}\"`;
         }).join('; ');
         const indexFilter = rmCmds.length ? rmCmds : 'echo no-op';
@@ -1468,7 +1468,7 @@ class LeakLockPanel {
                 progress.report({ increment: 10, message: 'Fetching remotes...' });
                 await this._gitFetchAll(repo);
                 progress.report({ increment: 20, message: 'Executing BFG...' });
-                try { await execAsync(this._stripForcePush(cmd)); } catch (e) { console.warn('BFG run had issues:', e.message); }
+                await execAsync(this._stripForcePush(cmd));
                 progress.report({ increment: 60, message: 'Cleaning git history...' });
             });
 
