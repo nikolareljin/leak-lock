@@ -802,8 +802,12 @@ class LeakLockPanel {
             </ul>
         ` : '<div style="color: var(--vscode-descriptionForeground);">No files or directories selected.</div>';
 
-        const preparedBlock = prepared ? `
+        const preparedBlockBfg = prepared && this._removalState.preparedMode === 'bfg' ? `
             <div id="prepared-command" class="manual-command" style="margin-top: 8px;">${escapeHtml(prepared)}</div>
+            <div style="margin-top:6px;"><button class="button" onclick="copyPrepared()">📋 Copy command</button></div>
+        ` : '';
+        const preparedBlockGit = prepared && this._removalState.preparedMode === 'git' ? `
+            <div id="prepared-command-git" class="manual-command" style="margin-top: 8px;">${escapeHtml(prepared)}</div>
             <div style="margin-top:6px;"><button class="button" onclick="copyPrepared()">📋 Copy command</button></div>
         ` : '';
 
@@ -826,6 +830,7 @@ class LeakLockPanel {
                     .danger-section { border: 1px solid var(--vscode-inputValidation-errorBorder); background: var(--vscode-inputValidation-errorBackground); padding: 12px; border-radius: 6px; }
                     .danger-button { background: #c62828; color: #fff; border: none; padding: 10px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; }
                     .danger-button:hover { background: #b71c1c; }
+                    .optional-frame { border: 1px dashed var(--vscode-panel-border); border-radius: 6px; padding: 12px; background: var(--vscode-editor-background); }
                 </style>
             </head>
             <body>
@@ -857,7 +862,7 @@ class LeakLockPanel {
                 </div>
 
                 <div class="section">
-                    <div class="h1">Prepare the BFG command</div>
+                    <div class="h1">BFG-based removal (recommended)</div>
                     <div class="hint">Choose how to group deletions, then generate the command.</div>
                     <div style="margin: 8px 0; display: flex; gap: 16px; align-items: center;">
                         <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
@@ -868,8 +873,8 @@ class LeakLockPanel {
                         </label>
                     </div>
                     <div style="margin-top: 8px;"><button class="button" onclick="prepareCommand()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>⚙️ Prepare the bfg command</button></div>
-                    ${preparedBlock}
-                    ${prepared ? `
+                    ${preparedBlockBfg}
+                    ${prepared && this._removalState.preparedMode === 'bfg' ? `
                         <div style=\"margin-top:12px;\">
                             <div class=\"h1\" style=\"font-size:1.1em;\">Deletion details</div>
                             <div class=\"hint\">BFG matches by name across history. Each target below shows the flag and pattern used.</div>
@@ -878,37 +883,38 @@ class LeakLockPanel {
                             </ul>
                         </div>
                     ` : ''}
+                    <div class="danger-section" style="margin-top: 12px;">
+                        <div class="h1 danger">Final Step: Rewrite Git History (BFG)</div>
+                        <div class="hint" style="margin-bottom: 8px;">This will permanently rewrite git history using BFG.</div>
+                        <button class="danger-button" onclick="runRemoval()" ${!prepared || this._removalState.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Confirm and run BFG removal</button>
+                    </div>
                 </div>
 
                 <div class="section">
-                    <div class="h1">Alternative: Path-based deletion (Git)</div>
-                    <div class="hint">Exact repo paths across branches, remotes and tags; preview before running.</div>
-                    <div style="margin: 8px 0;"><button class="button" onclick="previewMatches()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>🔎 Preview matches (branches, remotes, tags)</button></div>
-                    ${this._removalState.preview ? `
-                        <div style=\"margin-top:8px;\">\n                            <div class=\"h1\" style=\"font-size:1.1em;\">Local branches</div>
-                            ${this._removalState.preview.branches.length === 0 ? '<div class=\\\'hint\\\'>No matches on local branches.</div>' : ''}
-                            ${this._removalState.preview.branches.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
-                            <div class=\"h1\" style=\"font-size:1.1em; margin-top:10px;\">Remote branches</div>
-                            ${this._removalState.preview.remotes.length === 0 ? '<div class=\\\'hint\\\'>No matches on remote branches.</div>' : ''}
-                            ${this._removalState.preview.remotes.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
-                            <div class=\"h1\" style=\"font-size:1.1em; margin-top:10px;\">Tags</div>
-                            ${this._removalState.preview.tags.length === 0 ? '<div class=\\\'hint\\\'>No matches on tags.</div>' : ''}
-                            ${this._removalState.preview.tags.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
+                    <div class="optional-frame">
+                        <div class="h1">Optional: Path-based deletion (Git)</div>
+                        <div class="hint">Alternative to BFG; uses exact repo paths across branches, remotes, and tags. Preview before running.</div>
+                        <div style="margin: 8px 0;"><button class="button" onclick="previewMatches()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>🔎 Preview matches (branches, remotes, tags)</button></div>
+                        ${this._removalState.preview ? `
+                            <div style=\"margin-top:8px;\">\n                            <div class=\"h1\" style=\"font-size:1.1em;\">Local branches</div>
+                                ${this._removalState.preview.branches.length === 0 ? '<div class=\\\'hint\\\'>No matches on local branches.</div>' : ''}
+                                ${this._removalState.preview.branches.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
+                                <div class=\"h1\" style=\"font-size:1.1em; margin-top:10px;\">Remote branches</div>
+                                ${this._removalState.preview.remotes.length === 0 ? '<div class=\\\'hint\\\'>No matches on remote branches.</div>' : ''}
+                                ${this._removalState.preview.remotes.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
+                                <div class=\"h1\" style=\"font-size:1.1em; margin-top:10px;\">Tags</div>
+                                ${this._removalState.preview.tags.length === 0 ? '<div class=\\\'hint\\\'>No matches on tags.</div>' : ''}
+                                ${this._removalState.preview.tags.map(b => `<div style=\\\"margin:6px 0;\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul style=\\\"margin:4px 0 0 0; padding-left:18px;\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
+                            </div>
+                        ` : ''}
+                        <div style="margin-top: 8px;"><button class="button" onclick="prepareGit()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>⚙️ Prepare the git command</button></div>
+                        ${preparedBlockGit}
+                        <div class="danger-section" style="margin-top: 12px;">
+                            <div class="h1 danger">Final Step: Rewrite Git History (Git)</div>
+                            <div class="hint" style="margin-bottom: 8px;">This will permanently rewrite git history using git filter-branch on exact paths across branches.</div>
+                            <button class="danger-button" onclick="runPathRemoval()" ${!prepared || this._removalState.preparedMode !== 'git' ? 'disabled' : ''}>❗ Confirm and run path-based removal</button>
                         </div>
-                    ` : ''}
-                    <div style="margin-top: 8px;"><button class="button" onclick="prepareGit()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>⚙️ Prepare the git command</button></div>
-                    ${preparedBlock}
-                </div>
-
-                <div class="section danger-section">
-                    <div class="h1 danger">Final Step: Rewrite Git History (BFG)</div>
-                    <div class="hint" style="margin-bottom: 8px;">This will permanently rewrite git history using BFG.</div>
-                    <button class="danger-button" onclick="runRemoval()" ${!prepared || this._removalState.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Confirm and run BFG removal</button>
-                </div>
-                <div class="section danger-section">
-                    <div class="h1 danger">Final Step: Rewrite Git History (Git)</div>
-                    <div class="hint" style="margin-bottom: 8px;">This will permanently rewrite git history using git filter-branch on exact paths across branches.</div>
-                    <button class="danger-button" onclick="runPathRemoval()" ${!prepared || this._removalState.preparedMode !== 'git' ? 'disabled' : ''}>❗ Confirm and run path-based removal</button>
+                    </div>
                 </div>
 
                 <script>
@@ -924,7 +930,7 @@ class LeakLockPanel {
                     function runPathRemoval() { vscode.postMessage({ command: 'removeFiles.runGit' }); }
                     function copyPrepared() {
                         try {
-                            const el = document.getElementById('prepared-command');
+                            const el = document.getElementById('prepared-command') || document.getElementById('prepared-command-git');
                             if (!el) return;
                             const text = el.innerText || el.textContent || '';
                             if (navigator.clipboard && navigator.clipboard.writeText) {
