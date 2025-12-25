@@ -7,6 +7,11 @@ const vscode = require('vscode');
 
 const dockerImage = 'ghcr.io/praetorian-inc/noseyparker:latest';
 
+// Panel initialization delays (in milliseconds)
+// These timeouts ensure the webview panel is fully initialized before calling methods on it
+const PANEL_INIT_DELAY_MS = 50; // Delay for showRemoveFilesUI initialization
+const PANEL_SCAN_INIT_DELAY_MS = 100; // Delay for startScanFromSidebar initialization
+
 /**
  * Check if dependencies are already installed
  */
@@ -217,7 +222,7 @@ function activate(context) {
 			if (LeakLockPanel.currentPanel && typeof LeakLockPanel.currentPanel.showRemoveFilesUI === 'function') {
 				LeakLockPanel.currentPanel.showRemoveFilesUI(options?.directory);
 			}
-		}, 50);
+		}, PANEL_INIT_DELAY_MS);
 	});
 
 	// Register start scan command for sidebar integration
@@ -230,7 +235,7 @@ function activate(context) {
 				if (LeakLockPanel.currentPanel) {
 					LeakLockPanel.currentPanel.startScanFromSidebar(options.directory, options.dependenciesReady);
 				}
-			}, 100);
+			}, PANEL_SCAN_INIT_DELAY_MS);
 		}
 	});
 
