@@ -1473,7 +1473,8 @@ class LeakLockPanel {
                 ], { cwd: repo });
                 
                 progress.report({ increment: 50, message: 'Cleaning up refs...' });
-                // Clean up original refs - need to use shell for pipe
+                // Clean up original refs created by filter-branch
+                // First get the refs to delete, then use spawn to pipe them to update-ref
                 const { stdout: refsOut } = await execFileAsync('git', [
                     'for-each-ref',
                     '--format=delete %(refname)',
@@ -1487,7 +1488,7 @@ class LeakLockPanel {
                         proc.stdin.end();
                         proc.on('close', (code) => {
                             if (code === 0) resolve();
-                            else reject(new Error(`git update-ref failed with code ${code} for repository ${repo}`));
+                            else reject(new Error(`git update-ref failed with exit code ${code}`));
                         });
                         proc.on('error', reject);
                     });
