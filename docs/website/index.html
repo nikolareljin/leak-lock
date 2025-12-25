@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leak Lock Documentation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f8f9fa;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        .nav {
+            background: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .nav-container {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 0;
+        }
+
+        .nav-item {
+            padding: 1rem 2rem;
+            text-decoration: none;
+            color: #333;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border-bottom: 3px solid transparent;
+        }
+
+        .nav-item:hover, .nav-item.active {
+            background: #f8f9fa;
+            border-bottom-color: #667eea;
+            color: #667eea;
+        }
+
+        .content {
+            padding: 3rem 0;
+        }
+
+        .docs-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+
+        .doc-card {
+            background: white;
+            border-radius: 10px;
+            padding: 2rem;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .doc-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+        }
+
+        .doc-card h3 {
+            color: #667eea;
+            margin-bottom: 1rem;
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .doc-card p {
+            color: #666;
+            margin-bottom: 1.5rem;
+        }
+
+        .doc-card ul {
+            list-style: none;
+            margin-bottom: 1.5rem;
+        }
+
+        .doc-card li {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .doc-card li:last-child {
+            border-bottom: none;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 500;
+            transition: background 0.3s ease;
+        }
+
+        .btn:hover {
+            background: #5a67d8;
+        }
+
+        .btn-secondary {
+            background: #718096;
+        }
+
+        .btn-secondary:hover {
+            background: #4a5568;
+        }
+
+        .quick-start {
+            background: white;
+            border-radius: 10px;
+            padding: 2rem;
+            margin: 2rem 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .quick-start h2 {
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-top: 1.5rem;
+        }
+
+        .step {
+            text-align: center;
+            padding: 1.5rem;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            transition: border-color 0.3s ease;
+        }
+
+        .step:hover {
+            border-color: #667eea;
+        }
+
+        .step-number {
+            background: #667eea;
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-weight: bold;
+        }
+
+        .footer {
+            background: #2d3748;
+            color: white;
+            text-align: center;
+            padding: 2rem 0;
+            margin-top: 3rem;
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        .feature {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        .code {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 5px;
+            padding: 1rem;
+            font-family: 'Monaco', 'Consolas', monospace;
+            margin: 1rem 0;
+            overflow-x: auto;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 0 1rem;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .nav-item {
+                padding: 0.75rem 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <h1>🛡️ Leak Lock</h1>
+            <p>Secure your code repositories by detecting and removing sensitive information</p>
+        </div>
+    </header>
+
+    <nav class="nav">
+        <div class="container">
+            <div class="nav-container">
+                <a href="#overview" class="nav-item active">Overview</a>
+                <a href="#quick-start" class="nav-item">Quick Start</a>
+                <a href="#documentation" class="nav-item">Documentation</a>
+                <a href="#demo" class="nav-item">Demo</a>
+                <a href="#development" class="nav-item">Development</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="content">
+        <div class="container">
+            <!-- Overview Section -->
+            <section id="overview">
+                <h2>🌟 Overview</h2>
+                <p>Leak Lock is a powerful VS Code extension that helps developers secure their repositories by automatically detecting and removing sensitive information from git history.</p>
+                
+                <div class="features">
+                    <div class="feature">
+                        <div class="feature-icon">🔍</div>
+                        <h3>Smart Detection</h3>
+                        <p>Detects 100+ types of secrets with low false positives using advanced pattern matching</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">🖥️</div>
+                        <h3>Modern Interface</h3>
+                        <p>Full-width main area display perfect for reviewing scan results and taking action</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">🤖</div>
+                        <h3>Automated Workflow</h3>
+                        <p>One-click dependency installation and guided secret removal process</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">🛡️</div>
+                        <h3>Enterprise Ready</h3>
+                        <p>Docker integration, automated cleanup, and secure handling of sensitive data</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Quick Start Section -->
+            <section id="quick-start">
+                <div class="quick-start">
+                    <h2>🚀 Quick Start</h2>
+                    <p>Get started with Leak Lock in minutes</p>
+                    
+                    <div class="steps">
+                        <div class="step">
+                            <div class="step-number">1</div>
+                            <h3>Install</h3>
+                            <p>Install from VS Code Marketplace or load from VSIX file</p>
+                            <div class="code">code --install-extension leak-lock</div>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">2</div>
+                            <h3>Open</h3>
+                            <p>Click the shield icon in the activity bar and launch the scanner</p>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">3</div>
+                            <h3>Setup</h3>
+                            <p>Install dependencies (Docker, Nosey Parker, BFG tool) with one click</p>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">4</div>
+                            <h3>Scan</h3>
+                            <p>Scan your repository and review detected secrets in the results table</p>
+                        </div>
+                        <div class="step">
+                            <div class="step-number">5</div>
+                            <h3>Clean</h3>
+                            <p>Select secrets to remove and execute git history cleanup</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Documentation Section -->
+            <section id="documentation">
+                <h2>📖 Documentation</h2>
+                <div class="docs-grid">
+                    <div class="doc-card">
+                        <h3>👥 User Documentation</h3>
+                        <p>Complete guides for using Leak Lock effectively</p>
+                        <ul>
+                            <li>📖 Complete User Guide</li>
+                            <li>⚡ Quick Reference</li>
+                            <li>❓ FAQ & Troubleshooting</li>
+                            <li>🛡️ Security Best Practices</li>
+                        </ul>
+                        <a href="../USER_GUIDE.md" class="btn">Read User Guide</a>
+                    </div>
+
+                    <div class="doc-card">
+                        <h3>🛠️ Technical Documentation</h3>
+                        <p>Deep dive into architecture and APIs</p>
+                        <ul>
+                            <li>🏗️ Architecture Overview</li>
+                            <li>🔧 Complete API Reference</li>
+                            <li>📁 File Structure Guide</li>
+                            <li>📊 Data Flow Diagrams</li>
+                        </ul>
+                        <a href="../ARCHITECTURE.md" class="btn">View Architecture</a>
+                    </div>
+
+                    <div class="doc-card">
+                        <h3>🚀 Development</h3>
+                        <p>Contributing and development setup</p>
+                        <ul>
+                            <li>🏁 Development Setup</li>
+                            <li>🤝 Contributing Guidelines</li>
+                            <li>🧪 Testing Procedures</li>
+                            <li>📦 Release Process</li>
+                        </ul>
+                        <a href="../DEVELOPMENT.md" class="btn btn-secondary">Start Contributing</a>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Demo Section -->
+            <section id="demo">
+                <h2>📸 Demo & Screenshots</h2>
+                <div class="quick-start">
+                    <h3>🎬 Extension Walkthrough</h3>
+                    <p>See Leak Lock in action from installation to secret removal</p>
+                    
+                    <!-- Placeholder for demo content -->
+                    <div style="background: #f7fafc; border: 2px dashed #cbd5e0; padding: 3rem; text-align: center; margin: 1rem 0; border-radius: 10px;">
+                        <h4>📹 Demo Video Coming Soon</h4>
+                        <p>Complete walkthrough showing:</p>
+                        <ul style="list-style: none; margin: 1rem 0;">
+                            <li>✅ Extension installation and setup</li>
+                            <li>✅ Dependency installation process</li>
+                            <li>✅ Repository scanning workflow</li>
+                            <li>✅ Results review and secret selection</li>
+                            <li>✅ BFG cleanup execution</li>
+                        </ul>
+                    </div>
+
+                    <h3>🖼️ Interface Screenshots</h3>
+                    <div class="features">
+                        <div class="feature">
+                            <h4>🏠 Welcome View</h4>
+                            <p>Activity bar integration with launch button</p>
+                        </div>
+                        <div class="feature">
+                            <h4>🖥️ Main Scanner</h4>
+                            <p>Full-width interface with all controls</p>
+                        </div>
+                        <div class="feature">
+                            <h4>📊 Results Display</h4>
+                            <p>Detailed table with secret classifications</p>
+                        </div>
+                        <div class="feature">
+                            <h4>🔧 Remediation</h4>
+                            <p>Step-by-step secret removal process</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Development Section -->
+            <section id="development">
+                <h2>🛠️ Development</h2>
+                <div class="docs-grid">
+                    <div class="doc-card">
+                        <h3>🏁 Getting Started</h3>
+                        <p>Set up your development environment</p>
+                        <div class="code">git clone https://github.com/nikolareljin/leak-lock.git
+cd leak-lock
+npm install
+code .</div>
+                        <p>Press F5 to launch the extension in development mode</p>
+                    </div>
+
+                    <div class="doc-card">
+                        <h3>🧪 Testing</h3>
+                        <p>Run tests and validate functionality</p>
+                        <div class="code">npm test</div>
+                        <p>Manual testing with F5 launch and extension host</p>
+                    </div>
+
+                    <div class="doc-card">
+                        <h3>🤝 Contributing</h3>
+                        <p>Areas where you can help</p>
+                        <ul>
+                            <li>🔍 New secret detection patterns</li>
+                            <li>🎨 UI/UX improvements</li>
+                            <li>📖 Documentation enhancements</li>
+                            <li>🧪 Test coverage expansion</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2025 Leak Lock. Made with ❤️ for secure development.</p>
+            <p>
+                <a href="https://github.com/nikolareljin/leak-lock" style="color: #90cdf4; text-decoration: none;">GitHub</a> |
+                <a href="https://marketplace.visualstudio.com/items?itemName=leak-lock" style="color: #90cdf4; text-decoration: none;">VS Code Marketplace</a> |
+                <a href="../index.md" style="color: #90cdf4; text-decoration: none;">Documentation</a>
+            </p>
+        </div>
+    </footer>
+
+    <script>
+        // Simple navigation highlighting
+        document.addEventListener('DOMContentLoaded', function() {
+            const navItems = document.querySelectorAll('.nav-item');
+            const sections = document.querySelectorAll('section');
+
+            function updateActiveNav() {
+                let current = '';
+                sections.forEach(section => {
+                    const sectionTop = section.offsetTop;
+                    const sectionHeight = section.clientHeight;
+                    if (scrollY >= sectionTop - 200) {
+                        current = section.getAttribute('id');
+                    }
+                });
+
+                navItems.forEach(item => {
+                    item.classList.remove('active');
+                    if (item.getAttribute('href') === '#' + current) {
+                        item.classList.add('active');
+                    }
+                });
+            }
+
+            window.addEventListener('scroll', updateActiveNav);
+            
+            // Smooth scrolling for navigation links
+            navItems.forEach(item => {
+                item.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const targetId = this.getAttribute('href').substring(1);
+                    const targetSection = document.getElementById(targetId);
+                    if (targetSection) {
+                        targetSection.scrollIntoView({ behavior: 'smooth' });
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>

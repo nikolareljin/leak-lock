@@ -8,3 +8,12 @@ vsc-extension-quickstart.md
 **/*.map
 **/eslint.config.mjs
 **/.vscode-test.*
+tests
+test*.js
+.git/**
+node_modules/**
+src/**
+.eslintrc.json
+tsconfig.json
+**/*.ts
+!dist/**
