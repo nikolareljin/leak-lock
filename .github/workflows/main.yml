@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - master
+permissions:
+  contents: read
 
 jobs:
 
@@ -21,12 +23,15 @@ jobs:
 
     - name: Install dependencies
       run: |
-        yarn
-        yarn global add vsce
+        npm install
+        npm install -g vsce
 
     # - name: Build
-    #   run: yarn build
+    #   run: npm run build
 
+    - name: Mask tokens
+      run: |
+        echo "::add-mask::${{ secrets.VSCE_TOKEN }}"
     - name: Publish
       env:
         VSCE_TOKEN: ${{ secrets.VSCE_TOKEN }}
