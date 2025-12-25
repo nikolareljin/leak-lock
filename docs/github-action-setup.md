@@ -18,8 +18,15 @@ You need to create a Personal Access Token (PAT) for publishing to the VS Code M
    - **Expiration**: Set appropriate expiration date
 6. Copy the generated token
 
-### 2. Configure GitHub Repository Secret
-Add the token as a repository secret:
+### 2. Open VSX Registry Access Token
+You need a token from Open VSX to publish there:
+
+1. Go to [Open VSX User Settings](https://open-vsx.org/user-settings/tokens)
+2. Create a new token
+3. Copy the generated token
+
+### 3. Configure GitHub Repository Secrets
+Add the tokens as repository secrets:
 
 1. Go to your GitHub repository settings
 2. Navigate to **Settings** → **Secrets and variables** → **Actions**
@@ -27,8 +34,11 @@ Add the token as a repository secret:
 4. Name: `VSCE_PAT`
 5. Value: Paste your VS Code Marketplace token
 6. Click **Add secret**
+7. Repeat for Open VSX:
+   - Name: `OVSX_PAT`
+   - Value: Paste your Open VSX token
 
-### 3. Publisher Configuration
+### 4. Publisher Configuration
 Ensure your `package.json` includes the publisher field:
 
 ```json
@@ -40,7 +50,7 @@ Ensure your `package.json` includes the publisher field:
 }
 ```
 
-Replace `your-publisher-name` with your actual VS Code Marketplace publisher ID.
+Replace `your-publisher-name` with your actual VS Code Marketplace publisher ID (must match your Open VSX namespace).
 
 ## Workflow Features
 

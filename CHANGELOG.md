@@ -1,5 +1,18 @@
 # Change Log
 
+## 0.1.0
+### Added
+- **Scan Cleanup Flow (Prepare → Run)**: Scan results now generate BFG or Git-only commands before execution with copyable placeholders
+- **Open VSX Publishing**: CI now publishes VSIX packages to Open VSX using `OVSX_PAT`
+- **Local-Only Finding Classification**: Untracked, non-history secrets are marked safe (green) but still documented
+
+### Changed
+- **Force Push Prompt**: Explicit confirmation prompts after cleanup to optionally force push changes
+- **BFG Warning Text**: Clear note that BFG removes same-name files/directories everywhere in history
+- **Remove Files UX**: Target selection supports removing individual items and clearing selections
+- **Repository Picker Default**: Remove Files target selection opens at the chosen repository
+- **Activity Bar Icon**: Switched to `./media/icon.svg`
+
 ## September 29, 2025
 ### Added
 - **Comprehensive Installation Instructions**: Step-by-step guides for installing Docker and Java with platform-specific instructions
