@@ -777,6 +777,12 @@ class LeakLockPanel {
         this._updateWebviewContent();
     }
 
+    // Public: switch to Scan UI
+    showScanUI() {
+        this._viewMode = 'scan';
+        this._updateWebviewContent();
+    }
+
     _getRemoveFilesHtml() {
         const repoDir = this._removalState.repoDir ? escapeHtml(this._removalState.repoDir) : 'No repository selected';
         const targets = this._removalState.targets;
@@ -952,7 +958,13 @@ class LeakLockPanel {
     }
 
     async _selectRepoForRemoval() {
-        const options = { canSelectFolders: true, canSelectFiles: false, canSelectMany: false, openLabel: 'Select Git Repository Root' };
+        const options = {
+            canSelectFolders: true,
+            canSelectFiles: false,
+            canSelectMany: false,
+            openLabel: 'Select Git Repository Root',
+            defaultUri: this._removalState.repoDir ? vscode.Uri.file(this._removalState.repoDir) : undefined
+        };
         const result = await vscode.window.showOpenDialog(options);
         if (result && result[0]) {
             const repoPath = result[0].fsPath;
@@ -987,7 +999,8 @@ class LeakLockPanel {
             canSelectFolders,
             canSelectFiles,
             canSelectMany: true,
-            openLabel: label
+            openLabel: label,
+            defaultUri: this._removalState.repoDir ? vscode.Uri.file(this._removalState.repoDir) : undefined
         };
         const result = await vscode.window.showOpenDialog(options);
         if (result && result.length > 0) {
@@ -1334,9 +1347,7 @@ class LeakLockPanel {
         this._dependenciesInstalled = dependenciesReady;
 
         // Update UI and start scan
-        if (this._panel) {
-            this._panel.webview.html = this._getHtmlForWebview();
-        }
+        this.showScanUI();
 
         // Start the scan if both directory and dependencies are ready
         if (this._selectedDirectory && this._dependenciesInstalled) {
