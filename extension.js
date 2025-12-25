@@ -143,6 +143,17 @@ async function installDependencies(forceReinstall = false) {
  */
 function activate(context) {
 	console.log('Activating extension "leak-lock" ... ');
+
+	// Suppress known noisy runtime warnings from dependencies/host.
+	process.on('warning', (warning) => {
+		if (warning.code === 'DEP0040') {
+			return;
+		}
+		if (warning.name === 'ExperimentalWarning' && /SQLite/i.test(warning.message || '')) {
+			return;
+		}
+		console.warn(warning.stack || warning.message || warning);
+	});
 	
 	// Install dependencies on first activation
 	installDependencies();
