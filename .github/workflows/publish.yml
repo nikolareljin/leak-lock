@@ -47,7 +47,7 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'nikolareljin/leak-lock'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'nikolareljin' && endsWith(github.repository, '/leak-lock')
     permissions:
       contents: write
     
