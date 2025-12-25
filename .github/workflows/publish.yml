@@ -205,9 +205,16 @@ jobs:
             echo "Error: No .vsix file found"
             exit 1
           fi
+          OVSX_NAMESPACE="${{ secrets.OVSX_NAMESPACE }}"
+          if [ -n "$OVSX_NAMESPACE" ]; then
+            echo "Using Open VSX namespace: $OVSX_NAMESPACE"
+            OVSX_NAMESPACE_ARG="--namespace $OVSX_NAMESPACE"
+          else
+            OVSX_NAMESPACE_ARG=""
+          fi
           for i in {1..3}; do
             echo "Open VSX publish attempt $i..."
-            if ovsx publish "$VSIX_FILE" -p "${{ secrets.OVSX_PAT }}"; then
+            if ovsx publish "$VSIX_FILE" -p "${{ secrets.OVSX_PAT }}" $OVSX_NAMESPACE_ARG; then
               echo "Published to Open VSX successfully!"
               break
             else
