@@ -278,7 +278,6 @@ class LeakLockPanel {
         this._trackedFiles = null;
         this._dependenciesInstalled = false;
         this._panel = null;
-        this._lastFetchAt = null;
 
         // View mode: 'scan' | 'removeFiles'
         this._viewMode = 'scan';
@@ -1173,11 +1172,10 @@ class LeakLockPanel {
         try {
             const util = require('util');
             const execAsync = util.promisify(exec);
-            const repoEsc = repoPath.replace(/"/g, '\"');
+            const repoEsc = repoPath.replace(/"/g, '\\\\"');
             await execAsync(`cd "${repoEsc}" && git fetch --all --tags --prune`);
             const ts = new Date().toISOString();
             this._removalState.lastFetchAt = ts;
-            this._lastFetchAt = ts;
             this._updateWebviewContent();
         } catch (e) {
             console.warn('git fetch failed or no remotes:', e.message);
@@ -1195,7 +1193,7 @@ class LeakLockPanel {
         try {
             const util = require('util');
             const execAsync = util.promisify(exec);
-            const repoEsc = repo.replace(/"/g, '\\"');
+            const repoEsc = repo.replace(/"/g, '\\\\"');
             // List refs
             const { stdout: brOut } = await execAsync(`cd "${repoEsc}" && git for-each-ref --format='%(refname:short)' refs/heads`);
             const { stdout: rmOut } = await execAsync(`cd "${repoEsc}" && git for-each-ref --format='%(refname:short)' refs/remotes`);
@@ -1203,11 +1201,11 @@ class LeakLockPanel {
             const branches = brOut.split('\n').map(s => s.trim()).filter(Boolean);
             const remotes = rmOut.split('\n').map(s => s.trim()).filter(Boolean).filter(n => !/\bHEAD$/.test(n));
             const tags = tgOut.split('\n').map(s => s.trim()).filter(Boolean);
-            const pathspecs = targets.map(t => t.type === 'directory' ? `${t.path.replace(/"/g, '\\"')}/` : t.path.replace(/"/g, '\\"'));
+            const pathspecs = targets.map(t => t.type === 'directory' ? `${t.path.replace(/"/g, '\\\\"')}/` : t.path.replace(/"/g, '\\\\"'));
             const results = [];
             for (const br of branches) {
                 try {
-                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${br.replace(/"/g, '\\"')}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${br.replace(/"/g, '\\\\"')}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     results.push({ name: br, files });
                 } catch (e) {
@@ -1217,7 +1215,7 @@ class LeakLockPanel {
             const remoteResults = [];
             for (const rb of remotes) {
                 try {
-                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${rb.replace(/"/g, '\\"')}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${rb.replace(/"/g, '\\\\"')}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     remoteResults.push({ name: rb, files });
                 } catch (e) {
@@ -1227,7 +1225,7 @@ class LeakLockPanel {
             const tagResults = [];
             for (const tag of tags) {
                 try {
-                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${tag.replace(/"/g, '\\"')}^{}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${tag.replace(/"/g, '\\\\"')}^{}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     tagResults.push({ name: tag, files });
                 } catch (e) {
@@ -1440,7 +1438,7 @@ class LeakLockPanel {
         };
 
         // Fetch status for secrets cleanup actions
-        const lastFetchISO = this._lastFetchAt;
+        const lastFetchISO = this._removalState.lastFetchAt;
         let isStaleFetch = true;
         try {
             if (lastFetchISO) {
@@ -1542,7 +1540,7 @@ class LeakLockPanel {
             <div class="scan-section">
                 <h2>🔍 Scan Results</h2>
                 <div style="margin:6px 0 10px 0; font-size:0.9em; color:${fetchColor}; display:flex; align-items:center; gap:8px;">
-                    <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${this._lastFetchAt ? escapeHtml(new Date(this._lastFetchAt).toLocaleString()) : 'never'}${fetchNote}</span>
+                    <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${this._removalState.lastFetchAt ? escapeHtml(new Date(this._removalState.lastFetchAt).toLocaleString()) : 'never'}${fetchNote}</span>
                     <button style="padding:4px 8px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; cursor:pointer;" onclick="refetchNow()">⟳ Refetch now</button>
                 </div>
                 <div style="margin-bottom: 15px;">
