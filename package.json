@@ -79,7 +79,7 @@
         {
           "id": "leak-lock",
           "title": "Leak Lock",
-          "icon": "./media/shield.svg"
+          "icon": "./media/icon.svg"
         }
       ]
     },

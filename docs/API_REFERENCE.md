@@ -347,12 +347,13 @@ Returns the view type identifier.
 ```typescript
 interface ScanResult {
     type: string;           // Secret type (e.g., "API Key", "Password")
-    severity: string;       // Severity level ("high", "medium", "low")
+    severity: string;       // Severity level ("high", "medium", "low", "safe")
     file: string;          // Relative file path
     line: number;          // Line number in file
     preview: string;       // Preview of detected content
     fullMatch: string;     // Complete matched content
     rule: string;          // Detection rule used
+    isUntracked?: boolean; // True when found in working tree only (not tracked or in git history)
 }
 ```
 
