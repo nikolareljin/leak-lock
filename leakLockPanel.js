@@ -1266,9 +1266,9 @@ class LeakLockPanel {
     }
 
     _buildGitFilterBranchCommand(repoDir, targets) {
-        const repoEsc = repoDir.replace(/"/g, '\\"');
+        const repoEsc = repoDir.replace(/"/g, '\\\\\"');
         const rmCmds = targets.map(t => {
-            const p = t.path.replace(/"/g, '\\"');
+            const p = t.path.replace(/"/g, '\\\\\"');
             return `git rm -r --cached --ignore-unmatch \"${p}\"`;
         }).join('; ');
         const indexFilter = rmCmds.length ? rmCmds : 'echo no-op';
