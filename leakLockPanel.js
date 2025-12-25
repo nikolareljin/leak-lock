@@ -1172,6 +1172,13 @@ class LeakLockPanel {
         return full;
     }
 
+    _stripForcePush(command) {
+        if (!command) {
+            return command;
+        }
+        return command.replace(/\s*&&\s*git push --force --all\s*&&\s*git push --force --tags\s*$/, '');
+    }
+
     async _prepareBfgRemovalCommand() {
         const repo = this._removalState.repoDir;
         const targets = this._removalState.targets;
@@ -1415,10 +1422,17 @@ class LeakLockPanel {
                 progress.report({ increment: 10, message: 'Fetching remotes...' });
                 await this._gitFetchAll(repo);
                 progress.report({ increment: 30, message: 'Rewriting history...' });
-                await execAsync(cmd);
+                await execAsync(this._stripForcePush(cmd));
                 progress.report({ increment: 60, message: 'Cleanup complete' });
             });
-            await vscode.window.showInformationMessage('✅ Path-based removal complete. Review changes and force-push if needed.');
+            const result = await vscode.window.showInformationMessage(
+                '✅ Path-based removal complete. Your git history has been cleaned. Do you want to force push to update remote repositories now?',
+                'Force Push Now',
+                'Skip'
+            );
+            if (result === 'Force Push Now') {
+                await execAsync(`cd "${repo.replace(/"/g, '\\"')}" && git push --force --all && git push --force --tags`);
+            }
         } catch (e) {
             vscode.window.showErrorMessage(`Path-based removal failed: ${e.message}`);
         }
@@ -1454,11 +1468,18 @@ class LeakLockPanel {
                 progress.report({ increment: 10, message: 'Fetching remotes...' });
                 await this._gitFetchAll(repo);
                 progress.report({ increment: 20, message: 'Executing BFG...' });
-                try { await execAsync(cmd); } catch (e) { console.warn('BFG run had issues:', e.message); }
+                try { await execAsync(this._stripForcePush(cmd)); } catch (e) { console.warn('BFG run had issues:', e.message); }
                 progress.report({ increment: 60, message: 'Cleaning git history...' });
             });
 
-            await vscode.window.showInformationMessage('✅ Removal complete. Review changes and force-push if needed.');
+            const result = await vscode.window.showInformationMessage(
+                '✅ Removal complete. Your git history has been cleaned. Do you want to force push to update remote repositories now?',
+                'Force Push Now',
+                'Skip'
+            );
+            if (result === 'Force Push Now') {
+                await execAsync(`cd "${repo.replace(/"/g, '\\"')}" && git push --force --all && git push --force --tags`);
+            }
         } catch (e) {
             vscode.window.showErrorMessage(`Removal failed: ${e.message}`);
         } finally {
@@ -1630,11 +1651,11 @@ class LeakLockPanel {
             : 'Git-only command will appear here after preparation.';
         const preparedBlockBfg = `
             <div id="scan-prepared-command-bfg" class="danger-command">${escapeHtml(bfgCommandText)}</div>
-            ${prepared && this._scanCleanup.preparedMode === 'bfg' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\\'scan-prepared-command-bfg\\')">📋 Copy command</button></div>' : ''}
+            ${prepared && this._scanCleanup.preparedMode === 'bfg' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\'scan-prepared-command-bfg\')">📋 Copy command</button></div>' : ''}
         `;
         const preparedBlockGit = `
             <div id="scan-prepared-command-git" class="danger-command">${escapeHtml(gitCommandText)}</div>
-            ${prepared && this._scanCleanup.preparedMode === 'git' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\\'scan-prepared-command-git\\')">📋 Copy command</button></div>' : ''}
+            ${prepared && this._scanCleanup.preparedMode === 'git' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\'scan-prepared-command-git\')">📋 Copy command</button></div>' : ''}
         `;
 
         return `
@@ -2686,11 +2707,11 @@ class LeakLockPanel {
 
     _buildScanBfgReplaceCommand(scanPath, replacementsFile) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-        return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && java -jar \"${this._shellEscapeDoubleQuotes(bfgPath)}\" --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
+        return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && java -jar \"${this._shellEscapeDoubleQuotes(bfgPath)}\" --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" && git reflog expire --expire=now --all && git gc --prune=now --aggressive && git push --force --all && git push --force --tags`;
     }
 
     _buildScanGitReplaceCommand(scanPath, replacementsFile) {
-        return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && git filter-repo --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" --force && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
+        return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && git filter-repo --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" --force && git reflog expire --expire=now --all && git gc --prune=now --aggressive && git push --force --all && git push --force --tags`;
     }
 
     _prepareScanReplacementCommand(mode, replacements) {
@@ -2808,9 +2829,17 @@ class LeakLockPanel {
                 }
             });
 
-            await vscode.window.showInformationMessage(
-                '✅ Git-only cleanup completed. Your git history has been cleaned. You may need to force push to update remote repositories.'
+            const result = await vscode.window.showInformationMessage(
+                '✅ Git-only cleanup completed. Your git history has been cleaned. Do you want to force push to update remote repositories now?',
+                'Force Push Now',
+                'Skip'
             );
+            if (result === 'Force Push Now') {
+                const util = require('util');
+                const execAsync = util.promisify(exec);
+                const repoEsc = scanPath.replace(/"/g, '\\"');
+                await execAsync(`cd "${repoEsc}" && git push --force --all && git push --force --tags`);
+            }
         } catch (error) {
             vscode.window.showErrorMessage(`Git-only cleanup failed: ${error.message}`);
         }
@@ -2960,12 +2989,17 @@ class LeakLockPanel {
 
             // Show success message with next steps
             const result = await vscode.window.showInformationMessage(
-                '✅ BFG cleanup completed successfully!\n\nYour git history has been cleaned. You may need to force push to update remote repositories.',
+                '✅ BFG cleanup completed successfully!\n\nYour git history has been cleaned. Do you want to force push to update remote repositories now?',
+                'Force Push Now',
                 'Show Git Status',
-                'OK'
+                'Skip'
             );
 
-            if (result === 'Show Git Status') {
+            if (result === 'Force Push Now') {
+                const util = require('util');
+                const execAsync = util.promisify(exec);
+                await execAsync(`cd "${scanPath}" && git push --force --all && git push --force --tags`);
+            } else if (result === 'Show Git Status') {
                 // Open a new terminal and show git status
                 const terminal = vscode.window.createTerminal('Git Status');
                 terminal.sendText(`cd "${scanPath}" && git status`);
