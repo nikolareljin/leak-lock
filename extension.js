@@ -149,7 +149,9 @@ async function installDependencies(forceReinstall = false) {
 function activate(context) {
 	console.log('Activating extension "leak-lock" ... ');
 
-	// Suppress known noisy runtime warnings from dependencies/host.
+	// Suppress known, non-critical warnings from dependencies and the host environment.
+	// DEP0040: Node.js deprecation warning for punycode module, triggered by dependencies.
+	// SQLite ExperimentalWarning: VS Code's built-in SQLite support is marked experimental but stable.
 	process.on('warning', (warning) => {
 		if (warning.code === 'DEP0040') {
 			return;
