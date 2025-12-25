@@ -294,6 +294,7 @@ class LeakLockPanel {
             repoDir: null,
             targets: [], // { path, type: 'file'|'directory', base }
             preparedCommand: null,
+            preparedIndexFilter: null, // For git filter-branch execution
             preparedMode: null,
             preparing: false,
             running: false,
@@ -1064,6 +1065,7 @@ class LeakLockPanel {
                 }
                 this._removalState.repoDir = validated;
                 this._removalState.preparedCommand = null;
+                this._removalState.preparedIndexFilter = null;
             } catch (e) {
                 vscode.window.showErrorMessage(`Invalid repository path: ${e.message}`);
             }
@@ -1114,6 +1116,7 @@ class LeakLockPanel {
             for (const t of newTargets) existing.set(t.path, t);
             this._removalState.targets = Array.from(existing.values());
             this._removalState.preparedCommand = null;
+            this._removalState.preparedIndexFilter = null;
             this._updateWebviewContent();
         }
     }
@@ -1126,6 +1129,7 @@ class LeakLockPanel {
         this._removalState.targets = this._removalState.targets.filter(t => t.path !== targetPath);
         if (this._removalState.targets.length !== beforeCount) {
             this._removalState.preparedCommand = null;
+            this._removalState.preparedIndexFilter = null;
             this._removalState.preparedMode = null;
             this._removalState.details = [];
             this._updateWebviewContent();
@@ -1138,6 +1142,7 @@ class LeakLockPanel {
         }
         this._removalState.targets = [];
         this._removalState.preparedCommand = null;
+        this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._removalState.details = [];
         this._updateWebviewContent();
@@ -1231,6 +1236,7 @@ class LeakLockPanel {
         this._removalState.combineMode = mode;
         // Invalidate prepared command to force regeneration with new mode
         this._removalState.preparedCommand = null;
+        this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._updateWebviewContent();
     }
@@ -1259,6 +1265,7 @@ class LeakLockPanel {
         this._removalState.deletionMode = mode;
         // Clear previous prepared command/preview when switching
         this._removalState.preparedCommand = null;
+        this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._updateWebviewContent();
     }
@@ -1368,13 +1375,20 @@ class LeakLockPanel {
         }
     }
 
-    _buildGitFilterBranchCommand(repoDir, targets) {
-        const repoEsc = this._shellEscapeDoubleQuotes(repoDir);
+    _buildGitFilterBranchIndexFilter(targets) {
+        // Build the index filter script for git filter-branch
+        // This will be passed as a shell script to --index-filter
         const rmCmds = targets.map(t => {
             const p = this._shellEscapeDoubleQuotes(t.path);
             return `git rm -r --cached --ignore-unmatch \"${p}\"`;
         }).join('; ');
-        const indexFilter = rmCmds.length ? rmCmds : 'echo no-op';
+        return rmCmds.length ? rmCmds : 'echo no-op';
+    }
+
+    _buildGitFilterBranchCommandForDisplay(repoDir, indexFilter) {
+        // Build a display-only version of the command for UI purposes
+        // This is NOT executed - actual execution uses execFile
+        const repoEsc = this._shellEscapeDoubleQuotes(repoDir);
         const cmd = [
             `cd \"${repoEsc}\"`,
             `git filter-branch --force --index-filter \"${indexFilter}\" --prune-empty --tag-name-filter cat -- --all`,
@@ -1397,8 +1411,13 @@ class LeakLockPanel {
             this._removalState.preparing = true;
             this._updateWebviewContent();
             await this._gitFetchAll(validatedRepo);
-            const cmd = this._buildGitFilterBranchCommand(validatedRepo, targets);
-            this._removalState.preparedCommand = cmd;
+            // Store the index filter and repo path for execution
+            const indexFilter = this._buildGitFilterBranchIndexFilter(targets);
+            this._removalState.preparedIndexFilter = indexFilter;
+            this._removalState.repoDir = validatedRepo;
+            // Build display-only command for UI
+            const displayCmd = this._buildGitFilterBranchCommandForDisplay(validatedRepo, indexFilter);
+            this._removalState.preparedCommand = displayCmd;
             this._removalState.preparedMode = 'git';
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to prepare git command: ${e.message}`);
@@ -1410,8 +1429,8 @@ class LeakLockPanel {
 
     async _runGitRemoval() {
         const repo = this._removalState.repoDir;
-        const cmd = this._removalState.preparedCommand;
-        if (!repo || !cmd || this._removalState.preparedMode !== 'git') {
+        const indexFilter = this._removalState.preparedIndexFilter;
+        if (!repo || !indexFilter || this._removalState.preparedMode !== 'git') {
             vscode.window.showErrorMessage('Prepare the git command first.');
             return;
         }
@@ -1424,7 +1443,7 @@ class LeakLockPanel {
         if (proceed !== 'Proceed') return;
 
         const util = require('util');
-        const execAsync = util.promisify(exec);
+        const execFileAsync = util.promisify(execFile);
         try {
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
@@ -1433,9 +1452,50 @@ class LeakLockPanel {
             }, async (progress) => {
                 progress.report({ increment: 10, message: 'Fetching remotes...' });
                 await this._gitFetchAll(repo);
+                
                 progress.report({ increment: 30, message: 'Rewriting history...' });
-                await execAsync(this._stripForcePush(cmd));
-                progress.report({ increment: 60, message: 'Cleanup complete' });
+                // Run git filter-branch using execFile
+                await execFileAsync('git', [
+                    'filter-branch',
+                    '--force',
+                    '--index-filter',
+                    indexFilter,
+                    '--prune-empty',
+                    '--tag-name-filter',
+                    'cat',
+                    '--',
+                    '--all'
+                ], { cwd: repo });
+                
+                progress.report({ increment: 50, message: 'Cleaning up refs...' });
+                // Clean up original refs - need to use shell for pipe
+                const { stdout: refsOut } = await execFileAsync('git', [
+                    'for-each-ref',
+                    '--format=delete %(refname)',
+                    'refs/original/'
+                ], { cwd: repo });
+                if (refsOut.trim()) {
+                    // Update refs using stdin
+                    const { spawn } = require('child_process');
+                    await new Promise((resolve, reject) => {
+                        const proc = spawn('git', ['update-ref', '--stdin'], { cwd: repo });
+                        proc.stdin.write(refsOut);
+                        proc.stdin.end();
+                        proc.on('close', (code) => {
+                            if (code === 0) resolve();
+                            else reject(new Error(`git update-ref failed with code ${code}`));
+                        });
+                        proc.on('error', reject);
+                    });
+                }
+                
+                progress.report({ increment: 70, message: 'Expiring reflog...' });
+                await execFileAsync('git', ['reflog', 'expire', '--expire=now', '--all'], { cwd: repo });
+                
+                progress.report({ increment: 85, message: 'Running garbage collection...' });
+                await execFileAsync('git', ['gc', '--prune=now', '--aggressive'], { cwd: repo });
+                
+                progress.report({ increment: 100, message: 'Cleanup complete' });
             });
             const result = await vscode.window.showInformationMessage(
                 '✅ Path-based removal complete. Your git history has been cleaned. Do you want to force push to update remote repositories now?',
@@ -1443,7 +1503,8 @@ class LeakLockPanel {
                 'Skip'
             );
             if (result === 'Force Push Now') {
-                await execAsync(`cd "${repo.replace(/"/g, '\\"')}" && git push --force --all && git push --force --tags`);
+                await execFileAsync('git', ['push', '--force', '--all'], { cwd: repo });
+                await execFileAsync('git', ['push', '--force', '--tags'], { cwd: repo });
             }
         } catch (e) {
             vscode.window.showErrorMessage(`Path-based removal failed: ${e.message}`);
