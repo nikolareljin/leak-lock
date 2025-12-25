@@ -1170,10 +1170,21 @@ class LeakLockPanel {
 
     async _gitFetchAll(repoPath) {
         try {
-            const util = require('util');
-            const execAsync = util.promisify(exec);
-            const repoEsc = repoPath.replace(/"/g, '\\\\"');
-            await execAsync(`cd "${repoEsc}" && git fetch --all --tags --prune`);
+            await new Promise((resolve, reject) => {
+                const child = spawn('git', ['fetch', '--all', '--tags', '--prune'], {
+                    cwd: repoPath
+                });
+                child.on('error', (err) => {
+                    reject(err);
+                });
+                child.on('close', (code) => {
+                    if (code === 0) {
+                        resolve();
+                    } else {
+                        reject(new Error(`git fetch exited with code ${code}`));
+                    }
+                });
+            });
             const ts = new Date().toISOString();
             this._removalState.lastFetchAt = ts;
             this._updateWebviewContent();
