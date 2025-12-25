@@ -142,10 +142,10 @@ else
     print_test_result 1 "extension.js does not exist"
 fi
 
-if [ -f "sidebarProvider.js" ]; then
-    print_test_result 0 "sidebarProvider.js exists"
+if [ -f "leakLockSidebarProvider.js" ]; then
+    print_test_result 0 "leakLockSidebarProvider.js exists"
 else
-    print_test_result 1 "sidebarProvider.js does not exist"
+    print_test_result 1 "leakLockSidebarProvider.js does not exist"
 fi
 
 if [ -f "file-scan.js" ]; then
@@ -180,7 +180,7 @@ print_section "Testing Dependency Installation"
 
 if [ -f "package.json" ]; then
     echo -e "${YELLOW}Installing npm dependencies...${NC}"
-    if npm install > /dev/null; then
+    if npm install; then
         print_test_result 0 "npm dependencies installed successfully"
         
         # Check if node_modules exists
