@@ -1,5 +1,0 @@
-Update VSCode Extension to run in Docker praetorian scanner in the currently opened directory and display results of the scan in the left sidebar. 
-Add the form that will have "Analyze" button, results of the security scan (files, commit hashes, date of commit, who committed, content of the found problem). 
-Display a checkbox next to each of those results and an input text field - to allow replacing found values with other values. 
-At the bottom of the form, show "Fix" button. After pressing "Fix", it will run bfg tool with parametrized TXT values that will be run on the current repository. 
-Finally, user will be asked if changes should be pushed to the repository. In that case, forced commit with push will be performed in order to update all the changes in the repository. 
