@@ -1149,7 +1149,11 @@ class LeakLockPanel {
     }
 
     _escapeRegex(str) {
-        // Escape regex special chars: . * + ? ^ $ { } ( ) | [ ] \
+        // Escape all regex metacharacters so file/dir names are treated literally in BFG's Java-regex
+        // patterns. This is security-sensitive: these names may come from user-controlled repository
+        // content and are interpolated into a shell command. Escaping . * + ? ^ $ { } ( ) | [ ] and \ 
+        // prevents an attacker from smuggling in regex operators that change which paths BFG deletes
+        // or that break the surrounding command syntax.
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
