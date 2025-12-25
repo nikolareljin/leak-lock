@@ -1164,11 +1164,11 @@ class LeakLockPanel {
 
         const args = [];
         if (fileNames.length > 0) {
-            const fileRegex = fileNames.map(n => this._escapeRegex(n)).join('|').replace(/"/g, '\\"');
+            const fileRegex = this._shellEscapeDoubleQuotes(fileNames.map(n => this._escapeRegex(n)).join('|'));
             args.push(`--delete-files "${fileRegex}"`);
         }
         if (dirNames.length > 0) {
-            const dirRegex = dirNames.map(n => this._escapeRegex(n)).join('|').replace(/"/g, '\\"');
+            const dirRegex = this._shellEscapeDoubleQuotes(dirNames.map(n => this._escapeRegex(n)).join('|'));
             args.push(`--delete-folders "${dirRegex}"`);
         }
         const bfgCmd = `java -jar \"${bfgPath}\" ${args.join(' ')} \"${repoDir}\"`;
