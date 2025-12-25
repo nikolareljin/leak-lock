@@ -63,6 +63,7 @@ jobs:
         run: |
           echo "::add-mask::${{ secrets.GITHUB_TOKEN }}"
           echo "::add-mask::${{ secrets.VSCE_PAT }}"
+          echo "::add-mask::${{ secrets.OVSX_PAT }}"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
