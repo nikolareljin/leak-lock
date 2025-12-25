@@ -2818,15 +2818,13 @@ class LeakLockPanel {
 
                 progress.report({ increment: 40, message: "Running git filter-repo..." });
                 const util = require('util');
-                const execAsync = util.promisify(exec);
-                const repoEsc = this._shellEscapeDoubleQuotes(scanPath);
-                const fileEsc = this._shellEscapeDoubleQuotes(replacementsFile);
-                await execAsync(`cd "${repoEsc}" && git filter-repo --replace-text "${fileEsc}" --force`);
+                const execFileAsync = util.promisify(execFile);
+                await execFileAsync('git', ['filter-repo', '--replace-text', replacementsFile, '--force'], { cwd: scanPath });
 
                 progress.report({ increment: 20, message: "Expiring reflog..." });
-                await execAsync(`cd "${repoEsc}" && git reflog expire --expire=now --all`);
+                await execFileAsync('git', ['reflog', 'expire', '--expire=now', '--all'], { cwd: scanPath });
                 progress.report({ increment: 20, message: "Running garbage collection..." });
-                await execAsync(`cd "${repoEsc}" && git gc --prune=now --aggressive`);
+                await execFileAsync('git', ['gc', '--prune=now', '--aggressive'], { cwd: scanPath });
 
                 try {
                     fs.unlinkSync(replacementsFile);
@@ -2842,9 +2840,9 @@ class LeakLockPanel {
             );
             if (result === 'Force Push Now') {
                 const util = require('util');
-                const execAsync = util.promisify(exec);
-                const repoEsc = scanPath.replace(/"/g, '\\"');
-                await execAsync(`cd "${repoEsc}" && git push --force --all && git push --force --tags`);
+                const execFileAsync = util.promisify(execFile);
+                await execFileAsync('git', ['push', '--force', '--all'], { cwd: scanPath });
+                await execFileAsync('git', ['push', '--force', '--tags'], { cwd: scanPath });
             }
         } catch (error) {
             vscode.window.showErrorMessage(`Git-only cleanup failed: ${error.message}`);
