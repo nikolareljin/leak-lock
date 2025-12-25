@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./media/icon.png" width="128" height="128" />
+</p>
+
 # 🛡️ Leak Lock - VS Code Security Extension
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
