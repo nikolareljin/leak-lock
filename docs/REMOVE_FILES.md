@@ -1,12 +1,12 @@
 # 🗑️ Remove Files Flow
 
-This document explains the Remove Files feature that helps you remove unwanted files or directories from your git history using BFG, directly from the main panel.
+This document explains the Remove Files feature that helps you remove unwanted files or directories from your git history using BFG or git filter-branch, directly from the main panel.
 
 ## Overview
 
 - Launch from the sidebar: "🗑️ Remove files"
 - Uses a guided main-panel interface
-- Select repository, pick files/directories, prepare BFG, confirm and run
+- Select repository, pick files/directories, prepare commands (BFG or Git), confirm and run
 - BFG tool: https://rtyley.github.io/bfg-repo-cleaner/ — fast, safe history cleanup
 
 ## Steps
