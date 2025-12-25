@@ -1149,7 +1149,11 @@ class LeakLockPanel {
     }
 
     _escapeRegex(str) {
-        // Escape regex special chars: . * + ? ^ $ { } ( ) | [ ] \
+        // Escape all regex metacharacters so file/dir names are treated literally in BFG's Java-regex
+        // patterns. This is security-sensitive: these names may come from user-controlled repository
+        // content and are interpolated into a shell command. Escaping . * + ? ^ $ { } ( ) | [ ] and \ 
+        // prevents an attacker from smuggling in regex operators that change which paths BFG deletes
+        // or that break the surrounding command syntax.
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
@@ -1160,11 +1164,11 @@ class LeakLockPanel {
 
         const args = [];
         if (fileNames.length > 0) {
-            const fileRegex = fileNames.map(n => this._escapeRegex(n)).join('|').replace(/"/g, '\\"');
+            const fileRegex = this._shellEscapeDoubleQuotes(fileNames.map(n => this._escapeRegex(n)).join('|'));
             args.push(`--delete-files "${fileRegex}"`);
         }
         if (dirNames.length > 0) {
-            const dirRegex = dirNames.map(n => this._escapeRegex(n)).join('|').replace(/"/g, '\\"');
+            const dirRegex = this._shellEscapeDoubleQuotes(dirNames.map(n => this._escapeRegex(n)).join('|'));
             args.push(`--delete-folders "${dirRegex}"`);
         }
         const bfgCmd = `java -jar \"${bfgPath}\" ${args.join(' ')} \"${repoDir}\"`;
@@ -2813,8 +2817,8 @@ class LeakLockPanel {
                 progress.report({ increment: 40, message: "Running git filter-repo..." });
                 const util = require('util');
                 const execAsync = util.promisify(exec);
-                const repoEsc = scanPath.replace(/"/g, '\\"');
-                const fileEsc = replacementsFile.replace(/"/g, '\\"');
+                const repoEsc = this._shellEscapeDoubleQuotes(scanPath);
+                const fileEsc = this._shellEscapeDoubleQuotes(replacementsFile);
                 await execAsync(`cd "${repoEsc}" && git filter-repo --replace-text "${fileEsc}" --force`);
 
                 progress.report({ increment: 20, message: "Expiring reflog..." });
