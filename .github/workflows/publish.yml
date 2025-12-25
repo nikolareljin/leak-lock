@@ -175,7 +175,7 @@ jobs:
           # Publish with retry logic (removed --verbose flag)
           for i in {1..3}; do
             echo "Publishing attempt $i..."
-            if vsce publish --pat ${{ secrets.VSCE_PAT }}; then
+            if vsce publish --pat "${{ secrets.VSCE_PAT }}"; then
               echo "Published successfully!"
               break
             else
@@ -190,7 +190,6 @@ jobs:
             fi
           done
         env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
           NODE_ENV: production
 
       - name: Publish to Open VSX Registry
@@ -208,7 +207,7 @@ jobs:
           fi
           for i in {1..3}; do
             echo "Open VSX publish attempt $i..."
-            if ovsx publish "$VSIX_FILE" -p ${{ secrets.OVSX_PAT }}; then
+            if ovsx publish "$VSIX_FILE" -p "${{ secrets.OVSX_PAT }}"; then
               echo "Published to Open VSX successfully!"
               break
             else
@@ -223,13 +222,10 @@ jobs:
             fi
           done
         env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
           NODE_ENV: production
 
       - name: Create Git Tag
         if: github.event_name == 'push'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           FINAL_VERSION=${{ steps.new_version.outputs.version || steps.version.outputs.version }}
           echo "Creating git tag ${FINAL_VERSION}"
@@ -237,7 +233,7 @@ jobs:
           git config --local user.name "GitHub Action"
           git tag "${FINAL_VERSION}"
           # Ensure remote is authenticated with GITHUB_TOKEN for pushing tags
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "${FINAL_VERSION}"
 
       - name: Create GitHub Release
