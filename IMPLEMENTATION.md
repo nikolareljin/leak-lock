@@ -6,7 +6,7 @@ This VS Code extension provides security scanning for repositories using Nosey P
 ## Features Implemented
 
 ### 1. Extension Icon and Sidebar
-- Created SVG shield icon (`media/shield.svg`) for the extension
+- Created SVG shield icon (`media/icon.svg`) for the extension
 - Added activity bar view container with the shield icon
 - Configured webview-based sidebar panel
 
@@ -42,7 +42,7 @@ This VS Code extension provides security scanning for repositories using Nosey P
 ## Files Modified/Created
 
 ### New Files
-- `media/shield.svg` - Extension icon
+- `media/icon.svg` - Extension icon
 - `IMPLEMENTATION.md` - This documentation
 
 ### Modified Files
