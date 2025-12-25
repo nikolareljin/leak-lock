@@ -19,7 +19,7 @@ You need to create a Personal Access Token (PAT) for publishing to the VS Code M
 6. Copy the generated token
 
 ### 2. Open VSX Registry Access Token
-You need a token from Open VSX to publish there:
+You need a token from the Open VSX Registry (open-vsx.org) to publish there:
 
 1. Go to [Open VSX User Settings](https://open-vsx.org/user-settings/tokens)
 2. Create a new token
@@ -50,7 +50,7 @@ Ensure your `package.json` includes the publisher field:
 }
 ```
 
-Replace `your-publisher-name` with your actual VS Code Marketplace publisher ID (must match your Open VSX namespace).
+Replace `your-publisher-name` with your actual VS Code Marketplace publisher ID and ensure it matches your Open VSX namespace (the org/username shown on open-vsx.org).
 
 ## Workflow Features
 
@@ -86,6 +86,16 @@ vsce package
 
 # Publish to marketplace (requires PAT)
 vsce publish --pat YOUR_PAT_TOKEN
+```
+
+To publish to Open VSX manually:
+
+```bash
+# Install Open VSX CLI
+npm install -g ovsx
+
+# Publish the packaged .vsix (requires OVSX token)
+ovsx publish ./leak-lock-*.vsix -p YOUR_OVSX_TOKEN
 ```
 
 ## File Structure
