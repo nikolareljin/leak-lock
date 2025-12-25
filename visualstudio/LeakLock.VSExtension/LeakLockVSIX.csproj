@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <VSToolsPath Condition="'$(VSToolsPath)' == ''">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)</VSToolsPath>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <GeneratePkgDefFile>false</GeneratePkgDefFile>
+    <UseCodebase>true</UseCodebase>
+    <UseVSSDK>true</UseVSSDK>
+    <RootNamespace>LeakLock.VSExtension</RootNamespace>
+    <AssemblyName>LeakLock.VSExtension</AssemblyName>
+    <IncludeOutputGroupsInVSIX>BuiltProjectOutputGroup;DebugSymbolsProjectOutputGroup</IncludeOutputGroupsInVSIX>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.Sdk" Version="17.0.31902.203" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.11.5206" PrivateAssets="all" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="VSPackage.cs" />
+    <Compile Include="LeakLockToolWindow.cs" />
+    <Compile Include="LeakLockToolWindowControl.xaml.cs">
+      <DependentUpon>LeakLockToolWindowControl.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Commands\OpenLeakLockCommand.cs" />
+    <Compile Include="Services\ProcessRunner.cs" />
+    <Compile Include="Services\ScannerService.cs" />
+    <Compile Include="Services\BfgService.cs" />
+    <Compile Include="Models\Finding.cs" />
+    <Compile Include="Models\ScanResult.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <VSCTCompile Include="LeakLockPackage.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
+    <None Include="source.extension.vsixmanifest">
+      <SubType>Designer</SubType>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Page Include="LeakLockToolWindowControl.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Resources\bfg-placeholder.txt">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" Condition="Exists('$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets')" />
+</Project>

@@ -1,0 +1,2 @@
+Leak Lock Visual Studio Extension
+This is a placeholder resource for VSCT bitmap wiring.

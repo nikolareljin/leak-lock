@@ -193,39 +193,7 @@ jobs:
         with:
           tag_name: v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
           name: Release v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
-          body: |
-            ## Changes in this Release
-            
-            ### 🛡️ Security Scanning
-            - Enhanced dependency directory handling (node_modules, vendor, etc.)
-            - Improved UI with sidebar controls and main area results
-            - Dynamic progress indicators during scanning operations
-            - Cross-platform security protection for Windows and Unix systems
-            - Fixed XSS vulnerabilities in file path display
-            - Enhanced path validation with directory traversal protection
-            
-            ### 🔧 Technical Improvements  
-            - Separated installation/setup controls to sidebar
-            - Streamlined main panel for scan results and BFG execution
-            - Added spinner animations for better user feedback
-            - Improved error handling and cleanup operations
-            - Centralized configuration constants for better maintainability
-            - Enhanced dependency installation with detailed instructions
-            
-            ### 🚀 Deployment
-            - Automated publishing pipeline with version management
-            - Comprehensive testing before release
-            - Updated GitHub Actions to latest versions
-            - Fixed Node.js compatibility issues with VSCE packaging
-            - Resolved VSCE command line option compatibility
-            
-            **Installation:** Search for "leak-lock" in VS Code Extensions marketplace
-            
-            **Usage:** 
-            1. Open the Leak Lock sidebar panel
-            2. Install dependencies and select target directory  
-            3. Click "Start Scan" to analyze for secrets
-            4. Review results and run BFG cleanup as needed
+          body_path: .github/release-notes-template.md
           draft: false
           prerelease: false
           files: "*.vsix"

@@ -1,0 +1,171 @@
+name: Publish VSIX and IntelliJ Plugins
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'README*.md'
+  workflow_dispatch:
+
+jobs:
+  vsix:
+    name: Build + (optional) Publish Visual Studio VSIX
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get shared version (from package.json)
+        id: shared_version
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json | ConvertFrom-Json
+          $ver = $pkg.version
+          if (-not $ver) { Write-Error "package.json missing version"; exit 1 }
+          echo "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1.3.1
+
+      - name: Restore and Build VSIX (Release)
+        shell: pwsh
+        run: |
+          msbuild .\visualstudio\LeakLock.VisualStudio.sln -t:Restore -p:Configuration=Release
+          msbuild .\visualstudio\LeakLock.VisualStudio.sln -p:Configuration=Release -m
+
+      - name: Locate VSIX
+        id: locate_vsix
+        shell: pwsh
+        run: |
+          $vsix = Get-ChildItem -Recurse -Filter *.vsix -Path .\visualstudio\LeakLock.VSExtension\bin\Release | Select-Object -First 1
+          if (-not $vsix) { Write-Error "VSIX not found"; exit 1 }
+          echo "vsix_path=$($vsix.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Found VSIX: $($vsix.FullName)"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LeakLock-VSIX
+          path: ${{ steps.locate_vsix.outputs.vsix_path }}
+          retention-days: 14
+
+
+      - name: Create publish manifest
+        if: ${{ secrets.VS_MARKETPLACE_TOKEN != '' && secrets.VS_PUBLISHER != '' }}
+        shell: pwsh
+        run: |
+          $manifest = @{
+            "publisher" = "${{ secrets.VS_PUBLISHER }}";
+            "extensionId" = "LeakLock.VSExtension";
+            "displayName" = "Leak Lock for Visual Studio";
+            "description" = "Detects secrets using Nosey Parker and cleans history using BFG.";
+            "tags" = @("security","secrets","git","bfg");
+            "categories" = @("Coding");
+            "qna" = $true;
+            "repo" = "https://github.com/nikolareljin/leak-lock";
+            "galleryFlags" = @("Public")
+          } | ConvertTo-Json -Depth 5
+          $manifestPath = Join-Path $pwd "visualstudio\vsix-publish.json"
+          $manifest | Out-File -FilePath $manifestPath -Encoding utf8
+          echo "manifest_path=$manifestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Publish to Visual Studio Marketplace (Pinned SKUs)
+        if: ${{ secrets.VS_MARKETPLACE_TOKEN != '' && secrets.VS_PUBLISHER != '' }}
+        shell: pwsh
+        run: |
+          $vsix = "${{ steps.locate_vsix.outputs.vsix_path }}"
+          $manifest = "visualstudio\vsix-publish.json"
+          $vswhere = "$Env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          $skus = @(
+            "Microsoft.VisualStudio.Product.Enterprise",
+            "Microsoft.VisualStudio.Product.Professional",
+            "Microsoft.VisualStudio.Product.Community"
+          )
+          $installPath = $null
+          foreach ($sku in $skus) {
+            $p = & $vswhere -latest -products $sku -requires Microsoft.Component.MSBuild -property installationPath
+            if ($p) { $installPath = $p; break }
+          }
+          if (-not $installPath) {
+            # Fallback to any product
+            $installPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+          }
+          if (-not $installPath) { Write-Error "Visual Studio installation not found"; exit 1 }
+          $publisherExe = Join-Path $installPath "VSSDK\VisualStudioIntegration\Tools\Bin\VsixPublisher.exe"
+          if (-not (Test-Path $publisherExe)) {
+            $publisherExe = Get-ChildItem -Path $installPath -Recurse -Filter VsixPublisher.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not (Test-Path $publisherExe)) { Write-Error "VsixPublisher.exe not found"; exit 1 }
+          & $publisherExe publish -payload "$vsix" -publishManifest "$manifest" -personalAccessToken "${{ secrets.VS_MARKETPLACE_TOKEN }}"
+
+      - name: Create/Update GitHub Release (VSIX asset)
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.shared_version.outputs.version }}
+          name: Release v${{ steps.shared_version.outputs.version }}
+          body_path: .github/release-notes-template.md
+          files: ${{ steps.locate_vsix.outputs.vsix_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  intellij:
+    name: Build + (optional) Publish IntelliJ Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get shared version (from package.json)
+        id: shared_version
+        run: |
+          v=$(python3 - <<'PY'
+          import json
+          print(json.load(open('package.json'))['version'])
+          PY
+          )
+          echo "version=$v" >> $GITHUB_OUTPUT
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Make gradlew executable
+        working-directory: intellij/LeakLockIntelliJ
+        run: chmod +x gradlew
+
+      - name: Build plugin (distribution zip)
+        working-directory: intellij/LeakLockIntelliJ
+        run: ./gradlew buildPlugin --stacktrace
+
+      - name: Upload IntelliJ distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LeakLock-IntelliJ
+          path: intellij/LeakLockIntelliJ/build/distributions/*.zip
+          retention-days: 14
+
+      - name: Publish to JetBrains Marketplace
+        if: ${{ secrets.JETBRAINS_TOKEN != '' }}
+        working-directory: intellij/LeakLockIntelliJ
+        env:
+          JETBRAINS_TOKEN: ${{ secrets.JETBRAINS_TOKEN }}
+          JETBRAINS_CHANNEL: ${{ secrets.JETBRAINS_CHANNEL }}
+        run: ./gradlew publishPlugin --stacktrace
+
+      - name: Create/Update GitHub Release (IntelliJ asset)
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.shared_version.outputs.version }}
+          name: Release v${{ steps.shared_version.outputs.version }}
+          body_path: .github/release-notes-template.md
+          files: intellij/LeakLockIntelliJ/build/distributions/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
