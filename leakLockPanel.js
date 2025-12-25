@@ -355,7 +355,7 @@ class LeakLockPanel {
                         LeakLockPanel.currentPanel._selectRepoForRemoval();
                         break;
                     case 'removeFiles.selectTargets':
-                        LeakLockPanel.currentPanel._selectTargetsForRemoval();
+                        LeakLockPanel.currentPanel._selectTargetsForRemoval(message.kind);
                         break;
                     case 'removeFiles.prepare':
                         LeakLockPanel.currentPanel._prepareBfgRemovalCommand();
@@ -849,7 +849,11 @@ class LeakLockPanel {
                     <div class="h1">Select Files or Directories</div>
                     <div class="hint">Select one or more files or directories within the repository.</div>
                     ${targetsList}
-                    <div style="margin-top: 8px;"><button class="button" onclick="selectTargets()">➕ Select files/directories</button></div>
+                    <div style="margin-top: 8px; display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="button" onclick="selectTargets('both')">➕ Select files/directories</button>
+                        <button class="button" onclick="selectTargets('files')">📄 Select files</button>
+                        <button class="button" onclick="selectTargets('folders')">📁 Select directories</button>
+                    </div>
                 </div>
 
                 <div class="section">
@@ -910,7 +914,7 @@ class LeakLockPanel {
                 <script>
                     const vscode = acquireVsCodeApi();
                     // Repo selection is managed from the sidebar; no selection here
-                    function selectTargets() { vscode.postMessage({ command: 'removeFiles.selectTargets' }); }
+                    function selectTargets(kind) { vscode.postMessage({ command: 'removeFiles.selectTargets', kind }); }
                     function prepareCommand() { vscode.postMessage({ command: 'removeFiles.prepare' }); }
                     function setCombineMode(mode) { vscode.postMessage({ command: 'removeFiles.setCombineMode', mode }); }
                     function previewMatches() { vscode.postMessage({ command: 'removeFiles.preview' }); }
@@ -960,12 +964,25 @@ class LeakLockPanel {
         }
     }
 
-    async _selectTargetsForRemoval() {
+    async _selectTargetsForRemoval(kind = 'both') {
         if (!this._removalState.repoDir) {
             vscode.window.showErrorMessage('Please select a repository first.');
             return;
         }
-        const options = { canSelectFolders: true, canSelectFiles: true, canSelectMany: true, openLabel: 'Select files and/or directories to remove' };
+        const normalized = typeof kind === 'string' ? kind : 'both';
+        const canSelectFiles = normalized !== 'folders';
+        const canSelectFolders = normalized !== 'files';
+        const label = normalized === 'files'
+            ? 'Select files to remove'
+            : normalized === 'folders'
+                ? 'Select directories to remove'
+                : 'Select files and/or directories to remove';
+        const options = {
+            canSelectFolders,
+            canSelectFiles,
+            canSelectMany: true,
+            openLabel: label
+        };
         const result = await vscode.window.showOpenDialog(options);
         if (result && result.length > 0) {
             const repo = this._removalState.repoDir;
@@ -1319,6 +1336,27 @@ class LeakLockPanel {
         if (this._selectedDirectory && this._dependenciesInstalled) {
             this._scanRepository();
         }
+    }
+
+    updateRemoveFilesRepoFromSidebar(directory) {
+        if (!directory) {
+            return;
+        }
+        try {
+            const validated = validatePath(directory);
+            this._selectedDirectory = validated;
+            if (this._removalState.repoDir !== validated) {
+                this._removalState.repoDir = validated;
+                this._removalState.targets = [];
+                this._removalState.preparedCommand = null;
+                this._removalState.preparedMode = null;
+                this._removalState.preview = null;
+                this._removalState.details = [];
+            }
+            if (this._panel && this._viewMode === 'removeFiles') {
+                this._panel.webview.html = this._getHtmlForWebview();
+            }
+        } catch { }
     }
 
     _getResultsHtml() {
