@@ -1,7 +1,7 @@
 // Main area panel provider that uses the Webview API to display security issues in the main editor area.
 
 const vscode = require('vscode');
-const { exec, spawn } = require('child_process');
+const { exec, spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -1213,7 +1213,7 @@ class LeakLockPanel {
         }
         try {
             const util = require('util');
-            const execFileAsync = util.promisify(require('child_process').execFile);
+            const execFileAsync = util.promisify(execFile);
             // List refs
             const { stdout: brOut } = await execFileAsync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], { cwd: repo });
             const { stdout: rmOut } = await execFileAsync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/remotes'], { cwd: repo });
@@ -1728,7 +1728,7 @@ class LeakLockPanel {
             return;
         }
         const util = require('util');
-        const execFileAsync = util.promisify(require('child_process').execFile);
+        const execFileAsync = util.promisify(execFile);
         try {
             const { stdout: rootOut } = await execFileAsync('git', ['-C', scanPath, 'rev-parse', '--show-toplevel']);
             const repoRoot = rootOut.trim();
