@@ -849,6 +849,15 @@ class LeakLockPanel {
                     .danger-button { background: #c62828; color: #fff; border: none; padding: 10px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; }
                     .danger-button:hover { background: #b71c1c; }
                     .optional-frame { border: 1px dashed var(--vscode-panel-border); border-radius: 6px; padding: 12px; background: var(--vscode-editor-background); }
+                    .button-margin-y { margin: 8px 0; }
+                    .button-margin-top { margin-top: 8px; }
+                    .preview-section { margin-top: 8px; }
+                    .preview-header { font-size: 1.1em; }
+                    .preview-subheader { font-size: 1.1em; margin-top: 10px; }
+                    .branch-block { margin: 6px 0; }
+                    .branch-files { margin: 4px 0 0 0; padding-left: 18px; }
+                    .final-step-section { margin-top: 12px; }
+                    .final-step-hint { margin-bottom: 8px; }
                 </style>
             </head>
             <body>
@@ -918,20 +927,14 @@ class LeakLockPanel {
                         <div class="hint">Alternative to BFG; uses exact repo paths across branches, remotes, and tags. Preview before running.</div>
                         <div class="button-margin-y"><button class="button" onclick="previewMatches()" ${!hasTargets || !this._removalState.repoDir ? 'disabled' : ''}>🔎 Preview matches (branches, remotes, tags)</button></div>
                         ${this._removalState.preview ? `
-                            <style>
-                                .preview-section { margin-top: 8px; }
-                                .preview-header { font-size: 1.1em; }
-                                .preview-subheader { font-size: 1.1em; margin-top: 10px; }
-                                .branch-block { margin: 6px 0; }
-                                .branch-files { margin: 4px 0 0 0; padding-left: 18px; }
-                            </style>
-                            <div class=\"preview-section\">\n                            <div class=\"h1 preview-header\">Local branches</div>
+                            <div class="preview-section">
+                                <div class="h1 preview-header">Local branches</div>
                                 ${this._removalState.preview.branches.length === 0 ? '<div class=\\\'hint\\\'>No matches on local branches.</div>' : ''}
                                 ${this._removalState.preview.branches.map(b => `<div class=\\\"branch-block\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul class=\\\"branch-files\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
-                                <div class=\"h1 preview-subheader\">Remote branches</div>
+                                <div class="h1 preview-subheader">Remote branches</div>
                                 ${this._removalState.preview.remotes.length === 0 ? '<div class=\\\'hint\\\'>No matches on remote branches.</div>' : ''}
                                 ${this._removalState.preview.remotes.map(b => `<div class=\\\"branch-block\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul class=\\\"branch-files\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
-                                <div class=\"h1 preview-subheader\">Tags</div>
+                                <div class="h1 preview-subheader">Tags</div>
                                 ${this._removalState.preview.tags.length === 0 ? '<div class=\\\'hint\\\'>No matches on tags.</div>' : ''}
                                 ${this._removalState.preview.tags.map(b => `<div class=\\\"branch-block\\\"><strong>${escapeHtml(b.name)}</strong><br>${b.files.length ? '<ul class=\\\"branch-files\\\">' + b.files.map(f => '<li><code>' + escapeHtml(f) + '</code></li>').join('') + '</ul>' : '<span class=\\\"hint\\\">No matches</span>'}</div>`).join('')}
                             </div>
@@ -1210,20 +1213,19 @@ class LeakLockPanel {
         }
         try {
             const util = require('util');
-            const execAsync = util.promisify(exec);
-            const repoEsc = repo.replace(/"/g, '\\\\"');
+            const execFileAsync = util.promisify(require('child_process').execFile);
             // List refs
-            const { stdout: brOut } = await execAsync(`cd "${repoEsc}" && git for-each-ref --format='%(refname:short)' refs/heads`);
-            const { stdout: rmOut } = await execAsync(`cd "${repoEsc}" && git for-each-ref --format='%(refname:short)' refs/remotes`);
-            const { stdout: tgOut } = await execAsync(`cd "${repoEsc}" && git for-each-ref --format='%(refname:short)' refs/tags`);
+            const { stdout: brOut } = await execFileAsync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], { cwd: repo });
+            const { stdout: rmOut } = await execFileAsync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/remotes'], { cwd: repo });
+            const { stdout: tgOut } = await execFileAsync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/tags'], { cwd: repo });
             const branches = brOut.split('\n').map(s => s.trim()).filter(Boolean);
             const remotes = rmOut.split('\n').map(s => s.trim()).filter(Boolean).filter(n => !/\bHEAD$/.test(n));
             const tags = tgOut.split('\n').map(s => s.trim()).filter(Boolean);
-            const pathspecs = targets.map(t => t.type === 'directory' ? `${t.path.replace(/"/g, '\\\\"')}/` : t.path.replace(/"/g, '\\\\"'));
+            const pathspecs = targets.map(t => t.type === 'directory' ? `${t.path}/` : t.path);
             const results = [];
             for (const br of branches) {
                 try {
-                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${br.replace(/"/g, '\\\\"')}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', br, '--', ...pathspecs], { cwd: repo });
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     results.push({ name: br, files });
                 } catch (e) {
@@ -1233,7 +1235,7 @@ class LeakLockPanel {
             const remoteResults = [];
             for (const rb of remotes) {
                 try {
-                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${rb.replace(/"/g, '\\\\"')}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', rb, '--', ...pathspecs], { cwd: repo });
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     remoteResults.push({ name: rb, files });
                 } catch (e) {
@@ -1243,7 +1245,7 @@ class LeakLockPanel {
             const tagResults = [];
             for (const tag of tags) {
                 try {
-                    const { stdout } = await execAsync(`cd "${repoEsc}" && git ls-tree -r --name-only "${tag.replace(/"/g, '\\\\"')}^{}" -- ${pathspecs.map(p => '"' + p + '"').join(' ')}`);
+                    const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', `${tag}^{}`, '--', ...pathspecs], { cwd: repo });
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     tagResults.push({ name: tag, files });
                 } catch (e) {
