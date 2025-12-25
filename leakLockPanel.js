@@ -276,6 +276,14 @@ class LeakLockPanel {
         this._scanPath = null;
         this._scanRepoRoot = null;
         this._trackedFiles = null;
+        this._scanCleanup = {
+            preparedCommand: null,
+            preparedMode: null, // 'bfg' | 'git'
+            replacements: null,
+            replacementsFile: null,
+            preparing: false,
+            running: false
+        };
         this._dependenciesInstalled = false;
         this._panel = null;
 
@@ -351,6 +359,18 @@ class LeakLockPanel {
                         break;
                     case 'openSecurityGuide':
                         LeakLockPanel.currentPanel._openSecurityGuide();
+                        break;
+                    case 'scan.prepareBfg':
+                        LeakLockPanel.currentPanel._prepareScanBfgCommand(message.replacements);
+                        break;
+                    case 'scan.prepareGit':
+                        LeakLockPanel.currentPanel._prepareScanGitCommand(message.replacements);
+                        break;
+                    case 'scan.runBfg':
+                        LeakLockPanel.currentPanel._runPreparedScanCleanup('bfg');
+                        break;
+                    case 'scan.runGit':
+                        LeakLockPanel.currentPanel._runPreparedScanCleanup('git');
                         break;
                     // Remove Files flow
                     case 'removeFiles.selectRepo':
@@ -459,6 +479,22 @@ class LeakLockPanel {
                         padding: 10px 20px;
                         font-size: 1em;
                     }
+                    .danger-button {
+                        background: #c62828;
+                        color: #fff;
+                        border: none;
+                        padding: 10px 16px;
+                        border-radius: 4px;
+                        font-weight: bold;
+                        cursor: pointer;
+                    }
+                    .danger-button:hover {
+                        background: #b71c1c;
+                    }
+                    .danger-button:disabled {
+                        opacity: 0.5;
+                        cursor: not-allowed;
+                    }
                     .warning-text {
                         color: var(--vscode-errorForeground);
                         font-size: 0.85em;
@@ -490,6 +526,16 @@ class LeakLockPanel {
                     }
                     .manual-command {
                         background-color: var(--vscode-textCodeBlock-background);
+                        padding: 10px;
+                        border-radius: 4px;
+                        font-family: monospace;
+                        margin-top: 10px;
+                        word-break: break-all;
+                    }
+                    .danger-command {
+                        background: var(--vscode-inputValidation-errorBackground);
+                        border: 1px solid var(--vscode-inputValidation-errorBorder);
+                        color: var(--vscode-inputValidation-errorForeground);
                         padding: 10px;
                         border-radius: 4px;
                         font-family: monospace;
@@ -685,7 +731,7 @@ class LeakLockPanel {
                     // Dependency installation and directory selection 
                     // is now handled by the sidebar panel
                     
-                    function fixSecrets() {
+                    function collectReplacements() {
                         const replacements = {};
                         const checkboxes = document.querySelectorAll('.secret-checkbox:checked');
                         
@@ -696,27 +742,47 @@ class LeakLockPanel {
                             replacements[secretValue] = replacementInput.value || '*****';
                         });
                         
-                        vscode.postMessage({ 
-                            command: 'fix', 
-                            replacements: replacements 
+                        return replacements;
+                    }
+
+                    function prepareBfgCommand() {
+                        vscode.postMessage({
+                            command: 'scan.prepareBfg',
+                            replacements: collectReplacements()
                         });
                     }
-                    
-                    function runBFGCommand() {
-                        const replacements = {};
-                        const checkboxes = document.querySelectorAll('.secret-checkbox:checked');
-                        
-                        checkboxes.forEach(checkbox => {
-                            const row = checkbox.closest('tr');
-                            const secretValue = row.dataset.secret;
-                            const replacementInput = row.querySelector('.replacement-input');
-                            replacements[secretValue] = replacementInput.value || '*****';
+
+                    function prepareGitCommand() {
+                        vscode.postMessage({
+                            command: 'scan.prepareGit',
+                            replacements: collectReplacements()
                         });
-                        
-                        vscode.postMessage({ 
-                            command: 'runBFG', 
-                            replacements: replacements 
-                        });
+                    }
+
+                    function runPreparedBfg() {
+                        vscode.postMessage({ command: 'scan.runBfg' });
+                    }
+
+                    function runPreparedGit() {
+                        vscode.postMessage({ command: 'scan.runGit' });
+                    }
+
+                    function copyScanCommand(id) {
+                        try {
+                            const el = document.getElementById(id);
+                            if (!el) return;
+                            const text = el.innerText || el.textContent || '';
+                            if (navigator.clipboard && navigator.clipboard.writeText) {
+                                navigator.clipboard.writeText(text);
+                            } else {
+                                const ta = document.createElement('textarea');
+                                ta.value = text;
+                                document.body.appendChild(ta);
+                                ta.select();
+                                document.execCommand('copy');
+                                document.body.removeChild(ta);
+                            }
+                        } catch (e) {}
                     }
                     
                     function openFile(file, line) {
@@ -1553,6 +1619,21 @@ class LeakLockPanel {
         // Separate regular findings from dependency warnings
         const regularFindings = this._scanResults.filter(r => !r.isDependency);
         const dependencyWarnings = this._scanResults.filter(r => r.isDependency);
+        const prepared = this._scanCleanup.preparedCommand;
+        const bfgCommandText = prepared && this._scanCleanup.preparedMode === 'bfg'
+            ? prepared
+            : 'BFG command will appear here after preparation.';
+        const gitCommandText = prepared && this._scanCleanup.preparedMode === 'git'
+            ? prepared
+            : 'Git-only command will appear here after preparation.';
+        const preparedBlockBfg = `
+            <div id="scan-prepared-command-bfg" class="danger-command">${escapeHtml(bfgCommandText)}</div>
+            ${prepared && this._scanCleanup.preparedMode === 'bfg' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\\'scan-prepared-command-bfg\\')">📋 Copy command</button></div>' : ''}
+        `;
+        const preparedBlockGit = `
+            <div id="scan-prepared-command-git" class="danger-command">${escapeHtml(gitCommandText)}</div>
+            ${prepared && this._scanCleanup.preparedMode === 'git' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\\'scan-prepared-command-git\\')">📋 Copy command</button></div>' : ''}
+        `;
 
         return `
             <div class="scan-section">
@@ -1588,30 +1669,39 @@ class LeakLockPanel {
                         ${resultsRows}
                     </tbody>
                 </table>
-                <div style="margin-top: 15px;">
-                    <button class="fix-button" onclick="fixSecrets()">🔧 Generate Fix Command</button>
-                </div>
-                
-                <div class="run-section">
-                    <h3>⚡ Execute BFG Cleanup</h3>
+                <div class="run-section" style="margin-top: 18px;">
+                    <h3>⚡ BFG-based cleanup (recommended)</h3>
                     <p class="warning-text">⚠️ WARNING: This will permanently modify your git history!</p>
                     <p style="font-size: 0.9em; margin: 8px 0;">
-                        This will run BFG tool to remove selected secrets from git history and perform cleanup operations.
-                        Make sure you have a backup of your repository before proceeding.
+                        BFG is faster, but it will remove files/directories with the same name everywhere in history. Git-only cleanup does not.
                     </p>
-                    <button class="run-button" onclick="runBFGCommand()">
-                        🚀 Run BFG + Git Cleanup
-                    </button>
+                    <div style="margin-top: 8px;">
+                        <button class="scan-button" onclick="prepareBfgCommand()">⚙️ Prepare BFG command</button>
+                    </div>
+                    ${preparedBlockBfg}
+                    <div style="margin-top: 10px;">
+                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
+                    </div>
+                </div>
+
+                <div class="run-section" style="margin-top: 18px;">
+                    <h3>⚡ Git-only cleanup (alternative)</h3>
+                    <p class="warning-text">⚠️ WARNING: This will permanently modify your git history!</p>
+                    <p style="font-size: 0.9em; margin: 8px 0;">
+                        Git-only cleanup is path-aware and won’t remove same-name files elsewhere, but it is slower than BFG.
+                    </p>
+                    <div style="margin-top: 8px;">
+                        <button class="scan-button" onclick="prepareGitCommand()">⚙️ Prepare Git-only command</button>
+                    </div>
+                    ${preparedBlockGit}
+                    <div style="margin-top: 10px;">
+                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
+                    </div>
                 </div>
                 
                 <div style="margin-top: 10px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
                     💡 <strong>Tip:</strong> Review each secret carefully before applying fixes. Some may be test data or false positives.
                 </div>
-            </div>
-            <div id="manual-command" class="hidden">
-                <h3>Manual Fix Command</h3>
-                <div class="manual-command" id="command-text"></div>
-                <p>Copy and paste this command in your terminal to manually apply the changes:</p>
             </div>
         `;
     }
@@ -1621,6 +1711,10 @@ class LeakLockPanel {
             // Show scanning in progress
             this._isScanning = true;
             this._scanResults = [];
+            this._scanCleanup.preparedCommand = null;
+            this._scanCleanup.preparedMode = null;
+            this._scanCleanup.replacements = null;
+            this._scanCleanup.replacementsFile = null;
             this._updateWebviewContent();
 
             // Determine and validate scan path
@@ -2585,6 +2679,138 @@ class LeakLockPanel {
             // Instead of using --user root (security risk), just log the failure
             // Files will be cleaned up when the container terminates or by the OS
             console.warn(`Unable to cleanup ${datastorePath}. Files may remain until container cleanup.`);
+        }
+    }
+
+    _buildScanBfgReplaceCommand(scanPath, replacementsFile) {
+        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && java -jar \"${this._shellEscapeDoubleQuotes(bfgPath)}\" --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
+    }
+
+    _buildScanGitReplaceCommand(scanPath, replacementsFile) {
+        return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && git filter-repo --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" --force && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
+    }
+
+    _prepareScanReplacementCommand(mode, replacements) {
+        if (!replacements || Object.keys(replacements).length === 0) {
+            vscode.window.showWarningMessage('No secrets selected for removal.');
+            return;
+        }
+        const scanPath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!scanPath) {
+            vscode.window.showErrorMessage('No directory selected or workspace available.');
+            return;
+        }
+        const replacementsFile = path.join(scanPath, 'leak-lock-replacements.txt');
+        this._scanCleanup.preparing = true;
+        this._updateWebviewContent();
+        try {
+            const command = mode === 'git'
+                ? this._buildScanGitReplaceCommand(scanPath, replacementsFile)
+                : this._buildScanBfgReplaceCommand(scanPath, replacementsFile);
+            this._scanCleanup.preparedCommand = command;
+            this._scanCleanup.preparedMode = mode;
+            this._scanCleanup.replacements = replacements;
+            this._scanCleanup.replacementsFile = replacementsFile;
+        } finally {
+            this._scanCleanup.preparing = false;
+            this._updateWebviewContent();
+        }
+    }
+
+    _prepareScanBfgCommand(replacements) {
+        this._prepareScanReplacementCommand('bfg', replacements);
+    }
+
+    _prepareScanGitCommand(replacements) {
+        this._prepareScanReplacementCommand('git', replacements);
+    }
+
+    async _runPreparedScanCleanup(mode) {
+        if (!this._scanCleanup.preparedCommand || this._scanCleanup.preparedMode !== mode) {
+            vscode.window.showWarningMessage('Prepare the cleanup command first.');
+            return;
+        }
+        const replacements = this._scanCleanup.replacements;
+        if (!replacements || Object.keys(replacements).length === 0) {
+            vscode.window.showWarningMessage('No secrets selected for removal.');
+            return;
+        }
+        if (mode === 'git') {
+            await this._executeGitCleanup(replacements);
+        } else {
+            await this._executeBFGCleanup(replacements);
+        }
+        this._scanCleanup.preparedCommand = null;
+        this._scanCleanup.preparedMode = null;
+        this._scanCleanup.replacements = null;
+        this._scanCleanup.replacementsFile = null;
+        this._updateWebviewContent();
+    }
+
+    async _executeGitCleanup(replacements) {
+        if (!replacements || Object.keys(replacements).length === 0) {
+            vscode.window.showWarningMessage('No secrets selected for removal.');
+            return;
+        }
+
+        const scanPath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!scanPath) {
+            vscode.window.showErrorMessage('No directory selected or workspace available.');
+            return;
+        }
+
+        const proceed = await vscode.window.showWarningMessage(
+            `⚠️ WARNING: This will permanently modify your git history!\n\nThis action will:\n• Remove ${Object.keys(replacements).length} secrets from git history\n• Run git cleanup operations\n• Cannot be undone easily\n\nMake sure you have a backup!`,
+            { modal: true },
+            'Proceed with Git Cleanup',
+            'Cancel'
+        );
+
+        if (proceed !== 'Proceed with Git Cleanup') {
+            return;
+        }
+
+        try {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Running git-only cleanup...",
+                cancellable: false
+            }, async (progress) => {
+                progress.report({ increment: 10, message: "Preparing replacement file..." });
+                const replacementsFile = path.join(scanPath, 'leak-lock-replacements.txt');
+                const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
+                    `${secret}==>${replacement}`
+                ).join('\n');
+                fs.writeFileSync(replacementsFile, replacementLines);
+
+                progress.report({ increment: 10, message: "Fetching remotes..." });
+                await this._gitFetchAll(scanPath);
+
+                progress.report({ increment: 40, message: "Running git filter-repo..." });
+                const util = require('util');
+                const execAsync = util.promisify(exec);
+                const repoEsc = scanPath.replace(/"/g, '\\"');
+                const fileEsc = replacementsFile.replace(/"/g, '\\"');
+                await execAsync(`cd "${repoEsc}" && git filter-repo --replace-text "${fileEsc}" --force`);
+
+                progress.report({ increment: 20, message: "Expiring reflog..." });
+                await execAsync(`cd "${repoEsc}" && git reflog expire --expire=now --all`);
+                progress.report({ increment: 20, message: "Running garbage collection..." });
+                await execAsync(`cd "${repoEsc}" && git gc --prune=now --aggressive`);
+
+                try {
+                    fs.unlinkSync(replacementsFile);
+                } catch (cleanupError) {
+                    console.warn('Failed to clean up temporary file:', cleanupError);
+                }
+            });
+
+            await vscode.window.showInformationMessage(
+                '✅ Git-only cleanup completed. Your git history has been cleaned. You may need to force push to update remote repositories.'
+            );
+        } catch (error) {
+            vscode.window.showErrorMessage(`Git-only cleanup failed: ${error.message}`);
         }
     }
 
