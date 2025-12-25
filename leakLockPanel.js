@@ -864,13 +864,7 @@ class LeakLockPanel {
         const hasTargets = targets.length > 0;
         const prepared = this._removalState.preparedCommand;
         const lastFetchISO = this._removalState.lastFetchAt;
-        let isStale = true;
-        try {
-            if (lastFetchISO) {
-                const last = new Date(lastFetchISO).getTime();
-                isStale = (Date.now() - last) > (15 * 60 * 1000);
-            }
-        } catch { }
+        const isStale = this._isFetchStale(lastFetchISO);
         const fetchColor = isStale ? 'var(--vscode-inputValidation-warningForeground)' : 'var(--vscode-descriptionForeground)';
         const fetchNote = isStale ? ' (stale)' : '';
         const fetchTooltip = isStale
@@ -1156,6 +1150,19 @@ class LeakLockPanel {
         // prevents an attacker from smuggling in regex operators that change which paths BFG deletes
         // or that break the surrounding command syntax.
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    _isFetchStale(lastFetchISO) {
+        // Check if the last fetch timestamp is older than 15 minutes
+        if (!lastFetchISO) {
+            return true;
+        }
+        try {
+            const last = new Date(lastFetchISO).getTime();
+            return (Date.now() - last) > (15 * 60 * 1000);
+        } catch {
+            return true;
+        }
     }
 
     _buildBfgCommand(repoDir, targets) {
@@ -1551,13 +1558,7 @@ class LeakLockPanel {
 
         // Fetch status for secrets cleanup actions
         const lastFetchISO = this._removalState.lastFetchAt;
-        let isStaleFetch = true;
-        try {
-            if (lastFetchISO) {
-                const last = new Date(lastFetchISO).getTime();
-                isStaleFetch = (Date.now() - last) > (15 * 60 * 1000);
-            }
-        } catch { }
+        const isStaleFetch = this._isFetchStale(lastFetchISO);
         const fetchColor = isStaleFetch ? 'var(--vscode-inputValidation-warningForeground)' : 'var(--vscode-descriptionForeground)';
         const fetchNote = isStaleFetch ? ' (stale)' : '';
         const fetchTooltip = isStaleFetch
