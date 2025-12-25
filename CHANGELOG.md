@@ -7,6 +7,7 @@
 - **Visual Progress Indicators**: Real-time scanning progress with animated spinner and stage-by-stage tracking
 - **Enhanced Empty Results Display**: Celebratory interface when no secrets found with security checklist and best practices
 - **Interactive Security Guide**: Built-in security best practices guide accessible from scan results
+- **Local-Only Finding Classification**: Marks uncommitted, non-history secrets as safe (green) while still documenting them
 - **Advanced Scan Progress**: Five-stage progress tracking (Docker Check → Pull Image → Initialize → Scan Files → Process Results)
 - **Command Injection Security Fixes**: Proper shell path escaping and input validation to prevent security vulnerabilities
 - **Centralized Configuration**: Extracted hardcoded paths to shared config.js for better maintainability

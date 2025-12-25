@@ -273,6 +273,9 @@ class LeakLockPanel {
         this._selectedDirectory = null;
         this._isScanning = false;
         this._scanProgress = null;
+        this._scanPath = null;
+        this._scanRepoRoot = null;
+        this._trackedFiles = null;
         this._dependenciesInstalled = false;
         this._panel = null;
         this._lastFetchAt = null;
@@ -881,6 +884,9 @@ class LeakLockPanel {
                 <div class="section">
                     <div class="h1">BFG-based removal (recommended)</div>
                     <div class="hint">Choose how to group deletions, then generate the command.</div>
+                    <div class="hint" style="margin-top: 6px; color: var(--vscode-inputValidation-warningForeground);">
+                        BFG removes by name across the entire history. Any file with the same name anywhere in the repo will be deleted.
+                    </div>
                     <div style="margin: 8px 0; display: flex; gap: 16px; align-items: center;">
                         <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
                             <input type="radio" name="combineMode" value="combined" ${this._removalState.combineMode === 'combined' ? 'checked' : ''} onchange="setCombineMode('combined')"> Single combined command
@@ -1087,7 +1093,7 @@ class LeakLockPanel {
             args.push(`--delete-folders "${dirRegex}"`);
         }
         const bfgCmd = `java -jar \"${bfgPath}\" ${args.join(' ')} \"${repoDir}\"`;
-        const full = `cd \"${repoDir}\" && ${bfgCmd} && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
+        const full = `cd \"${repoDir}\" && ${bfgCmd} && git reflog expire --expire=now --all && git gc --prune=now --aggressive && git push --force --all && git push --force --tags`;
         return full;
     }
 
@@ -1428,6 +1434,7 @@ class LeakLockPanel {
             high: '#ff6b6b',
             medium: '#ffa726',
             low: '#66bb6a',
+            safe: '#4caf50',
             info: '#42a5f5',
             warning: '#ff9800'
         };
@@ -1450,20 +1457,30 @@ class LeakLockPanel {
         const resultsRows = this._scanResults.map((result, index) => {
             const isDependency = result.isDependency;
             const isGitHistory = result.isGitHistory;
+            const isUntracked = result.isUntracked;
 
             // Choose appropriate icon and styling
             let icon = '📄';
             let iconTooltip = 'Current file';
-            if (isDependency) {
-                icon = '⚠️';
-                iconTooltip = 'Dependency directory';
-            } else if (isGitHistory) {
+            if (isGitHistory) {
                 icon = '🕒';
                 iconTooltip = 'Git history (past commit/branch)';
+            } else if (isUntracked) {
+                icon = '🟢';
+                iconTooltip = 'Not committed (local only)';
+            } else if (isDependency) {
+                icon = '⚠️';
+                iconTooltip = 'Dependency directory';
             }
 
             const rowStyle = isDependency ? 'opacity: 0.7;' : '';
-            const contextNote = isDependency ? ' (dependency directory)' : (isGitHistory ? ' (git history)' : '');
+            const contextNote = isGitHistory
+                ? ' (git history)'
+                : isUntracked
+                    ? ' (not committed)'
+                    : isDependency
+                        ? ' (dependency directory)'
+                        : '';
 
             return `
                 <tr data-secret="${escapeHtml(result.secret)}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
@@ -1474,6 +1491,7 @@ class LeakLockPanel {
                         </span>
                         ${isDependency ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(deps)</span>' : ''}
                         ${isGitHistory ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(history)</span>' : ''}
+                        ${isUntracked ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(local)</span>' : ''}
                     </td>
                     <td style="text-align: center;">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; ${isGitHistory ? 'cursor: default;' : 'cursor: pointer;'}">
@@ -1496,6 +1514,7 @@ class LeakLockPanel {
                             <span style="font-size: 0.9em;">
                                 ${escapeHtml(result.description)}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(in dependency)</span>' : ''}
+                                ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
                             </span>
                         </div>
                     </td>
@@ -1616,6 +1635,9 @@ class LeakLockPanel {
                 return;
             }
 
+            this._scanPath = scanPath;
+            await this._primeGitTracking(scanPath);
+
             // Update progress: Checking Docker
             this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
             this._updateWebviewContent();
@@ -1679,6 +1701,57 @@ class LeakLockPanel {
             this._updateWebviewContent();
             vscode.window.showErrorMessage(`Scan failed: ${error.message}`);
         }
+    }
+
+    async _primeGitTracking(scanPath) {
+        this._scanRepoRoot = null;
+        this._trackedFiles = null;
+        if (!scanPath) {
+            return;
+        }
+        const util = require('util');
+        const execAsync = util.promisify(exec);
+        try {
+            const scanEsc = scanPath.replace(/"/g, '\\"');
+            const { stdout: rootOut } = await execAsync(`git -C "${scanEsc}" rev-parse --show-toplevel`);
+            const repoRoot = rootOut.trim();
+            if (!repoRoot) {
+                return;
+            }
+            const repoEsc = repoRoot.replace(/"/g, '\\"');
+            const { stdout: filesOut } = await execAsync(`git -C "${repoEsc}" ls-files -z`);
+            const tracked = filesOut.split('\0').filter(Boolean);
+            this._scanRepoRoot = repoRoot;
+            this._trackedFiles = new Set(tracked);
+        } catch (e) {
+            this._scanRepoRoot = null;
+            this._trackedFiles = null;
+        }
+    }
+
+    _isUntrackedWorkingTreeFile(filePath, relativeFile, isGitHistory) {
+        if (isGitHistory) {
+            return false;
+        }
+        if (!this._scanRepoRoot || !this._trackedFiles || !this._scanPath) {
+            return false;
+        }
+        if (!relativeFile || relativeFile === 'scan_output' || relativeFile === 'git-history-reference' || relativeFile === 'git-history-artifact') {
+            return false;
+        }
+        let absPath = filePath;
+        if (!path.isAbsolute(absPath)) {
+            absPath = path.join(this._scanPath, relativeFile);
+        }
+        if (!fs.existsSync(absPath)) {
+            return false;
+        }
+        const relToRepo = path.relative(this._scanRepoRoot, absPath);
+        if (!relToRepo || relToRepo.startsWith('..') || path.isAbsolute(relToRepo)) {
+            return false;
+        }
+        const normalized = relToRepo.replace(/\\/g, '/');
+        return !this._trackedFiles.has(normalized);
     }
 
     // Add method to update webview content
@@ -2420,6 +2493,12 @@ class LeakLockPanel {
             severity = 'warning';
         }
 
+        const isUntracked = this._isUntrackedWorkingTreeFile(filePath, relativeFile, isGitHistory);
+        if (isUntracked) {
+            enhancedDescription = `${description} (not committed)`;
+            severity = 'safe';
+        }
+
         const result = {
             file: relativeFile,
             line: line,
@@ -2428,7 +2507,8 @@ class LeakLockPanel {
             severity: severity,
             isDependency: isInDependency,
             originalSeverity: this._getSeverity(ruleName),
-            isGitHistory: isGitHistory
+            isGitHistory: isGitHistory,
+            isUntracked: isUntracked
         };
 
         return result;
