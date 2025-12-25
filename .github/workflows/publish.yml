@@ -228,16 +228,12 @@ jobs:
 
       - name: Create Git Tag
         if: github.event_name == 'push'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           FINAL_VERSION=${{ steps.new_version.outputs.version || steps.version.outputs.version }}
           echo "Creating git tag v${FINAL_VERSION}"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git tag "v${FINAL_VERSION}"
-          # Ensure remote is authenticated with GITHUB_TOKEN for pushing tags
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "v${FINAL_VERSION}"
 
       - name: Create GitHub Release
