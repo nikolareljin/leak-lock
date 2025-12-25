@@ -11,6 +11,7 @@ const MAX_VOLUME_NAME_LENGTH = 255; // Maximum Docker volume name length
 const DOCKER_PULL_TIMEOUT = 120000; // Docker pull timeout in milliseconds (2 minutes)
 const SCAN_TIMEOUT = 300000; // Scan timeout in milliseconds (5 minutes)
 const SECRET_TRUNCATE_LENGTH = 50; // Length to truncate secrets for display
+const REMOTE_HEAD_FILTER_PATTERN = /\bHEAD$/; // Pattern to filter out remote HEAD refs
 
 // Cross-platform sensitive system directories
 const SENSITIVE_DIRECTORIES = {
@@ -1296,7 +1297,7 @@ class LeakLockPanel {
             const { stdout: rmOut } = await execFileAsync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/remotes'], { cwd: repo });
             const { stdout: tgOut } = await execFileAsync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/tags'], { cwd: repo });
             const branches = brOut.split('\n').map(s => s.trim()).filter(Boolean);
-            const remotes = rmOut.split('\n').map(s => s.trim()).filter(Boolean).filter(n => !/\bHEAD$/.test(n));
+            const remotes = rmOut.split('\n').map(s => s.trim()).filter(Boolean).filter(n => !REMOTE_HEAD_FILTER_PATTERN.test(n));
             const tags = tgOut.split('\n').map(s => s.trim()).filter(Boolean);
             const pathspecs = targets.map(t => t.type === 'directory' ? `${t.path}/` : t.path);
             const results = [];
