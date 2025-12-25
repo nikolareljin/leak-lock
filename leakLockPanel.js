@@ -1377,7 +1377,10 @@ class LeakLockPanel {
 
     _buildGitFilterBranchIndexFilter(targets) {
         // Build the index filter script for git filter-branch
-        // This will be passed as a shell script to --index-filter
+        // Note: git filter-branch's --index-filter inherently requires a shell script string
+        // This is a limitation of the git filter-branch command itself
+        // All paths are validated via validatePath() and escaped via _shellEscapeDoubleQuotes()
+        // before being included in this filter
         const rmCmds = targets.map(t => {
             const p = this._shellEscapeDoubleQuotes(t.path);
             return `git rm -r --cached --ignore-unmatch \"${p}\"`;
@@ -1455,6 +1458,8 @@ class LeakLockPanel {
                 
                 progress.report({ increment: 30, message: 'Rewriting history...' });
                 // Run git filter-branch using execFile
+                // Note: --index-filter expects a shell script string, but all paths are escaped
+                // via _shellEscapeDoubleQuotes() in _buildGitFilterBranchIndexFilter()
                 await execFileAsync('git', [
                     'filter-branch',
                     '--force',
@@ -1476,14 +1481,13 @@ class LeakLockPanel {
                 ], { cwd: repo });
                 if (refsOut.trim()) {
                     // Update refs using stdin
-                    const { spawn } = require('child_process');
                     await new Promise((resolve, reject) => {
                         const proc = spawn('git', ['update-ref', '--stdin'], { cwd: repo });
                         proc.stdin.write(refsOut);
                         proc.stdin.end();
                         proc.on('close', (code) => {
                             if (code === 0) resolve();
-                            else reject(new Error(`git update-ref failed with code ${code}`));
+                            else reject(new Error(`git update-ref failed with code ${code} for repository ${repo}`));
                         });
                         proc.on('error', reject);
                     });
