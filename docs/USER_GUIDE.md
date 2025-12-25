@@ -89,6 +89,7 @@ The results appear in a detailed table with the following columns:
 - 🔴 **High**: Critical secrets like production API keys
 - 🟡 **Medium**: Potentially sensitive data
 - 🟢 **Low**: Possible false positives or test data
+- 🟢 **Safe (Not committed)**: Found only in the working tree (not tracked or in git history)
 
 ---
 
