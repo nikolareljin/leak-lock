@@ -20,4 +20,4 @@ tsconfig.json
 **/*.ts
 !dist/**
 .env
-
+.env.example
