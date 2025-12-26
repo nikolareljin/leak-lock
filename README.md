@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/icon.png" width="128" height="128" />
+  <img src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/icon.png?sanitize=true" width="128" height="128" />
 </p>
 
 # 🛡️ Leak Lock - VS Code Security Extension
@@ -81,7 +81,7 @@ code --install-extension leak-lock-0.0.1.vsix
 - **Generate Commands**: Automatic BFG command generation
 - **Execute Cleanup**: One-click git history rewriting
 
-<img width="942" height="1307" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot1.png" />
+<img width="942" height="1307" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot1.png?sanitize=true" />
 
 
 ---
@@ -107,21 +107,21 @@ The extension adds a shield icon to the activity bar for easy access.
 ### Welcome View
 Simple welcome interface in the sidebar with a "Open Scanner" button.
 
-<img width="71" height="653" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot2.png" />
+<img width="71" height="653" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot2.png?sanitize=true" />
 
 "Leak-Lock" scanner button:
 
-<img width="73" height="74" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot3.png" />
+<img width="73" height="74" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot3.png?sanitize=true" />
 
 
 ### Main Scanner Interface
 
-<img width="413" height="548" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot4.png" />
+<img width="413" height="548" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot4.png?sanitize=true" />
 
 Full-width main area interface showing:
 - Dependency installation status
 
-<img width="422" height="1009" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot5.png" />
+<img width="422" height="1009" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot5.png?sanitize=true" />
 
 - Directory selection with auto-detection
 - Scanning controls and progress
@@ -129,13 +129,13 @@ Full-width main area interface showing:
 
 ### Scanning Process
 
-<img width="1701" height="859" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot6.png" />
+<img width="1701" height="859" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot6.png?sanitize=true" />
 
 Real-time progress indication during repository scanning with Nosey Parker.
 
 ### Results Display
 
-<img width="2340" height="1215" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot7.png" />
+<img width="2340" height="1215" alt="image" src="https://raw.githubusercontent.com/nikolareljin/leak-lock/main/media/screenshot7.png?sanitize=true" />
 
 Detailed table showing:
 - Secret type and severity
