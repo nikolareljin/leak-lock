@@ -1,5 +1,8 @@
 # Change Log
 
+## 0.1.2
+- Ignore jar files in the vscode distro.
+
 ## 0.1.1
 ### Changed
 - **Test Assets Organization**: Moved `validate.sh`, `test.sh`, and `test-secrets.js` into `test/` for a cleaner root directory
