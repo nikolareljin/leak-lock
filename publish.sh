@@ -46,8 +46,13 @@ export NODE_OPTIONS="--max-old-space-size=4096"
 
 package_vsix() {
   if ! command -v vsce >/dev/null 2>&1; then
-    echo "Error: vsce not found. Install with: npm install -g @vscode/vsce"
-    exit 1
+    echo "vsce not found. Installing..."
+    npm install -g @vscode/vsce
+  fi
+
+  if [ ! -d "node_modules" ]; then
+    echo "Installing npm dependencies..."
+    npm install
   fi
 
   echo "Packaging extension..."
@@ -76,8 +81,8 @@ case "$TYPE" in
     ;;
   open-vsx|openvsx|open)
     if ! command -v ovsx >/dev/null 2>&1; then
-      echo "Error: ovsx not found. Install with: npm install -g ovsx"
-      exit 1
+      echo "ovsx not found. Installing..."
+      npm install -g ovsx
     fi
     if [ -z "${OVSX_PAT:-}" ]; then
       echo "Error: OVSX_PAT is not set in .env."
