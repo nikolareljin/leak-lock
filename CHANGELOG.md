@@ -1,5 +1,10 @@
 # Change Log
 
+## 0.1.1
+### Changed
+- **Test Assets Organization**: Moved `validate.sh`, `test.sh`, and `test-secrets.js` into `test/` for a cleaner root directory
+- **README Documentation**: Improved README guidance and clarity
+
 ## 0.1.0
 ### Added
 - **Scan Cleanup Flow (Prepare → Run)**: Scan results now generate BFG or Git-only commands before execution with copyable placeholders

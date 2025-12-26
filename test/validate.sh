@@ -65,12 +65,12 @@ fi
 
 # Test 6: Test the scan functionality with a simple test
 echo "🧪 Testing scan functionality..."
-if [ -f "test-secrets.js" ]; then
+if [ -f "test/test-secrets.js" ]; then
     echo "✅ Test file with secrets exists"
     
     # Create a simple test directory structure
     mkdir -p test-scan-dir
-    cp test-secrets.js test-scan-dir/
+    cp test/test-secrets.js test-scan-dir/
     
     echo "🔍 Running basic Nosey Parker scan..."
     # Test if we can run the scan command (without full execution)
