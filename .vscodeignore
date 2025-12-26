@@ -21,3 +21,4 @@ tsconfig.json
 !dist/**
 .env
 .env.example
+bfg.jar
