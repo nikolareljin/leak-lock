@@ -84,17 +84,15 @@ case "$TYPE" in
       echo "ovsx not found. Installing..."
       npm install -g ovsx
     fi
+    # No --namespace support in ovsx CLI; publisher is set in package.json
     if [ -z "${OVSX_PAT:-}" ]; then
       echo "Error: OVSX_PAT is not set in .env."
       exit 1
     fi
+    # OVSX_NAMESPACE is not required for ovsx CLI; publisher is set in package.json
     package_vsix
-    OVSX_NAMESPACE_ARG=""
-    if [ -n "${OVSX_NAMESPACE:-}" ]; then
-      OVSX_NAMESPACE_ARG="--namespace $OVSX_NAMESPACE"
-    fi
     echo "Publishing to Open VSX..."
-    ovsx publish "$VSIX_FILE" -p "$OVSX_PAT" $OVSX_NAMESPACE_ARG
+    ovsx publish "$VSIX_FILE" -p "$OVSX_PAT"
     cleanup_vsix
     ;;
   *)
