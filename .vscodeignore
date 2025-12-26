@@ -4,6 +4,8 @@ test/**
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md
+.env.example
+publish.sh
 **/jsconfig.json
 **/*.map
 **/eslint.config.mjs
