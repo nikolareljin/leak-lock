@@ -132,7 +132,8 @@ jobs:
           export NODE_OPTIONS="--max-old-space-size=4096"
 
           # Remove test scripts and test samples.
-          rm ./test*.*
+          rm -f ./test*.*
+          rm -f ./test/test*.*
           
           # Package the extension (removed --verbose flag as it's not supported)
           echo "Packaging extension..."
