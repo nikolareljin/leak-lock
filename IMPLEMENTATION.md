@@ -1,7 +1,7 @@
 # Leak Lock Extension Implementation
 
 ## Overview
-This VS Code extension provides security scanning for repositories using Nosey Parker and BFG Repo Cleaner.
+This VS Code extension provides security scanning for repositories using TruffleHog and BFG Repo Cleaner.
 
 ## Features Implemented
 
@@ -12,12 +12,12 @@ This VS Code extension provides security scanning for repositories using Nosey P
 
 ### 2. Dependency Installation
 - Automatic installation of BFG CLI tool (Java JAR)
-- Automatic Docker image pull for Nosey Parker scanner
+- Automatic Docker image pull for TruffleHog scanner
 - Dependencies installed on extension activation
 
 ### 3. Repository Scanning
 - "Scan" button in the sidebar to scan current repository
-- Uses Nosey Parker Docker container for secret detection
+- Uses TruffleHog Docker container for secret detection
 - Displays scan results in human-readable table format
 - Shows file location, line number, found secret, and description
 
@@ -54,10 +54,10 @@ This VS Code extension provides security scanning for repositories using Nosey P
 ## Usage Flow
 
 1. User opens VS Code with a repository
-2. Extension installs dependencies (BFG, Nosey Parker Docker image)
+2. Extension installs dependencies (BFG, TruffleHog Docker image)
 3. User clicks the shield icon in the activity bar
 4. Sidebar opens with "Scan Repository" button
-5. User clicks scan - Nosey Parker analyzes the repository
+5. User clicks scan - TruffleHog analyzes the repository
 6. Results appear in a table with secret details
 7. User selects secrets to fix and customizes replacement values
 8. User clicks "Fix" button

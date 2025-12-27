@@ -9,11 +9,11 @@ module.exports = {
     BFG_DOWNLOAD_URL: 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar',
     
     // Docker Configuration
-    DOCKER_IMAGE: 'ghcr.io/praetorian-inc/noseyparker:latest',
+    DOCKER_IMAGE: 'trufflesecurity/trufflehog:latest',
     DOCKER_PULL_TIMEOUT: 120000, // 2 minutes
     
     // Scanning Configuration
-    TEMP_DATASTORE_NAME: '.noseyparker-temp',
+    TEMP_DATASTORE_NAME: '.trufflehog-temp',
     SCAN_TIMEOUT: 300000, // 5 minutes
     REPORT_TIMEOUT: 60000, // 1 minute
     

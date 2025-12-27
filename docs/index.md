@@ -77,7 +77,7 @@ Common questions and solutions
 Deep dive into extension architecture
 - 🧩 Core components and data flow
 - 🎨 UI architecture and layout design
-- 🔧 External tool integration (Docker, Nosey Parker, BFG)
+- 🔧 External tool integration (Docker, TruffleHog, BFG)
 - 📊 State management and lifecycle
 
 #### 🔧 **[API Reference](./API_REFERENCE.md)**
@@ -170,7 +170,7 @@ Security aspects and best practices
 - [📋 Changelog](../CHANGELOG.md) - Version history
 
 ### 🌐 **External Resources**
-- [🔍 Nosey Parker](https://github.com/praetorian-inc/noseyparker) - Secret detection engine
+- [🔍 TruffleHog](https://github.com/trufflesecurity/trufflehog) - Secret detection engine
 - [🔧 BFG Repo Cleaner](https://rtyley.github.io/bfg-repo-cleaner/) - Git history tool
 - [📚 VS Code API](https://code.visualstudio.com/api) - Extension development
 - [🛡️ OWASP Security](https://owasp.org/www-project-top-ten/) - Security best practices

@@ -42,7 +42,7 @@ On first launch, you'll see the welcome view:
 2. Wait for the installation process to complete
 3. Dependencies include:
    - Docker (must be pre-installed)
-   - Nosey Parker Docker image
+   - TruffleHog Docker image
    - BFG Repo Cleaner tool
 
 ---
@@ -371,10 +371,10 @@ Use this guided flow to remove files or directories from your repository history
 
 ### External Tools
 
-**Nosey Parker**
-- [Project page](https://github.com/praetorian-inc/noseyparker)
+**TruffleHog**
+- [Project page](https://github.com/trufflesecurity/trufflehog)
 - Advanced secret detection engine with 100+ curated rules
-- Fast and precise; maintained by Praetorian with active community
+- Fast and precise; maintained by Truffle Security with active community
 
 **BFG Repo Cleaner**
 - [Project page](https://rtyley.github.io/bfg-repo-cleaner/)
@@ -382,7 +382,7 @@ Use this guided flow to remove files or directories from your repository history
 - Ideal for removing large files or secrets across history
 
 ### Why Leak Lock
-- Seamlessly integrates Nosey Parker and BFG/git workflows inside VS Code
+- Seamlessly integrates TruffleHog and BFG/git workflows inside VS Code
 - Offers both name‑based (BFG) and path‑exact (git) removal with previews
 - Adds safe defaults, warnings, and copyable commands for clear, auditable changes
 

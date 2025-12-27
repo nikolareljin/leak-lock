@@ -33,7 +33,7 @@
 - **Command Injection Security Fixes**: Proper shell path escaping and input validation to prevent security vulnerabilities
 - **Centralized Configuration**: Extracted hardcoded paths to shared config.js for better maintainability
 - **Enhanced Dependency Management**: Smart dependency section that auto-hides when all dependencies are installed
-- **Detailed Dependency Status**: Individual status tracking for Docker, Nosey Parker, Java, and BFG with version information
+- **Detailed Dependency Status**: Individual status tracking for Docker, TruffleHog, Java, and BFG with version information
 - **Improved UI/UX**: Progress indicators, animations, and better visual feedback during operations
 - **Advanced Error Handling**: Comprehensive error messages and recovery suggestions for dependency issues
 - **Package Updates**: Updated package-lock.json with latest dependency versions
@@ -73,7 +73,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Added
 - **Enhanced Dependency Management**: Smart dependency section that auto-hides when all dependencies are installed
-- **Detailed Dependency Status**: Individual status tracking for Docker, Nosey Parker, Java, and BFG with version information
+- **Detailed Dependency Status**: Individual status tracking for Docker, TruffleHog, Java, and BFG with version information
 - **Improved UI/UX**: Progress indicators, animations, and better visual feedback during operations
 - **Advanced Error Handling**: Comprehensive error messages and recovery suggestions for dependency issues
 - **Package Updates**: Updated package-lock.json with latest dependency versions
@@ -97,7 +97,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Added
 - **Complete Core Implementation**: Full Leak Lock extension with scanning and secret fixing capabilities
-- **Nosey Parker Integration**: Docker-based secret scanning with 100+ secret type detection
+- **TruffleHog Integration**: Docker-based secret scanning with 100+ secret type detection
 - **BFG Repo-Cleaner Integration**: Automated git history cleaning and secret removal
 - **Results Display**: Comprehensive scan results with file locations, line numbers, and secret previews
 - **Manual Remediation**: Safe manual command generation for git history rewriting

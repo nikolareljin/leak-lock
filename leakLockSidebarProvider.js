@@ -326,7 +326,7 @@ class LeakLockSidebarProvider {
         
         // Get status for each dependency
         const dockerStatus = this._dependencyStatus?.docker?.installed ? '✅' : '❌';
-        const noseyparkerStatus = this._dependencyStatus?.noseyparker?.installed ? '✅' : '❌';
+        const trufflehogStatus = this._dependencyStatus?.trufflehog?.installed ? '✅' : '❌';
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
         const bfgStatus = this._dependencyStatus?.bfg?.installed ? '✅' : '⚠️';
         
@@ -388,12 +388,12 @@ class LeakLockSidebarProvider {
                 ` : ''}
                 
                 <div class="status-item">
-                    <span><span class="status-icon">${noseyparkerStatus}</span>Nosey Parker Image</span>
-                    ${showSpinner && this._dependencyStatus?.docker?.installed && !this._dependencyStatus?.noseyparker?.installed ? '<div class="spinner"></div>' : ''}
+                    <span><span class="status-icon">${trufflehogStatus}</span>TruffleHog Image</span>
+                    ${showSpinner && this._dependencyStatus?.docker?.installed && !this._dependencyStatus?.trufflehog?.installed ? '<div class="spinner"></div>' : ''}
                 </div>
-                ${this._dependencyStatus?.noseyparker?.error ? `
+                ${this._dependencyStatus?.trufflehog?.error ? `
                     <div style="font-size: 10px; color: var(--vscode-inputValidation-errorForeground); margin-left: 20px; margin-bottom: 5px;">
-                        ${this._dependencyStatus.noseyparker.error}
+                        ${this._dependencyStatus.trufflehog.error}
                     </div>
                 ` : ''}
                 
@@ -476,7 +476,7 @@ class LeakLockSidebarProvider {
                 
                 ${!this._dependenciesInstalled ? `
                     <div class="warning-text">
-                        ⚠️ Docker and Nosey Parker are required for scanning
+                        ⚠️ Docker and TruffleHog are required for scanning
                     </div>
                 ` : ''}
                 
@@ -587,7 +587,7 @@ class LeakLockSidebarProvider {
         
         this._dependencyStatus = {
             docker: { installed: false, version: null, error: null },
-            noseyparker: { installed: false, error: null },
+            trufflehog: { installed: false, error: null },
             java: { installed: false, version: null, error: null },
             bfg: { installed: false, path: null, error: null }
         };
@@ -609,12 +609,12 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.docker.error = 'Docker not installed or not in PATH';
         }
         
-        // Check Nosey Parker image
+        // Check TruffleHog image
         try {
-            await execAsync('docker images ghcr.io/praetorian-inc/noseyparker:latest --format "table {{.Repository}}"');
-            this._dependencyStatus.noseyparker.installed = true;
+            await execAsync('docker images trufflesecurity/trufflehog:latest --format "table {{.Repository}}"');
+            this._dependencyStatus.trufflehog.installed = true;
         } catch (error) {
-            this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not available';
+            this._dependencyStatus.trufflehog.error = 'TruffleHog Docker image not available';
         }
         
         // Check Java
@@ -637,7 +637,7 @@ class LeakLockSidebarProvider {
         
         // Overall status - all core dependencies must be met
         this._dependenciesInstalled = this._dependencyStatus.docker.installed && 
-                                      this._dependencyStatus.noseyparker.installed;
+                                      this._dependencyStatus.trufflehog.installed;
         
         this._updateView();
     }
@@ -713,10 +713,10 @@ class LeakLockSidebarProvider {
                     throw new Error('Docker is not installed or not accessible. Please install Docker first.');
                 }
 
-                progress.report({ increment: 30, message: "Pulling Nosey Parker image..." });
+                progress.report({ increment: 30, message: "Pulling TruffleHog image..." });
                 
-                // Pull the Nosey Parker Docker image
-                await execAsync('docker pull ghcr.io/praetorian-inc/noseyparker:latest', { timeout: 300000 });
+                // Pull the TruffleHog Docker image
+                await execAsync('docker pull trufflesecurity/trufflehog:latest', { timeout: 300000 });
                 
                 progress.report({ increment: 30, message: "Downloading BFG tool..." });
                 

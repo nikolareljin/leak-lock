@@ -61,14 +61,15 @@ Leak Lock follows a modular architecture with clear separation of concerns betwe
 graph TD
     A[User Initiates Scan] --> B[Check Directory Selection]
     B --> C[Validate Dependencies]
-    C --> D[Initialize Nosey Parker Datastore]
-    D --> E[Execute Docker Scan Command]
-    E --> F[Parse JSON Results]
-    F --> G[Display Results Table]
-    G --> H[User Reviews Secrets]
-    H --> I[Generate BFG Commands]
-    I --> J[Execute Git Cleanup]
-    J --> K[Complete Workflow]
+    C --> D[Prepare Temporary Scan Output]
+    D --> E[Execute TruffleHog Git Scan]
+    E --> F[Execute TruffleHog Filesystem Scan]
+    F --> G[Parse JSON Results]
+    G --> H[Display Results Table]
+    H --> I[User Reviews Secrets]
+    I --> J[Generate BFG Commands]
+    J --> K[Execute Git Cleanup]
+    K --> L[Complete Workflow]
 ```
 
 ### Component Interaction
@@ -77,7 +78,7 @@ graph LR
     A[extension.js] --> B[LeakLockPanel.js]
     A --> C[WelcomeViewProvider.js]
     C --> B
-    B --> D[Docker/Nosey Parker]
+    B --> D[Docker/TruffleHog]
     B --> E[BFG Tool]
     B --> F[Git Commands]
     D --> G[Scan Results]
@@ -92,7 +93,7 @@ graph LR
 │ 🛡️ Leak Lock Scanner                                        │
 ├─────────────────────────────────────────────────────────────┤
 │ ✅ Setup Complete                                           │
-│ 🐳 Docker running • 🔧 BFG tool ready • 🔍 Nosey Parker   │
+│ 🐳 Docker running • 🔧 BFG tool ready • 🔍 TruffleHog   │
 │ [🔄 Reinstall] [🔧 Reset Status]                           │
 ├─────────────────────────────────────────────────────────────┤
 │ 📁 Scan Directory                                           │
@@ -130,21 +131,16 @@ Activity Bar    Sidebar View
 
 ## 🔧 External Tool Integration
 
-### Docker/Nosey Parker Integration
+### Docker/TruffleHog Integration
 ```javascript
-// Command structure for Nosey Parker scanning
-const initCommand = `docker run --rm -v "${datastorePath}:/datastore" 
-    ghcr.io/praetorian-inc/noseyparker:latest 
-    datastore init --datastore /datastore`;
+// Command structure for TruffleHog scanning
+const gitScanCommand = `docker run --rm -v "${scanPath}:/scan" 
+    trufflesecurity/trufflehog:latest 
+    git file:///scan --json`;
 
-const scanCommand = `docker run --rm -v "${scanPath}:/scan" 
-    -v "${datastorePath}:/datastore" 
-    ghcr.io/praetorian-inc/noseyparker:latest 
-    scan --datastore /datastore /scan`;
-
-const reportCommand = `docker run --rm -v "${datastorePath}:/datastore" 
-    ghcr.io/praetorian-inc/noseyparker:latest 
-    report --datastore /datastore --format json`;
+const filesystemScanCommand = `docker run --rm -v "${scanPath}:/scan" 
+    trufflesecurity/trufflehog:latest 
+    filesystem /scan --json`;
 ```
 
 ### BFG Tool Integration
@@ -315,7 +311,7 @@ _getHtmlForWebview() {
 - Automatic cleanup on extension deactivation
 
 ### 4. **Tool Isolation**
-- Docker containerization for Nosey Parker
+- Docker containerization for TruffleHog
 - No direct shell access from webview
 - Controlled command execution with validation
 
@@ -344,7 +340,7 @@ _getHtmlForWebview() {
 ## 🔄 Extension Points
 
 ### Adding New Secret Types
-1. Nosey Parker handles pattern detection
+1. TruffleHog handles pattern detection
 2. Results parsing in `_scanRepository()`
 3. UI updates in `_getResultsHtml()`
 

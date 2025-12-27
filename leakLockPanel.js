@@ -12,6 +12,7 @@ const DOCKER_PULL_TIMEOUT = 120000; // Docker pull timeout in milliseconds (2 mi
 const SCAN_TIMEOUT = 300000; // Scan timeout in milliseconds (5 minutes)
 const SECRET_TRUNCATE_LENGTH = 50; // Length to truncate secrets for display
 const REMOTE_HEAD_FILTER_PATTERN = /\bHEAD$/; // Pattern to filter out remote HEAD refs
+const TRUFFLEHOG_IMAGE = 'trufflesecurity/trufflehog:latest';
 
 // Cross-platform sensitive system directories
 const SENSITIVE_DIRECTORIES = {
@@ -522,6 +523,11 @@ class LeakLockPanel {
                         color: var(--vscode-input-foreground);
                         border: 1px solid var(--vscode-input-border);
                         padding: 4px;
+                    }
+                    .file-link.disabled {
+                        pointer-events: none;
+                        color: var(--vscode-descriptionForeground);
+                        text-decoration: none;
                     }
                     .checkbox {
                         margin-right: 5px;
@@ -1643,7 +1649,7 @@ class LeakLockPanel {
                 icon = '🕒';
                 iconTooltip = 'Git history (past commit/branch)';
             } else if (isUntracked) {
-                icon = '🟢';
+                icon = '📝';
                 iconTooltip = 'Not committed (local only)';
             } else if (isDependency) {
                 icon = '⚠️';
@@ -1660,18 +1666,18 @@ class LeakLockPanel {
                         : '';
 
             return `
-                <tr data-secret="${escapeHtml(result.secret)}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
+                <tr data-secret="${escapeHtml(result.secret)}" data-file="${escapeHtml(result.openPath || '')}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
                     <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? '' : 'checked'}></td>
                     <td title="${escapeHtml(result.file)}${contextNote}">
-                        <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
+                        <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.openPath || '')}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
                         </span>
                         ${isDependency ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(deps)</span>' : ''}
                         ${isGitHistory ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(history)</span>' : ''}
-                        ${isUntracked ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(local)</span>' : ''}
+                        ${isUntracked ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(not committed)</span>' : ''}
                     </td>
                     <td style="text-align: center;">
-                        <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; ${isGitHistory ? 'cursor: default;' : 'cursor: pointer;'}">
+                        <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.openPath || '')}" data-line="${result.line}" style="background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 10px; font-size: 0.8em; ${isGitHistory ? 'cursor: default;' : 'cursor: pointer;'}">
                             ${result.line}
                         </span>
                     </td>
@@ -1857,33 +1863,40 @@ class LeakLockPanel {
             }
 
             // Update progress: Pulling image
-            this._scanProgress = { stage: 'pull', message: 'Pulling Nosey Parker image...' };
+            this._scanProgress = { stage: 'pull', message: 'Pulling TruffleHog image...' };
             this._updateWebviewContent();
 
-            // Pull the latest Nosey Parker image
-            await this._pullNoseyParkerImage();
+            // Pull the latest TruffleHog image
+            await this._pullTrufflehogImage();
+            const imageAvailable = await this._isTrufflehogImageAvailable();
+            if (!imageAvailable) {
+                vscode.window.showErrorMessage('TruffleHog image not available. Install dependencies or ensure Docker can pull images.');
+                this._isScanning = false;
+                this._updateWebviewContent();
+                return;
+            }
 
             // Update progress: Initializing
-            this._scanProgress = { stage: 'init', message: 'Initializing datastore...' };
+            this._scanProgress = { stage: 'init', message: 'Preparing temporary scan results...' };
             this._updateWebviewContent();
 
-            // Create and validate temporary datastore path
-            const tempDatastore = validateDockerPath(path.join(scanPath, '.noseyparker-temp'), [scanPath]);
-            await this._initializeDatastore(tempDatastore);
+            // Create and validate temporary output path
+            const tempScanOutput = validateDockerPath(path.join(scanPath, '.trufflehog-temp'), [scanPath]);
+            await this._prepareTempScanOutput(tempScanOutput);
 
             // Update progress: Scanning
             this._scanProgress = { stage: 'scan', message: 'Scanning for secrets...' };
             this._updateWebviewContent();
 
             // Run the actual scan
-            const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
+            const scanResults = await this._runTrufflehogScan(scanPath, tempScanOutput);
 
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
             this._updateWebviewContent();
 
-            // Clean up temporary datastore
-            await this._cleanupTempFiles(tempDatastore);
+            // Clean up temporary scan output
+            await this._cleanupTempFiles(tempScanOutput);
 
             // Update results
             this._scanResults = scanResults;
@@ -2052,13 +2065,20 @@ class LeakLockPanel {
 
     _openFile(file, line) {
         // Open file in editor
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (workspaceFolder) {
-            const filePath = path.isAbsolute(file) ? file : path.join(workspaceFolder.uri.fsPath, file);
-            vscode.window.showTextDocument(vscode.Uri.file(filePath), {
-                selection: new vscode.Range(line - 1, 0, line - 1, 0)
-            });
+        if (!file) {
+            vscode.window.showWarningMessage('Unable to open file: missing path.');
+            return;
         }
+        const filePath = path.isAbsolute(file)
+            ? file
+            : this._resolveResultPath(file, file) || file;
+        if (!filePath || !fs.existsSync(filePath)) {
+            vscode.window.showWarningMessage(`Unable to open file: ${file}`);
+            return;
+        }
+        vscode.window.showTextDocument(vscode.Uri.file(filePath), {
+            selection: new vscode.Range(line - 1, 0, line - 1, 0)
+        });
     }
 
     // Essential utility methods for scanning functionality
@@ -2081,173 +2101,237 @@ class LeakLockPanel {
         });
     }
 
-    async _pullNoseyParkerImage() {
-        return new Promise((resolve, reject) => {
-            const pullCommand = 'docker pull ghcr.io/praetorian-inc/noseyparker:latest';
-            exec(pullCommand, { timeout: DOCKER_PULL_TIMEOUT }, (error, stdout, stderr) => {
+    async _pullTrufflehogImage() {
+        return new Promise((resolve) => {
+            const pullCommand = `docker pull ${TRUFFLEHOG_IMAGE}`;
+            exec(pullCommand, { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
                 if (error) {
                     console.warn('Failed to pull latest image, using existing:', error.message);
-                    resolve(); // Continue with existing image
+                    resolve(false);
                 } else {
-                    resolve();
+                    resolve(true);
                 }
             });
         });
     }
 
-    async _initializeDatastore(datastorePath) {
-        try {
-            // Validate the datastore path
-            const validatedDatastorePath = validateDockerPath(datastorePath);
+    async _isTrufflehogImageAvailable() {
+        return new Promise((resolve) => {
+            const inspectCommand = `docker image inspect ${TRUFFLEHOG_IMAGE}`;
+            exec(inspectCommand, (error) => {
+                resolve(!error);
+            });
+        });
+    }
 
-            // Aggressively remove existing datastore if it exists
-            if (fs.existsSync(validatedDatastorePath)) {
-                await this._cleanupTempFiles(validatedDatastorePath);
+    async _prepareTempScanOutput(tempPath) {
+        try {
+            const validatedTempPath = validateDockerPath(tempPath);
+
+            if (fs.existsSync(validatedTempPath)) {
+                await this._cleanupTempFiles(validatedTempPath);
             }
 
-            // Validate and ensure the parent directory exists
-            const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
+            const parentDir = validateDockerPath(path.dirname(validatedTempPath));
             if (!fs.existsSync(parentDir)) {
                 fs.mkdirSync(parentDir, { recursive: true });
             }
 
-            return new Promise((resolve, reject) => {
-                try {
-                    // Use safe Docker command construction with validation
-                    const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
-                    const datastoreName = sanitizeDockerVolumeName(path.basename(validatedDatastorePath));
-
-                    const dockerArgs = [
-                        'run', '--rm',
-                        '-v', `${parentDir}:/workspace`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'datastore', 'init',
-                        '--datastore', `/workspace/${datastoreName}`
-                    ];
-
-                    runDockerCommand(dockerArgs).then(() => {
-                        resolve();
-                    }).catch(error => {
-                        // If initialization fails, try to force cleanup and retry once
-                        console.warn('Initial datastore init failed, trying cleanup and retry:', error.message);
-                        this._cleanupTempFiles(validatedDatastorePath).then(() => {
-                            // Retry initialization with same safe arguments
-                            return runDockerCommand(dockerArgs);
-                        }).then(() => {
-                            resolve();
-                        }).catch(retryError => {
-                            reject(new Error(`Failed to initialize datastore after retry: ${retryError.message}\nStderr: ${retryError.stderr || ''}`));
-                        });
-                    });
-                } catch (validationError) {
-                    reject(new Error(`Path validation failed: ${validationError.message}`));
-                }
-            });
+            if (!fs.existsSync(validatedTempPath)) {
+                fs.mkdirSync(validatedTempPath, { recursive: true });
+            }
         } catch (error) {
-            throw new Error(`Datastore initialization failed: ${error.message}`);
+            throw new Error(`Temporary scan output preparation failed: ${error.message}`);
         }
     }
 
-    async _runNoseyParkerScan(scanPath, datastorePath) {
-        return new Promise((resolve, reject) => {
-            try {
-                // Validate paths before using them
-                const validatedScanPath = validateDockerPath(scanPath);
-                const validatedDatastorePath = validateDockerPath(datastorePath);
+    async _runTrufflehogScan(scanPath, tempOutputPath) {
+        try {
+            // Validate paths before using them
+            const validatedScanPath = validateDockerPath(scanPath);
+            validateDockerPath(tempOutputPath);
 
-                // Get dependency handling configuration
-                const config = vscode.workspace.getConfiguration('leakLock');
-                const dependencyHandling = config.get('dependencyHandling') || 'warning';
+            // Get dependency handling configuration
+            const config = vscode.workspace.getConfiguration('leakLock');
+            const dependencyHandling = config.get('dependencyHandling') || 'warning';
 
-                // Create ignore file for proper exclusion if needed
-                if (dependencyHandling === 'exclude') {
-                    // For now, let's skip file-based exclusions to avoid issues
-                    // We'll handle dependency filtering in the results processing instead
-                    console.log('Dependency exclusion will be handled in post-processing');
-                }
-
-                // Ensure git history scanning is explicitly enabled (built into args below)
-
-                // First scan the repository with full git history using safe Docker command
-                const scanArgs = [
-                    'run', '--rm',
-                    '-v', `${validatedScanPath}:/scan`,
-                    '-v', `${validatedDatastorePath}:/datastore`,
-                    'ghcr.io/praetorian-inc/noseyparker:latest',
-                    'scan',
-                    '--datastore', '/datastore',
-                    '--git-history', 'full',
-                    '/scan'
-                ];
-
-                // Use a timeout wrapper for the Docker command
-                const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error(`Scan timeout after ${SCAN_TIMEOUT / 1000 / 60} minutes`)), SCAN_TIMEOUT);
-                });
-
-                Promise.race([runDockerCommand(scanArgs), timeoutPromise]).then(({ stdout: scanStdout, stderr: scanStderr }) => {
-                    // Continue to report generation - Nosey Parker may return non-zero exit codes even on successful scans
-
-                    // Now report the findings in structured format using safe Docker command
-                    const reportArgs = [
-                        'run', '--rm',
-                        '-v', `${validatedDatastorePath}:/datastore`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'report',
-                        '--datastore', '/datastore',
-                        '--format', 'json'
-                    ];
-
-                    runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
-                        try {
-                            const results = this._parseNoseyParkerResults(reportStdout);
-                            resolve(results);
-                        } catch (parseError) {
-                            console.warn('Failed to parse JSON results, using fallback:', parseError.message);
-                            resolve(this._createFallbackResults(reportStdout + scanStdout));
-                        }
-                    }).catch(reportError => {
-                        console.warn('Report command failed, trying alternative approach:', reportError.message);
-                        resolve(this._createFallbackResults(scanStdout + scanStderr));
-                    });
-                }).catch(scanError => {
-                    // Handle scan errors, but allow exit code 2 which is common for Nosey Parker
-                    if (scanError.code !== 2) {
-                        console.error('Scan error details:', { error: scanError, stdout: scanError.stdout, stderr: scanError.stderr });
-                        reject(new Error(`Scan failed: ${scanError.message}\nStderr: ${scanError.stderr || ''}`));
-                        return;
-                    }
-                    // If exit code 2, try to continue with report generation
-                    const reportArgs = [
-                        'run', '--rm',
-                        '-v', `${validatedDatastorePath}:/datastore`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'report',
-                        '--datastore', '/datastore',
-                        '--format', 'json'
-                    ];
-
-                    runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
-                        try {
-                            const results = this._parseNoseyParkerResults(reportStdout);
-                            resolve(results);
-                        } catch (parseError) {
-                            console.warn('Failed to parse JSON results, using fallback:', parseError.message);
-                            resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
-                        }
-                    }).catch(reportError => {
-                        console.warn('Report command also failed:', reportError.message);
-                        resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
-                    });
-                });
-            } catch (validationError) {
-                reject(new Error(`Path validation failed: ${validationError.message}`));
+            // Create ignore file for proper exclusion if needed
+            if (dependencyHandling === 'exclude') {
+                // For now, let's skip file-based exclusions to avoid issues
+                // We'll handle dependency filtering in the results processing instead
+                console.log('Dependency exclusion will be handled in post-processing');
             }
-        });
+
+            const customConfigPath = await this._prepareCustomTrufflehogConfig(scanPath, tempOutputPath);
+            const configArgs = customConfigPath ? ['--config', customConfigPath] : [];
+
+            const timeoutAfter = `${SCAN_TIMEOUT / 1000 / 60} minutes`;
+            const makeTimeout = (label) => new Promise((_, reject) => {
+                setTimeout(() => reject(new Error(`${label} scan timeout after ${timeoutAfter}`)), SCAN_TIMEOUT);
+            });
+
+            const runWithTimeout = (args, label) => Promise.race([runDockerCommand(args), makeTimeout(label)]);
+
+            const gitArgs = [
+                'run', '--rm',
+                '-v', `${validatedScanPath}:/scan`,
+                TRUFFLEHOG_IMAGE,
+                'git',
+                'file:///scan',
+                '--json',
+                ...configArgs
+            ];
+
+            const filesystemArgs = [
+                'run', '--rm',
+                '-v', `${validatedScanPath}:/scan`,
+                TRUFFLEHOG_IMAGE,
+                'filesystem',
+                '/scan',
+                '--json',
+                ...configArgs
+            ];
+
+            const runScan = async (args, label) => {
+                try {
+                    const result = await runWithTimeout(args, label);
+                    return { ...result, ok: true };
+                } catch (error) {
+                    return {
+                        stdout: error.stdout || '',
+                        stderr: error.stderr || '',
+                        error,
+                        ok: false
+                    };
+                }
+            };
+
+            const [gitResult, fsResult] = await Promise.all([
+                runScan(gitArgs, 'Git history'),
+                runScan(filesystemArgs, 'Filesystem')
+            ]);
+
+            const collected = [];
+            const gitResults = this._parseTrufflehogResults(gitResult.stdout || '', 'git');
+            const gitErrorResults = gitResults.length === 0
+                ? this._parseTrufflehogResults(gitResult.stderr || '', 'git')
+                : [];
+            const fsResults = this._parseTrufflehogResults(fsResult.stdout || '', 'filesystem');
+            const fsErrorResults = fsResults.length === 0
+                ? this._parseTrufflehogResults(fsResult.stderr || '', 'filesystem')
+                : [];
+            collected.push(...gitResults, ...fsResults);
+            collected.push(...gitErrorResults, ...fsErrorResults);
+
+            if (collected.length === 0) {
+                const fallbackOutput = [
+                    gitResult.stdout,
+                    gitResult.stderr,
+                    fsResult.stdout,
+                    fsResult.stderr
+                ].filter(Boolean).join('\n');
+                if (fallbackOutput) {
+                    const fallbackResults = this._createFallbackResults(fallbackOutput);
+                    if (fallbackResults.length > 0) {
+                        return fallbackResults;
+                    }
+                }
+                const errorMessages = [];
+                if (!gitResult.ok) {
+                    errorMessages.push(this._formatDockerScanError('Git history', gitResult));
+                }
+                if (!fsResult.ok) {
+                    errorMessages.push(this._formatDockerScanError('Filesystem', fsResult));
+                }
+                if (errorMessages.length > 0) {
+                    throw new Error(`Scan failed: ${errorMessages.join(' | ')}`);
+                }
+            }
+
+            const deduped = [];
+            const seen = new Set();
+            for (const result of collected) {
+                const key = `${result.file}|${result.line}|${result.secret}|${result.description}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    deduped.push(result);
+                }
+            }
+            return deduped;
+        } catch (error) {
+            console.error('Scan error details:', { error, stdout: error.stdout, stderr: error.stderr });
+            throw new Error(`Scan failed: ${error.message}\nStderr: ${error.stderr || ''}`);
+        }
+    }
+
+    _formatDockerScanError(label, result) {
+        const baseMessage = result.error?.message || `Docker ${label} scan failed`;
+        const stderr = (result.stderr || '').trim();
+        const stdout = (result.stdout || '').trim();
+        const details = stderr || stdout;
+        return details ? `${label}: ${baseMessage} (${details})` : `${label}: ${baseMessage}`;
+    }
+
+    async _prepareCustomTrufflehogConfig(scanPath, tempOutputPath) {
+        const configPath = path.join(tempOutputPath, 'trufflehog-custom-config.yml');
+        const configContents = `detectors:
+  - name: env_token
+    keywords:
+      - password
+      - pass
+      - secret
+      - token
+      - api_key
+      - apikey
+      - access_key
+      - private_key
+      - client_secret
+    regex:
+      env_token: '(?m)^(?:export[[:space:]]+)?[A-Za-z0-9_]*?(?:PASSWORD|PASS|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET)[A-Za-z0-9_]*[[:space:]]*=[[:space:]]*["'']?([^"''[:space:]#]{6,})'
+    exclude_words:
+      - example
+      - changeme
+      - your
+      - replace
+      - redacted
+      - notset
+  - name: env_connection_string
+    keywords:
+      - database_url
+      - database_uri
+      - connection_string
+      - mongodb_uri
+      - postgres_url
+      - mysql_url
+      - redis_url
+    regex:
+      env_connection: '(?m)^(?:export[[:space:]]+)?(?:DATABASE_URL|DATABASE_URI|CONNECTION_STRING|MONGODB_URI|POSTGRES_URL|MYSQL_URL|REDIS_URL)[[:space:]]*=[[:space:]]*["'']?([^"''[:space:]#]{6,})'
+    exclude_words:
+      - example
+      - changeme
+      - your
+      - replace
+      - redacted
+      - notset
+`;
+
+        try {
+            await fs.promises.writeFile(configPath, configContents, 'utf8');
+        } catch (error) {
+            console.warn('Failed to write custom TruffleHog config:', error.message);
+            return null;
+        }
+
+        const relPath = path.relative(scanPath, configPath);
+        if (!relPath || relPath.startsWith('..') || path.isAbsolute(relPath)) {
+            console.warn('Custom TruffleHog config path is outside scan root:', configPath);
+            return null;
+        }
+        return path.posix.join('/scan', relPath.split(path.sep).join('/'));
     }
 
     /**
-     * Extract file path from Nosey Parker match object, trying multiple possible locations
+     * Extract file path from scan match object, trying multiple possible locations
      */
     _extractFilePathFromMatch(match) {
         // Try multiple possible locations for file path in order of preference
@@ -2407,7 +2491,7 @@ class LeakLockPanel {
         return 'unknown';
     }
 
-    _parseNoseyParkerResults(output) {
+    _parseTrufflehogResults(output, fallbackSourceType = null) {
         const results = [];
 
         if (!output.trim()) {
@@ -2415,117 +2499,180 @@ class LeakLockPanel {
         }
 
         try {
-            // Parse JSON output from Nosey Parker report command
-            const jsonFindings = JSON.parse(output);
+            const addFinding = (finding) => {
+                const detectorName = finding.DetectorName || finding.detectorName;
+                const detectorType = finding.DetectorType ?? finding.detectorType;
+                if (!detectorName && !detectorType) {
+                    return;
+                }
 
-            // Debug logging for external directory scanning
-            console.log(`Parsing Nosey Parker results. Selected directory: ${this._selectedDirectory}`);
-            console.log(`Found ${Array.isArray(jsonFindings) ? jsonFindings.length : 0} findings`);
+                const sourceTypeRaw = finding.SourceType || finding.sourceType || fallbackSourceType;
+                const sourceData = finding.SourceMetadata?.Data || finding.sourceMetadata?.Data || {};
+                const fsMeta = sourceData.Filesystem || sourceData.filesystem;
+                const gitMeta = sourceData.Git || sourceData.git;
+                const meta = fsMeta || gitMeta || {};
+                let sourceType = fallbackSourceType || '';
+                if (gitMeta) {
+                    sourceType = 'git';
+                } else if (fsMeta) {
+                    sourceType = 'filesystem';
+                } else if (typeof sourceTypeRaw === 'string') {
+                    sourceType = sourceTypeRaw.toLowerCase();
+                }
 
-            if (Array.isArray(jsonFindings)) {
-                jsonFindings.forEach((finding, findingIndex) => {
-                    finding.matches?.forEach((match, matchIndex) => {
-                        let filePath = this._extractFilePathFromMatch(match);
+                let filePath = meta.file || meta.path || meta.file_path || finding.File || finding.file;
+                if (filePath && filePath.startsWith('file://')) {
+                    filePath = filePath.replace('file://', '');
+                }
+                if (filePath && filePath.startsWith('/scan/')) {
+                    filePath = filePath.substring(6);
+                }
+                if (!filePath) {
+                    filePath = sourceType === 'git' ? 'git-history-reference' : 'file_path_not_found';
+                }
 
-                        const line = match.location?.source_span?.start?.line ||
-                            match.location?.line ||
-                            match.line_number ||
-                            1;
-                        const secretText = match.snippet?.matching ||
-                            match.snippet?.before ||
-                            match.content ||
-                            match.text ||
-                            'content_unavailable';
+                let lineNumber = meta.line || meta.line_number || finding.Line || finding.line;
+                lineNumber = parseInt(lineNumber, 10);
+                if (!Number.isFinite(lineNumber) || lineNumber < 1) {
+                    lineNumber = 1;
+                }
 
-                        // Debug logging for path extraction
-                        if (filePath === 'file_path_not_found') {
-                            console.warn('No file path found in match');
-                        }
+                const secretText = finding.RawV2 ||
+                    finding.rawV2 ||
+                    finding.Raw ||
+                    finding.raw ||
+                    finding.Secret ||
+                    finding.secret ||
+                    finding.Redacted ||
+                    finding.redacted ||
+                    'content_unavailable';
 
-                        // Skip non-git version control artifacts, but allow git history results
-                        if (filePath === 'version-control-artifact' || filePath.includes('/.svn/') || filePath.includes('/.hg/')) {
-                            console.log(`Skipping non-git version control artifact: ${filePath}`);
-                            return; // Skip this result
-                        }
+                const detectorNameText = typeof detectorName === 'string' ? detectorName.trim() : '';
+                const description = detectorNameText ||
+                    detectorType ||
+                    finding.Description ||
+                    'Secret detected';
 
-                        // For git history artifacts, try to extract meaningful file information
-                        if (filePath === 'git-history-artifact' || (filePath.includes('/.git/') && !filePath.includes('(git-history)'))) {
-                            console.log(`Found git history artifact, extracting file info: ${filePath}`);
-                            // Try to get file path from git object or commit information
-                            const actualPath = this._extractActualPathFromGitHistory(match, finding);
-                            if (actualPath && actualPath !== 'unknown') {
-                                filePath = actualPath;
-                            } else {
-                                // If we can't extract meaningful path, mark it as git history
-                                filePath = 'git-history-reference';
-                            }
-                        }
+                const ruleName = detectorNameText || detectorType;
 
-                        const result = this._createResult(
-                            filePath,
-                            line,
-                            secretText,
-                            finding.rule_name || 'Secret detected',
-                            finding.rule_name,
-                            match
-                        );
-                        results.push(result);
-                    });
-                });
-            }
-        } catch (jsonError) {
-            console.warn('JSON parsing failed, trying line-by-line:', jsonError.message);
-
-            // Try parsing as JSONL (JSON Lines format)
-            const lines = output.split('\n').filter(line => line.trim());
-
-            lines.forEach(line => {
-                try {
-                    const parsed = JSON.parse(line);
-                    if (parsed.matches && Array.isArray(parsed.matches)) {
-                        parsed.matches.forEach(match => {
-                            let filePath = this._extractFilePathFromMatch(match);
-                            const lineNumber = match.location?.line ||
-                                match.line_number ||
-                                match.location?.source_span?.start?.line ||
-                                1;
-                            const secretText = match.snippet ||
-                                match.content ||
-                                match.text ||
-                                'content_unavailable';
-
-                            // Skip non-git version control artifacts (JSONL parsing)
-                            if (filePath === 'version-control-artifact' || filePath.includes('/.svn/') || filePath.includes('/.hg/')) {
-                                console.log(`Skipping non-git version control artifact (JSONL): ${filePath}`);
-                                return; // Skip this result
-                            }
-
-                            // Handle git history artifacts in JSONL parsing
-                            if (filePath === 'git-history-artifact' || (filePath.includes('/.git/') && !filePath.includes('(git-history)'))) {
-                                const actualPath = this._extractActualPathFromGitHistory(match, parsed);
-                                if (actualPath && actualPath !== 'unknown') {
-                                    filePath = actualPath;
-                                } else {
-                                    filePath = 'git-history-reference';
-                                }
-                            }
-
-                            results.push(this._createResult(
-                                filePath,
-                                lineNumber,
-                                secretText,
-                                match.rule_name || parsed.rule_name || 'Secret detected',
-                                match.rule_name || parsed.rule_name,
-                                match
-                            ));
-                        });
+                results.push(this._createResult(
+                    filePath,
+                    lineNumber,
+                    secretText,
+                    description,
+                    ruleName,
+                    {
+                        sourceType,
+                        sourceMetadata: finding.SourceMetadata || finding.sourceMetadata,
+                        verified: finding.Verified || finding.verified
                     }
+                ));
+            };
+
+            const extractJsonChunks = (text) => {
+                const chunks = [];
+                let depth = 0;
+                let inString = false;
+                let escapeNext = false;
+                let start = -1;
+                for (let i = 0; i < text.length; i++) {
+                    const ch = text[i];
+                    if (escapeNext) {
+                        escapeNext = false;
+                        continue;
+                    }
+                    if (ch === '\\') {
+                        escapeNext = true;
+                        continue;
+                    }
+                    if (ch === '"') {
+                        inString = !inString;
+                        continue;
+                    }
+                    if (inString) {
+                        continue;
+                    }
+                    if (ch === '{' || ch === '[') {
+                        if (depth === 0) {
+                            start = i;
+                        }
+                        depth += 1;
+                    } else if (ch === '}' || ch === ']') {
+                        if (depth > 0) {
+                            depth -= 1;
+                            if (depth === 0 && start !== -1) {
+                                chunks.push(text.slice(start, i + 1));
+                                start = -1;
+                            }
+                        }
+                    }
+                }
+                return chunks;
+            };
+
+            const trimmed = output.trim();
+            if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+                try {
+                    const parsed = JSON.parse(trimmed);
+                    if (Array.isArray(parsed)) {
+                        parsed.forEach(addFinding);
+                    } else {
+                        addFinding(parsed);
+                    }
+                    return results;
+                } catch (error) {
+                    const chunks = extractJsonChunks(trimmed);
+                    if (chunks.length > 0) {
+                        chunks.forEach((chunk) => {
+                            try {
+                                const parsed = JSON.parse(chunk);
+                                if (Array.isArray(parsed)) {
+                                    parsed.forEach(addFinding);
+                                } else {
+                                    addFinding(parsed);
+                                }
+                            } catch {
+                                // ignore chunk parse failures
+                            }
+                        });
+                        if (results.length > 0) {
+                            return results;
+                        }
+                    }
+                    // Fall back to JSONL parsing
+                }
+            }
+
+            const lines = output.split('\n').filter(line => line.trim());
+            lines.forEach((line, index) => {
+                try {
+                    const finding = JSON.parse(line);
+                    addFinding(finding);
                 } catch (lineError) {
-                    // Skip invalid JSON lines, but log for debugging
-                    // Avoid logging full line content to prevent leaking sensitive data
-                    console.warn('Failed to parse JSON line at index', lines.indexOf(line), '-', lineError.message);
+                    if (line.startsWith('trufflehog:')) {
+                        return;
+                    }
+                    const segments = line.split('\t').map(seg => seg.trim()).filter(Boolean);
+                    let parsedAny = false;
+                    segments.forEach((segment) => {
+                        if (!segment.startsWith('{') && !segment.startsWith('[')) {
+                            return;
+                        }
+                        try {
+                            const finding = JSON.parse(segment);
+                            addFinding(finding);
+                            parsedAny = true;
+                        } catch {
+                            // ignore segment parse failures
+                        }
+                    });
+                    if (!parsedAny) {
+                        console.warn('Failed to parse JSON line at index', index, '-', lineError.message);
+                    }
                 }
             });
+        } catch (parseError) {
+            console.warn('Failed to parse TruffleHog results, using fallback:', parseError.message);
         }
 
         return results;
@@ -2554,6 +2701,9 @@ class LeakLockPanel {
                 const match = line.match(pattern);
                 if (match) {
                     let filePath = match[1];
+                    filePath = filePath.replace(/["',\\]+$/, '');
+                    filePath = filePath.replace(/","line$/i, '').replace(/",line$/i, '');
+                    filePath = filePath.replace(/","line_number$/i, '').replace(/",line_number$/i, '');
                     // Clean up common Docker mount path prefixes
                     if (filePath.startsWith('/scan/')) {
                         filePath = filePath.substring(6);
@@ -2574,7 +2724,7 @@ class LeakLockPanel {
                     results.push(this._createResult(
                         filePath,
                         parseInt(match[2]) || 1,
-                        '***hidden***',
+                        line.trim(),
                         'Secret detected (details hidden)',
                         'fallback_detection',
                         null
@@ -2584,19 +2734,7 @@ class LeakLockPanel {
             }
         });
 
-        // If no patterns matched but there's output, create a generic result
-        if (results.length === 0 && (output.includes('secret') || output.includes('finding'))) {
-            results.push(this._createResult(
-                'scan_output',
-                1,
-                '***scan completed***',
-                'Scan completed - check console output for details',
-                'info',
-                null
-            ));
-        }
-
-        console.log(`_parseNoseyParkerResults returning ${results.length} total results`);
+        console.log(`_parseTrufflehogResults returning ${results.length} total results`);
         return results;
     }
 
@@ -2629,7 +2767,7 @@ class LeakLockPanel {
             // Extract project name from .git paths for context
             const gitMatch = cleanPath.match(/^(.+?)\/\.git\/.+$/);
             if (gitMatch) {
-                // For git history results, we'll get the actual file path from Nosey Parker's metadata
+                // For git history results, we'll get the actual file path from scanner metadata
                 // This is just a fallback - the main logic should extract proper paths
                 return gitMatch[1] + '/.git (git-history)';
             }
@@ -2650,10 +2788,23 @@ class LeakLockPanel {
     }
 
     _truncateSecret(secret) {
-        if (secret.length > SECRET_TRUNCATE_LENGTH) {
-            return secret.substring(0, SECRET_TRUNCATE_LENGTH) + '...';
-        }
         return secret;
+    }
+
+    _resolveResultPath(filePath, relativeFile) {
+        const baseDir = this._selectedDirectory || this._scanPath || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!baseDir) {
+            return path.isAbsolute(filePath) ? filePath : null;
+        }
+        if (path.isAbsolute(filePath)) {
+            return filePath;
+        }
+        const baseName = path.basename(baseDir);
+        let candidate = relativeFile || filePath;
+        if (candidate.startsWith(`${baseName}/`) || candidate.startsWith(`${baseName}\\`)) {
+            candidate = candidate.slice(baseName.length + 1);
+        }
+        return path.join(baseDir, candidate);
     }
 
     _getSeverity(ruleName) {
@@ -2662,7 +2813,7 @@ class LeakLockPanel {
         const highRisk = ['api_key', 'secret_key', 'private_key', 'password', 'token'];
         const mediumRisk = ['url', 'connection_string', 'config'];
 
-        const lower = ruleName.toLowerCase();
+        const lower = String(ruleName).toLowerCase();
         if (highRisk.some(risk => lower.includes(risk))) return 'high';
         if (mediumRisk.some(risk => lower.includes(risk))) return 'medium';
         return 'low';
@@ -2672,10 +2823,19 @@ class LeakLockPanel {
         const relativeFile = this._getRelativeFilePath(filePath);
         const isInDependency = this._isInDependencyDirectory(relativeFile);
 
-        // Check if this result comes from git history by examining provenance
+        // Check if this result comes from git history by examining source metadata
         let isGitHistory = false;
-        if (match && match.provenance && Array.isArray(match.provenance)) {
-            isGitHistory = match.provenance.some(prov => prov.kind === 'git_repo');
+        if (match) {
+            const sourceType = match.sourceType || match.SourceType;
+            if (sourceType) {
+                isGitHistory = sourceType.toLowerCase() === 'git';
+            }
+            if (!isGitHistory) {
+                const sourceData = match.sourceMetadata?.Data || match.SourceMetadata?.Data;
+                if (sourceData && (sourceData.Git || sourceData.git)) {
+                    isGitHistory = true;
+                }
+            }
         }
         // Also check legacy path-based detection
         isGitHistory = isGitHistory || filePath.startsWith('git-ref:') || filePath.startsWith('git-object') || filePath === 'git-history-reference';
@@ -2684,14 +2844,20 @@ class LeakLockPanel {
         const config = vscode.workspace.getConfiguration('leakLock');
         const dependencyHandling = config.get('dependencyHandling') || 'warning';
 
-        // Enhanced description for git history results
+        // Enhanced description for git history or verified results
         let enhancedDescription = description;
         if (isGitHistory) {
             enhancedDescription = `${description} (found in git history)`;
         }
+        if (match?.verified === true) {
+            enhancedDescription = `${enhancedDescription} (verified)`;
+        }
 
         // Determine severity based on configuration
         let severity = this._getSeverity(ruleName);
+        if (match?.verified === true) {
+            severity = 'high';
+        }
         if (isInDependency && dependencyHandling === 'warning') {
             severity = 'warning';
         }
@@ -2699,11 +2865,12 @@ class LeakLockPanel {
         const isUntracked = this._isUntrackedWorkingTreeFile(filePath, relativeFile, isGitHistory);
         if (isUntracked) {
             enhancedDescription = `${description} (not committed)`;
-            severity = 'safe';
         }
 
+        const openPath = isGitHistory ? null : this._resolveResultPath(filePath, relativeFile);
         const result = {
             file: relativeFile,
+            openPath: openPath,
             line: line,
             secret: this._truncateSecret(secret),
             description: enhancedDescription,
@@ -2743,28 +2910,28 @@ class LeakLockPanel {
         });
     }
 
-    async _cleanupTempFiles(datastorePath) {
+    async _cleanupTempFiles(tempPath) {
         try {
-            // Validate the datastore path before any operations
-            const validatedDatastorePath = validateDockerPath(datastorePath);
+            // Validate the temp path before any operations
+            const validatedTempPath = validateDockerPath(tempPath);
 
-            if (fs.existsSync(validatedDatastorePath)) {
+            if (fs.existsSync(validatedTempPath)) {
                 // Try multiple approaches to remove files
                 try {
-                    fs.rmSync(validatedDatastorePath, { recursive: true, force: true });
+                    fs.rmSync(validatedTempPath, { recursive: true, force: true });
                 } catch (fsError) {
                     console.warn('fs.rmSync failed, trying Docker cleanup:', fsError.message);
 
                     // Use Docker to clean up files that might have been created with root permissions
                     // But avoid using --user root for security
-                    const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
-                    const datastoreName = sanitizeDockerVolumeName(path.basename(validatedDatastorePath));
+                    const parentDir = validateDockerPath(path.dirname(validatedTempPath));
+                    const tempName = sanitizeDockerVolumeName(path.basename(validatedTempPath));
 
                     const cleanupArgs = [
                         'run', '--rm',
                         '-v', `${parentDir}:/workspace`,
                         'alpine:latest',
-                        'rm', '-rf', `/workspace/${datastoreName}`
+                        'rm', '-rf', `/workspace/${tempName}`
                     ];
                     await runDockerCommand(cleanupArgs);
                 }
@@ -2773,7 +2940,7 @@ class LeakLockPanel {
             console.warn('All cleanup attempts failed:', error.message);
             // Instead of using --user root (security risk), just log the failure
             // Files will be cleaned up when the container terminates or by the OS
-            console.warn(`Unable to cleanup ${datastorePath}. Files may remain until container cleanup.`);
+            console.warn(`Unable to cleanup ${tempPath}. Files may remain until container cleanup.`);
         }
     }
 

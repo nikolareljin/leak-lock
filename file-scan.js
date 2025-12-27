@@ -1,11 +1,11 @@
 // Security scan in the currently edited file. 
-// Scan using Praetorian Docker image and store results into a data store named by the currently edited filename (use the filename as the key). Convert any spaces into underscores.
+// Scan using the TruffleHog Docker image and emit JSON results for the current file.
 // In the currently edited file, show the results of the security scan as a decoration on the line number where the issue was found. The decoration should be a red squiggly underline.
 // The decoration should be shown only when the file is saved.
 // The decoration should be removed when the file is closed.
 const vscode = require('vscode');
 
-const dockerImage = 'ghcr.io/praetorian-inc/noseyparker:latest';
+const dockerImage = 'trufflesecurity/trufflehog:latest';
 
 /**
  * Perform Security Scan on the currently edited file.
@@ -23,7 +23,7 @@ function activate(context) {
         const key = filename.replace(/\s/g, '_').replace(/\//g, '_').replace(/\./g, '_').replace(/:/g, '_');
         const spawn = require('child_process').spawn;
         const date = new Date().toISOString().replace(/[:.]/g, '-');
-        const args = ['run', '--rm', '-v', `${filename}:/scan/${key}`, dockerImage, 'report', '--datastore', `np.${key}`, '--format', 'json'];
+        const args = ['run', '--rm', '-v', `${filename}:/scan/${key}`, dockerImage, 'filesystem', '/scan', '--json'];
         const docker = spawn('docker', args);
         docker.stdout.on('data', (data) => {
             console.log

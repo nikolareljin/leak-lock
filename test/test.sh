@@ -132,10 +132,10 @@ if [ -f "extension.js" ]; then
     fi
     
     # Check for Docker image reference
-    if grep -q "ghcr.io/praetorian-inc/noseyparker" extension.js; then
-        print_test_result 0 "Nosey Parker Docker image reference found"
+    if grep -q "trufflesecurity/trufflehog" extension.js; then
+        print_test_result 0 "TruffleHog Docker image reference found"
     else
-        print_test_result 1 "Nosey Parker Docker image reference not found"
+        print_test_result 1 "TruffleHog Docker image reference not found"
     fi
     
 else
@@ -235,15 +235,15 @@ print_section "Testing Docker Integration"
 if command -v docker &> /dev/null && docker info &> /dev/null; then
     echo -e "${YELLOW}Testing Docker image availability...${NC}"
     
-    # Check if Nosey Parker image exists locally or can be pulled
-    if docker image inspect ghcr.io/praetorian-inc/noseyparker:latest &> /dev/null; then
-        print_test_result 0 "Nosey Parker Docker image is available locally"
+    # Check if TruffleHog image exists locally or can be pulled
+    if docker image inspect trufflesecurity/trufflehog:latest &> /dev/null; then
+        print_test_result 0 "TruffleHog Docker image is available locally"
     else
-        echo -e "${YELLOW}Attempting to pull Nosey Parker image...${NC}"
-        if timeout 60 docker pull ghcr.io/praetorian-inc/noseyparker:latest &> /dev/null; then
-            print_test_result 0 "Successfully pulled Nosey Parker Docker image"
+        echo -e "${YELLOW}Attempting to pull TruffleHog image...${NC}"
+        if timeout 60 docker pull trufflesecurity/trufflehog:latest &> /dev/null; then
+            print_test_result 0 "Successfully pulled TruffleHog Docker image"
         else
-            print_test_result 1 "Failed to pull Nosey Parker Docker image (timeout or network issue)"
+            print_test_result 1 "Failed to pull TruffleHog Docker image (timeout or network issue)"
         fi
     fi
     

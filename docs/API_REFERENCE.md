@@ -51,7 +51,7 @@ Validates installed dependencies.
 ```javascript
 {
     docker: boolean,
-    noseyparker: boolean,
+    trufflehog: boolean,
     bfg: boolean,
     java: boolean
 }
@@ -74,7 +74,7 @@ Installs required dependencies with progress tracking.
 **Returns:** Promise<boolean> - Success status
 
 **Responsibilities:**
-- Download Nosey Parker Docker image
+- Download TruffleHog Docker image
 - Download BFG tool
 - Validate Java installation
 - Show progress notifications
@@ -83,7 +83,7 @@ Installs required dependencies with progress tracking.
 Complete cleanup of all extension dependencies.
 
 **Responsibilities:**
-- Remove Docker images: `ghcr.io/praetorian-inc/noseyparker:latest`
+- Remove Docker images: `trufflesecurity/trufflehog:latest`
 - Delete BFG jar file
 - Remove temporary directories
 - Clean up Docker volumes
@@ -178,27 +178,23 @@ Executes repository scanning workflow.
 
 **Workflow:**
 1. Validate scan directory
-2. Initialize Nosey Parker datastore
-3. Execute Docker scan command
-4. Parse JSON results
-5. Update UI with results
+2. Prepare temporary scan output
+3. Execute TruffleHog git scan
+4. Execute TruffleHog filesystem scan
+5. Parse JSON results
+6. Update UI with results
 
 **Commands Generated:**
 ```bash
-# Initialize datastore
-docker run --rm -v "${datastorePath}:/datastore" \
-  ghcr.io/praetorian-inc/noseyparker:latest \
-  datastore init --datastore /datastore
+# Scan git history
+docker run --rm -v "${scanPath}:/scan" \
+  trufflesecurity/trufflehog:latest \
+  git file:///scan --json
 
-# Scan directory
-docker run --rm -v "${scanPath}:/scan" -v "${datastorePath}:/datastore" \
-  ghcr.io/praetorian-inc/noseyparker:latest \
-  scan --datastore /datastore /scan
-
-# Generate report
-docker run --rm -v "${datastorePath}:/datastore" \
-  ghcr.io/praetorian-inc/noseyparker:latest \
-  report --datastore /datastore --format json
+# Scan working tree (including untracked files)
+docker run --rm -v "${scanPath}:/scan" \
+  trufflesecurity/trufflehog:latest \
+  filesystem /scan --json
 ```
 
 ##### **_fixSecrets(replacements: Object): Promise<void>**
@@ -268,7 +264,7 @@ Validates dependencies during panel initialization.
 
 **Logic:**
 - Checks Docker availability
-- Validates Nosey Parker image
+- Validates TruffleHog image
 - Verifies BFG tool presence
 - Updates `_dependenciesInstalled` flag
 
@@ -361,7 +357,7 @@ interface ScanResult {
 ```typescript
 interface DependencyStatus {
     docker: boolean;        // Docker availability
-    noseyparker: boolean;   // Nosey Parker image present
+    trufflehog: boolean;   // TruffleHog image present
     bfg: boolean;          // BFG tool available
     java: boolean;         // Java runtime available
 }
@@ -461,7 +457,7 @@ vscode.window.withProgress({
     title: "Scanning for secrets...",
     cancellable: false
 }, async (progress) => {
-    progress.report({ increment: 25, message: "Initializing datastore..." });
+    progress.report({ increment: 25, message: "Preparing temporary scan results..." });
     // ... scanning steps
 });
 ```

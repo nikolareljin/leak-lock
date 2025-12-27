@@ -18,7 +18,7 @@
 Leak Lock is a powerful VS Code extension that helps developers secure their repositories by:
 
 - 🔍 **Scanning** git repositories for secrets, API keys, and sensitive data
-- 🛡️ **Detecting** over 100+ types of credentials using Nosey Parker
+- 🛡️ **Detecting** over 100+ types of credentials using TruffleHog
 - 🔧 **Removing** secrets from git history using BFG tool
 - ⚡ **Automating** the complete security remediation workflow
 - 📊 **Displaying** results in an intuitive main area interface
@@ -40,7 +40,7 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
  - **Path-Based Safe Removal**: Exact path deletion across branches with preview
 
 ### 🤖 **Automated Workflow**
-- **One-Click Dependency Install**: Docker, Nosey Parker, BFG tool
+- **One-Click Dependency Install**: Docker, TruffleHog, BFG tool
 - **Intelligent Scanning**: Context-aware repository analysis
 - **Guided Remediation**: Step-by-step secret removal process
 - **Git History Cleanup**: Automatic history rewriting and cleanup
@@ -131,7 +131,7 @@ Full-width main area interface showing:
 
 <img width="1701" height="859" alt="image" src="https://github.com/user-attachments/assets/dd8af4e9-c873-4435-9bd5-cbc60584ee73" />
 
-Real-time progress indication during repository scanning with Nosey Parker.
+Real-time progress indication during repository scanning with TruffleHog.
 
 ### Results Display
 
@@ -225,10 +225,10 @@ npm test
 
 ## 🛡️ Security Tools
 
-### **Nosey Parker**
+### **TruffleHog**
 - **Purpose**: Secret detection and scanning
-- **Project**: Nosey Parker by Praetorian — https://github.com/praetorian-inc/noseyparker
-- **Image**: `ghcr.io/praetorian-inc/noseyparker:latest`
+- **Project**: TruffleHog by Truffle Security — https://github.com/trufflesecurity/trufflehog
+- **Image**: `trufflesecurity/trufflehog:latest`
 - **Why it’s good**: High-precision detection with 100+ well‑maintained rules, fast scanning, low false positives, and active community support.
 - **Integration**: Containerized execution for portability and consistency across platforms
 
@@ -242,7 +242,7 @@ npm test
 - **Note**: Deletion matches by filename/folder name across history (not full path)
 
 ### Why Leak Lock
-- Seamless integration: Combines Nosey Parker (detection) and BFG/git (removal) into a single VS Code experience.
+- Seamless integration: Combines TruffleHog (detection) and BFG/git (removal) into a single VS Code experience.
 - Safer defaults: Previews, path‑based alternative, and confirmation steps reduce risk.
 - Productivity: One panel to scan, review, prepare commands, and execute — no shell juggling.
 - Cross‑platform: Dockerized scanning and built‑in helpers make it reliable on Windows, macOS, and Linux.
@@ -265,7 +265,7 @@ npm test
 - `leak-lock.cleanup` - Clean up all dependencies
 
 ### **Dependencies**
-- **Docker**: Container runtime for Nosey Parker
+- **Docker**: Container runtime for TruffleHog
 - **Java**: Runtime for BFG tool (auto-detected)
 - **Git**: Version control operations
 
@@ -276,7 +276,7 @@ npm test
 The extension provides comprehensive cleanup functionality:
 
 ### **Automatic Cleanup (on uninstall)**
-- Removes Nosey Parker Docker image
+- Removes TruffleHog Docker image
 - Deletes BFG tool jar file
 - Cleans up temporary files and directories
 - Removes Docker volumes created by extension

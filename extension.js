@@ -5,7 +5,7 @@ const vscode = require('vscode');
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 
-const dockerImage = 'ghcr.io/praetorian-inc/noseyparker:latest';
+const dockerImage = 'trufflesecurity/trufflehog:latest';
 
 // Panel initialization delays (in milliseconds)
 // These timeouts ensure the webview panel is fully initialized before calling methods on it
@@ -24,7 +24,7 @@ async function checkDependencies() {
 	
 	const dependencies = {
 		docker: false,
-		noseyparker: false,
+		trufflehog: false,
 		bfg: false,
 		java: false
 	};
@@ -35,11 +35,11 @@ async function checkDependencies() {
 		// await execAsync('docker info');
 		dependencies.docker = true;
 		
-		// Check Nosey Parker image
-		await execAsync('docker image inspect ghcr.io/praetorian-inc/noseyparker:latest');
-		dependencies.noseyparker = true;
+		// Check TruffleHog image
+		await execAsync(`docker image inspect ${dockerImage}`);
+		dependencies.trufflehog = true;
 	} catch (error) {
-		console.log('Docker or Nosey Parker not available');
+		console.log('Docker or TruffleHog not available');
 	}
 	
 	try {
@@ -121,15 +121,15 @@ async function installDependencies(forceReinstall = false) {
 				vscode.window.showWarningMessage('Failed to download BFG tool. You may need to download it manually.');
 			}
 			
-			progress.report({ increment: 20, message: "Pulling Nosey Parker Docker image..." });
+			progress.report({ increment: 20, message: "Pulling TruffleHog Docker image..." });
 			
-			// Pull Nosey Parker Docker image
+			// Pull TruffleHog Docker image
 			try {
-				await execAsync('docker pull ghcr.io/praetorian-inc/noseyparker:latest');
-				progress.report({ increment: 0, message: "Nosey Parker image ready ✓" });
+				await execAsync(`docker pull ${dockerImage}`);
+				progress.report({ increment: 0, message: "TruffleHog image ready ✓" });
 			} catch (error) {
-				console.error('Failed to pull Nosey Parker image:', error);
-				throw new Error('Failed to pull Nosey Parker Docker image. Please check your internet connection.');
+				console.error('Failed to pull TruffleHog image:', error);
+				throw new Error('Failed to pull TruffleHog Docker image. Please check your internet connection.');
 			}
 		});
 		
@@ -308,13 +308,13 @@ async function cleanupDependencies() {
 	console.log('Starting Leak Lock extension cleanup...');
 	
 	try {
-		// 1. Remove Nosey Parker Docker image
+		// 1. Remove TruffleHog Docker image
 		try {
-			console.log('Removing Nosey Parker Docker image...');
-			await execAsync('docker rmi ghcr.io/praetorian-inc/noseyparker:latest');
-			console.log('✓ Nosey Parker Docker image removed');
+			console.log('Removing TruffleHog Docker image...');
+			await execAsync(`docker rmi ${dockerImage}`);
+			console.log('✓ TruffleHog Docker image removed');
 		} catch (error) {
-			console.log('Nosey Parker Docker image not found or already removed');
+			console.log('TruffleHog Docker image not found or already removed');
 		}
 		
 		// 2. Remove BFG tool
@@ -333,7 +333,7 @@ async function cleanupDependencies() {
 			path.join(__dirname, 'temp'),
 			path.join(__dirname, 'scan-results'),
 			path.join(__dirname, 'replacements.txt'),
-			path.join(__dirname, '.noseyparker')
+			path.join(__dirname, '.trufflehog-temp')
 		];
 		
 		for (const tempPath of tempPaths) {

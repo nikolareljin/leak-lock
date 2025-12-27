@@ -50,36 +50,39 @@ else
 fi
 
 # Test 5: Test Docker image availability
-echo "🔍 Checking Nosey Parker Docker image..."
-if docker image inspect ghcr.io/praetorian-inc/noseyparker:latest > /dev/null 2>&1; then
-    echo "✅ Nosey Parker image is available locally"
+echo "🔍 Checking TruffleHog Docker image..."
+if docker image inspect trufflesecurity/trufflehog:latest > /dev/null 2>&1; then
+    echo "✅ TruffleHog image is available locally"
 else
-    echo "⚠️  Nosey Parker image not found locally"
+    echo "⚠️  TruffleHog image not found locally"
     echo "🔄 Attempting to pull image..."
-    if timeout 30 docker pull ghcr.io/praetorian-inc/noseyparker:latest > /dev/null 2>&1; then
-        echo "✅ Successfully pulled Nosey Parker image"
+    if timeout 30 docker pull trufflesecurity/trufflehog:latest > /dev/null 2>&1; then
+        echo "✅ Successfully pulled TruffleHog image"
     else
         echo "⚠️  Could not pull image (network/timeout issue)"
     fi
 fi
 
-# Test 6: Test the scan functionality with a simple test
-echo "🧪 Testing scan functionality..."
+# Test 6: Run TruffleHog scan and capture exact JSON output
+echo "🧪 Testing scan functionality and capturing JSON output..."
 if [ -f "test/test-secrets.js" ]; then
     echo "✅ Test file with secrets exists"
-    
+
     # Create a simple test directory structure
+    rm -rf test-scan-dir
     mkdir -p test-scan-dir
     cp test/test-secrets.js test-scan-dir/
-    
-    echo "🔍 Running basic Nosey Parker scan..."
-    # Test if we can run the scan command (without full execution)
-    if docker run --rm -v "$(pwd)/test-scan-dir:/scan" ghcr.io/praetorian-inc/noseyparker:latest --help > /dev/null 2>&1; then
-        echo "✅ Nosey Parker Docker command works"
+
+    echo "🔍 Running TruffleHog scan (JSON output)..."
+    output_file="test/trufflehog-test-output.jsonl"
+    if docker run --rm -v "$(pwd)/test-scan-dir:/scan" trufflesecurity/trufflehog:latest filesystem /scan --json | tee "$output_file"; then
+        echo "✅ TruffleHog scan complete. JSON output saved to $output_file"
     else
-        echo "⚠️  Nosey Parker Docker command failed"
+        echo "❌ TruffleHog scan failed"
+        rm -rf test-scan-dir
+        exit 1
     fi
-    
+
     # Cleanup
     rm -rf test-scan-dir
 else
