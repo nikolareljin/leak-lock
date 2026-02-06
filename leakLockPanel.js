@@ -707,6 +707,101 @@ class LeakLockPanel {
                     .secondary-button:hover {
                         background: var(--vscode-button-secondaryHoverBackground);
                     }
+
+                    /* Reusable detail dialog (overlay) */
+                    .detail-dialog-overlay {
+                        display: none;
+                        position: fixed;
+                        top: 0; left: 0; right: 0; bottom: 0;
+                        background: rgba(0,0,0,0.5);
+                        z-index: 9999;
+                        align-items: center;
+                        justify-content: center;
+                    }
+                    .detail-dialog-overlay.visible {
+                        display: flex;
+                    }
+                    .detail-dialog {
+                        background: var(--vscode-editor-background);
+                        border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, #454545));
+                        border-radius: 8px;
+                        padding: 20px;
+                        min-width: 340px;
+                        max-width: 560px;
+                        max-height: 70vh;
+                        display: flex;
+                        flex-direction: column;
+                        box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+                    }
+                    .detail-dialog-header {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        margin-bottom: 12px;
+                    }
+                    .detail-dialog-header h3 {
+                        margin: 0;
+                        font-size: 1em;
+                    }
+                    .detail-dialog-close {
+                        background: none;
+                        border: none;
+                        color: var(--vscode-foreground);
+                        font-size: 1.2em;
+                        cursor: pointer;
+                        padding: 2px 6px;
+                        border-radius: 4px;
+                    }
+                    .detail-dialog-close:hover {
+                        background: var(--vscode-toolbar-hoverBackground);
+                    }
+                    .detail-dialog-body {
+                        overflow-y: auto;
+                        font-family: monospace;
+                        font-size: 0.9em;
+                        white-space: pre-wrap;
+                        word-break: break-all;
+                        padding: 8px;
+                        background: var(--vscode-textCodeBlock-background);
+                        border-radius: 4px;
+                        margin-bottom: 12px;
+                        max-height: 50vh;
+                    }
+                    .detail-dialog-actions {
+                        display: flex;
+                        gap: 8px;
+                        justify-content: flex-end;
+                    }
+                    .detail-dialog-actions button {
+                        padding: 6px 14px;
+                        border: none;
+                        border-radius: 4px;
+                        cursor: pointer;
+                        font-size: 0.9em;
+                    }
+                    .detail-dialog-copy {
+                        background: var(--vscode-button-background);
+                        color: var(--vscode-button-foreground);
+                    }
+                    .detail-dialog-copy:hover {
+                        background: var(--vscode-button-hoverBackground);
+                    }
+                    .detail-dialog-dismiss {
+                        background: var(--vscode-button-secondaryBackground);
+                        color: var(--vscode-button-secondaryForeground);
+                    }
+                    .detail-dialog-dismiss:hover {
+                        background: var(--vscode-button-secondaryHoverBackground);
+                    }
+
+                    .branch-link {
+                        cursor: pointer;
+                        text-decoration: underline;
+                        text-decoration-style: dotted;
+                    }
+                    .branch-link:hover {
+                        text-decoration-style: solid;
+                    }
                 </style>
             </head>
             <body>
@@ -810,19 +905,89 @@ class LeakLockPanel {
                         vscode.postMessage({ command: 'removeFiles.refetch' });
                     }
                     
-                    // Safe event delegation for file links
+                    // --- Reusable detail dialog ---
+                    function showDetailDialog(title, content) {
+                        const overlay = document.getElementById('detail-dialog-overlay');
+                        const titleEl = document.getElementById('detail-dialog-title');
+                        const bodyEl = document.getElementById('detail-dialog-body');
+                        titleEl.textContent = title;
+                        bodyEl.textContent = content;
+                        overlay.classList.add('visible');
+                    }
+
+                    function hideDetailDialog() {
+                        const overlay = document.getElementById('detail-dialog-overlay');
+                        overlay.classList.remove('visible');
+                    }
+
+                    function copyDetailDialogContent() {
+                        const bodyEl = document.getElementById('detail-dialog-body');
+                        const text = bodyEl.textContent || '';
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(text).then(() => {
+                                const btn = document.getElementById('detail-dialog-copy-btn');
+                                const orig = btn.textContent;
+                                btn.textContent = 'Copied!';
+                                setTimeout(() => { btn.textContent = orig; }, 1500);
+                            });
+                        } else {
+                            const ta = document.createElement('textarea');
+                            ta.value = text;
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                        }
+                    }
+
+                    // Safe event delegation for file links and branch links
                     document.addEventListener('click', function(event) {
                         if (event.target.closest('.file-link.clickable')) {
                             const link = event.target.closest('.file-link');
                             const file = link.getAttribute('data-file');
                             const line = parseInt(link.getAttribute('data-line'));
-                            
+
                             if (file && line) {
                                 openFile(file, line);
                             }
                         }
+
+                        // Branch detail click
+                        if (event.target.closest('.branch-link')) {
+                            const el = event.target.closest('.branch-link');
+                            const branches = el.getAttribute('data-branches');
+                            if (branches) {
+                                showDetailDialog('Branches containing this commit', branches);
+                            }
+                        }
+
+                        // Close dialog on overlay click (outside dialog box)
+                        if (event.target.id === 'detail-dialog-overlay') {
+                            hideDetailDialog();
+                        }
+                    });
+
+                    // Close dialog on Escape
+                    document.addEventListener('keydown', function(event) {
+                        if (event.key === 'Escape') {
+                            hideDetailDialog();
+                        }
                     });
                 </script>
+
+                <div id="detail-dialog-overlay" class="detail-dialog-overlay">
+                    <div class="detail-dialog">
+                        <div class="detail-dialog-header">
+                            <h3 id="detail-dialog-title"></h3>
+                            <button class="detail-dialog-close" onclick="hideDetailDialog()" title="Close">&times;</button>
+                        </div>
+                        <div id="detail-dialog-body" class="detail-dialog-body"></div>
+                        <div class="detail-dialog-actions">
+                            <button id="detail-dialog-copy-btn" class="detail-dialog-copy" onclick="copyDetailDialogContent()">Copy</button>
+                            <button class="detail-dialog-dismiss" onclick="hideDetailDialog()">Close</button>
+                        </div>
+                    </div>
+                </div>
             </body>
             </html>
         `;
@@ -1661,15 +1826,44 @@ class LeakLockPanel {
 
             // Build git info display for commit details
             const shortHash = result.commitHash ? result.commitHash.substring(0, 7) : null;
-            const commitDateFormatted = result.commitDate
-                ? new Date(result.commitDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-                : null;
+
+            // Parse git timestamp: NP uses gix format "<unix_seconds> <tz_offset>" e.g. "1705312200 -0500"
+            // Also handle ISO 8601 strings as fallback
+            let commitDateFormatted = null;
+            if (result.commitDate) {
+                const gitTsParts = String(result.commitDate).match(/^(\d+)\s+([+-]\d{4})$/);
+                if (gitTsParts) {
+                    const d = new Date(parseInt(gitTsParts[1], 10) * 1000);
+                    if (!isNaN(d.getTime())) {
+                        commitDateFormatted = d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+                    }
+                } else {
+                    const d = new Date(result.commitDate);
+                    if (!isNaN(d.getTime())) {
+                        commitDateFormatted = d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+                    }
+                }
+            }
+
+            // Build branch display: truncate to first branch, click to see all
+            let branchHtml = '';
+            if (result.commitBranch) {
+                const branches = result.commitBranch.split(', ');
+                const MAX_DISPLAY_BRANCHES = 1;
+                const firstBranch = branches[0];
+                if (branches.length <= MAX_DISPLAY_BRANCHES) {
+                    branchHtml = `<span title="${escapeHtml(result.commitBranch)}" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)}</span>`;
+                } else {
+                    const allBranches = branches.join('\n');
+                    branchHtml = `<span class="branch-link" data-branches="${escapeHtml(allBranches)}" title="Click to see all ${branches.length} branches" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
+                }
+            }
 
             let gitInfoHtml = '';
             if (result.commitHash || result.commitBranch || result.commitDate) {
                 const parts = [];
-                if (result.commitBranch) {
-                    parts.push(`<span title="Branch(es)" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(result.commitBranch)}</span>`);
+                if (branchHtml) {
+                    parts.push(branchHtml);
                 }
                 if (shortHash) {
                     parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
@@ -1963,7 +2157,9 @@ class LeakLockPanel {
     }
 
     /**
-     * Enrich scan results with git commit metadata (branch names and commit dates).
+     * Enrich scan results with git branch names (and commit dates as fallback).
+     * Commit dates are primarily extracted from Nosey Parker provenance;
+     * git commands are used for branch resolution and as a date fallback.
      * Batch-processes unique commit hashes to avoid redundant git calls.
      */
     async _enrichResultsWithGitInfo(results, scanPath) {
@@ -1974,11 +2170,15 @@ class LeakLockPanel {
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
 
-        // Collect unique commit hashes
+        // Collect unique commit hashes (and track which need date fallback)
         const uniqueHashes = new Set();
+        const needsDateFallback = new Set();
         for (const result of results) {
             if (result.commitHash) {
                 uniqueHashes.add(result.commitHash);
+                if (!result.commitDate) {
+                    needsDateFallback.add(result.commitHash);
+                }
             }
         }
 
@@ -1991,12 +2191,19 @@ class LeakLockPanel {
 
         for (const hash of uniqueHashes) {
             try {
-                // Get commit date
-                const { stdout: dateOut } = await execFileAsync('git', [
-                    '-C', repoDir,
-                    'log', '-1', '--format=%aI', hash
-                ], { timeout: 5000 });
-                const commitDate = dateOut.trim() || null;
+                // Get commit date only if not already provided by Nosey Parker
+                let commitDate = null;
+                if (needsDateFallback.has(hash)) {
+                    try {
+                        const { stdout: dateOut } = await execFileAsync('git', [
+                            '-C', repoDir,
+                            'log', '-1', '--format=%aI', hash
+                        ], { timeout: 5000 });
+                        commitDate = dateOut.trim() || null;
+                    } catch {
+                        // commit may not exist locally
+                    }
+                }
 
                 // Get branches containing this commit
                 let branches = [];
@@ -2013,10 +2220,10 @@ class LeakLockPanel {
                     // branch --contains can fail for orphaned commits
                 }
 
-                commitInfo.set(hash, { branches, date: commitDate });
+                commitInfo.set(hash, { branches, fallbackDate: commitDate });
             } catch {
                 // Commit may no longer exist in the repo (e.g., after rebase)
-                commitInfo.set(hash, { branches: [], date: null });
+                commitInfo.set(hash, { branches: [], fallbackDate: null });
             }
         }
 
@@ -2025,7 +2232,10 @@ class LeakLockPanel {
             if (result.commitHash && commitInfo.has(result.commitHash)) {
                 const info = commitInfo.get(result.commitHash);
                 result.commitBranch = info.branches.length > 0 ? info.branches.join(', ') : null;
-                result.commitDate = info.date;
+                // Use NP-provided date first, fall back to git date
+                if (!result.commitDate && info.fallbackDate) {
+                    result.commitDate = info.fallbackDate;
+                }
             }
         }
     }
@@ -2800,13 +3010,23 @@ class LeakLockPanel {
             severity = 'safe';
         }
 
-        // Extract commit hash from Nosey Parker provenance metadata
+        // Extract commit hash and date from Nosey Parker provenance metadata
+        // NP structure: provenance[].first_commit.commit_metadata.{commit_id, committer_timestamp, author_timestamp}
         let commitHash = null;
+        let commitDate = null;
         if (match && match.provenance && Array.isArray(match.provenance)) {
             for (const prov of match.provenance) {
-                if (prov.kind === 'git_repo' && prov.first_commit && prov.first_commit.commit_id) {
-                    commitHash = prov.first_commit.commit_id;
-                    break;
+                if (prov.kind === 'git_repo' && prov.first_commit) {
+                    const meta = prov.first_commit.commit_metadata;
+                    if (meta) {
+                        if (meta.commit_id) {
+                            commitHash = meta.commit_id;
+                        }
+                        commitDate = meta.author_timestamp || meta.committer_timestamp || null;
+                    }
+                    if (commitHash) {
+                        break;
+                    }
                 }
             }
         }
@@ -2823,7 +3043,7 @@ class LeakLockPanel {
             isUntracked: isUntracked,
             commitHash: commitHash,
             commitBranch: null,
-            commitDate: null
+            commitDate: commitDate
         };
 
         return result;
