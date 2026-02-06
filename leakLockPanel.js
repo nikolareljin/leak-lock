@@ -1659,6 +1659,29 @@ class LeakLockPanel {
                         ? ' (dependency directory)'
                         : '';
 
+            // Build git info display for commit details
+            const shortHash = result.commitHash ? result.commitHash.substring(0, 7) : null;
+            const commitDateFormatted = result.commitDate
+                ? new Date(result.commitDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+                : null;
+
+            let gitInfoHtml = '';
+            if (result.commitHash || result.commitBranch || result.commitDate) {
+                const parts = [];
+                if (result.commitBranch) {
+                    parts.push(`<span title="Branch(es)" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(result.commitBranch)}</span>`);
+                }
+                if (shortHash) {
+                    parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
+                }
+                if (commitDateFormatted) {
+                    parts.push(`<span title="Commit date" style="color: var(--vscode-descriptionForeground);">${escapeHtml(commitDateFormatted)}</span>`);
+                }
+                gitInfoHtml = parts.join('<br>');
+            } else {
+                gitInfoHtml = '<span style="color: var(--vscode-descriptionForeground); font-size: 0.85em;">—</span>';
+            }
+
             return `
                 <tr data-secret="${escapeHtml(result.secret)}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
                     <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? '' : 'checked'}></td>
@@ -1682,6 +1705,9 @@ class LeakLockPanel {
                     </td>
                     <td>
                         <input type="text" class="replacement-input" value="*****" placeholder="Replacement value" ${isDependency ? 'disabled' : ''}>
+                    </td>
+                    <td style="font-size: 0.85em; line-height: 1.4;">
+                        ${gitInfoHtml}
                     </td>
                     <td>
                         <div style="display: flex; align-items: center; gap: 8px;">
@@ -1753,10 +1779,11 @@ class LeakLockPanel {
                     <thead>
                         <tr>
                             <th style="width: 40px;">Fix</th>
-                            <th style="width: 25%;">File</th>
-                            <th style="width: 60px;">Line</th>
-                            <th style="width: 30%;">Secret</th>
-                            <th style="width: 20%;">Replace With</th>
+                            <th style="width: 20%;">File</th>
+                            <th style="width: 50px;">Line</th>
+                            <th style="width: 20%;">Secret</th>
+                            <th style="width: 12%;">Replace With</th>
+                            <th style="width: 15%;">Git Info</th>
                             <th>Description</th>
                         </tr>
                     </thead>
@@ -1885,6 +1912,9 @@ class LeakLockPanel {
             // Clean up temporary datastore
             await this._cleanupTempFiles(tempDatastore);
 
+            // Enrich results with git branch names and commit dates
+            await this._enrichResultsWithGitInfo(scanResults, scanPath);
+
             // Update results
             this._scanResults = scanResults;
             this._isScanning = false;
@@ -1929,6 +1959,74 @@ class LeakLockPanel {
         } catch (e) {
             this._scanRepoRoot = null;
             this._trackedFiles = null;
+        }
+    }
+
+    /**
+     * Enrich scan results with git commit metadata (branch names and commit dates).
+     * Batch-processes unique commit hashes to avoid redundant git calls.
+     */
+    async _enrichResultsWithGitInfo(results, scanPath) {
+        if (!scanPath || !results || results.length === 0) {
+            return;
+        }
+
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+
+        // Collect unique commit hashes
+        const uniqueHashes = new Set();
+        for (const result of results) {
+            if (result.commitHash) {
+                uniqueHashes.add(result.commitHash);
+            }
+        }
+
+        if (uniqueHashes.size === 0) {
+            return;
+        }
+
+        const repoDir = this._scanRepoRoot || scanPath;
+        const commitInfo = new Map(); // hash -> { branches, date }
+
+        for (const hash of uniqueHashes) {
+            try {
+                // Get commit date
+                const { stdout: dateOut } = await execFileAsync('git', [
+                    '-C', repoDir,
+                    'log', '-1', '--format=%aI', hash
+                ], { timeout: 5000 });
+                const commitDate = dateOut.trim() || null;
+
+                // Get branches containing this commit
+                let branches = [];
+                try {
+                    const { stdout: branchOut } = await execFileAsync('git', [
+                        '-C', repoDir,
+                        'branch', '-a', '--contains', hash
+                    ], { timeout: 10000 });
+                    branches = branchOut.split('\n')
+                        .map(b => b.trim().replace(/^\*\s*/, ''))
+                        .filter(Boolean)
+                        .filter(b => !b.includes('HEAD detached'));
+                } catch {
+                    // branch --contains can fail for orphaned commits
+                }
+
+                commitInfo.set(hash, { branches, date: commitDate });
+            } catch {
+                // Commit may no longer exist in the repo (e.g., after rebase)
+                commitInfo.set(hash, { branches: [], date: null });
+            }
+        }
+
+        // Assign enriched info back to results
+        for (const result of results) {
+            if (result.commitHash && commitInfo.has(result.commitHash)) {
+                const info = commitInfo.get(result.commitHash);
+                result.commitBranch = info.branches.length > 0 ? info.branches.join(', ') : null;
+                result.commitDate = info.date;
+            }
         }
     }
 
@@ -2702,6 +2800,17 @@ class LeakLockPanel {
             severity = 'safe';
         }
 
+        // Extract commit hash from Nosey Parker provenance metadata
+        let commitHash = null;
+        if (match && match.provenance && Array.isArray(match.provenance)) {
+            for (const prov of match.provenance) {
+                if (prov.kind === 'git_repo' && prov.first_commit && prov.first_commit.commit_id) {
+                    commitHash = prov.first_commit.commit_id;
+                    break;
+                }
+            }
+        }
+
         const result = {
             file: relativeFile,
             line: line,
@@ -2711,7 +2820,10 @@ class LeakLockPanel {
             isDependency: isInDependency,
             originalSeverity: this._getSeverity(ruleName),
             isGitHistory: isGitHistory,
-            isUntracked: isUntracked
+            isUntracked: isUntracked,
+            commitHash: commitHash,
+            commitBranch: null,
+            commitDate: null
         };
 
         return result;
