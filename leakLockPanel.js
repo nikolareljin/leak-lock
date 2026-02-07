@@ -507,21 +507,27 @@ class LeakLockPanel {
                         width: 100%;
                         border-collapse: collapse;
                         margin-top: 10px;
+                        table-layout: fixed;
                     }
                     .results-table th, .results-table td {
                         border: 1px solid var(--vscode-panel-border);
                         padding: 8px;
                         text-align: left;
+                        overflow: hidden;
+                        text-overflow: ellipsis;
                     }
                     .results-table th {
                         background-color: var(--vscode-editor-selectionBackground);
                     }
                     .replacement-input {
                         width: 100%;
+                        box-sizing: border-box;
                         background-color: var(--vscode-input-background);
                         color: var(--vscode-input-foreground);
                         border: 1px solid var(--vscode-input-border);
                         padding: 4px;
+                        position: relative;
+                        z-index: 1;
                     }
                     .checkbox {
                         margin-right: 5px;
@@ -717,9 +723,11 @@ class LeakLockPanel {
                         z-index: 9999;
                         align-items: center;
                         justify-content: center;
+                        pointer-events: none;
                     }
                     .detail-dialog-overlay.visible {
                         display: flex;
+                        pointer-events: auto;
                     }
                     .detail-dialog {
                         background: var(--vscode-editor-background);
@@ -1860,18 +1868,26 @@ class LeakLockPanel {
             }
 
             let gitInfoHtml = '';
+            let gitInfoTooltip = '';
             if (result.commitHash || result.commitBranch || result.commitDate) {
                 const parts = [];
+                const tooltipParts = [];
                 if (branchHtml) {
                     parts.push(branchHtml);
                 }
+                if (result.commitBranch) {
+                    tooltipParts.push('Branch(es): ' + result.commitBranch);
+                }
                 if (shortHash) {
                     parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
+                    tooltipParts.push('Commit: ' + result.commitHash);
                 }
                 if (commitDateFormatted) {
                     parts.push(`<span title="Commit date" style="color: var(--vscode-descriptionForeground);">${escapeHtml(commitDateFormatted)}</span>`);
+                    tooltipParts.push('Date: ' + commitDateFormatted);
                 }
                 gitInfoHtml = parts.join('<br>');
+                gitInfoTooltip = tooltipParts.join('\n');
             } else {
                 gitInfoHtml = '<span style="color: var(--vscode-descriptionForeground); font-size: 0.85em;">—</span>';
             }
@@ -1892,7 +1908,7 @@ class LeakLockPanel {
                             ${result.line}
                         </span>
                     </td>
-                    <td>
+                    <td title="${escapeHtml(result.secret)}">
                         <span style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;">
                             ${escapeHtml(result.secret)}
                         </span>
@@ -1900,10 +1916,10 @@ class LeakLockPanel {
                     <td>
                         <input type="text" class="replacement-input" value="*****" placeholder="Replacement value" ${isDependency ? 'disabled' : ''}>
                     </td>
-                    <td style="font-size: 0.85em; line-height: 1.4;">
+                    <td title="${escapeHtml(gitInfoTooltip)}" style="font-size: 0.85em; line-height: 1.4; overflow: visible; white-space: normal; word-break: break-word;">
                         ${gitInfoHtml}
                     </td>
-                    <td>
+                    <td title="${escapeHtml(result.description)}">
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <span style="background: ${severityColors[result.severity] || '#666'}; color: white; padding: 2px 6px; border-radius: 10px; font-size: 0.7em; text-transform: uppercase;">
                                 ${escapeHtml(result.severity)}
