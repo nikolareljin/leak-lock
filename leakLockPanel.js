@@ -928,6 +928,15 @@ class LeakLockPanel {
                         overlay.classList.remove('visible');
                     }
 
+                    function fallbackCopyToClipboard(textToCopy) {
+                        const ta = document.createElement('textarea');
+                        ta.value = textToCopy;
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                    }
+
                     function copyDetailDialogContent() {
                         const bodyEl = document.getElementById('detail-dialog-body');
                         const text = bodyEl.textContent || '';
@@ -937,14 +946,11 @@ class LeakLockPanel {
                                 const orig = btn.textContent;
                                 btn.textContent = 'Copied!';
                                 setTimeout(() => { btn.textContent = orig; }, 1500);
+                            }).catch(() => {
+                                fallbackCopyToClipboard(text);
                             });
                         } else {
-                            const ta = document.createElement('textarea');
-                            ta.value = text;
-                            document.body.appendChild(ta);
-                            ta.select();
-                            document.execCommand('copy');
-                            document.body.removeChild(ta);
+                            fallbackCopyToClipboard(text);
                         }
                     }
 
@@ -2203,9 +2209,13 @@ class LeakLockPanel {
         }
 
         const repoDir = this._scanRepoRoot || scanPath;
-        const commitInfo = new Map(); // hash -> { branches, date }
+        const commitInfo = new Map(); // hash -> { branches, fallbackDate }
 
-        for (const hash of uniqueHashes) {
+        // Resolve commit metadata in parallel with limited concurrency
+        const CONCURRENCY = 5;
+        const hashArray = [...uniqueHashes];
+
+        const resolveHash = async (hash) => {
             try {
                 // Get commit date only if not already provided by Nosey Parker
                 let commitDate = null;
@@ -2231,7 +2241,11 @@ class LeakLockPanel {
                     branches = branchOut.split('\n')
                         .map(b => b.trim().replace(/^\*\s*/, ''))
                         .filter(Boolean)
-                        .filter(b => !b.includes('HEAD detached'));
+                        .filter(b =>
+                            !b.includes('HEAD detached') &&
+                            !b.includes('->') &&
+                            !REMOTE_HEAD_FILTER_PATTERN.test(b)
+                        );
                 } catch {
                     // branch --contains can fail for orphaned commits
                 }
@@ -2241,6 +2255,12 @@ class LeakLockPanel {
                 // Commit may no longer exist in the repo (e.g., after rebase)
                 commitInfo.set(hash, { branches: [], fallbackDate: null });
             }
+        };
+
+        // Process hashes in batches of CONCURRENCY
+        for (let i = 0; i < hashArray.length; i += CONCURRENCY) {
+            const batch = hashArray.slice(i, i + CONCURRENCY);
+            await Promise.all(batch.map(resolveHash));
         }
 
         // Assign enriched info back to results
