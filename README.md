@@ -13,7 +13,7 @@
 
 ---
 
-## 🌟 Overview
+## Overview
 
 Leak Lock is a powerful VS Code extension that helps developers secure their repositories by:
 
@@ -54,7 +54,7 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 
 ### 1. Installation
 ```bash
-# Install from VS Code Marketplace (coming soon)
+# Install from VS Code Marketplace
 code --install-extension leak-lock
 
 # Or install from VSIX
