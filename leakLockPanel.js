@@ -1843,12 +1843,12 @@ class LeakLockPanel {
                 if (gitTsParts) {
                     const d = new Date(parseInt(gitTsParts[1], 10) * 1000);
                     if (!isNaN(d.getTime())) {
-                        commitDateFormatted = d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+                        commitDateFormatted = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
                     }
                 } else {
                     const d = new Date(result.commitDate);
                     if (!isNaN(d.getTime())) {
-                        commitDateFormatted = d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+                        commitDateFormatted = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
                     }
                 }
             }
