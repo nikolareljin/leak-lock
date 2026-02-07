@@ -969,9 +969,14 @@ class LeakLockPanel {
                         // Branch detail click
                         if (event.target.closest('.branch-link')) {
                             const el = event.target.closest('.branch-link');
-                            const branches = el.getAttribute('data-branches');
-                            if (branches) {
-                                showDetailDialog('Branches containing this commit', branches);
+                            const raw = el.getAttribute('data-branches');
+                            if (raw) {
+                                try {
+                                    const branches = JSON.parse(raw);
+                                    showDetailDialog('Branches containing this commit', branches.join('\n'));
+                                } catch {
+                                    showDetailDialog('Branches containing this commit', raw);
+                                }
                             }
                         }
 
@@ -1847,9 +1852,21 @@ class LeakLockPanel {
             if (result.commitDate) {
                 const gitTsParts = String(result.commitDate).match(/^(\d+)\s+([+-]\d{4})$/);
                 if (gitTsParts) {
-                    const d = new Date(parseInt(gitTsParts[1], 10) * 1000);
-                    if (!isNaN(d.getTime())) {
-                        commitDateFormatted = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+                    const unixSeconds = parseInt(gitTsParts[1], 10);
+                    const tzOffset = gitTsParts[2]; // e.g. "-0500"
+                    if (!isNaN(unixSeconds) && typeof tzOffset === 'string') {
+                        const sign = tzOffset[0] === '-' ? -1 : 1;
+                        const hours = parseInt(tzOffset.substring(1, 3), 10) || 0;
+                        const minutes = parseInt(tzOffset.substring(3, 5), 10) || 0;
+                        const offsetMinutes = sign * (hours * 60 + minutes);
+                        // Adjust UTC instant by commit's offset to get the commit's local wall-clock date
+                        const adjustedMs = (unixSeconds + offsetMinutes * 60) * 1000;
+                        const d = new Date(adjustedMs);
+                        if (!isNaN(d.getTime())) {
+                            commitDateFormatted = d.toLocaleDateString(undefined, {
+                                year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC'
+                            });
+                        }
                     }
                 } else {
                     const d = new Date(result.commitDate);
@@ -1868,8 +1885,8 @@ class LeakLockPanel {
                 if (branches.length <= MAX_DISPLAY_BRANCHES) {
                     branchHtml = `<span title="${escapeHtml(result.commitBranch)}" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)}</span>`;
                 } else {
-                    const allBranches = branches.join('\n');
-                    branchHtml = `<span class="branch-link" data-branches="${escapeHtml(allBranches)}" title="Click to see all ${branches.length} branches" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
+                    const allBranchesJson = JSON.stringify(branches);
+                    branchHtml = `<span class="branch-link" data-branches="${escapeJsonAttribute(allBranchesJson)}" title="Click to see all ${branches.length} branches" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
                 }
             }
 
@@ -2236,7 +2253,7 @@ class LeakLockPanel {
                 try {
                     const { stdout: branchOut } = await execFileAsync('git', [
                         '-C', repoDir,
-                        'branch', '-a', '--contains', hash
+                        'branch', '--no-color', '-a', '--contains', hash
                     ], { timeout: 10000 });
                     branches = branchOut.split('\n')
                         .map(b => b.trim().replace(/^\*\s*/, ''))
