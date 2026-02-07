@@ -969,14 +969,10 @@ class LeakLockPanel {
                         // Branch detail click
                         if (event.target.closest('.branch-link')) {
                             const el = event.target.closest('.branch-link');
-                            const raw = el.getAttribute('data-branches');
-                            if (raw) {
-                                try {
-                                    const branches = JSON.parse(raw);
-                                    showDetailDialog('Branches containing this commit', branches.join('\n'));
-                                } catch {
-                                    showDetailDialog('Branches containing this commit', raw);
-                                }
+                            const idx = el.getAttribute('data-branch-idx');
+                            if (idx !== null && window.__branchData && window.__branchData[idx]) {
+                                const branches = window.__branchData[idx];
+                                showDetailDialog('Branches containing this commit', branches.join('\\n'));
                             }
                         }
 
@@ -1815,6 +1811,7 @@ class LeakLockPanel {
             ? 'Remote refs may be outdated (older than 15 minutes). Fetch to ensure cleanup considers latest branches and tags.'
             : 'Remotes fetched recently; cleanup reflects current branches and tags.';
 
+        const branchDataMap = {}; // index → branches array, populated during map
         const resultsRows = this._scanResults.map((result, index) => {
             const isDependency = result.isDependency;
             const isGitHistory = result.isGitHistory;
@@ -1885,8 +1882,8 @@ class LeakLockPanel {
                 if (branches.length <= MAX_DISPLAY_BRANCHES) {
                     branchHtml = `<span title="${escapeHtml(result.commitBranch)}" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)}</span>`;
                 } else {
-                    const allBranchesJson = JSON.stringify(branches);
-                    branchHtml = `<span class="branch-link" data-branches="${escapeJsonAttribute(allBranchesJson)}" title="Click to see all ${branches.length} branches" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
+                    branchDataMap[index] = branches;
+                    branchHtml = `<span class="branch-link" data-branch-idx="${index}" title="Click to see all ${branches.length} branches" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
                 }
             }
 
@@ -2008,6 +2005,7 @@ class LeakLockPanel {
                         ` : ''}
                     </div>
                 </div>
+                <script>window.__branchData = ${JSON.stringify(branchDataMap)};</script>
                 <table class="results-table">
                     <thead>
                         <tr>
