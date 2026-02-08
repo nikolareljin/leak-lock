@@ -6,14 +6,14 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
 [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
 
 ---
 
-## 🌟 Overview
+## Overview
 
 Leak Lock is a powerful VS Code extension that helps developers secure their repositories by:
 
@@ -54,8 +54,8 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 
 ### 1. Installation
 ```bash
-# Install from VS Code Marketplace (coming soon)
-code --install-extension leak-lock
+# Install from VS Code Marketplace
+code --install-extension nikolareljin.leak-lock
 
 # Or install from VSIX
 code --install-extension leak-lock-0.0.1.vsix
@@ -107,16 +107,16 @@ The extension adds a shield icon to the activity bar for easy access.
 ### Welcome View
 Simple welcome interface in the sidebar with a "Open Scanner" button.
 
-<img width="71" height="653" alt="image" src="https://github.com/user-attachments/assets/7746e552-4017-45fb-b2d3-3f412b2da92b" />
+<img width="47" height="331" alt="image" src="https://github.com/user-attachments/assets/b0ff943c-bf64-4b61-a5f9-ff83ba83bd11" />
 
 "Leak-Lock" scanner button:
 
-<img width="73" height="74" alt="image" src="https://github.com/user-attachments/assets/2e927619-0825-47b7-9ef3-e825c6ffd520" />
+<img width="119" height="128" alt="image" src="https://github.com/user-attachments/assets/4b98cea4-f793-4294-9ab0-adf96611e023" />
 
 
 ### Main Scanner Interface
 
-<img width="413" height="548" alt="image" src="https://github.com/user-attachments/assets/e6d5630d-0a4a-4ae5-8383-94c88595de02" />
+<img width="354" height="573" alt="image" src="https://github.com/user-attachments/assets/c8199804-290a-4797-930e-8e8c3f7cc7c2" />
 
 Full-width main area interface showing:
 - Dependency installation status
@@ -136,6 +136,10 @@ Real-time progress indication during repository scanning with Nosey Parker.
 ### Results Display
 
 <img width="2340" height="1215" alt="image" src="https://github.com/user-attachments/assets/bc057139-d659-49f0-b81c-4d76dbe54dba" />
+
+In case of found issues - like with these demo files: 
+
+<img width="1322" height="1246" alt="image" src="https://github.com/user-attachments/assets/54e9d84f-8a63-46ef-8b66-972e1488e826" />
 
 Detailed table showing:
 - Secret type and severity
