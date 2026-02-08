@@ -1,5 +1,12 @@
 # Change Log
 
+## 0.2.0
+### Added
+- **Git Commit Info in Scan Results**: Display branch name, commit hash, and commit date for each detected credential leak found in git history ([#36](https://github.com/nikolareljin/leak-lock/issues/36))
+  - New "Git Info" column in the results table showing branch, abbreviated commit hash, and formatted date
+  - Batch-resolves commit metadata via `git log` and `git branch --contains` after scanning
+  - Gracefully handles orphaned commits and non-git findings
+
 ## 0.1.2
 - Ignore jar files in the vscode distro.
 
