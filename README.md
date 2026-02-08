@@ -137,6 +137,10 @@ Real-time progress indication during repository scanning with Nosey Parker.
 
 <img width="2340" height="1215" alt="image" src="https://github.com/user-attachments/assets/bc057139-d659-49f0-b81c-4d76dbe54dba" />
 
+In case of found issues - like with these demo files: 
+
+<img width="1322" height="1246" alt="image" src="https://github.com/user-attachments/assets/54e9d84f-8a63-46ef-8b66-972e1488e826" />
+
 Detailed table showing:
 - Secret type and severity
 - File location and line number
