@@ -107,16 +107,16 @@ The extension adds a shield icon to the activity bar for easy access.
 ### Welcome View
 Simple welcome interface in the sidebar with a "Open Scanner" button.
 
-<img width="71" height="653" alt="image" src="https://github.com/user-attachments/assets/7746e552-4017-45fb-b2d3-3f412b2da92b" />
+<img width="47" height="331" alt="image" src="https://github.com/user-attachments/assets/b0ff943c-bf64-4b61-a5f9-ff83ba83bd11" />
 
 "Leak-Lock" scanner button:
 
-<img width="73" height="74" alt="image" src="https://github.com/user-attachments/assets/2e927619-0825-47b7-9ef3-e825c6ffd520" />
+<img width="119" height="128" alt="image" src="https://github.com/user-attachments/assets/4b98cea4-f793-4294-9ab0-adf96611e023" />
 
 
 ### Main Scanner Interface
 
-<img width="413" height="548" alt="image" src="https://github.com/user-attachments/assets/e6d5630d-0a4a-4ae5-8383-94c88595de02" />
+<img width="354" height="573" alt="image" src="https://github.com/user-attachments/assets/c8199804-290a-4797-930e-8e8c3f7cc7c2" />
 
 Full-width main area interface showing:
 - Dependency installation status
