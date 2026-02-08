@@ -977,7 +977,7 @@ class LeakLockPanel {
                             const idx = el.getAttribute('data-branch-idx');
                             if (idx !== null && window.__branchData && window.__branchData[idx]) {
                                 const branches = window.__branchData[idx];
-                                showDetailDialog('Branches containing this commit', branches.join('\\n'));
+                                showDetailDialog('Branches and tags containing this commit', branches.join('\\n'));
                             }
                         }
 
