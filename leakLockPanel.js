@@ -1873,35 +1873,37 @@ class LeakLockPanel {
                 } else {
                     const d = new Date(result.commitDate);
                     if (!isNaN(d.getTime())) {
-                        commitDateFormatted = d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+                        commitDateFormatted = d.toLocaleDateString(undefined, {
+                            year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC'
+                        });
                     }
                 }
             }
 
             // Build branch display: truncate to first branch, click to see all
             let branchHtml = '';
-            if (result.commitBranch) {
-                const branches = result.commitBranch.split(', ');
+            if (result.commitBranches && result.commitBranches.length > 0) {
+                const branches = result.commitBranches;
                 const MAX_DISPLAY_BRANCHES = 1;
                 const firstBranch = branches[0];
                 if (branches.length <= MAX_DISPLAY_BRANCHES) {
-                    branchHtml = `<span title="${escapeHtml(result.commitBranch)}" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)}</span>`;
+                    branchHtml = `<span title="${escapeHtml(branches.join(', '))}" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)}</span>`;
                 } else {
                     branchDataMap[index] = branches;
-                    branchHtml = `<span class="branch-link" data-branch-idx="${index}" title="Click to see all ${branches.length} branches" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
+                    branchHtml = `<span class="branch-link" data-branch-idx="${index}" title="Click to see all ${branches.length} branches/tags" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
                 }
             }
 
             let gitInfoHtml = '';
             let gitInfoTooltip = '';
-            if (result.commitHash || result.commitBranch || result.commitDate) {
+            if (result.commitHash || (result.commitBranches && result.commitBranches.length > 0) || result.commitDate) {
                 const parts = [];
                 const tooltipParts = [];
                 if (branchHtml) {
                     parts.push(branchHtml);
                 }
-                if (result.commitBranch) {
-                    tooltipParts.push('Branch(es): ' + result.commitBranch);
+                if (result.commitBranches && result.commitBranches.length > 0) {
+                    tooltipParts.push('Branch(es): ' + result.commitBranches.join(', '));
                 }
                 if (shortHash) {
                     parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
@@ -2010,7 +2012,7 @@ class LeakLockPanel {
                         ` : ''}
                     </div>
                 </div>
-                <script>window.__branchData = ${JSON.stringify(branchDataMap)};</script>
+                <script>window.__branchData = ${JSON.stringify(branchDataMap).replace(/</g, '\\u003c')};</script>
                 <table class="results-table">
                     <thead>
                         <tr>
@@ -2270,6 +2272,21 @@ class LeakLockPanel {
                     // branch --contains can fail for orphaned commits
                 }
 
+                // Get tags pointing at this commit
+                try {
+                    const { stdout: tagOut } = await execFileAsync('git', [
+                        '-C', repoDir,
+                        'tag', '--contains', hash
+                    ], { timeout: 10000 });
+                    const tags = tagOut.split('\n')
+                        .map(t => t.trim())
+                        .filter(Boolean)
+                        .map(t => `tag: ${t}`);
+                    branches = branches.concat(tags);
+                } catch {
+                    // tag --contains can fail for orphaned commits
+                }
+
                 commitInfo.set(hash, { branches, fallbackDate: commitDate });
             } catch {
                 // Commit may no longer exist in the repo (e.g., after rebase)
@@ -2287,7 +2304,7 @@ class LeakLockPanel {
         for (const result of results) {
             if (result.commitHash && commitInfo.has(result.commitHash)) {
                 const info = commitInfo.get(result.commitHash);
-                result.commitBranch = info.branches.length > 0 ? info.branches.join(', ') : null;
+                result.commitBranches = info.branches.length > 0 ? info.branches : null;
                 // Use NP-provided date first, fall back to git date
                 if (!result.commitDate && info.fallbackDate) {
                     result.commitDate = info.fallbackDate;
@@ -3098,7 +3115,7 @@ class LeakLockPanel {
             isGitHistory: isGitHistory,
             isUntracked: isUntracked,
             commitHash: commitHash,
-            commitBranch: null,
+            commitBranches: null,
             commitDate: commitDate
         };
 
