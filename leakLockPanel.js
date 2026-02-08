@@ -2272,7 +2272,7 @@ class LeakLockPanel {
                     // branch --contains can fail for orphaned commits
                 }
 
-                // Get tags pointing at this commit
+                // Get tags that contain this commit (including git history)
                 try {
                     const { stdout: tagOut } = await execFileAsync('git', [
                         '-C', repoDir,
