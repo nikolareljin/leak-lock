@@ -108,3 +108,5 @@ private/
 
 # JAR files
 bfg.jar
+
+/ignore/
