@@ -885,9 +885,11 @@ class LeakLockPanel {
                         
                         checkboxes.forEach(checkbox => {
                             const row = checkbox.closest('tr');
-                            const secretValue = row.dataset.secret;
+                            const findingIndex = row.dataset.findingIndex;
                             const replacementInput = row.querySelector('.replacement-input');
-                            replacements[secretValue] = replacementInput.value || '*****';
+                            if (typeof findingIndex !== 'undefined') {
+                                replacements[findingIndex] = replacementInput.value || '*****';
+                            }
                         });
                         
                         return replacements;
@@ -1971,7 +1973,7 @@ class LeakLockPanel {
             }
 
             return `
-                <tr data-secret="${escapeHtml(result.secret)}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
+                <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
                     <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? '' : 'checked'}></td>
                     <td title="${escapeHtml(result.file)}${contextNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
@@ -3250,8 +3252,34 @@ class LeakLockPanel {
         return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && git filter-repo --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" --force && git reflog expire --expire=now --all && git gc --prune=now --aggressive && git push --force --all && git push --force --tags`;
     }
 
+    _resolveScanReplacements(replacements) {
+        if (!replacements || typeof replacements !== 'object') {
+            return {};
+        }
+        const resolved = {};
+        for (const [key, replacement] of Object.entries(replacements)) {
+            const idx = Number(key);
+            if (Number.isInteger(idx) && idx >= 0 && idx < this._scanResults.length) {
+                const result = this._scanResults[idx];
+                if (!result || result.isDependency) {
+                    continue;
+                }
+                const secretValue = result.fullSecret || result.secret;
+                if (!secretValue) {
+                    continue;
+                }
+                resolved[secretValue] = replacement || '*****';
+                continue;
+            }
+            // Backward compatibility for existing callers that pass secret->replacement maps.
+            resolved[key] = replacement || '*****';
+        }
+        return resolved;
+    }
+
     _prepareScanReplacementCommand(mode, replacements) {
-        if (!replacements || Object.keys(replacements).length === 0) {
+        const resolvedReplacements = this._resolveScanReplacements(replacements);
+        if (!resolvedReplacements || Object.keys(resolvedReplacements).length === 0) {
             vscode.window.showWarningMessage('No secrets selected for removal.');
             return;
         }
@@ -3269,7 +3297,7 @@ class LeakLockPanel {
                 : this._buildScanBfgReplaceCommand(scanPath, replacementsFile);
             this._scanCleanup.preparedCommand = command;
             this._scanCleanup.preparedMode = mode;
-            this._scanCleanup.replacements = replacements;
+            this._scanCleanup.replacements = resolvedReplacements;
             this._scanCleanup.replacementsFile = replacementsFile;
         } finally {
             this._scanCleanup.preparing = false;
@@ -3561,8 +3589,8 @@ class LeakLockPanel {
 
         return {
             generatedAt: new Date().toISOString(),
-            scanPath: this._scanPath || null,
-            selectedDirectory: this._selectedDirectory || null,
+            scanPath: redactSensitive ? '[REDACTED_PATH]' : (this._scanPath || null),
+            selectedDirectory: redactSensitive ? '[REDACTED_PATH]' : (this._selectedDirectory || null),
             totalFindings: this._scanResults.length,
             redacted: redactSensitive,
             summary: {
@@ -3574,7 +3602,7 @@ class LeakLockPanel {
                 file: redactSensitive ? '[REDACTED_PATH]' : result.file,
                 line: result.line,
                 secret: redactSensitive ? '[REDACTED_SECRET]' : (result.fullSecret || result.secret),
-                secretDisplay: result.secret,
+                secretDisplay: redactSensitive ? '[REDACTED_SECRET]' : result.secret,
                 isSecretDisplayTruncated: Boolean(result.isSecretTruncated),
                 description: result.description,
                 severity: result.severity,
@@ -3623,8 +3651,11 @@ class LeakLockPanel {
             }
 
             const exportPayload = this._buildScanExportPayload({ redactSensitive });
-            await fs.promises.writeFile(targetUri.fsPath, `${JSON.stringify(exportPayload, null, 2)}\n`, 'utf8');
-            vscode.window.showInformationMessage(`Exported scan results to ${targetUri.fsPath}`);
+            await vscode.workspace.fs.writeFile(
+                targetUri,
+                Buffer.from(`${JSON.stringify(exportPayload, null, 2)}\n`, 'utf8')
+            );
+            vscode.window.showInformationMessage(`Exported scan results to ${targetUri.toString(true)}`);
         } catch (error) {
             console.error('Failed to export scan results:', error);
             vscode.window.showErrorMessage(`Failed to export scan results: ${error.message}`);
