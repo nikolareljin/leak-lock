@@ -845,6 +845,13 @@ class LeakLockPanel {
                             padding: 6px;
                             word-break: break-word;
                         }
+                        /* Hide action/replacement columns in print output for readability. */
+                        .results-table th:nth-child(1),
+                        .results-table td:nth-child(1),
+                        .results-table th:nth-child(5),
+                        .results-table td:nth-child(5) {
+                            display: none !important;
+                        }
                     }
                 </style>
             </head>
@@ -3152,10 +3159,14 @@ class LeakLockPanel {
             }
         }
 
+        const fullSecret = typeof secret === 'string' ? secret : String(secret);
+        const displaySecret = this._truncateSecret(fullSecret);
         const result = {
             file: relativeFile,
             line: line,
-            secret: this._truncateSecret(secret),
+            secret: displaySecret,
+            fullSecret: fullSecret,
+            isSecretTruncated: displaySecret !== fullSecret,
             description: enhancedDescription,
             severity: severity,
             isDependency: isInDependency,
@@ -3541,7 +3552,8 @@ class LeakLockPanel {
         }
     }
 
-    _buildScanExportPayload() {
+    _buildScanExportPayload(options = {}) {
+        const redactSensitive = Boolean(options.redactSensitive);
         const severityCounts = this._scanResults.reduce((counts, result) => {
             counts[result.severity] = (counts[result.severity] || 0) + 1;
             return counts;
@@ -3552,15 +3564,18 @@ class LeakLockPanel {
             scanPath: this._scanPath || null,
             selectedDirectory: this._selectedDirectory || null,
             totalFindings: this._scanResults.length,
+            redacted: redactSensitive,
             summary: {
                 severities: severityCounts,
                 dependencyFindings: this._scanResults.filter(result => result.isDependency).length,
                 gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length
             },
             findings: this._scanResults.map(result => ({
-                file: result.file,
+                file: redactSensitive ? '[REDACTED_PATH]' : result.file,
                 line: result.line,
-                secret: result.secret,
+                secret: redactSensitive ? '[REDACTED_SECRET]' : (result.fullSecret || result.secret),
+                secretDisplay: result.secret,
+                isSecretDisplayTruncated: Boolean(result.isSecretTruncated),
                 description: result.description,
                 severity: result.severity,
                 isDependency: Boolean(result.isDependency),
@@ -3580,6 +3595,17 @@ class LeakLockPanel {
                 return;
             }
 
+            const exportMode = await vscode.window.showWarningMessage(
+                'Export may include secret snippets and local filesystem paths. Choose export mode:',
+                { modal: true },
+                'Export with redaction',
+                'Export with full findings'
+            );
+            if (!exportMode) {
+                return;
+            }
+            const redactSensitive = exportMode === 'Export with redaction';
+
             const now = new Date();
             const timestamp = now.toISOString().replace(/[:.]/g, '-');
             const defaultBasePath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -3596,7 +3622,7 @@ class LeakLockPanel {
                 return;
             }
 
-            const exportPayload = this._buildScanExportPayload();
+            const exportPayload = this._buildScanExportPayload({ redactSensitive });
             await fs.promises.writeFile(targetUri.fsPath, `${JSON.stringify(exportPayload, null, 2)}\n`, 'utf8');
             vscode.window.showInformationMessage(`Exported scan results to ${targetUri.fsPath}`);
         } catch (error) {
