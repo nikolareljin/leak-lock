@@ -378,6 +378,9 @@ class LeakLockPanel {
                     case 'scan.exportJson':
                         LeakLockPanel.currentPanel._exportScanResultsJson();
                         break;
+                    case 'scan.printPdf':
+                        LeakLockPanel.currentPanel._printScanResultsPdf();
+                        break;
                     // Remove Files flow
                     case 'removeFiles.selectRepo':
                         LeakLockPanel.currentPanel._selectRepoForRemoval();
@@ -923,7 +926,7 @@ class LeakLockPanel {
                     }
 
                     function printScanResults() {
-                        window.print();
+                        vscode.postMessage({ command: 'scan.printPdf' });
                     }
 
                     function copyScanCommand(id) {
@@ -3600,7 +3603,7 @@ class LeakLockPanel {
                 gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length
             },
             findings: this._scanResults.map(result => ({
-                file: redactSensitive ? '[REDACTED_PATH]' : result.file,
+                file: result.file,
                 line: result.line,
                 secret: redactSensitive ? '[REDACTED_SECRET]' : (result.fullSecret || result.secret),
                 secretDisplay: redactSensitive ? '[REDACTED_SECRET]' : result.secret,
@@ -3660,6 +3663,76 @@ class LeakLockPanel {
         } catch (error) {
             console.error('Failed to export scan results:', error);
             vscode.window.showErrorMessage(`Failed to export scan results: ${error.message}`);
+        }
+    }
+
+    _buildPrintableScanReportHtml() {
+        const generatedAt = new Date().toLocaleString();
+        const rows = this._scanResults.map((result) => `
+            <tr>
+                <td>${escapeHtml(result.file)}</td>
+                <td>${escapeHtml(String(result.line || ''))}</td>
+                <td>${escapeHtml(result.secret || '')}</td>
+                <td>${escapeHtml(result.severity || '')}</td>
+                <td>${escapeHtml(result.description || '')}</td>
+            </tr>
+        `).join('');
+
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Leak Lock Scan Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+    h1 { margin: 0 0 8px 0; font-size: 24px; }
+    .meta { margin-bottom: 16px; color: #444; font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #ccc; padding: 8px; font-size: 12px; text-align: left; vertical-align: top; word-break: break-word; }
+    th { background: #f4f4f4; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Leak Lock Scan Report</h1>
+  <div class="meta">Generated: ${escapeHtml(generatedAt)} | Findings: ${this._scanResults.length}</div>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Line</th>
+        <th>Secret (display)</th>
+        <th>Severity</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows}
+    </tbody>
+  </table>
+</body>
+</html>`;
+    }
+
+    async _printScanResultsPdf() {
+        try {
+            if (!this._scanResults || this._scanResults.length === 0) {
+                vscode.window.showInformationMessage('No scan results available to print.');
+                return;
+            }
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const reportPath = path.join(os.tmpdir(), `leak-lock-scan-report-${timestamp}.html`);
+            await fs.promises.writeFile(reportPath, this._buildPrintableScanReportHtml(), 'utf8');
+            const reportUri = vscode.Uri.file(reportPath);
+            const opened = await vscode.env.openExternal(reportUri);
+            if (!opened) {
+                vscode.window.showErrorMessage('Unable to open printable report in browser.');
+                return;
+            }
+            vscode.window.showInformationMessage('Opened printable scan report in your default browser. Use browser Print to save as PDF.');
+        } catch (error) {
+            console.error('Failed to open printable scan report:', error);
+            vscode.window.showErrorMessage(`Failed to prepare printable scan report: ${error.message}`);
         }
     }
 
