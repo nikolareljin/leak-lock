@@ -6,7 +6,7 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
 [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
@@ -38,6 +38,7 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 - **Progress Tracking**: Real-time scanning and remediation progress
 - **Remove Files Flow**: Sidebar button opens guided removal UI in main area
  - **Path-Based Safe Removal**: Exact path deletion across branches with preview
+- **Results Export**: Export findings to JSON or print/save as PDF directly from the results view
 
 ### 🤖 **Automated Workflow**
 - **One-Click Dependency Install**: Docker, Nosey Parker, BFG tool
@@ -81,12 +82,17 @@ code --install-extension leak-lock-0.0.1.vsix
 - **Generate Commands**: Automatic BFG command generation
 - **Execute Cleanup**: One-click git history rewriting
 
+### 6. Export Scan Results (New)
+- **Export JSON**: Save all current findings and metadata to a `.json` file
+- **Print / Save as PDF**: Use the print-friendly view from scan results for PDF reports
+- **Share Findings**: Attach exports to tickets, audits, or remediation docs
+
 <img width="942" height="1307" alt="image" src="https://github.com/user-attachments/assets/1c0ca6c4-1254-4337-b893-ee26c94f95e3" />
 
 
 ---
 
-### 6. Remove Unwanted Files (New)
+### 7. Remove Unwanted Files (New)
 - Open from sidebar: click "🗑️ Remove files"
 - Select repository (git root)
 - Choose multiple files and/or directories

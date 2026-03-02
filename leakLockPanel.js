@@ -374,6 +374,9 @@ class LeakLockPanel {
                     case 'scan.runGit':
                         LeakLockPanel.currentPanel._runPreparedScanCleanup('git');
                         break;
+                    case 'scan.exportJson':
+                        LeakLockPanel.currentPanel._exportScanResultsJson();
+                        break;
                     // Remove Files flow
                     case 'removeFiles.selectRepo':
                         LeakLockPanel.currentPanel._selectRepoForRemoval();
@@ -810,6 +813,39 @@ class LeakLockPanel {
                     .branch-link:hover {
                         text-decoration-style: solid;
                     }
+                    .export-actions {
+                        margin: 12px 0;
+                        display: flex;
+                        gap: 8px;
+                        flex-wrap: wrap;
+                    }
+                    @media print {
+                        .scan-header,
+                        .run-section,
+                        .warning-text,
+                        .secret-checkbox,
+                        .replacement-input,
+                        button,
+                        #detail-dialog-overlay {
+                            display: none !important;
+                        }
+                        body, .main-container, .scan-section {
+                            padding: 0 !important;
+                            margin: 0 !important;
+                        }
+                        .results-table {
+                            width: 100%;
+                            border-collapse: collapse;
+                            table-layout: fixed;
+                        }
+                        .results-table th, .results-table td {
+                            border: 1px solid #999;
+                            color: #000;
+                            font-size: 10pt;
+                            padding: 6px;
+                            word-break: break-word;
+                        }
+                    }
                 </style>
             </head>
             <body>
@@ -870,6 +906,14 @@ class LeakLockPanel {
 
                     function runPreparedGit() {
                         vscode.postMessage({ command: 'scan.runGit' });
+                    }
+
+                    function exportScanResultsJson() {
+                        vscode.postMessage({ command: 'scan.exportJson' });
+                    }
+
+                    function printScanResults() {
+                        window.print();
                     }
 
                     function copyScanCommand(id) {
@@ -2002,6 +2046,10 @@ class LeakLockPanel {
                 </div>
                 <div style="margin-bottom: 15px;">
                     <strong>Found ${this._scanResults.length} potential secrets:</strong>
+                    <div class="export-actions">
+                        <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
+                        <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
+                    </div>
                     <div style="margin-top: 8px;">
                         <div>${severitySummary}</div>
                         ${dependencyWarnings.length > 0 ? `
@@ -3490,6 +3538,70 @@ class LeakLockPanel {
         } catch (error) {
             console.error('BFG execution error:', error);
             vscode.window.showErrorMessage(`❌ BFG cleanup failed: ${error.message}`);
+        }
+    }
+
+    _buildScanExportPayload() {
+        const severityCounts = this._scanResults.reduce((counts, result) => {
+            counts[result.severity] = (counts[result.severity] || 0) + 1;
+            return counts;
+        }, {});
+
+        return {
+            generatedAt: new Date().toISOString(),
+            scanPath: this._scanPath || null,
+            selectedDirectory: this._selectedDirectory || null,
+            totalFindings: this._scanResults.length,
+            summary: {
+                severities: severityCounts,
+                dependencyFindings: this._scanResults.filter(result => result.isDependency).length,
+                gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length
+            },
+            findings: this._scanResults.map(result => ({
+                file: result.file,
+                line: result.line,
+                secret: result.secret,
+                description: result.description,
+                severity: result.severity,
+                isDependency: Boolean(result.isDependency),
+                isGitHistory: Boolean(result.isGitHistory),
+                isUntracked: Boolean(result.isUntracked),
+                commitHash: result.commitHash || null,
+                commitBranches: result.commitBranches || null,
+                commitDate: result.commitDate || null
+            }))
+        };
+    }
+
+    async _exportScanResultsJson() {
+        try {
+            if (!this._scanResults || this._scanResults.length === 0) {
+                vscode.window.showInformationMessage('No scan results available to export.');
+                return;
+            }
+
+            const now = new Date();
+            const timestamp = now.toISOString().replace(/[:.]/g, '-');
+            const defaultBasePath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            const defaultUri = defaultBasePath
+                ? vscode.Uri.file(path.join(defaultBasePath, `leak-lock-scan-results-${timestamp}.json`))
+                : undefined;
+            const targetUri = await vscode.window.showSaveDialog({
+                defaultUri,
+                filters: { 'JSON files': ['json'] },
+                saveLabel: 'Export scan results'
+            });
+
+            if (!targetUri) {
+                return;
+            }
+
+            const exportPayload = this._buildScanExportPayload();
+            await fs.promises.writeFile(targetUri.fsPath, `${JSON.stringify(exportPayload, null, 2)}\n`, 'utf8');
+            vscode.window.showInformationMessage(`Exported scan results to ${targetUri.fsPath}`);
+        } catch (error) {
+            console.error('Failed to export scan results:', error);
+            vscode.window.showErrorMessage(`Failed to export scan results: ${error.message}`);
         }
     }
 
