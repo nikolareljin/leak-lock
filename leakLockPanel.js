@@ -4,6 +4,7 @@ const vscode = require('vscode');
 const { exec, spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -3636,10 +3637,10 @@ class LeakLockPanel {
 
             const now = new Date();
             const timestamp = now.toISOString().replace(/[:.]/g, '-');
-            const defaultBasePath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-            const defaultUri = defaultBasePath
-                ? vscode.Uri.file(path.join(defaultBasePath, `leak-lock-scan-results-${timestamp}.json`))
-                : undefined;
+            const homeDir = os.homedir();
+            const downloadsDir = path.join(homeDir, 'Downloads');
+            const defaultBasePath = fs.existsSync(downloadsDir) ? downloadsDir : homeDir;
+            const defaultUri = vscode.Uri.file(path.join(defaultBasePath, `leak-lock-scan-results-${timestamp}.json`));
             const targetUri = await vscode.window.showSaveDialog({
                 defaultUri,
                 filters: { 'JSON files': ['json'] },
