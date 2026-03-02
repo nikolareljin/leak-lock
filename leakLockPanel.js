@@ -3721,7 +3721,14 @@ class LeakLockPanel {
                 return;
             }
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const reportPath = path.join(os.tmpdir(), `leak-lock-scan-report-${timestamp}.html`);
+            // Avoid /tmp for browser-print handoff on Linux sandboxed browsers.
+            const homeDir = os.homedir();
+            const downloadsDir = path.join(homeDir, 'Downloads');
+            const reportsDir = fs.existsSync(downloadsDir)
+                ? path.join(downloadsDir, 'leak-lock-reports')
+                : path.join(homeDir, 'leak-lock-reports');
+            await fs.promises.mkdir(reportsDir, { recursive: true });
+            const reportPath = path.join(reportsDir, `leak-lock-scan-report-${timestamp}.html`);
             await fs.promises.writeFile(reportPath, this._buildPrintableScanReportHtml(), 'utf8');
             const reportUri = vscode.Uri.file(reportPath);
             const opened = await vscode.env.openExternal(reportUri);
@@ -3729,7 +3736,7 @@ class LeakLockPanel {
                 vscode.window.showErrorMessage('Unable to open printable report in browser.');
                 return;
             }
-            vscode.window.showInformationMessage('Opened printable scan report in your default browser. Use browser Print to save as PDF.');
+            vscode.window.showInformationMessage(`Opened printable scan report in your default browser: ${reportPath}`);
         } catch (error) {
             console.error('Failed to open printable scan report:', error);
             vscode.window.showErrorMessage(`Failed to prepare printable scan report: ${error.message}`);
