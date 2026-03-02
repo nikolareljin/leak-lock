@@ -91,6 +91,15 @@ The results appear in a detailed table with the following columns:
 - 🟢 **Low**: Possible false positives or test data
 - 🟢 **Safe (Not committed)**: Found only in the working tree (not tracked or in git history)
 
+### Exporting Results
+
+After a scan completes, use the export actions in the results section:
+
+- **📤 Export JSON**: Saves a machine-readable report with scan metadata and findings.
+- **🖨️ Print / Save as PDF**: Opens a print-friendly version of the current results so you can save a PDF report.
+
+Use exports to share findings in incidents, tickets, or audit reports.
+
 ---
 
 ## 🔧 Removing Secrets
