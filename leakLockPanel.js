@@ -892,7 +892,7 @@ class LeakLockPanel {
                             const findingIndex = row.dataset.findingIndex;
                             const replacementInput = row.querySelector('.replacement-input');
                             if (typeof findingIndex !== 'undefined') {
-                                replacements[findingIndex] = replacementInput.value || '*****';
+                                replacements['idx:' + findingIndex] = replacementInput.value || '*****';
                             }
                         });
                         
@@ -1978,7 +1978,7 @@ class LeakLockPanel {
 
             return `
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
-                    <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? '' : 'checked'}></td>
+                    <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? 'disabled' : 'checked'}></td>
                     <td title="${escapeHtml(result.file)}${contextNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
@@ -3262,8 +3262,11 @@ class LeakLockPanel {
         }
         const resolved = {};
         for (const [key, replacement] of Object.entries(replacements)) {
-            const idx = Number(key);
-            if (Number.isInteger(idx) && idx >= 0 && idx < this._scanResults.length) {
+            if (key.startsWith('idx:')) {
+                const idx = Number(key.slice(4));
+                if (!Number.isInteger(idx) || idx < 0 || idx >= this._scanResults.length) {
+                    continue;
+                }
                 const result = this._scanResults[idx];
                 if (!result || result.isDependency) {
                     continue;
@@ -3275,7 +3278,7 @@ class LeakLockPanel {
                 resolved[secretValue] = replacement || '*****';
                 continue;
             }
-            // Backward compatibility for existing callers that pass secret->replacement maps.
+            // Backward compatibility for callers that pass secret->replacement maps.
             resolved[key] = replacement || '*****';
         }
         return resolved;
@@ -3628,15 +3631,15 @@ class LeakLockPanel {
             }
 
             const exportMode = await vscode.window.showWarningMessage(
-                'Export may include secret snippets and local filesystem paths. Choose export mode:',
+                'Export may include secret snippets and local filesystem paths. Secret redaction hides secrets, but file paths remain visible.',
                 { modal: true },
-                'Export with redaction',
+                'Export with secret redaction',
                 'Export with full findings'
             );
             if (!exportMode) {
                 return;
             }
-            const redactSensitive = exportMode === 'Export with redaction';
+            const redactSensitive = exportMode === 'Export with secret redaction';
 
             const now = new Date();
             const timestamp = now.toISOString().replace(/[:.]/g, '-');
@@ -3671,7 +3674,7 @@ class LeakLockPanel {
         const rows = this._scanResults.map((result) => `
             <tr>
                 <td>${escapeHtml(result.file)}</td>
-                <td>${escapeHtml(String(result.line || ''))}</td>
+                <td>${escapeHtml(String(result.line ?? ''))}</td>
                 <td>${escapeHtml(result.secret || '')}</td>
                 <td>${escapeHtml(result.severity || '')}</td>
                 <td>${escapeHtml(result.description || '')}</td>
