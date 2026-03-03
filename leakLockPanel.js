@@ -3632,15 +3632,15 @@ class LeakLockPanel {
             }
 
             const exportMode = await vscode.window.showWarningMessage(
-                'Export may include secret snippets and local filesystem paths. Secret redaction hides top-level scan paths and secret values, but per-finding file paths and metadata remain visible.',
+                'Export may include secret snippets and filesystem paths. Secret and path redaction hides secret values and top-level scan/selection paths, but per-finding file paths and related metadata remain visible in the exported JSON.',
                 { modal: true },
-                'Export with secret redaction',
+                'Export with secret and path redaction',
                 'Export with full findings'
             );
             if (!exportMode) {
                 return;
             }
-            const redactSensitive = exportMode === 'Export with secret redaction';
+            const redactSensitive = exportMode === 'Export with secret and path redaction';
 
             const now = new Date();
             const timestamp = now.toISOString().replace(/[:.]/g, '-');
@@ -3726,7 +3726,7 @@ class LeakLockPanel {
                 return;
             }
             const printMode = await vscode.window.showWarningMessage(
-                'Printing creates an HTML report on disk before opening the browser print dialog. Choose full or redacted output and where to save it.',
+                'Printing creates an HTML report on disk before opening the browser print dialog. Full output may include secret snippets and file paths. Choose redacted/full output and where to save it.',
                 { modal: true },
                 'Save redacted printable report',
                 'Save full printable report'
