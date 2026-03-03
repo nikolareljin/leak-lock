@@ -1,5 +1,12 @@
 # Change Log
 
+## 0.3.0
+### Added
+- **Scan Results Export**: Export scan findings as JSON and print/save the current results view as PDF ([#37](https://github.com/nikolareljin/leak-lock/issues/37))
+  - New `Export JSON` action in the scan results section
+  - New `Print / Save as PDF` action in the scan results section
+  - Exported JSON includes metadata (`generatedAt`, scan path, counts) and full finding records
+
 ## 0.2.0
 ### Added
 - **Git Commit Info in Scan Results**: Display branch name, commit hash, and commit date for each detected credential leak found in git history ([#36](https://github.com/nikolareljin/leak-lock/issues/36))
