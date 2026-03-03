@@ -4,6 +4,7 @@ const vscode = require('vscode');
 const { exec, spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -373,6 +374,12 @@ class LeakLockPanel {
                         break;
                     case 'scan.runGit':
                         LeakLockPanel.currentPanel._runPreparedScanCleanup('git');
+                        break;
+                    case 'scan.exportJson':
+                        LeakLockPanel.currentPanel._exportScanResultsJson();
+                        break;
+                    case 'scan.printPdf':
+                        LeakLockPanel.currentPanel._printScanResultsPdf();
                         break;
                     // Remove Files flow
                     case 'removeFiles.selectRepo':
@@ -810,6 +817,46 @@ class LeakLockPanel {
                     .branch-link:hover {
                         text-decoration-style: solid;
                     }
+                    .export-actions {
+                        margin: 12px 0;
+                        display: flex;
+                        gap: 8px;
+                        flex-wrap: wrap;
+                    }
+                    @media print {
+                        .scan-header,
+                        .run-section,
+                        .warning-text,
+                        .secret-checkbox,
+                        .replacement-input,
+                        button,
+                        #detail-dialog-overlay {
+                            display: none !important;
+                        }
+                        body, .main-container, .scan-section {
+                            padding: 0 !important;
+                            margin: 0 !important;
+                        }
+                        .results-table {
+                            width: 100%;
+                            border-collapse: collapse;
+                            table-layout: fixed;
+                        }
+                        .results-table th, .results-table td {
+                            border: 1px solid #999;
+                            color: #000;
+                            font-size: 10pt;
+                            padding: 6px;
+                            word-break: break-word;
+                        }
+                        /* Hide action/replacement columns in print output for readability. */
+                        .results-table th:nth-child(1),
+                        .results-table td:nth-child(1),
+                        .results-table th:nth-child(5),
+                        .results-table td:nth-child(5) {
+                            display: none !important;
+                        }
+                    }
                 </style>
             </head>
             <body>
@@ -842,9 +889,11 @@ class LeakLockPanel {
                         
                         checkboxes.forEach(checkbox => {
                             const row = checkbox.closest('tr');
-                            const secretValue = row.dataset.secret;
+                            const findingIndex = row.dataset.findingIndex;
                             const replacementInput = row.querySelector('.replacement-input');
-                            replacements[secretValue] = replacementInput.value || '*****';
+                            if (typeof findingIndex !== 'undefined') {
+                                replacements['idx:' + findingIndex] = replacementInput.value || '*****';
+                            }
                         });
                         
                         return replacements;
@@ -870,6 +919,14 @@ class LeakLockPanel {
 
                     function runPreparedGit() {
                         vscode.postMessage({ command: 'scan.runGit' });
+                    }
+
+                    function exportScanResultsJson() {
+                        vscode.postMessage({ command: 'scan.exportJson' });
+                    }
+
+                    function printScanResults() {
+                        vscode.postMessage({ command: 'scan.printPdf' });
                     }
 
                     function copyScanCommand(id) {
@@ -1920,8 +1977,8 @@ class LeakLockPanel {
             }
 
             return `
-                <tr data-secret="${escapeHtml(result.secret)}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
-                    <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? '' : 'checked'}></td>
+                <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
+                    <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? 'disabled' : 'checked'}></td>
                     <td title="${escapeHtml(result.file)}${contextNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
@@ -2002,6 +2059,10 @@ class LeakLockPanel {
                 </div>
                 <div style="margin-bottom: 15px;">
                     <strong>Found ${this._scanResults.length} potential secrets:</strong>
+                    <div class="export-actions">
+                        <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
+                        <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
+                    </div>
                     <div style="margin-top: 8px;">
                         <div>${severitySummary}</div>
                         ${dependencyWarnings.length > 0 ? `
@@ -3104,10 +3165,14 @@ class LeakLockPanel {
             }
         }
 
+        const fullSecret = typeof secret === 'string' ? secret : String(secret);
+        const displaySecret = this._truncateSecret(fullSecret);
         const result = {
             file: relativeFile,
             line: line,
-            secret: this._truncateSecret(secret),
+            secret: displaySecret,
+            fullSecret: fullSecret,
+            isSecretTruncated: displaySecret !== fullSecret,
             description: enhancedDescription,
             severity: severity,
             isDependency: isInDependency,
@@ -3191,8 +3256,37 @@ class LeakLockPanel {
         return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && git filter-repo --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" --force && git reflog expire --expire=now --all && git gc --prune=now --aggressive && git push --force --all && git push --force --tags`;
     }
 
+    _resolveScanReplacements(replacements) {
+        if (!replacements || typeof replacements !== 'object') {
+            return {};
+        }
+        const resolved = {};
+        for (const [key, replacement] of Object.entries(replacements)) {
+            if (key.startsWith('idx:')) {
+                const idx = Number(key.slice(4));
+                if (!Number.isInteger(idx) || idx < 0 || idx >= this._scanResults.length) {
+                    continue;
+                }
+                const result = this._scanResults[idx];
+                if (!result || result.isDependency) {
+                    continue;
+                }
+                const secretValue = result.fullSecret || result.secret;
+                if (!secretValue) {
+                    continue;
+                }
+                resolved[secretValue] = replacement || '*****';
+                continue;
+            }
+            // Backward compatibility for callers that pass secret->replacement maps.
+            resolved[key] = replacement || '*****';
+        }
+        return resolved;
+    }
+
     _prepareScanReplacementCommand(mode, replacements) {
-        if (!replacements || Object.keys(replacements).length === 0) {
+        const resolvedReplacements = this._resolveScanReplacements(replacements);
+        if (!resolvedReplacements || Object.keys(resolvedReplacements).length === 0) {
             vscode.window.showWarningMessage('No secrets selected for removal.');
             return;
         }
@@ -3210,7 +3304,7 @@ class LeakLockPanel {
                 : this._buildScanBfgReplaceCommand(scanPath, replacementsFile);
             this._scanCleanup.preparedCommand = command;
             this._scanCleanup.preparedMode = mode;
-            this._scanCleanup.replacements = replacements;
+            this._scanCleanup.replacements = resolvedReplacements;
             this._scanCleanup.replacementsFile = replacementsFile;
         } finally {
             this._scanCleanup.preparing = false;
@@ -3490,6 +3584,184 @@ class LeakLockPanel {
         } catch (error) {
             console.error('BFG execution error:', error);
             vscode.window.showErrorMessage(`❌ BFG cleanup failed: ${error.message}`);
+        }
+    }
+
+    _buildScanExportPayload(options = {}) {
+        const redactSensitive = Boolean(options.redactSensitive);
+        const severityCounts = this._scanResults.reduce((counts, result) => {
+            counts[result.severity] = (counts[result.severity] || 0) + 1;
+            return counts;
+        }, {});
+
+        return {
+            generatedAt: new Date().toISOString(),
+            scanPath: redactSensitive ? '[REDACTED_PATH]' : (this._scanPath || null),
+            selectedDirectory: redactSensitive ? '[REDACTED_PATH]' : (this._selectedDirectory || null),
+            totalFindings: this._scanResults.length,
+            redacted: redactSensitive,
+            summary: {
+                severities: severityCounts,
+                dependencyFindings: this._scanResults.filter(result => result.isDependency).length,
+                gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length
+            },
+            findings: this._scanResults.map(result => ({
+                file: result.file,
+                line: result.line,
+                secret: redactSensitive ? '[REDACTED_SECRET]' : (result.fullSecret || result.secret),
+                secretDisplay: redactSensitive ? '[REDACTED_SECRET]' : result.secret,
+                // Avoid leaking secret-length hints in redacted exports.
+                isSecretDisplayTruncated: redactSensitive ? null : Boolean(result.isSecretTruncated),
+                description: result.description,
+                severity: result.severity,
+                isDependency: Boolean(result.isDependency),
+                isGitHistory: Boolean(result.isGitHistory),
+                isUntracked: Boolean(result.isUntracked),
+                commitHash: result.commitHash || null,
+                commitBranches: result.commitBranches || null,
+                commitDate: result.commitDate || null
+            }))
+        };
+    }
+
+    async _exportScanResultsJson() {
+        try {
+            if (!this._scanResults || this._scanResults.length === 0) {
+                vscode.window.showInformationMessage('No scan results available to export.');
+                return;
+            }
+
+            const exportMode = await vscode.window.showWarningMessage(
+                'Export may include secret snippets and filesystem paths. Secret and path redaction hides secret values and top-level scan/selection paths, but per-finding file paths and related metadata remain visible in the exported JSON.',
+                { modal: true },
+                'Export with secret and path redaction',
+                'Export with full findings'
+            );
+            if (!exportMode) {
+                return;
+            }
+            const redactSensitive = exportMode === 'Export with secret and path redaction';
+
+            const now = new Date();
+            const timestamp = now.toISOString().replace(/[:.]/g, '-');
+            const homeDir = os.homedir();
+            const downloadsDir = path.join(homeDir, 'Downloads');
+            const defaultBasePath = fs.existsSync(downloadsDir) ? downloadsDir : homeDir;
+            const defaultUri = vscode.Uri.file(path.join(defaultBasePath, `leak-lock-scan-results-${timestamp}.json`));
+            const targetUri = await vscode.window.showSaveDialog({
+                defaultUri,
+                filters: { 'JSON files': ['json'] },
+                saveLabel: 'Export scan results'
+            });
+
+            if (!targetUri) {
+                return;
+            }
+
+            const exportPayload = this._buildScanExportPayload({ redactSensitive });
+            await vscode.workspace.fs.writeFile(
+                targetUri,
+                Buffer.from(`${JSON.stringify(exportPayload, null, 2)}\n`, 'utf8')
+            );
+            vscode.window.showInformationMessage(`Exported scan results to ${targetUri.toString(true)}`);
+        } catch (error) {
+            console.error('Failed to export scan results:', error);
+            vscode.window.showErrorMessage(`Failed to export scan results: ${error.message}`);
+        }
+    }
+
+    _buildPrintableScanReportHtml(options = {}) {
+        const redactSensitive = Boolean(options.redactSensitive);
+        const generatedAt = new Date().toLocaleString();
+        const rows = this._scanResults.map((result) => `
+            <tr>
+                <td>${escapeHtml(redactSensitive ? '[REDACTED_PATH]' : (result.file || ''))}</td>
+                <td>${escapeHtml(String(result.line ?? ''))}</td>
+                <td>${escapeHtml(redactSensitive ? '[REDACTED_SECRET]' : (result.secret || ''))}</td>
+                <td>${escapeHtml(result.severity || '')}</td>
+                <td>${escapeHtml(result.description || '')}</td>
+            </tr>
+        `).join('');
+
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Leak Lock Scan Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #111; }
+    h1 { margin: 0 0 8px 0; font-size: 24px; }
+    .meta { margin-bottom: 16px; color: #444; font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #ccc; padding: 8px; font-size: 12px; text-align: left; vertical-align: top; word-break: break-word; }
+    th { background: #f4f4f4; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Leak Lock Scan Report</h1>
+  <div class="meta">Generated: ${escapeHtml(generatedAt)} | Findings: ${this._scanResults.length} | Redacted: ${redactSensitive ? 'yes' : 'no'}</div>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Line</th>
+        <th>Secret (display)</th>
+        <th>Severity</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows}
+    </tbody>
+  </table>
+</body>
+</html>`;
+    }
+
+    async _printScanResultsPdf() {
+        try {
+            if (!this._scanResults || this._scanResults.length === 0) {
+                vscode.window.showInformationMessage('No scan results available to print.');
+                return;
+            }
+            const printMode = await vscode.window.showWarningMessage(
+                'Printing creates an HTML report on disk before opening the browser print dialog. Full output may include secret snippets and file paths. Choose redacted/full output and where to save it.',
+                { modal: true },
+                'Save redacted printable report',
+                'Save full printable report'
+            );
+            if (!printMode) {
+                return;
+            }
+            const redactSensitive = printMode === 'Save redacted printable report';
+
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            // Avoid /tmp for browser-print handoff on Linux sandboxed browsers.
+            const homeDir = os.homedir();
+            const downloadsDir = path.join(homeDir, 'Downloads');
+            const defaultBasePath = fs.existsSync(downloadsDir) ? downloadsDir : homeDir;
+            const defaultUri = vscode.Uri.file(path.join(defaultBasePath, `leak-lock-scan-report-${timestamp}.html`));
+            const targetUri = await vscode.window.showSaveDialog({
+                defaultUri,
+                filters: { 'HTML files': ['html'] },
+                saveLabel: redactSensitive ? 'Save redacted printable report' : 'Save printable report'
+            });
+            if (!targetUri) {
+                return;
+            }
+
+            const reportHtml = this._buildPrintableScanReportHtml({ redactSensitive });
+            await vscode.workspace.fs.writeFile(targetUri, Buffer.from(reportHtml, 'utf8'));
+            const opened = await vscode.env.openExternal(targetUri);
+            if (!opened) {
+                vscode.window.showWarningMessage(`Printable report saved to ${targetUri.toString(true)}, but could not be opened automatically.`);
+                return;
+            }
+            vscode.window.showInformationMessage(`Opened printable scan report in your default browser: ${targetUri.toString(true)}`);
+        } catch (error) {
+            console.error('Failed to open printable scan report:', error);
+            vscode.window.showErrorMessage(`Failed to prepare printable scan report: ${error.message}`);
         }
     }
 
