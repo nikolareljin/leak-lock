@@ -3610,7 +3610,8 @@ class LeakLockPanel {
                 line: result.line,
                 secret: redactSensitive ? '[REDACTED_SECRET]' : (result.fullSecret || result.secret),
                 secretDisplay: redactSensitive ? '[REDACTED_SECRET]' : result.secret,
-                isSecretDisplayTruncated: Boolean(result.isSecretTruncated),
+                // Avoid leaking secret-length hints in redacted exports.
+                isSecretDisplayTruncated: redactSensitive ? null : Boolean(result.isSecretTruncated),
                 description: result.description,
                 severity: result.severity,
                 isDependency: Boolean(result.isDependency),
@@ -3631,7 +3632,7 @@ class LeakLockPanel {
             }
 
             const exportMode = await vscode.window.showWarningMessage(
-                'Export may include secret snippets and local filesystem paths. Secret redaction hides secrets, but file paths remain visible.',
+                'Export may include secret snippets and local filesystem paths. Secret redaction hides top-level scan paths and secret values, but per-finding file paths and metadata remain visible.',
                 { modal: true },
                 'Export with secret redaction',
                 'Export with full findings'
@@ -3669,13 +3670,14 @@ class LeakLockPanel {
         }
     }
 
-    _buildPrintableScanReportHtml() {
+    _buildPrintableScanReportHtml(options = {}) {
+        const redactSensitive = Boolean(options.redactSensitive);
         const generatedAt = new Date().toLocaleString();
         const rows = this._scanResults.map((result) => `
             <tr>
-                <td>${escapeHtml(result.file)}</td>
+                <td>${escapeHtml(redactSensitive ? '[REDACTED_PATH]' : (result.file || ''))}</td>
                 <td>${escapeHtml(String(result.line ?? ''))}</td>
-                <td>${escapeHtml(result.secret || '')}</td>
+                <td>${escapeHtml(redactSensitive ? '[REDACTED_SECRET]' : (result.secret || ''))}</td>
                 <td>${escapeHtml(result.severity || '')}</td>
                 <td>${escapeHtml(result.description || '')}</td>
             </tr>
@@ -3698,7 +3700,7 @@ class LeakLockPanel {
 </head>
 <body>
   <h1>Leak Lock Scan Report</h1>
-  <div class="meta">Generated: ${escapeHtml(generatedAt)} | Findings: ${this._scanResults.length}</div>
+  <div class="meta">Generated: ${escapeHtml(generatedAt)} | Findings: ${this._scanResults.length} | Redacted: ${redactSensitive ? 'yes' : 'no'}</div>
   <table>
     <thead>
       <tr>
@@ -3723,23 +3725,40 @@ class LeakLockPanel {
                 vscode.window.showInformationMessage('No scan results available to print.');
                 return;
             }
+            const printMode = await vscode.window.showWarningMessage(
+                'Printing creates an HTML report on disk before opening the browser print dialog. Choose full or redacted output and where to save it.',
+                { modal: true },
+                'Save redacted printable report',
+                'Save full printable report'
+            );
+            if (!printMode) {
+                return;
+            }
+            const redactSensitive = printMode === 'Save redacted printable report';
+
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             // Avoid /tmp for browser-print handoff on Linux sandboxed browsers.
             const homeDir = os.homedir();
             const downloadsDir = path.join(homeDir, 'Downloads');
-            const reportsDir = fs.existsSync(downloadsDir)
-                ? path.join(downloadsDir, 'leak-lock-reports')
-                : path.join(homeDir, 'leak-lock-reports');
-            await fs.promises.mkdir(reportsDir, { recursive: true });
-            const reportPath = path.join(reportsDir, `leak-lock-scan-report-${timestamp}.html`);
-            await fs.promises.writeFile(reportPath, this._buildPrintableScanReportHtml(), 'utf8');
-            const reportUri = vscode.Uri.file(reportPath);
-            const opened = await vscode.env.openExternal(reportUri);
-            if (!opened) {
-                vscode.window.showErrorMessage('Unable to open printable report in browser.');
+            const defaultBasePath = fs.existsSync(downloadsDir) ? downloadsDir : homeDir;
+            const defaultUri = vscode.Uri.file(path.join(defaultBasePath, `leak-lock-scan-report-${timestamp}.html`));
+            const targetUri = await vscode.window.showSaveDialog({
+                defaultUri,
+                filters: { 'HTML files': ['html'] },
+                saveLabel: redactSensitive ? 'Save redacted printable report' : 'Save printable report'
+            });
+            if (!targetUri) {
                 return;
             }
-            vscode.window.showInformationMessage(`Opened printable scan report in your default browser: ${reportPath}`);
+
+            const reportHtml = this._buildPrintableScanReportHtml({ redactSensitive });
+            await vscode.workspace.fs.writeFile(targetUri, Buffer.from(reportHtml, 'utf8'));
+            const opened = await vscode.env.openExternal(targetUri);
+            if (!opened) {
+                vscode.window.showWarningMessage(`Printable report saved to ${targetUri.toString(true)}, but could not be opened automatically.`);
+                return;
+            }
+            vscode.window.showInformationMessage(`Opened printable scan report in your default browser: ${targetUri.toString(true)}`);
         } catch (error) {
             console.error('Failed to open printable scan report:', error);
             vscode.window.showErrorMessage(`Failed to prepare printable scan report: ${error.message}`);
