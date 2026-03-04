@@ -2350,54 +2350,57 @@ class LeakLockPanel {
             findings.push(this._createKeywordHistoryResult(filePath, keyword, description, commitHash, commitDate));
             return true;
         };
-        const matchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
+        const commitModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
+        const fileModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
 
         try {
             if (keywordConfig.searchCommitMessages) {
                 this._scanProgress = { stage: 'process', message: 'Searching git commit messages for configured keywords...' };
                 this._updateWebviewContent();
-                for (const keyword of keywordConfig.keywords) {
+                const perKeywordCap = keywordConfig.maxMatchesPerKeyword * 5;
+                const gitMaxCount = Math.max(
+                    perKeywordCap,
+                    keywordConfig.keywords.length * perKeywordCap
+                );
+                const grepArgs = keywordConfig.keywords.flatMap((keyword) => ['--grep', keyword]);
+                const { stdout } = await execFileAsync('git', [
+                    '-C', repoDir,
+                    'log', '--all', '--no-color', '-z',
+                    '--regexp-ignore-case', '--fixed-strings',
+                    ...grepArgs,
+                    `--max-count=${gitMaxCount}`,
+                    '--pretty=format:%H%x09%aI%x09%s%x00'
+                ], gitLogOptions);
+                const records = stdout.split('\0').filter(Boolean);
+                for (const record of records) {
                     if (findings.length >= maxTotalFindings) {
                         break;
                     }
-                    const perKeywordCap = keywordConfig.maxMatchesPerKeyword * 5;
-                    const { stdout } = await execFileAsync('git', [
-                        '-C', repoDir,
-                        'log', '--all', '--no-color', '-z',
-                        '--regexp-ignore-case', '--fixed-strings',
-                        '--grep', keyword,
-                        `--max-count=${perKeywordCap}`,
-                        '--pretty=format:%H%x09%aI%x09%s%x00'
-                    ], gitLogOptions);
-                    const records = stdout.split('\0').filter(Boolean);
-                    for (const record of records) {
-                        if (findings.length >= maxTotalFindings) {
-                            break;
-                        }
-                        const existingCount = matchCountByKeyword.get(keyword) || 0;
+                    const firstTab = record.indexOf('\t');
+                    const secondTab = firstTab >= 0 ? record.indexOf('\t', firstTab + 1) : -1;
+                    if (firstTab < 0 || secondTab < 0) {
+                        continue;
+                    }
+                    const commitHash = record.slice(0, firstTab).trim();
+                    const commitDate = record.slice(firstTab + 1, secondTab).trim();
+                    const subject = record.slice(secondTab + 1).trim();
+                    for (const keyword of keywordConfig.keywords) {
+                        const existingCount = commitModeMatchCountByKeyword.get(keyword) || 0;
                         if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
-                            break;
-                        }
-                        const firstTab = record.indexOf('\t');
-                        const secondTab = firstTab >= 0 ? record.indexOf('\t', firstTab + 1) : -1;
-                        if (firstTab < 0 || secondTab < 0) {
                             continue;
                         }
-                        const commitHash = record.slice(0, firstTab).trim();
-                        const commitDate = record.slice(firstTab + 1, secondTab).trim();
-                        const subject = record.slice(secondTab + 1).trim();
                         if (!this._keywordMatchesText(subject, keyword)) {
                             continue;
                         }
                         const added = addFinding(
-                            'git-history-reference',
+                            'git-history:commit-message',
                             keyword,
                             `Keyword "${keyword}" found in commit ${commitHash}${commitDate ? ` (${commitDate})` : ''}`,
                             commitHash,
                             commitDate
                         );
                         if (added) {
-                            matchCountByKeyword.set(keyword, existingCount + 1);
+                            commitModeMatchCountByKeyword.set(keyword, existingCount + 1);
                         }
                     }
                 }
@@ -2424,6 +2427,7 @@ class LeakLockPanel {
                         'log', '--all', '--no-color',
                         '--pretty=format:COMMIT%x09%H%x09%aI',
                         '-p',
+                        '-U0',
                         '--pickaxe-regex',
                         '-G', combinedPattern,
                         `--max-count=${gitMaxCount}`,
@@ -2466,7 +2470,7 @@ class LeakLockPanel {
                         }
                         const patchLine = line.slice(1);
                         for (const keyword of fileHistoryKeywords) {
-                            const existingCount = matchCountByKeyword.get(keyword) || 0;
+                            const existingCount = fileModeMatchCountByKeyword.get(keyword) || 0;
                             if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
                                 continue;
                             }
@@ -2481,7 +2485,7 @@ class LeakLockPanel {
                                 currentDate
                             );
                             if (added) {
-                                matchCountByKeyword.set(keyword, existingCount + 1);
+                                fileModeMatchCountByKeyword.set(keyword, existingCount + 1);
                             }
                         }
                     }
@@ -2630,7 +2634,11 @@ class LeakLockPanel {
         if (!this._scanRepoRoot || !this._trackedFiles || !this._scanPath) {
             return false;
         }
-        if (!relativeFile || relativeFile === 'scan_output' || relativeFile === 'git-history-reference' || relativeFile === 'git-history-artifact') {
+        if (!relativeFile ||
+            relativeFile === 'scan_output' ||
+            relativeFile === 'git-history-reference' ||
+            relativeFile === 'git-history-artifact' ||
+            relativeFile.startsWith('git-history:')) {
             return false;
         }
         let absPath = filePath;
@@ -3292,6 +3300,10 @@ class LeakLockPanel {
     }
 
     _getRelativeFilePath(filePath) {
+        if (typeof filePath === 'string' && filePath.startsWith('git-history:')) {
+            return filePath;
+        }
+
         // If scanning external directory (not workspace), show relative path from selected directory
         if (this._selectedDirectory) {
             // If path is absolute and starts with selected directory, make it relative
@@ -3370,7 +3382,11 @@ class LeakLockPanel {
             isGitHistory = match.provenance.some(prov => prov.kind === 'git_repo');
         }
         // Also check legacy path-based detection
-        isGitHistory = isGitHistory || filePath.startsWith('git-ref:') || filePath.startsWith('git-object') || filePath === 'git-history-reference';
+        isGitHistory = isGitHistory ||
+            filePath.startsWith('git-ref:') ||
+            filePath.startsWith('git-object') ||
+            filePath.startsWith('git-history:') ||
+            filePath === 'git-history-reference';
         if (normalizedOptions.forceGitHistory === true) {
             isGitHistory = true;
         }
