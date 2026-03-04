@@ -102,8 +102,9 @@ code --install-extension leak-lock-0.0.1.vsix
   - `leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword`
 
 Default keyword profile (designed for attribution-policy and secret hygiene):
-- Agent/AI attribution terms: `ai`, `agent`, `assistant`, `claude`, `codex`, `copilot`, `gemini`, `gpt`, `chatgpt`, `openai`, `anthropic`, `aider`, `cursor`, `windsurf`, `meldbot`, `openclaw`, `nanoclaw`
+- Agent/AI attribution terms: `agent`, `assistant`, `claude`, `codex`, `copilot`, `gemini`, `gpt`, `chatgpt`, `openai`, `anthropic`, `aider`, `cursor`, `windsurf`, `meldbot`, `openclaw`, `nanoclaw`
 - Sensitive terms: `password`, `token`, `api_key`, `secret`
+Note: In file-history mode, very short keywords are skipped to reduce noise and improve performance.
 
 Example use case:
 - Detect commit messages that mention coding agents.
