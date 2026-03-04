@@ -97,7 +97,6 @@
         "leakLock.gitHistoryKeywordSearch.keywords": {
           "type": "array",
           "default": [
-            "ai",
             "agent",
             "assistant",
             "claude",

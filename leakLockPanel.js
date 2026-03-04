@@ -2330,6 +2330,7 @@ class LeakLockPanel {
         const repoDir = this._scanRepoRoot || scanPath;
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
+        const gitLogOptions = { timeout: 20000, maxBuffer: 50 * 1024 * 1024 };
         const findings = [];
         const seen = new Set();
         const totalSearchModes = (keywordConfig.searchCommitMessages ? 1 : 0) + (keywordConfig.searchFileHistory ? 1 : 0);
@@ -2357,7 +2358,7 @@ class LeakLockPanel {
                     '-C', repoDir,
                     'log', '--all', '--no-color', '-z',
                     '--pretty=format:%H%x09%aI%x09%B%x00'
-                ], { timeout: 20000 });
+                ], gitLogOptions);
 
                 const records = stdout.split('\0').filter(Boolean);
                 const matchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
@@ -2407,15 +2408,21 @@ class LeakLockPanel {
                     if (findings.length >= maxTotalFindings) {
                         break;
                     }
+                    if (keyword.length <= 3) {
+                        // Skip short tokens (for example "ai") in file-history mode to avoid
+                        // broad and expensive -S matches that are mostly noise.
+                        continue;
+                    }
                     const { stdout } = await execFileAsync('git', [
                         '-C', repoDir,
                         'log', '--all', '--no-color',
                         '--pretty=format:COMMIT%x09%H%x09%aI',
                         '-p',
                         '-S', keyword,
+                        '--max-count=1000',
                         '--',
                         '.'
-                    ], { timeout: 20000 });
+                    ], gitLogOptions);
 
                     const lines = stdout.split('\n');
                     let currentCommit = null;
@@ -2423,8 +2430,8 @@ class LeakLockPanel {
                     let currentFile = null;
                     let perKeywordCount = 0;
                     for (const rawLine of lines) {
-                        const line = rawLine.trim();
-                        if (!line) {
+                        const line = rawLine.trimEnd();
+                        if (!line.trim()) {
                             continue;
                         }
                         if (line.startsWith('COMMIT\t')) {
