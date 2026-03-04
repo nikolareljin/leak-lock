@@ -6,7 +6,7 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
 [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
@@ -91,6 +91,23 @@ code --install-extension leak-lock-0.0.1.vsix
 
 
 ---
+
+### 6.1 Optional Keyword Search in Git History (New)
+- Open VS Code settings for Leak Lock.
+- Enable `leakLock.gitHistoryKeywordSearch.enabled`.
+- Configure keywords in `leakLock.gitHistoryKeywordSearch.keywords`.
+- Optionally tune:
+  - `leakLock.gitHistoryKeywordSearch.searchCommitMessages`
+  - `leakLock.gitHistoryKeywordSearch.searchFileHistory`
+  - `leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword`
+
+Default keyword profile (designed for attribution-policy and secret hygiene):
+- Agent/AI attribution terms: `ai`, `agent`, `assistant`, `claude`, `codex`, `copilot`, `gemini`, `gpt`, `chatgpt`, `openai`, `anthropic`, `aider`, `cursor`, `windsurf`, `meldbot`, `openclaw`, `nanoclaw`
+- Sensitive terms: `password`, `token`, `api_key`, `secret`
+
+Example use case:
+- Detect commit messages that mention coding agents.
+- Detect potentially sensitive terms in historical file changes.
 
 ### 7. Remove Unwanted Files (New)
 - Open from sidebar: click "🗑️ Remove files"
