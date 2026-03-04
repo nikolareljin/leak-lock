@@ -1,5 +1,14 @@
 # Change Log
 
+## 0.4.0
+### Added
+- **Keyword Search in Git History**: Optional scanning for configured keywords in commit messages and historical file content changes ([#39](https://github.com/nikolareljin/leak-lock/issues/39))
+  - New settings to enable/disable keyword history scanning
+  - Separate toggles for commit-message scanning and file-history scanning
+  - Configurable keyword list and per-keyword match cap
+  - Default keyword profile targets agent-attribution terms and sensitive credential wording
+  - Keyword matches are surfaced in scan results with git commit metadata
+
 ## 0.3.0
 ### Added
 - **Scan Results Export**: Export scan findings as JSON and print/save the current results view as PDF ([#37](https://github.com/nikolareljin/leak-lock/issues/37))

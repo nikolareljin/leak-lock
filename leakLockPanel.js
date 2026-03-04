@@ -2203,6 +2203,8 @@ class LeakLockPanel {
 
             // Run the actual scan
             const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
+            const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
+            const allResults = scanResults.concat(keywordHistoryResults);
 
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
@@ -2212,10 +2214,10 @@ class LeakLockPanel {
             await this._cleanupTempFiles(tempDatastore);
 
             // Enrich results with git branch names and commit dates
-            await this._enrichResultsWithGitInfo(scanResults, scanPath);
+            await this._enrichResultsWithGitInfo(allResults, scanPath);
 
             // Update results
-            this._scanResults = scanResults;
+            this._scanResults = allResults;
             this._isScanning = false;
             this._scanProgress = null;
 
@@ -2223,8 +2225,8 @@ class LeakLockPanel {
             this._updateWebviewContent();
 
             // Show completion message
-            if (scanResults.length > 0) {
-                vscode.window.showWarningMessage(`Scan complete! Found ${scanResults.length} potential secrets. Review them in the main panel.`);
+            if (allResults.length > 0) {
+                vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} potential secrets. Review them in the main panel.`);
             } else {
                 vscode.window.showInformationMessage('🎉 Scan complete! No secrets found in your repository. Your code looks secure!');
             }
@@ -2259,6 +2261,158 @@ class LeakLockPanel {
             this._scanRepoRoot = null;
             this._trackedFiles = null;
         }
+    }
+
+    _getKeywordSearchConfig() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        const enabled = !!config.get('gitHistoryKeywordSearch.enabled', false);
+        const rawKeywords = config.get('gitHistoryKeywordSearch.keywords', []);
+        const maxMatchesPerKeyword = Number(config.get('gitHistoryKeywordSearch.maxMatchesPerKeyword', 25)) || 25;
+        const searchCommitMessages = !!config.get('gitHistoryKeywordSearch.searchCommitMessages', true);
+        const searchFileHistory = !!config.get('gitHistoryKeywordSearch.searchFileHistory', true);
+
+        const keywords = Array.isArray(rawKeywords)
+            ? [...new Set(rawKeywords.map((k) => String(k || '').trim()).filter(Boolean))]
+            : [];
+
+        return {
+            enabled,
+            keywords,
+            maxMatchesPerKeyword: Math.max(1, Math.min(500, maxMatchesPerKeyword)),
+            searchCommitMessages,
+            searchFileHistory
+        };
+    }
+
+    _createKeywordHistoryResult(filePath, keyword, description, commitHash, commitDate) {
+        const result = this._createResult(
+            filePath,
+            1,
+            keyword,
+            description,
+            'git_history_keyword'
+        );
+        result.isGitHistory = true;
+        result.commitHash = commitHash || null;
+        result.commitDate = commitDate || null;
+        return result;
+    }
+
+    async _scanGitHistoryForKeywords(scanPath) {
+        const keywordConfig = this._getKeywordSearchConfig();
+        if (!keywordConfig.enabled || keywordConfig.keywords.length === 0) {
+            return [];
+        }
+
+        const repoDir = this._scanRepoRoot || scanPath;
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const findings = [];
+        const seen = new Set();
+
+        const addFinding = (filePath, keyword, description, commitHash, commitDate) => {
+            const dedupeKey = [commitHash || '', filePath || '', keyword, description].join('|');
+            if (seen.has(dedupeKey)) {
+                return;
+            }
+            seen.add(dedupeKey);
+            findings.push(this._createKeywordHistoryResult(filePath, keyword, description, commitHash, commitDate));
+        };
+
+        try {
+            if (keywordConfig.searchCommitMessages) {
+                this._scanProgress = { stage: 'process', message: 'Searching git commit messages for configured keywords...' };
+                this._updateWebviewContent();
+
+                const { stdout } = await execFileAsync('git', [
+                    '-C', repoDir,
+                    'log', '--all', '--no-color',
+                    '--pretty=format:%H%x09%aI%x09%s'
+                ], { timeout: 20000 });
+
+                const lines = stdout.split('\n').filter(Boolean);
+                const matchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
+                for (const line of lines) {
+                    const firstTab = line.indexOf('\t');
+                    const secondTab = firstTab >= 0 ? line.indexOf('\t', firstTab + 1) : -1;
+                    if (firstTab < 0 || secondTab < 0) {
+                        continue;
+                    }
+                    const commitHash = line.slice(0, firstTab).trim();
+                    const commitDate = line.slice(firstTab + 1, secondTab).trim();
+                    const subject = line.slice(secondTab + 1).trim();
+                    const subjectLower = subject.toLowerCase();
+
+                    for (const keyword of keywordConfig.keywords) {
+                        const existingCount = matchCountByKeyword.get(keyword) || 0;
+                        if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+                            continue;
+                        }
+                        if (!subjectLower.includes(keyword.toLowerCase())) {
+                            continue;
+                        }
+                        const preview = subject.length > 140 ? `${subject.slice(0, 137)}...` : subject;
+                        addFinding(
+                            'git-history-reference',
+                            keyword,
+                            `Keyword "${keyword}" found in commit message: ${preview}`,
+                            commitHash,
+                            commitDate
+                        );
+                        matchCountByKeyword.set(keyword, existingCount + 1);
+                    }
+                }
+            }
+
+            if (keywordConfig.searchFileHistory) {
+                this._scanProgress = { stage: 'process', message: 'Searching git file history for configured keywords...' };
+                this._updateWebviewContent();
+
+                for (const keyword of keywordConfig.keywords) {
+                    const { stdout } = await execFileAsync('git', [
+                        '-C', repoDir,
+                        'log', '--all', '--no-color',
+                        '--pretty=format:COMMIT%x09%H%x09%aI',
+                        '--name-only',
+                        '-S', keyword,
+                        '--',
+                        '.'
+                    ], { timeout: 20000 });
+
+                    const lines = stdout.split('\n');
+                    let currentCommit = null;
+                    let currentDate = null;
+                    let perKeywordCount = 0;
+                    for (const rawLine of lines) {
+                        const line = rawLine.trim();
+                        if (!line) {
+                            continue;
+                        }
+                        if (line.startsWith('COMMIT\t')) {
+                            const parts = line.split('\t');
+                            currentCommit = parts[1] || null;
+                            currentDate = parts[2] || null;
+                            continue;
+                        }
+                        if (!currentCommit || perKeywordCount >= keywordConfig.maxMatchesPerKeyword) {
+                            continue;
+                        }
+                        addFinding(
+                            line,
+                            keyword,
+                            `Keyword "${keyword}" found in historical file content changes`,
+                            currentCommit,
+                            currentDate
+                        );
+                        perKeywordCount++;
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn('Keyword history scan skipped:', error.message);
+        }
+
+        return findings;
     }
 
     /**
