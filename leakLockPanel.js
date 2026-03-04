@@ -1873,11 +1873,13 @@ class LeakLockPanel {
             ? 'Remote refs may be outdated (older than 15 minutes). Fetch to ensure cleanup considers latest branches and tags.'
             : 'Remotes fetched recently; cleanup reflects current branches and tags.';
 
-        const branchDataMap = {}; // index → branches array, populated during map
+        const branchDataMap = {}; // index -> branches array, populated during map
         const resultsRows = this._scanResults.map((result, index) => {
             const isDependency = result.isDependency;
             const isGitHistory = result.isGitHistory;
             const isUntracked = result.isUntracked;
+            const includeInCleanup = result.includeInCleanup !== false;
+            const cleanupDisabled = isDependency || !includeInCleanup;
 
             // Choose appropriate icon and styling
             let icon = '📄';
@@ -1901,6 +1903,7 @@ class LeakLockPanel {
                     : isDependency
                         ? ' (dependency directory)'
                         : '';
+            const cleanupNote = includeInCleanup ? '' : ' (keyword history reference only)';
 
             // Build git info display for commit details
             const shortHash = result.commitHash ? result.commitHash.substring(0, 7) : null;
@@ -1978,8 +1981,8 @@ class LeakLockPanel {
 
             return `
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
-                    <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? 'disabled' : 'checked'}></td>
-                    <td title="${escapeHtml(result.file)}${contextNote}">
+                    <td><input type="checkbox" class="secret-checkbox checkbox" ${cleanupDisabled ? 'disabled' : 'checked'}></td>
+                    <td title="${escapeHtml(result.file)}${contextNote}${cleanupNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
                         </span>
@@ -1998,7 +2001,7 @@ class LeakLockPanel {
                         </span>
                     </td>
                     <td>
-                        <input type="text" class="replacement-input" value="*****" placeholder="Replacement value" ${isDependency ? 'disabled' : ''}>
+                        <input type="text" class="replacement-input" value="*****" placeholder="Replacement value" ${cleanupDisabled ? 'disabled' : ''}>
                     </td>
                     <td title="${escapeHtml(gitInfoTooltip)}" style="font-size: 0.85em; line-height: 1.4; overflow: visible; white-space: normal; word-break: break-word;">
                         ${gitInfoHtml}
@@ -2012,6 +2015,7 @@ class LeakLockPanel {
                                 ${escapeHtml(result.description)}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(in dependency)</span>' : ''}
                                 ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
+                                ${!includeInCleanup ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(excluded from cleanup)</span>' : ''}
                             </span>
                         </div>
                     </td>
@@ -2290,12 +2294,31 @@ class LeakLockPanel {
             1,
             keyword,
             description,
-            'git_history_keyword'
+            'git_history_keyword',
+            null,
+            { forceGitHistory: true, includeInCleanup: false }
         );
-        result.isGitHistory = true;
+        result.isKeywordHistory = true;
         result.commitHash = commitHash || null;
         result.commitDate = commitDate || null;
         return result;
+    }
+
+    _escapeRegExp(value) {
+        return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    _keywordMatchesText(text, keyword) {
+        const normalizedText = String(text || '');
+        const keywordLower = String(keyword || '').toLowerCase();
+        if (!keywordLower) {
+            return false;
+        }
+        if (keywordLower.length <= 3) {
+            const boundaryRegex = new RegExp(`\\b${this._escapeRegExp(keywordLower)}\\b`, 'i');
+            return boundaryRegex.test(normalizedText);
+        }
+        return normalizedText.toLowerCase().includes(keywordLower);
     }
 
     async _scanGitHistoryForKeywords(scanPath) {
@@ -2309,14 +2332,20 @@ class LeakLockPanel {
         const execFileAsync = util.promisify(execFile);
         const findings = [];
         const seen = new Set();
+        const totalSearchModes = (keywordConfig.searchCommitMessages ? 1 : 0) + (keywordConfig.searchFileHistory ? 1 : 0);
+        const maxTotalFindings = Math.max(50, Math.min(2000, keywordConfig.keywords.length * keywordConfig.maxMatchesPerKeyword * Math.max(1, totalSearchModes)));
 
         const addFinding = (filePath, keyword, description, commitHash, commitDate) => {
+            if (findings.length >= maxTotalFindings) {
+                return false;
+            }
             const dedupeKey = [commitHash || '', filePath || '', keyword, description].join('|');
             if (seen.has(dedupeKey)) {
-                return;
+                return false;
             }
             seen.add(dedupeKey);
             findings.push(this._createKeywordHistoryResult(filePath, keyword, description, commitHash, commitDate));
+            return true;
         };
 
         try {
@@ -2326,40 +2355,46 @@ class LeakLockPanel {
 
                 const { stdout } = await execFileAsync('git', [
                     '-C', repoDir,
-                    'log', '--all', '--no-color',
-                    '--pretty=format:%H%x09%aI%x09%s'
+                    'log', '--all', '--no-color', '-z',
+                    '--pretty=format:%H%x09%aI%x09%B%x00'
                 ], { timeout: 20000 });
 
-                const lines = stdout.split('\n').filter(Boolean);
+                const records = stdout.split('\0').filter(Boolean);
                 const matchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
-                for (const line of lines) {
-                    const firstTab = line.indexOf('\t');
-                    const secondTab = firstTab >= 0 ? line.indexOf('\t', firstTab + 1) : -1;
+                for (const record of records) {
+                    if (findings.length >= maxTotalFindings) {
+                        break;
+                    }
+                    const firstTab = record.indexOf('\t');
+                    const secondTab = firstTab >= 0 ? record.indexOf('\t', firstTab + 1) : -1;
                     if (firstTab < 0 || secondTab < 0) {
                         continue;
                     }
-                    const commitHash = line.slice(0, firstTab).trim();
-                    const commitDate = line.slice(firstTab + 1, secondTab).trim();
-                    const subject = line.slice(secondTab + 1).trim();
-                    const subjectLower = subject.toLowerCase();
+                    const commitHash = record.slice(0, firstTab).trim();
+                    const commitDate = record.slice(firstTab + 1, secondTab).trim();
+                    const fullMessage = record.slice(secondTab + 1).trim();
+                    const firstLineEnd = fullMessage.indexOf('\n');
+                    const previewSource = firstLineEnd >= 0 ? fullMessage.slice(0, firstLineEnd) : fullMessage;
+                    const preview = previewSource.length > 140 ? `${previewSource.slice(0, 137)}...` : previewSource;
 
                     for (const keyword of keywordConfig.keywords) {
                         const existingCount = matchCountByKeyword.get(keyword) || 0;
                         if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
                             continue;
                         }
-                        if (!subjectLower.includes(keyword.toLowerCase())) {
+                        if (!this._keywordMatchesText(fullMessage, keyword)) {
                             continue;
                         }
-                        const preview = subject.length > 140 ? `${subject.slice(0, 137)}...` : subject;
-                        addFinding(
+                        const added = addFinding(
                             'git-history-reference',
                             keyword,
                             `Keyword "${keyword}" found in commit message: ${preview}`,
                             commitHash,
                             commitDate
                         );
-                        matchCountByKeyword.set(keyword, existingCount + 1);
+                        if (added) {
+                            matchCountByKeyword.set(keyword, existingCount + 1);
+                        }
                     }
                 }
             }
@@ -2369,11 +2404,14 @@ class LeakLockPanel {
                 this._updateWebviewContent();
 
                 for (const keyword of keywordConfig.keywords) {
+                    if (findings.length >= maxTotalFindings) {
+                        break;
+                    }
                     const { stdout } = await execFileAsync('git', [
                         '-C', repoDir,
                         'log', '--all', '--no-color',
                         '--pretty=format:COMMIT%x09%H%x09%aI',
-                        '--name-only',
+                        '-p',
                         '-S', keyword,
                         '--',
                         '.'
@@ -2382,6 +2420,7 @@ class LeakLockPanel {
                     const lines = stdout.split('\n');
                     let currentCommit = null;
                     let currentDate = null;
+                    let currentFile = null;
                     let perKeywordCount = 0;
                     for (const rawLine of lines) {
                         const line = rawLine.trim();
@@ -2392,19 +2431,41 @@ class LeakLockPanel {
                             const parts = line.split('\t');
                             currentCommit = parts[1] || null;
                             currentDate = parts[2] || null;
+                            currentFile = null;
+                            continue;
+                        }
+                        if (line.startsWith('diff --git ')) {
+                            const match = rawLine.match(/^diff --git a\/(.+?) b\/(.+)$/);
+                            if (match) {
+                                currentFile = match[2];
+                            }
                             continue;
                         }
                         if (!currentCommit || perKeywordCount >= keywordConfig.maxMatchesPerKeyword) {
                             continue;
                         }
-                        addFinding(
-                            line,
+                        if (!currentFile) {
+                            continue;
+                        }
+                        if (!(line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) || line.startsWith('+++') || line.startsWith('---')) {
+                            continue;
+                        }
+                        if (!this._keywordMatchesText(line.slice(1), keyword)) {
+                            continue;
+                        }
+                        const added = addFinding(
+                            currentFile,
                             keyword,
                             `Keyword "${keyword}" found in historical file content changes`,
                             currentCommit,
                             currentDate
                         );
-                        perKeywordCount++;
+                        if (added) {
+                            perKeywordCount++;
+                        }
+                        if (findings.length >= maxTotalFindings) {
+                            break;
+                        }
                     }
                 }
             }
@@ -2445,12 +2506,13 @@ class LeakLockPanel {
             return;
         }
 
+        const MAX_HASHES_TO_ENRICH = 200;
+        const hashArray = [...uniqueHashes].slice(0, MAX_HASHES_TO_ENRICH);
         const repoDir = this._scanRepoRoot || scanPath;
         const commitInfo = new Map(); // hash -> { branches, fallbackDate }
 
         // Resolve commit metadata in parallel with limited concurrency
         const CONCURRENCY = 5;
-        const hashArray = [...uniqueHashes];
 
         const resolveHash = async (hash) => {
             try {
@@ -3264,7 +3326,8 @@ class LeakLockPanel {
         return 'low';
     }
 
-    _createResult(filePath, line, secret, description, ruleName, match = null) {
+    _createResult(filePath, line, secret, description, ruleName, match = null, options = null) {
+        const normalizedOptions = options && typeof options === 'object' ? options : {};
         const relativeFile = this._getRelativeFilePath(filePath);
         const isInDependency = this._isInDependencyDirectory(relativeFile);
 
@@ -3275,6 +3338,9 @@ class LeakLockPanel {
         }
         // Also check legacy path-based detection
         isGitHistory = isGitHistory || filePath.startsWith('git-ref:') || filePath.startsWith('git-object') || filePath === 'git-history-reference';
+        if (normalizedOptions.forceGitHistory === true) {
+            isGitHistory = true;
+        }
 
         // Get dependency handling configuration
         const config = vscode.workspace.getConfiguration('leakLock');
@@ -3321,6 +3387,7 @@ class LeakLockPanel {
 
         const fullSecret = typeof secret === 'string' ? secret : String(secret);
         const displaySecret = this._truncateSecret(fullSecret);
+        const includeInCleanup = normalizedOptions.includeInCleanup !== false;
         const result = {
             file: relativeFile,
             line: line,
@@ -3330,7 +3397,9 @@ class LeakLockPanel {
             description: enhancedDescription,
             severity: severity,
             isDependency: isInDependency,
+            includeInCleanup: includeInCleanup,
             originalSeverity: this._getSeverity(ruleName),
+            ruleName: ruleName || '',
             isGitHistory: isGitHistory,
             isUntracked: isUntracked,
             commitHash: commitHash,
@@ -3422,7 +3491,7 @@ class LeakLockPanel {
                     continue;
                 }
                 const result = this._scanResults[idx];
-                if (!result || result.isDependency) {
+                if (!result || result.isDependency || result.includeInCleanup === false || result.ruleName === 'git_history_keyword') {
                     continue;
                 }
                 const secretValue = result.fullSecret || result.secret;
