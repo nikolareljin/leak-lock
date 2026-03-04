@@ -1849,8 +1849,8 @@ class LeakLockPanel {
         if (this._scanResults.length === 0) {
             return `
                 <div class="scan-section">
-                    <h2>✅ No Secrets Found</h2>
-                    <p>Great! No potential secrets were detected in your repository.</p>
+                    <h2>✅ No Findings Found</h2>
+                    <p>Great! No findings (potential secrets or policy references) were detected in your repository.</p>
                 </div>
             `;
         }
@@ -2062,7 +2062,7 @@ class LeakLockPanel {
                     <button style="padding:4px 8px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; cursor:pointer;" onclick="refetchNow()">⟳ Refetch now</button>
                 </div>
                 <div style="margin-bottom: 15px;">
-                    <strong>Found ${this._scanResults.length} potential secrets:</strong>
+                    <strong>Found ${this._scanResults.length} findings:</strong>
                     <div class="export-actions">
                         <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
                         <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
@@ -2232,7 +2232,7 @@ class LeakLockPanel {
             if (allResults.length > 0) {
                 vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} findings (potential secrets or policy references). Review them in the main panel.`);
             } else {
-                vscode.window.showInformationMessage('🎉 Scan complete! No secrets found in your repository. Your code looks secure!');
+                vscode.window.showInformationMessage('🎉 Scan complete! No findings (potential secrets or policy references) were found in your repository.');
             }
         } catch (error) {
             console.error('Scan error:', error);
@@ -2350,13 +2350,12 @@ class LeakLockPanel {
             findings.push(this._createKeywordHistoryResult(filePath, keyword, description, commitHash, commitDate));
             return true;
         };
+        const matchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
 
         try {
             if (keywordConfig.searchCommitMessages) {
                 this._scanProgress = { stage: 'process', message: 'Searching git commit messages for configured keywords...' };
                 this._updateWebviewContent();
-
-                const matchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
                 for (const keyword of keywordConfig.keywords) {
                     if (findings.length >= maxTotalFindings) {
                         break;
@@ -2408,23 +2407,25 @@ class LeakLockPanel {
                 this._scanProgress = { stage: 'process', message: 'Searching git file history for configured keywords...' };
                 this._updateWebviewContent();
 
-                for (const keyword of keywordConfig.keywords) {
-                    if (findings.length >= maxTotalFindings) {
-                        break;
-                    }
-                    if (keyword.length <= 3) {
-                        // Skip short tokens (for example "ai") in file-history mode to avoid
-                        // broad and expensive -S matches that are mostly noise.
-                        continue;
-                    }
-                    const safetyFactor = 3;
-                    const gitMaxCount = Math.max(1, keywordConfig.maxMatchesPerKeyword) * safetyFactor;
+                const fileHistoryKeywords = keywordConfig.keywords.filter((keyword) => keyword.length > 3);
+                if (fileHistoryKeywords.length > 0) {
+                    const combinedPattern = fileHistoryKeywords
+                        .map((keyword) => this._escapeRegex(keyword))
+                        .join('|');
+                    const commitSafetyFactor = 3;
+                    const gitMaxCount = Math.max(
+                        100,
+                        Math.max(1, keywordConfig.maxMatchesPerKeyword) *
+                            Math.max(1, fileHistoryKeywords.length) *
+                            commitSafetyFactor
+                    );
                     const { stdout } = await execFileAsync('git', [
                         '-C', repoDir,
                         'log', '--all', '--no-color',
                         '--pretty=format:COMMIT%x09%H%x09%aI',
                         '-p',
-                        '-S', keyword,
+                        '--pickaxe-regex',
+                        '-G', combinedPattern,
                         `--max-count=${gitMaxCount}`,
                         '--',
                         '.'
@@ -2434,8 +2435,10 @@ class LeakLockPanel {
                     let currentCommit = null;
                     let currentDate = null;
                     let currentFile = null;
-                    let perKeywordCount = 0;
                     for (const rawLine of lines) {
+                        if (findings.length >= maxTotalFindings) {
+                            break;
+                        }
                         const line = rawLine.trimEnd();
                         if (!line.trim()) {
                             continue;
@@ -2454,31 +2457,32 @@ class LeakLockPanel {
                             }
                             continue;
                         }
-                        if (!currentCommit || perKeywordCount >= keywordConfig.maxMatchesPerKeyword) {
-                            continue;
-                        }
-                        if (!currentFile) {
+                        if (!currentCommit || !currentFile) {
                             continue;
                         }
                         // Restrict to added/removed lines only; exclude diff headers.
                         if (!(line.startsWith('+') || line.startsWith('-')) || line.startsWith('+++') || line.startsWith('---')) {
                             continue;
                         }
-                        if (!this._keywordMatchesText(line.slice(1), keyword)) {
-                            continue;
-                        }
-                        const added = addFinding(
-                            currentFile,
-                            keyword,
-                            `Keyword "${keyword}" found in historical file content changes`,
-                            currentCommit,
-                            currentDate
-                        );
-                        if (added) {
-                            perKeywordCount++;
-                        }
-                        if (findings.length >= maxTotalFindings) {
-                            break;
+                        const patchLine = line.slice(1);
+                        for (const keyword of fileHistoryKeywords) {
+                            const existingCount = matchCountByKeyword.get(keyword) || 0;
+                            if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+                                continue;
+                            }
+                            if (!this._keywordMatchesText(patchLine, keyword)) {
+                                continue;
+                            }
+                            const added = addFinding(
+                                currentFile,
+                                keyword,
+                                `Keyword "${keyword}" found in historical file content changes`,
+                                currentCommit,
+                                currentDate
+                            );
+                            if (added) {
+                                matchCountByKeyword.set(keyword, existingCount + 1);
+                            }
                         }
                     }
                 }
