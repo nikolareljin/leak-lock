@@ -2429,6 +2429,7 @@ class LeakLockPanel {
                     const { stdout } = await execFileAsync('git', [
                         '-C', repoDir,
                         'log', '--all', '--no-color',
+                        '--regexp-ignore-case',
                         '--pretty=format:COMMIT%x09%H%x09%aI',
                         '-p',
                         '-U0',
