@@ -2230,7 +2230,7 @@ class LeakLockPanel {
 
             // Show completion message
             if (allResults.length > 0) {
-                vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} potential secrets. Review them in the main panel.`);
+                vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} findings (potential secrets or policy references). Review them in the main panel.`);
             } else {
                 vscode.window.showInformationMessage('🎉 Scan complete! No secrets found in your repository. Your code looks secure!');
             }
@@ -2298,14 +2298,9 @@ class LeakLockPanel {
             null,
             { forceGitHistory: true, includeInCleanup: false }
         );
-        result.isKeywordHistory = true;
         result.commitHash = commitHash || null;
         result.commitDate = commitDate || null;
         return result;
-    }
-
-    _escapeRegExp(value) {
-        return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
     _keywordMatchesText(text, keyword) {
@@ -2315,7 +2310,7 @@ class LeakLockPanel {
             return false;
         }
         if (keywordLower.length <= 3) {
-            const boundaryRegex = new RegExp(`\\b${this._escapeRegExp(keywordLower)}\\b`, 'i');
+            const boundaryRegex = new RegExp(`\\b${this._escapeRegex(keywordLower)}\\b`, 'i');
             return boundaryRegex.test(normalizedText);
         }
         return normalizedText.toLowerCase().includes(keywordLower);
@@ -2354,38 +2349,41 @@ class LeakLockPanel {
                 this._scanProgress = { stage: 'process', message: 'Searching git commit messages for configured keywords...' };
                 this._updateWebviewContent();
 
-                const { stdout } = await execFileAsync('git', [
-                    '-C', repoDir,
-                    'log', '--all', '--no-color', '-z',
-                    '--pretty=format:%H%x09%aI%x09%B%x00'
-                ], gitLogOptions);
-
-                const records = stdout.split('\0').filter(Boolean);
                 const matchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
-                for (const record of records) {
+                for (const keyword of keywordConfig.keywords) {
                     if (findings.length >= maxTotalFindings) {
                         break;
                     }
-                    const firstTab = record.indexOf('\t');
-                    const secondTab = firstTab >= 0 ? record.indexOf('\t', firstTab + 1) : -1;
-                    if (firstTab < 0 || secondTab < 0) {
-                        continue;
-                    }
-                    const commitHash = record.slice(0, firstTab).trim();
-                    const commitDate = record.slice(firstTab + 1, secondTab).trim();
-                    const fullMessage = record.slice(secondTab + 1).trim();
-                    const firstLineEnd = fullMessage.indexOf('\n');
-                    const previewSource = firstLineEnd >= 0 ? fullMessage.slice(0, firstLineEnd) : fullMessage;
-                    const preview = previewSource.length > 140 ? `${previewSource.slice(0, 137)}...` : previewSource;
-
-                    for (const keyword of keywordConfig.keywords) {
+                    const perKeywordCap = keywordConfig.maxMatchesPerKeyword * 5;
+                    const { stdout } = await execFileAsync('git', [
+                        '-C', repoDir,
+                        'log', '--all', '--no-color', '-z',
+                        '--regexp-ignore-case', '--fixed-strings',
+                        '--grep', keyword,
+                        `--max-count=${perKeywordCap}`,
+                        '--pretty=format:%H%x09%aI%x09%s%x00'
+                    ], gitLogOptions);
+                    const records = stdout.split('\0').filter(Boolean);
+                    for (const record of records) {
+                        if (findings.length >= maxTotalFindings) {
+                            break;
+                        }
                         const existingCount = matchCountByKeyword.get(keyword) || 0;
                         if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+                            break;
+                        }
+                        const firstTab = record.indexOf('\t');
+                        const secondTab = firstTab >= 0 ? record.indexOf('\t', firstTab + 1) : -1;
+                        if (firstTab < 0 || secondTab < 0) {
                             continue;
                         }
-                        if (!this._keywordMatchesText(fullMessage, keyword)) {
+                        const commitHash = record.slice(0, firstTab).trim();
+                        const commitDate = record.slice(firstTab + 1, secondTab).trim();
+                        const subject = record.slice(secondTab + 1).trim();
+                        if (!this._keywordMatchesText(subject, keyword)) {
                             continue;
                         }
+                        const preview = subject.length > 140 ? `${subject.slice(0, 137)}...` : subject;
                         const added = addFinding(
                             'git-history-reference',
                             keyword,
@@ -2478,6 +2476,14 @@ class LeakLockPanel {
             }
         } catch (error) {
             console.warn('Keyword history scan skipped:', error.message);
+            this._scanProgress = {
+                stage: 'process',
+                message: 'Keyword history scan was skipped due to a Git error. See extension logs for details.'
+            };
+            this._updateWebviewContent();
+            vscode.window.showWarningMessage(
+                'LeakLock: Keyword history scan was skipped due to a Git error. See logs for details.'
+            );
         }
 
         return findings;
