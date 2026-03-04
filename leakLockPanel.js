@@ -2271,7 +2271,11 @@ class LeakLockPanel {
         const config = vscode.workspace.getConfiguration('leakLock');
         const enabled = !!config.get('gitHistoryKeywordSearch.enabled', false);
         const rawKeywords = config.get('gitHistoryKeywordSearch.keywords', []);
-        const maxMatchesPerKeyword = Number(config.get('gitHistoryKeywordSearch.maxMatchesPerKeyword', 25)) || 25;
+        const rawMaxMatchesPerKeyword = config.get('gitHistoryKeywordSearch.maxMatchesPerKeyword', 25);
+        const parsedMaxMatchesPerKeyword = Number(rawMaxMatchesPerKeyword);
+        const maxMatchesPerKeyword = Number.isFinite(parsedMaxMatchesPerKeyword)
+            ? Math.floor(parsedMaxMatchesPerKeyword)
+            : 25;
         const searchCommitMessages = !!config.get('gitHistoryKeywordSearch.searchCommitMessages', true);
         const searchFileHistory = !!config.get('gitHistoryKeywordSearch.searchFileHistory', true);
 
@@ -2383,11 +2387,10 @@ class LeakLockPanel {
                         if (!this._keywordMatchesText(subject, keyword)) {
                             continue;
                         }
-                        const preview = subject.length > 140 ? `${subject.slice(0, 137)}...` : subject;
                         const added = addFinding(
                             'git-history-reference',
                             keyword,
-                            `Keyword "${keyword}" found in commit message: ${preview}`,
+                            `Keyword "${keyword}" found in commit ${commitHash}${commitDate ? ` (${commitDate})` : ''}`,
                             commitHash,
                             commitDate
                         );
@@ -2411,13 +2414,15 @@ class LeakLockPanel {
                         // broad and expensive -S matches that are mostly noise.
                         continue;
                     }
+                    const safetyFactor = 3;
+                    const gitMaxCount = Math.max(1, keywordConfig.maxMatchesPerKeyword) * safetyFactor;
                     const { stdout } = await execFileAsync('git', [
                         '-C', repoDir,
                         'log', '--all', '--no-color',
                         '--pretty=format:COMMIT%x09%H%x09%aI',
                         '-p',
                         '-S', keyword,
-                        '--max-count=1000',
+                        `--max-count=${gitMaxCount}`,
                         '--',
                         '.'
                     ], gitLogOptions);
