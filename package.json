@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -71,6 +71,57 @@
             "Treat dependency findings the same as regular findings"
           ],
           "description": "How to handle secrets found in dependency directories (node_modules, vendor, etc.)"
+        },
+        "leakLock.gitHistoryKeywordSearch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable attribution-policy keyword scanning in git history (commit messages and historical file content changes)."
+        },
+        "leakLock.gitHistoryKeywordSearch.searchCommitMessages": {
+          "type": "boolean",
+          "default": true,
+          "description": "When keyword history scan is enabled, search commit messages."
+        },
+        "leakLock.gitHistoryKeywordSearch.searchFileHistory": {
+          "type": "boolean",
+          "default": true,
+          "description": "When keyword history scan is enabled, search historical file content changes."
+        },
+        "leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword": {
+          "type": "integer",
+          "default": 25,
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Maximum number of keyword findings to collect per keyword and search mode."
+        },
+        "leakLock.gitHistoryKeywordSearch.keywords": {
+          "type": "array",
+          "default": [
+            "agent",
+            "assistant",
+            "claude",
+            "codex",
+            "copilot",
+            "gemini",
+            "gpt",
+            "chatgpt",
+            "openai",
+            "anthropic",
+            "aider",
+            "cursor",
+            "windsurf",
+            "meldbot",
+            "openclaw",
+            "nanoclaw",
+            "password",
+            "token",
+            "api_key",
+            "secret"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Keywords to detect in git history commit messages and/or file history (defaults focus on agent attribution and sensitive credential terms)."
         }
       }
     },

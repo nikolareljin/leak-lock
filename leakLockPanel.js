@@ -1849,8 +1849,8 @@ class LeakLockPanel {
         if (this._scanResults.length === 0) {
             return `
                 <div class="scan-section">
-                    <h2>✅ No Secrets Found</h2>
-                    <p>Great! No potential secrets were detected in your repository.</p>
+                    <h2>✅ No Findings Found</h2>
+                    <p>Great! No findings (potential secrets or policy references) were detected in your repository.</p>
                 </div>
             `;
         }
@@ -1873,11 +1873,13 @@ class LeakLockPanel {
             ? 'Remote refs may be outdated (older than 15 minutes). Fetch to ensure cleanup considers latest branches and tags.'
             : 'Remotes fetched recently; cleanup reflects current branches and tags.';
 
-        const branchDataMap = {}; // index → branches array, populated during map
+        const branchDataMap = {}; // index -> branches array, populated during map
         const resultsRows = this._scanResults.map((result, index) => {
             const isDependency = result.isDependency;
             const isGitHistory = result.isGitHistory;
             const isUntracked = result.isUntracked;
+            const includeInCleanup = result.includeInCleanup !== false;
+            const cleanupDisabled = isDependency || !includeInCleanup;
 
             // Choose appropriate icon and styling
             let icon = '📄';
@@ -1901,6 +1903,7 @@ class LeakLockPanel {
                     : isDependency
                         ? ' (dependency directory)'
                         : '';
+            const cleanupNote = includeInCleanup ? '' : ' (keyword history reference only)';
 
             // Build git info display for commit details
             const shortHash = result.commitHash ? result.commitHash.substring(0, 7) : null;
@@ -1978,8 +1981,8 @@ class LeakLockPanel {
 
             return `
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
-                    <td><input type="checkbox" class="secret-checkbox checkbox" ${isDependency ? 'disabled' : 'checked'}></td>
-                    <td title="${escapeHtml(result.file)}${contextNote}">
+                    <td><input type="checkbox" class="secret-checkbox checkbox" ${cleanupDisabled ? 'disabled' : 'checked'}></td>
+                    <td title="${escapeHtml(result.file)}${contextNote}${cleanupNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
                         </span>
@@ -1998,7 +2001,7 @@ class LeakLockPanel {
                         </span>
                     </td>
                     <td>
-                        <input type="text" class="replacement-input" value="*****" placeholder="Replacement value" ${isDependency ? 'disabled' : ''}>
+                        <input type="text" class="replacement-input" value="*****" placeholder="Replacement value" ${cleanupDisabled ? 'disabled' : ''}>
                     </td>
                     <td title="${escapeHtml(gitInfoTooltip)}" style="font-size: 0.85em; line-height: 1.4; overflow: visible; white-space: normal; word-break: break-word;">
                         ${gitInfoHtml}
@@ -2012,6 +2015,7 @@ class LeakLockPanel {
                                 ${escapeHtml(result.description)}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(in dependency)</span>' : ''}
                                 ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
+                                ${!includeInCleanup ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(excluded from cleanup)</span>' : ''}
                             </span>
                         </div>
                     </td>
@@ -2058,7 +2062,7 @@ class LeakLockPanel {
                     <button style="padding:4px 8px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; cursor:pointer;" onclick="refetchNow()">⟳ Refetch now</button>
                 </div>
                 <div style="margin-bottom: 15px;">
-                    <strong>Found ${this._scanResults.length} potential secrets:</strong>
+                    <strong>Found ${this._scanResults.length} findings:</strong>
                     <div class="export-actions">
                         <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
                         <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
@@ -2203,6 +2207,8 @@ class LeakLockPanel {
 
             // Run the actual scan
             const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
+            const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
+            const allResults = scanResults.concat(keywordHistoryResults);
 
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
@@ -2212,10 +2218,10 @@ class LeakLockPanel {
             await this._cleanupTempFiles(tempDatastore);
 
             // Enrich results with git branch names and commit dates
-            await this._enrichResultsWithGitInfo(scanResults, scanPath);
+            await this._enrichResultsWithGitInfo(allResults, scanPath);
 
             // Update results
-            this._scanResults = scanResults;
+            this._scanResults = allResults;
             this._isScanning = false;
             this._scanProgress = null;
 
@@ -2223,10 +2229,10 @@ class LeakLockPanel {
             this._updateWebviewContent();
 
             // Show completion message
-            if (scanResults.length > 0) {
-                vscode.window.showWarningMessage(`Scan complete! Found ${scanResults.length} potential secrets. Review them in the main panel.`);
+            if (allResults.length > 0) {
+                vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} findings (potential secrets or policy references). Review them in the main panel.`);
             } else {
-                vscode.window.showInformationMessage('🎉 Scan complete! No secrets found in your repository. Your code looks secure!');
+                vscode.window.showInformationMessage('🎉 Scan complete! No findings (potential secrets or policy references) were found in your repository.');
             }
         } catch (error) {
             console.error('Scan error:', error);
@@ -2261,6 +2267,250 @@ class LeakLockPanel {
         }
     }
 
+    _getKeywordSearchConfig() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        const enabled = !!config.get('gitHistoryKeywordSearch.enabled', false);
+        const rawKeywords = config.get('gitHistoryKeywordSearch.keywords', []);
+        const rawMaxMatchesPerKeyword = config.get('gitHistoryKeywordSearch.maxMatchesPerKeyword', 25);
+        const parsedMaxMatchesPerKeyword = Number(rawMaxMatchesPerKeyword);
+        const maxMatchesPerKeyword = Number.isFinite(parsedMaxMatchesPerKeyword)
+            ? Math.floor(parsedMaxMatchesPerKeyword)
+            : 25;
+        const searchCommitMessages = !!config.get('gitHistoryKeywordSearch.searchCommitMessages', true);
+        const searchFileHistory = !!config.get('gitHistoryKeywordSearch.searchFileHistory', true);
+
+        const keywords = Array.isArray(rawKeywords)
+            ? [...new Set(rawKeywords.map((k) => String(k || '').trim()).filter(Boolean))]
+            : [];
+
+        return {
+            enabled,
+            keywords,
+            maxMatchesPerKeyword: Math.max(1, Math.min(500, maxMatchesPerKeyword)),
+            searchCommitMessages,
+            searchFileHistory
+        };
+    }
+
+    _createKeywordHistoryResult(filePath, keyword, description, commitHash, commitDate) {
+        const result = this._createResult(
+            filePath,
+            1,
+            keyword,
+            description,
+            'git_history_keyword',
+            null,
+            { forceGitHistory: true, includeInCleanup: false }
+        );
+        result.commitHash = commitHash || null;
+        result.commitDate = commitDate || null;
+        return result;
+    }
+
+    _keywordMatchesText(text, keyword) {
+        const normalizedText = String(text || '');
+        const keywordStr = String(keyword || '').trim();
+        const keywordLower = keywordStr.toLowerCase();
+        if (!keywordLower) {
+            return false;
+        }
+        // Reduce false positives for word-like keywords by requiring whole-word matches.
+        const isWordLike = /^[A-Za-z0-9]+$/.test(keywordStr);
+        if (isWordLike) {
+            const boundaryRegex = new RegExp(`\\b${this._escapeRegex(keywordStr)}\\b`, 'i');
+            return boundaryRegex.test(normalizedText);
+        }
+        return normalizedText.toLowerCase().includes(keywordLower);
+    }
+
+    async _scanGitHistoryForKeywords(scanPath) {
+        const keywordConfig = this._getKeywordSearchConfig();
+        if (!keywordConfig.enabled || keywordConfig.keywords.length === 0) {
+            return [];
+        }
+
+        const repoDir = this._scanRepoRoot || scanPath;
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const gitLogOptions = { timeout: 20000, maxBuffer: 50 * 1024 * 1024 };
+        const findings = [];
+        const seen = new Set();
+        const totalSearchModes = (keywordConfig.searchCommitMessages ? 1 : 0) + (keywordConfig.searchFileHistory ? 1 : 0);
+        const maxTotalFindings = Math.max(50, Math.min(2000, keywordConfig.keywords.length * keywordConfig.maxMatchesPerKeyword * Math.max(1, totalSearchModes)));
+        const maxCommitLogCount = 5000;
+        const maxFileHistoryLogCount = 3000;
+
+        const addFinding = (filePath, keyword, description, commitHash, commitDate) => {
+            if (findings.length >= maxTotalFindings) {
+                return false;
+            }
+            const dedupeKey = [commitHash || '', filePath || '', keyword, description].join('|');
+            if (seen.has(dedupeKey)) {
+                return false;
+            }
+            seen.add(dedupeKey);
+            findings.push(this._createKeywordHistoryResult(filePath, keyword, description, commitHash, commitDate));
+            return true;
+        };
+        const commitModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
+        const fileModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
+
+        try {
+            if (keywordConfig.searchCommitMessages) {
+                this._scanProgress = { stage: 'process', message: 'Searching git commit messages for configured keywords...' };
+                this._updateWebviewContent();
+                const perKeywordCap = keywordConfig.maxMatchesPerKeyword * 5;
+                const requestedMaxCount = Math.max(
+                    perKeywordCap,
+                    keywordConfig.keywords.length * perKeywordCap
+                );
+                const gitMaxCount = Math.min(maxCommitLogCount, requestedMaxCount);
+                const grepArgs = keywordConfig.keywords.flatMap((keyword) => ['--grep', keyword]);
+                const { stdout } = await execFileAsync('git', [
+                    '-C', repoDir,
+                    'log', '--all', '--no-color', '-z',
+                    '--regexp-ignore-case', '--fixed-strings',
+                    ...grepArgs,
+                    `--max-count=${gitMaxCount}`,
+                    '--pretty=format:%H%x09%aI%x09%B%x00'
+                ], gitLogOptions);
+                const records = stdout.split('\0').filter(Boolean);
+                for (const record of records) {
+                    if (findings.length >= maxTotalFindings) {
+                        break;
+                    }
+                    const firstTab = record.indexOf('\t');
+                    const secondTab = firstTab >= 0 ? record.indexOf('\t', firstTab + 1) : -1;
+                    if (firstTab < 0 || secondTab < 0) {
+                        continue;
+                    }
+                    const commitHash = record.slice(0, firstTab).trim();
+                    const commitDate = record.slice(firstTab + 1, secondTab).trim();
+                    const fullMessage = record.slice(secondTab + 1).trim();
+                    for (const keyword of keywordConfig.keywords) {
+                        const existingCount = commitModeMatchCountByKeyword.get(keyword) || 0;
+                        if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+                            continue;
+                        }
+                        if (!this._keywordMatchesText(fullMessage, keyword)) {
+                            continue;
+                        }
+                        const added = addFinding(
+                            'git-history:commit-message',
+                            keyword,
+                            `Keyword "${keyword}" found in commit ${commitHash}${commitDate ? ` (${commitDate})` : ''}`,
+                            commitHash,
+                            commitDate
+                        );
+                        if (added) {
+                            commitModeMatchCountByKeyword.set(keyword, existingCount + 1);
+                        }
+                    }
+                }
+            }
+
+            if (keywordConfig.searchFileHistory) {
+                this._scanProgress = { stage: 'process', message: 'Searching git file history for configured keywords...' };
+                this._updateWebviewContent();
+
+                const fileHistoryKeywords = keywordConfig.keywords.filter((keyword) => keyword.length > 3);
+                if (fileHistoryKeywords.length > 0) {
+                    const combinedPattern = fileHistoryKeywords
+                        .map((keyword) => this._escapeRegex(keyword))
+                        .join('|');
+                    const commitSafetyFactor = 3;
+                    const requestedMaxCount = Math.max(
+                        100,
+                        Math.max(1, keywordConfig.maxMatchesPerKeyword) *
+                            Math.max(1, fileHistoryKeywords.length) *
+                            commitSafetyFactor
+                    );
+                    const gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
+                    const { stdout } = await execFileAsync('git', [
+                        '-C', repoDir,
+                        'log', '--all', '--no-color',
+                        '--regexp-ignore-case',
+                        '--pretty=format:COMMIT%x09%H%x09%aI',
+                        '-p',
+                        '-U0',
+                        '--pickaxe-regex',
+                        '-G', combinedPattern,
+                        `--max-count=${gitMaxCount}`,
+                        '--',
+                        '.'
+                    ], gitLogOptions);
+
+                    const lines = stdout.split('\n');
+                    let currentCommit = null;
+                    let currentDate = null;
+                    let currentFile = null;
+                    for (const rawLine of lines) {
+                        if (findings.length >= maxTotalFindings) {
+                            break;
+                        }
+                        const line = rawLine.trimEnd();
+                        if (!line.trim()) {
+                            continue;
+                        }
+                        if (line.startsWith('COMMIT\t')) {
+                            const parts = line.split('\t');
+                            currentCommit = parts[1] || null;
+                            currentDate = parts[2] || null;
+                            currentFile = null;
+                            continue;
+                        }
+                        if (line.startsWith('diff --git ')) {
+                            const match = rawLine.match(/^diff --git a\/(.+?) b\/(.+)$/);
+                            if (match) {
+                                currentFile = match[2];
+                            }
+                            continue;
+                        }
+                        if (!currentCommit || !currentFile) {
+                            continue;
+                        }
+                        // Restrict to added/removed lines only; exclude diff headers.
+                        if (!(line.startsWith('+') || line.startsWith('-')) || line.startsWith('+++') || line.startsWith('---')) {
+                            continue;
+                        }
+                        const patchLine = line.slice(1);
+                        for (const keyword of fileHistoryKeywords) {
+                            const existingCount = fileModeMatchCountByKeyword.get(keyword) || 0;
+                            if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+                                continue;
+                            }
+                            if (!this._keywordMatchesText(patchLine, keyword)) {
+                                continue;
+                            }
+                            const added = addFinding(
+                                currentFile,
+                                keyword,
+                                `Keyword "${keyword}" found in historical file content changes`,
+                                currentCommit,
+                                currentDate
+                            );
+                            if (added) {
+                                fileModeMatchCountByKeyword.set(keyword, existingCount + 1);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn('Keyword history scan skipped:', error.message);
+            this._scanProgress = {
+                stage: 'process',
+                message: 'Keyword history scan was skipped due to a Git error. See extension logs for details.'
+            };
+            this._updateWebviewContent();
+            vscode.window.showWarningMessage(
+                'LeakLock: Keyword history scan was skipped due to a Git error. See logs for details.'
+            );
+        }
+
+        return findings;
+    }
+
     /**
      * Enrich scan results with git branch names (and commit dates as fallback).
      * Commit dates are primarily extracted from Nosey Parker provenance;
@@ -2291,12 +2541,20 @@ class LeakLockPanel {
             return;
         }
 
+        // Limit enrichment work to keep git calls bounded on large result sets.
+        const MAX_HASHES_TO_ENRICH = 200;
+        const hashArray = [...uniqueHashes].slice(0, MAX_HASHES_TO_ENRICH);
+        if (uniqueHashes.size > MAX_HASHES_TO_ENRICH) {
+            console.warn(
+                `[LeakLock] Git metadata enrichment limited to ${MAX_HASHES_TO_ENRICH} of ` +
+                `${uniqueHashes.size} unique commit hashes. Some findings may not include branch/date metadata.`
+            );
+        }
         const repoDir = this._scanRepoRoot || scanPath;
         const commitInfo = new Map(); // hash -> { branches, fallbackDate }
 
         // Resolve commit metadata in parallel with limited concurrency
         const CONCURRENCY = 5;
-        const hashArray = [...uniqueHashes];
 
         const resolveHash = async (hash) => {
             try {
@@ -2381,7 +2639,11 @@ class LeakLockPanel {
         if (!this._scanRepoRoot || !this._trackedFiles || !this._scanPath) {
             return false;
         }
-        if (!relativeFile || relativeFile === 'scan_output' || relativeFile === 'git-history-reference' || relativeFile === 'git-history-artifact') {
+        if (!relativeFile ||
+            relativeFile === 'scan_output' ||
+            relativeFile === 'git-history-reference' ||
+            relativeFile === 'git-history-artifact' ||
+            relativeFile.startsWith('git-history:')) {
             return false;
         }
         let absPath = filePath;
@@ -3043,6 +3305,10 @@ class LeakLockPanel {
     }
 
     _getRelativeFilePath(filePath) {
+        if (typeof filePath === 'string' && filePath.startsWith('git-history:')) {
+            return filePath;
+        }
+
         // If scanning external directory (not workspace), show relative path from selected directory
         if (this._selectedDirectory) {
             // If path is absolute and starts with selected directory, make it relative
@@ -3110,7 +3376,8 @@ class LeakLockPanel {
         return 'low';
     }
 
-    _createResult(filePath, line, secret, description, ruleName, match = null) {
+    _createResult(filePath, line, secret, description, ruleName, match = null, options = null) {
+        const normalizedOptions = options && typeof options === 'object' ? options : {};
         const relativeFile = this._getRelativeFilePath(filePath);
         const isInDependency = this._isInDependencyDirectory(relativeFile);
 
@@ -3120,7 +3387,14 @@ class LeakLockPanel {
             isGitHistory = match.provenance.some(prov => prov.kind === 'git_repo');
         }
         // Also check legacy path-based detection
-        isGitHistory = isGitHistory || filePath.startsWith('git-ref:') || filePath.startsWith('git-object') || filePath === 'git-history-reference';
+        isGitHistory = isGitHistory ||
+            filePath.startsWith('git-ref:') ||
+            filePath.startsWith('git-object') ||
+            filePath.startsWith('git-history:') ||
+            filePath === 'git-history-reference';
+        if (normalizedOptions.forceGitHistory === true) {
+            isGitHistory = true;
+        }
 
         // Get dependency handling configuration
         const config = vscode.workspace.getConfiguration('leakLock');
@@ -3167,6 +3441,7 @@ class LeakLockPanel {
 
         const fullSecret = typeof secret === 'string' ? secret : String(secret);
         const displaySecret = this._truncateSecret(fullSecret);
+        const includeInCleanup = normalizedOptions.includeInCleanup !== false;
         const result = {
             file: relativeFile,
             line: line,
@@ -3176,7 +3451,9 @@ class LeakLockPanel {
             description: enhancedDescription,
             severity: severity,
             isDependency: isInDependency,
+            includeInCleanup: includeInCleanup,
             originalSeverity: this._getSeverity(ruleName),
+            ruleName: ruleName || '',
             isGitHistory: isGitHistory,
             isUntracked: isUntracked,
             commitHash: commitHash,
@@ -3268,7 +3545,7 @@ class LeakLockPanel {
                     continue;
                 }
                 const result = this._scanResults[idx];
-                if (!result || result.isDependency) {
+                if (!result || result.isDependency || result.includeInCleanup === false || result.ruleName === 'git_history_keyword') {
                     continue;
                 }
                 const secretValue = result.fullSecret || result.secret;
