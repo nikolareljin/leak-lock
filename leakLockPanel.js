@@ -2337,6 +2337,8 @@ class LeakLockPanel {
         const seen = new Set();
         const totalSearchModes = (keywordConfig.searchCommitMessages ? 1 : 0) + (keywordConfig.searchFileHistory ? 1 : 0);
         const maxTotalFindings = Math.max(50, Math.min(2000, keywordConfig.keywords.length * keywordConfig.maxMatchesPerKeyword * Math.max(1, totalSearchModes)));
+        const maxCommitLogCount = 5000;
+        const maxFileHistoryLogCount = 3000;
 
         const addFinding = (filePath, keyword, description, commitHash, commitDate) => {
             if (findings.length >= maxTotalFindings) {
@@ -2358,10 +2360,11 @@ class LeakLockPanel {
                 this._scanProgress = { stage: 'process', message: 'Searching git commit messages for configured keywords...' };
                 this._updateWebviewContent();
                 const perKeywordCap = keywordConfig.maxMatchesPerKeyword * 5;
-                const gitMaxCount = Math.max(
+                const requestedMaxCount = Math.max(
                     perKeywordCap,
                     keywordConfig.keywords.length * perKeywordCap
                 );
+                const gitMaxCount = Math.min(maxCommitLogCount, requestedMaxCount);
                 const grepArgs = keywordConfig.keywords.flatMap((keyword) => ['--grep', keyword]);
                 const { stdout } = await execFileAsync('git', [
                     '-C', repoDir,
@@ -2369,7 +2372,7 @@ class LeakLockPanel {
                     '--regexp-ignore-case', '--fixed-strings',
                     ...grepArgs,
                     `--max-count=${gitMaxCount}`,
-                    '--pretty=format:%H%x09%aI%x09%s%x00'
+                    '--pretty=format:%H%x09%aI%x09%B%x00'
                 ], gitLogOptions);
                 const records = stdout.split('\0').filter(Boolean);
                 for (const record of records) {
@@ -2383,13 +2386,13 @@ class LeakLockPanel {
                     }
                     const commitHash = record.slice(0, firstTab).trim();
                     const commitDate = record.slice(firstTab + 1, secondTab).trim();
-                    const subject = record.slice(secondTab + 1).trim();
+                    const fullMessage = record.slice(secondTab + 1).trim();
                     for (const keyword of keywordConfig.keywords) {
                         const existingCount = commitModeMatchCountByKeyword.get(keyword) || 0;
                         if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
                             continue;
                         }
-                        if (!this._keywordMatchesText(subject, keyword)) {
+                        if (!this._keywordMatchesText(fullMessage, keyword)) {
                             continue;
                         }
                         const added = addFinding(
@@ -2416,12 +2419,13 @@ class LeakLockPanel {
                         .map((keyword) => this._escapeRegex(keyword))
                         .join('|');
                     const commitSafetyFactor = 3;
-                    const gitMaxCount = Math.max(
+                    const requestedMaxCount = Math.max(
                         100,
                         Math.max(1, keywordConfig.maxMatchesPerKeyword) *
                             Math.max(1, fileHistoryKeywords.length) *
                             commitSafetyFactor
                     );
+                    const gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
                     const { stdout } = await execFileAsync('git', [
                         '-C', repoDir,
                         'log', '--all', '--no-color',
