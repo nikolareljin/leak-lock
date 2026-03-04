@@ -2309,12 +2309,15 @@ class LeakLockPanel {
 
     _keywordMatchesText(text, keyword) {
         const normalizedText = String(text || '');
-        const keywordLower = String(keyword || '').toLowerCase();
+        const keywordStr = String(keyword || '').trim();
+        const keywordLower = keywordStr.toLowerCase();
         if (!keywordLower) {
             return false;
         }
-        if (keywordLower.length <= 3) {
-            const boundaryRegex = new RegExp(`\\b${this._escapeRegex(keywordLower)}\\b`, 'i');
+        // Reduce false positives for word-like keywords by requiring whole-word matches.
+        const isWordLike = /^[A-Za-z0-9]+$/.test(keywordStr);
+        if (isWordLike) {
+            const boundaryRegex = new RegExp(`\\b${this._escapeRegex(keywordStr)}\\b`, 'i');
             return boundaryRegex.test(normalizedText);
         }
         return normalizedText.toLowerCase().includes(keywordLower);
@@ -2457,7 +2460,8 @@ class LeakLockPanel {
                         if (!currentFile) {
                             continue;
                         }
-                        if (!(line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) || line.startsWith('+++') || line.startsWith('---')) {
+                        // Restrict to added/removed lines only; exclude diff headers.
+                        if (!(line.startsWith('+') || line.startsWith('-')) || line.startsWith('+++') || line.startsWith('---')) {
                             continue;
                         }
                         if (!this._keywordMatchesText(line.slice(1), keyword)) {
@@ -2524,8 +2528,15 @@ class LeakLockPanel {
             return;
         }
 
+        // Limit enrichment work to keep git calls bounded on large result sets.
         const MAX_HASHES_TO_ENRICH = 200;
         const hashArray = [...uniqueHashes].slice(0, MAX_HASHES_TO_ENRICH);
+        if (uniqueHashes.size > MAX_HASHES_TO_ENRICH) {
+            console.warn(
+                `[LeakLock] Git metadata enrichment limited to ${MAX_HASHES_TO_ENRICH} of ` +
+                `${uniqueHashes.size} unique commit hashes. Some findings may not include branch/date metadata.`
+            );
+        }
         const repoDir = this._scanRepoRoot || scanPath;
         const commitInfo = new Map(); // hash -> { branches, fallbackDate }
 
