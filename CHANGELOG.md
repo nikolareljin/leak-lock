@@ -1,5 +1,10 @@
 # Change Log
 
+## 0.5.0
+### Added
+- **Expanded Git-History Text Search**: Supports arbitrary text terms across commit messages and historical file content without skipping short terms.
+- **Git-History Filename Search**: Added optional filename matching mode via `leakLock.gitHistoryKeywordSearch.searchFileNames`.
+
 ## 0.4.1
 ### Fixed
 - **Printable Report Redaction Scope**: Redacted PDF/printable reports now keep finding paths visible and redact only secret values, so remediation context is preserved.

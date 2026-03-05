@@ -2278,6 +2278,7 @@ class LeakLockPanel {
             : 25;
         const searchCommitMessages = !!config.get('gitHistoryKeywordSearch.searchCommitMessages', true);
         const searchFileHistory = !!config.get('gitHistoryKeywordSearch.searchFileHistory', true);
+        const searchFileNames = !!config.get('gitHistoryKeywordSearch.searchFileNames', true);
 
         const keywords = Array.isArray(rawKeywords)
             ? [...new Set(rawKeywords.map((k) => String(k || '').trim()).filter(Boolean))]
@@ -2288,7 +2289,8 @@ class LeakLockPanel {
             keywords,
             maxMatchesPerKeyword: Math.max(1, Math.min(500, maxMatchesPerKeyword)),
             searchCommitMessages,
-            searchFileHistory
+            searchFileHistory,
+            searchFileNames
         };
     }
 
@@ -2357,10 +2359,14 @@ class LeakLockPanel {
         const gitLogOptions = { timeout: 20000, maxBuffer: 50 * 1024 * 1024 };
         const findings = [];
         const seen = new Set();
-        const totalSearchModes = (keywordConfig.searchCommitMessages ? 1 : 0) + (keywordConfig.searchFileHistory ? 1 : 0);
+        const totalSearchModes =
+            (keywordConfig.searchCommitMessages ? 1 : 0) +
+            (keywordConfig.searchFileHistory ? 1 : 0) +
+            (keywordConfig.searchFileNames ? 1 : 0);
         const maxTotalFindings = Math.max(50, Math.min(2000, keywordConfig.keywords.length * keywordConfig.maxMatchesPerKeyword * Math.max(1, totalSearchModes)));
         const maxCommitLogCount = 5000;
         const maxFileHistoryLogCount = 3000;
+        const maxFileNameHistoryLogCount = 4000;
 
         const addFinding = (filePath, keyword, description, commitHash, commitDate) => {
             if (findings.length >= maxTotalFindings) {
@@ -2376,6 +2382,7 @@ class LeakLockPanel {
         };
         const commitModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
         const fileModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
+        const fileNameModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
 
         try {
             if (keywordConfig.searchCommitMessages) {
@@ -2436,7 +2443,7 @@ class LeakLockPanel {
                 this._scanProgress = { stage: 'process', message: 'Searching git file history for configured keywords...' };
                 this._updateWebviewContent();
 
-                const fileHistoryKeywords = keywordConfig.keywords.filter((keyword) => keyword.length > 3);
+                const fileHistoryKeywords = keywordConfig.keywords;
                 if (fileHistoryKeywords.length > 0) {
                     const combinedPattern = fileHistoryKeywords
                         .map((keyword) => this._escapeRegex(keyword))
@@ -2515,6 +2522,72 @@ class LeakLockPanel {
                             if (added) {
                                 fileModeMatchCountByKeyword.set(keyword, existingCount + 1);
                             }
+                        }
+                    }
+                }
+            }
+
+            if (keywordConfig.searchFileNames) {
+                this._scanProgress = { stage: 'process', message: 'Searching git history file names for configured keywords...' };
+                this._updateWebviewContent();
+
+                const perKeywordCap = keywordConfig.maxMatchesPerKeyword * 3;
+                const requestedMaxCount = Math.max(
+                    perKeywordCap,
+                    keywordConfig.keywords.length * perKeywordCap
+                );
+                const gitMaxCount = Math.min(maxFileNameHistoryLogCount, requestedMaxCount);
+                const { stdout } = await execFileAsync('git', [
+                    '-C', repoDir,
+                    'log', '--all', '--no-color',
+                    '--name-only',
+                    '--pretty=format:COMMIT%x09%H%x09%aI',
+                    `--max-count=${gitMaxCount}`,
+                    '--',
+                    '.'
+                ], gitLogOptions);
+
+                const lines = stdout.split('\n');
+                let currentCommit = null;
+                let currentDate = null;
+                for (const rawLine of lines) {
+                    if (findings.length >= maxTotalFindings) {
+                        break;
+                    }
+                    const line = rawLine.trimEnd();
+                    if (!line.trim()) {
+                        continue;
+                    }
+                    if (line.startsWith('COMMIT\t')) {
+                        const parts = line.split('\t');
+                        currentCommit = parts[1] || null;
+                        currentDate = parts[2] || null;
+                        continue;
+                    }
+                    if (!currentCommit) {
+                        continue;
+                    }
+                    const fileNamePath = line.trim();
+                    if (!fileNamePath) {
+                        continue;
+                    }
+                    for (const keyword of keywordConfig.keywords) {
+                        const existingCount = fileNameModeMatchCountByKeyword.get(keyword) || 0;
+                        if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+                            continue;
+                        }
+                        if (!this._keywordMatchesText(fileNamePath, keyword)) {
+                            continue;
+                        }
+                        const added = addFinding(
+                            fileNamePath,
+                            keyword,
+                            `Keyword "${keyword}" found in historical file name`,
+                            currentCommit,
+                            currentDate
+                        );
+                        if (added) {
+                            fileNameModeMatchCountByKeyword.set(keyword, existingCount + 1);
                         }
                     }
                 }

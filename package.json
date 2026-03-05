@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -85,7 +85,12 @@
         "leakLock.gitHistoryKeywordSearch.searchFileHistory": {
           "type": "boolean",
           "default": true,
-          "description": "When keyword history scan is enabled, search historical file content changes."
+          "description": "When git-history text search is enabled, search historical file content changes (supports arbitrary text terms)."
+        },
+        "leakLock.gitHistoryKeywordSearch.searchFileNames": {
+          "type": "boolean",
+          "default": true,
+          "description": "When git-history text search is enabled, search historical file names."
         },
         "leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword": {
           "type": "integer",
@@ -121,7 +126,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Keywords to detect in git history commit messages and/or file history (defaults focus on agent attribution and sensitive credential terms)."
+          "description": "Search terms to detect in git history commit messages, file content history, and file names."
         }
       }
     },
