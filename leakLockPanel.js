@@ -2318,10 +2318,17 @@ class LeakLockPanel {
         return (hash >>> 0).toString(16);
     }
 
-    _formatCommitMessagePathLabel(commitMessage) {
+    _formatCommitMessagePathLabel(commitMessage, commitHash) {
         const normalizedMessage = String(commitMessage || '').replace(/\s+/g, ' ').trim();
-        const hashSource = normalizedMessage || '(empty commit message)';
+        const effectiveMessage = normalizedMessage || '(empty commit message)';
+        const normalizedCommitHash = commitHash ? String(commitHash).trim() : '';
+        const hashSource = normalizedCommitHash
+            ? `${normalizedCommitHash}|${effectiveMessage}`
+            : effectiveMessage;
         const messageID = this._stableHash(hashSource);
+        if (normalizedCommitHash) {
+            return `git-history:commit-message [id:${messageID} commit:${normalizedCommitHash}]`;
+        }
         return `git-history:commit-message [id:${messageID}]`;
     }
 
@@ -2405,7 +2412,7 @@ class LeakLockPanel {
                     const commitHash = record.slice(0, firstTab).trim();
                     const commitDate = record.slice(firstTab + 1, secondTab).trim();
                     const fullMessage = record.slice(secondTab + 1).trim();
-                    const commitMessagePathLabel = this._formatCommitMessagePathLabel(fullMessage);
+                    const commitMessagePathLabel = this._formatCommitMessagePathLabel(fullMessage, commitHash);
                     for (const keyword of keywordConfig.keywords) {
                         const existingCount = commitModeMatchCountByKeyword.get(keyword) || 0;
                         if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
@@ -3967,7 +3974,9 @@ class LeakLockPanel {
     }
 
     _buildPrintableScanReportHtml(options = {}) {
-        const redactSecrets = Boolean(options.redactSensitive);
+        const redactSecrets = (typeof options.redactSecrets === 'boolean')
+            ? options.redactSecrets
+            : Boolean(options.redactSensitive);
         const generatedAt = new Date().toLocaleString();
         const rows = this._scanResults.map((result) => `
             <tr>
@@ -4030,7 +4039,7 @@ class LeakLockPanel {
             if (!printMode) {
                 return;
             }
-            const redactSensitive = printMode === 'Save secret-redacted printable report';
+            const redactSecrets = printMode === 'Save secret-redacted printable report';
 
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             // Avoid /tmp for browser-print handoff on Linux sandboxed browsers.
@@ -4041,13 +4050,13 @@ class LeakLockPanel {
             const targetUri = await vscode.window.showSaveDialog({
                 defaultUri,
                 filters: { 'HTML files': ['html'] },
-                saveLabel: redactSensitive ? 'Save secret-redacted printable report' : 'Save printable report'
+                saveLabel: redactSecrets ? 'Save secret-redacted printable report' : 'Save printable report'
             });
             if (!targetUri) {
                 return;
             }
 
-            const reportHtml = this._buildPrintableScanReportHtml({ redactSensitive });
+            const reportHtml = this._buildPrintableScanReportHtml({ redactSecrets });
             await vscode.workspace.fs.writeFile(targetUri, Buffer.from(reportHtml, 'utf8'));
             const opened = await vscode.env.openExternal(targetUri);
             if (!opened) {
