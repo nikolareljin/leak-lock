@@ -2702,6 +2702,15 @@ class LeakLockPanel {
                         if (flushText) {
                             stdoutBuffer += flushText;
                         }
+                        let nulIndex = stdoutBuffer.indexOf('\0');
+                        while (nulIndex !== -1) {
+                            const record = stdoutBuffer.slice(0, nulIndex);
+                            if (record) {
+                                processNameStatusRecord(record);
+                            }
+                            stdoutBuffer = stdoutBuffer.slice(nulIndex + 1);
+                            nulIndex = stdoutBuffer.indexOf('\0');
+                        }
                         if (stdoutBuffer) {
                             processNameStatusRecord(stdoutBuffer);
                             stdoutBuffer = '';
