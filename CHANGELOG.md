@@ -1,5 +1,10 @@
 # Change Log
 
+## 0.4.1
+### Fixed
+- **Printable Report Redaction Scope**: Redacted PDF/printable reports now keep finding paths visible and redact only secret values, so remediation context is preserved.
+- **Commit-Message History Result Context**: Keyword matches from commit-message scanning now show message content in the Path column with a clear `git-history:commit-message "..."` label.
+
 ## 0.4.0
 ### Added
 - **Keyword Search in Git History**: Optional scanning for configured keywords in commit messages and historical file content changes ([#39](https://github.com/nikolareljin/leak-lock/issues/39))

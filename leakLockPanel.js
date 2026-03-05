@@ -2307,6 +2307,17 @@ class LeakLockPanel {
         return result;
     }
 
+    _formatCommitMessagePathLabel(commitMessage) {
+        const normalizedMessage = String(commitMessage || '').replace(/\s+/g, ' ').trim();
+        const fallbackMessage = '(empty commit message)';
+        const maxMessageLength = 120;
+        const messageForDisplay = normalizedMessage || fallbackMessage;
+        const clippedMessage = messageForDisplay.length > maxMessageLength
+            ? `${messageForDisplay.substring(0, maxMessageLength - 3)}...`
+            : messageForDisplay;
+        return `git-history:commit-message ${JSON.stringify(clippedMessage)}`;
+    }
+
     _keywordMatchesText(text, keyword) {
         const normalizedText = String(text || '');
         const keywordStr = String(keyword || '').trim();
@@ -2396,7 +2407,7 @@ class LeakLockPanel {
                             continue;
                         }
                         const added = addFinding(
-                            'git-history:commit-message',
+                            this._formatCommitMessagePathLabel(fullMessage),
                             keyword,
                             `Keyword "${keyword}" found in commit ${commitHash}${commitDate ? ` (${commitDate})` : ''}`,
                             commitHash,
@@ -3952,7 +3963,7 @@ class LeakLockPanel {
         const generatedAt = new Date().toLocaleString();
         const rows = this._scanResults.map((result) => `
             <tr>
-                <td>${escapeHtml(redactSensitive ? '[REDACTED_PATH]' : (result.file || ''))}</td>
+                <td>${escapeHtml(result.file || '')}</td>
                 <td>${escapeHtml(String(result.line ?? ''))}</td>
                 <td>${escapeHtml(redactSensitive ? '[REDACTED_SECRET]' : (result.secret || ''))}</td>
                 <td>${escapeHtml(result.severity || '')}</td>
@@ -4003,15 +4014,15 @@ class LeakLockPanel {
                 return;
             }
             const printMode = await vscode.window.showWarningMessage(
-                'Printing creates an HTML report on disk before opening the browser print dialog. Full output may include secret snippets and file paths. Choose redacted/full output and where to save it.',
+                'Printing creates an HTML report on disk before opening the browser print dialog. Secret-redacted output hides secret values but still keeps file/message paths visible for remediation context.',
                 { modal: true },
-                'Save redacted printable report',
+                'Save secret-redacted printable report',
                 'Save full printable report'
             );
             if (!printMode) {
                 return;
             }
-            const redactSensitive = printMode === 'Save redacted printable report';
+            const redactSensitive = printMode === 'Save secret-redacted printable report';
 
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             // Avoid /tmp for browser-print handoff on Linux sandboxed browsers.
@@ -4022,7 +4033,7 @@ class LeakLockPanel {
             const targetUri = await vscode.window.showSaveDialog({
                 defaultUri,
                 filters: { 'HTML files': ['html'] },
-                saveLabel: redactSensitive ? 'Save redacted printable report' : 'Save printable report'
+                saveLabel: redactSensitive ? 'Save secret-redacted printable report' : 'Save printable report'
             });
             if (!targetUri) {
                 return;
