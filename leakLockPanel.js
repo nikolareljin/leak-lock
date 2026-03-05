@@ -2318,13 +2318,10 @@ class LeakLockPanel {
         return (hash >>> 0).toString(16);
     }
 
-    _formatCommitMessagePathLabel(commitMessage, commitHash) {
-        const normalizedMessage = String(commitMessage || '').replace(/\s+/g, ' ').trim();
-        const effectiveMessage = normalizedMessage || '(empty commit message)';
+    _formatCommitMessagePathLabel(_commitMessage, commitHash) {
         const normalizedCommitHash = commitHash ? String(commitHash).trim() : '';
-        const hashSource = normalizedCommitHash
-            ? `${normalizedCommitHash}|${effectiveMessage}`
-            : effectiveMessage;
+        // Derive the ID from commit hash only to avoid encoding any commit-message information.
+        const hashSource = normalizedCommitHash || 'no-commit-hash';
         const messageID = this._stableHash(hashSource);
         if (normalizedCommitHash) {
             return `git-history:commit-message [id:${messageID} commit:${normalizedCommitHash}]`;
