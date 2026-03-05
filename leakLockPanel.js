@@ -2,6 +2,7 @@
 
 const vscode = require('vscode');
 const { exec, spawn, execFile } = require('child_process');
+const { StringDecoder } = require('string_decoder');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -2555,10 +2556,12 @@ class LeakLockPanel {
                     let currentDate = null;
                     let stdoutBuffer = '';
                     let stderrBuffer = '';
+                    let pendingNameStatus = null;
                     let stoppedEarly = false;
                     let timedOut = false;
                     let settled = false;
                     const gitLog = spawn('git', gitArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+                    const stdoutDecoder = new StringDecoder('utf8');
                     const timeoutMs = Math.max(1000, gitLogOptions.timeout || 20000);
                     const timeoutHandle = setTimeout(() => {
                         timedOut = true;
@@ -2583,54 +2586,8 @@ class LeakLockPanel {
                         reject(error);
                     };
 
-                    const processNameStatusRecord = (rawRecord, nextRecordSupplier) => {
-                        if (findings.length >= maxTotalFindings) {
-                            if (!stoppedEarly) {
-                                stoppedEarly = true;
-                                gitLog.kill();
-                            }
-                            return;
-                        }
-
-                        const record = String(rawRecord || '').replace(/\r$/, '');
-                        if (!record) {
-                            return;
-                        }
-                        if (record.startsWith('COMMIT\t')) {
-                            const parts = record.split('\t');
-                            currentCommit = parts[1] || null;
-                            currentDate = parts[2] || null;
-                            return;
-                        }
-                        if (!currentCommit) {
-                            return;
-                        }
-
-                        let filePaths = [];
-                        const tabIndex = record.indexOf('\t');
-                        if (tabIndex !== -1) {
-                            const status = record.slice(0, tabIndex).toUpperCase();
-                            const firstPath = record.slice(tabIndex + 1);
-                            if ((status.startsWith('R') || status.startsWith('C'))) {
-                                const secondPath = nextRecordSupplier();
-                                filePaths = [firstPath, secondPath].filter((p) => typeof p === 'string' && p.length > 0);
-                            } else {
-                                filePaths = firstPath ? [firstPath] : [];
-                            }
-                        } else {
-                            // With -z name-status, Git may emit status and paths as separate NUL records.
-                            const status = record.toUpperCase();
-                            if (status.startsWith('R') || status.startsWith('C')) {
-                                const oldPath = nextRecordSupplier();
-                                const newPath = nextRecordSupplier();
-                                filePaths = [oldPath, newPath].filter((p) => typeof p === 'string' && p.length > 0);
-                            } else {
-                                const filePath = nextRecordSupplier();
-                                filePaths = filePath ? [filePath] : [];
-                            }
-                        }
-
-                        if (filePaths.length === 0) {
+                    const emitFilePaths = (filePaths) => {
+                        if (!Array.isArray(filePaths) || filePaths.length === 0) {
                             return;
                         }
                         for (const fileNamePath of filePaths) {
@@ -2656,19 +2613,79 @@ class LeakLockPanel {
                         }
                     };
 
-                    gitLog.stdout.on('data', (chunk) => {
-                        stdoutBuffer += chunk.toString();
-                        const records = stdoutBuffer.split('\0');
-                        stdoutBuffer = records.pop() || '';
-                        for (let i = 0; i < records.length; i++) {
-                            const consumeNext = () => {
-                                if (i + 1 >= records.length) {
-                                    return '';
+                    const processNameStatusRecord = (rawRecord) => {
+                        if (findings.length >= maxTotalFindings) {
+                            if (!stoppedEarly) {
+                                stoppedEarly = true;
+                                gitLog.kill();
+                            }
+                            return;
+                        }
+
+                        const record = String(rawRecord || '');
+                        if (!record) {
+                            return;
+                        }
+                        if (record.startsWith('COMMIT\t')) {
+                            const parts = record.split('\t');
+                            currentCommit = parts[1] || null;
+                            currentDate = parts[2] || null;
+                            pendingNameStatus = null;
+                            return;
+                        }
+                        if (!currentCommit) {
+                            return;
+                        }
+
+                        if (pendingNameStatus) {
+                            pendingNameStatus.paths.push(record);
+                            if (pendingNameStatus.paths.length >= pendingNameStatus.expectedPathCount) {
+                                emitFilePaths(pendingNameStatus.paths.slice(0, pendingNameStatus.expectedPathCount));
+                                pendingNameStatus = null;
+                            }
+                            return;
+                        }
+
+                        const isNameStatusToken = (token) => /^[ACDMRTUXB][0-9]*$/i.test(token);
+                        let statusToken = '';
+                        let initialPaths = [];
+                        const tabIndex = record.indexOf('\t');
+                        if (tabIndex !== -1) {
+                            const maybeStatus = record.slice(0, tabIndex);
+                            if (isNameStatusToken(maybeStatus)) {
+                                statusToken = maybeStatus.toUpperCase();
+                                const pathFromToken = record.slice(tabIndex + 1);
+                                if (pathFromToken) {
+                                    initialPaths.push(pathFromToken);
                                 }
-                                i += 1;
-                                return records[i];
-                            };
-                            processNameStatusRecord(records[i], consumeNext);
+                            }
+                        }
+                        if (!statusToken && isNameStatusToken(record)) {
+                            statusToken = record.toUpperCase();
+                        }
+                        if (!statusToken) {
+                            return;
+                        }
+
+                        const expectedPathCount = (statusToken.startsWith('R') || statusToken.startsWith('C')) ? 2 : 1;
+                        if (initialPaths.length >= expectedPathCount) {
+                            emitFilePaths(initialPaths.slice(0, expectedPathCount));
+                            return;
+                        }
+                        pendingNameStatus = {
+                            expectedPathCount,
+                            paths: initialPaths
+                        };
+                    };
+
+                    gitLog.stdout.on('data', (chunk) => {
+                        stdoutBuffer += stdoutDecoder.write(chunk);
+                        let nulIndex = stdoutBuffer.indexOf('\0');
+                        while (nulIndex !== -1) {
+                            const record = stdoutBuffer.slice(0, nulIndex);
+                            stdoutBuffer = stdoutBuffer.slice(nulIndex + 1);
+                            processNameStatusRecord(record);
+                            nulIndex = stdoutBuffer.indexOf('\0');
                         }
                     });
 
@@ -2681,8 +2698,12 @@ class LeakLockPanel {
                     });
 
                     gitLog.on('close', (code, signal) => {
+                        const flushText = stdoutDecoder.end();
+                        if (flushText) {
+                            stdoutBuffer += flushText;
+                        }
                         if (stdoutBuffer) {
-                            processNameStatusRecord(stdoutBuffer.replace(/\r$/, ''), () => '');
+                            processNameStatusRecord(stdoutBuffer);
                             stdoutBuffer = '';
                         }
                         if (stoppedEarly) {
