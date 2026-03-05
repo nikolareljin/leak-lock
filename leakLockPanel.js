@@ -2307,15 +2307,22 @@ class LeakLockPanel {
         return result;
     }
 
+    _stableHash(input) {
+        const str = String(input || '');
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            const charCode = str.charCodeAt(i);
+            hash = ((hash << 5) - hash) + charCode;
+            hash |= 0;
+        }
+        return (hash >>> 0).toString(16);
+    }
+
     _formatCommitMessagePathLabel(commitMessage) {
         const normalizedMessage = String(commitMessage || '').replace(/\s+/g, ' ').trim();
-        const fallbackMessage = '(empty commit message)';
-        const maxMessageLength = 120;
-        const messageForDisplay = normalizedMessage || fallbackMessage;
-        const clippedMessage = messageForDisplay.length > maxMessageLength
-            ? `${messageForDisplay.substring(0, maxMessageLength - 3)}...`
-            : messageForDisplay;
-        return `git-history:commit-message ${JSON.stringify(clippedMessage)}`;
+        const hashSource = normalizedMessage || '(empty commit message)';
+        const messageID = this._stableHash(hashSource);
+        return `git-history:commit-message [id:${messageID}]`;
     }
 
     _keywordMatchesText(text, keyword) {
@@ -2398,6 +2405,7 @@ class LeakLockPanel {
                     const commitHash = record.slice(0, firstTab).trim();
                     const commitDate = record.slice(firstTab + 1, secondTab).trim();
                     const fullMessage = record.slice(secondTab + 1).trim();
+                    const commitMessagePathLabel = this._formatCommitMessagePathLabel(fullMessage);
                     for (const keyword of keywordConfig.keywords) {
                         const existingCount = commitModeMatchCountByKeyword.get(keyword) || 0;
                         if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
@@ -2407,7 +2415,7 @@ class LeakLockPanel {
                             continue;
                         }
                         const added = addFinding(
-                            this._formatCommitMessagePathLabel(fullMessage),
+                            commitMessagePathLabel,
                             keyword,
                             `Keyword "${keyword}" found in commit ${commitHash}${commitDate ? ` (${commitDate})` : ''}`,
                             commitHash,
@@ -3959,13 +3967,13 @@ class LeakLockPanel {
     }
 
     _buildPrintableScanReportHtml(options = {}) {
-        const redactSensitive = Boolean(options.redactSensitive);
+        const redactSecrets = Boolean(options.redactSensitive);
         const generatedAt = new Date().toLocaleString();
         const rows = this._scanResults.map((result) => `
             <tr>
                 <td>${escapeHtml(result.file || '')}</td>
                 <td>${escapeHtml(String(result.line ?? ''))}</td>
-                <td>${escapeHtml(redactSensitive ? '[REDACTED_SECRET]' : (result.secret || ''))}</td>
+                <td>${escapeHtml(redactSecrets ? '[REDACTED_SECRET]' : (result.secret || ''))}</td>
                 <td>${escapeHtml(result.severity || '')}</td>
                 <td>${escapeHtml(result.description || '')}</td>
             </tr>
@@ -3988,7 +3996,7 @@ class LeakLockPanel {
 </head>
 <body>
   <h1>Leak Lock Scan Report</h1>
-  <div class="meta">Generated: ${escapeHtml(generatedAt)} | Findings: ${this._scanResults.length} | Redacted: ${redactSensitive ? 'yes' : 'no'}</div>
+  <div class="meta">Generated: ${escapeHtml(generatedAt)} | Findings: ${this._scanResults.length} | Secrets redacted: ${redactSecrets ? 'yes' : 'no'}</div>
   <table>
     <thead>
       <tr>
