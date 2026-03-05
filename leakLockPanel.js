@@ -2584,7 +2584,32 @@ class LeakLockPanel {
                     let stdoutBuffer = '';
                     let stderrBuffer = '';
                     let stoppedEarly = false;
+                    let timedOut = false;
+                    let settled = false;
                     const gitLog = spawn('git', gitArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+                    const timeoutMs = Math.max(1000, gitLogOptions.timeout || 20000);
+                    const timeoutHandle = setTimeout(() => {
+                        timedOut = true;
+                        gitLog.kill();
+                    }, timeoutMs);
+
+                    const settleResolve = () => {
+                        if (settled) {
+                            return;
+                        }
+                        settled = true;
+                        clearTimeout(timeoutHandle);
+                        resolve();
+                    };
+
+                    const settleReject = (error) => {
+                        if (settled) {
+                            return;
+                        }
+                        settled = true;
+                        clearTimeout(timeoutHandle);
+                        reject(error);
+                    };
 
                     const processLine = (rawLine) => {
                         if (findings.length >= maxTotalFindings) {
@@ -2652,7 +2677,7 @@ class LeakLockPanel {
                     });
 
                     gitLog.on('error', (error) => {
-                        reject(error);
+                        settleReject(error);
                     });
 
                     gitLog.on('close', (code, signal) => {
@@ -2661,15 +2686,19 @@ class LeakLockPanel {
                             stdoutBuffer = '';
                         }
                         if (stoppedEarly) {
-                            resolve();
+                            settleResolve();
+                            return;
+                        }
+                        if (timedOut) {
+                            settleReject(new Error(`git log filename history timed out after ${timeoutMs}ms`));
                             return;
                         }
                         if (code === 0) {
-                            resolve();
+                            settleResolve();
                             return;
                         }
                         const reason = signal ? `signal ${signal}` : `exit code ${code}`;
-                        reject(new Error(`git log filename history failed (${reason}): ${stderrBuffer.trim()}`));
+                        settleReject(new Error(`git log filename history failed (${reason}): ${stderrBuffer.trim()}`));
                     });
                 });
             }
