@@ -99,16 +99,18 @@ code --install-extension leak-lock-0.0.1.vsix
 - Optionally tune:
   - `leakLock.gitHistoryKeywordSearch.searchCommitMessages`
   - `leakLock.gitHistoryKeywordSearch.searchFileHistory`
+  - `leakLock.gitHistoryKeywordSearch.searchFileNames`
   - `leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword`
 
 Default keyword profile (designed for attribution-policy and secret hygiene):
 - Agent/AI attribution terms: `agent`, `assistant`, `claude`, `codex`, `copilot`, `gemini`, `gpt`, `chatgpt`, `openai`, `anthropic`, `aider`, `cursor`, `windsurf`, `meldbot`, `openclaw`, `nanoclaw`
 - Sensitive terms: `password`, `token`, `api_key`, `secret`
-Note: In file-history mode, very short keywords are skipped to reduce noise and improve performance.
+The keyword list can include arbitrary text terms and filename fragments, not only predefined security words.
 
 Example use case:
 - Detect commit messages that mention coding agents.
 - Detect potentially sensitive terms in historical file changes.
+- Detect historical filenames that include specific terms (for example `id_rsa`, `secrets`, or custom naming conventions).
 
 ### 7. Remove Unwanted Files (New)
 - Open from sidebar: click "🗑️ Remove files"
