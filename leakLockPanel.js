@@ -2331,11 +2331,6 @@ class LeakLockPanel {
         return `git-history:commit-message [id:${messageID}]`;
     }
 
-    _keywordMatchesText(text, keyword) {
-        const matcher = this._buildKeywordMatcher(keyword, { matchFragments: false });
-        return matcher(text);
-    }
-
     _buildKeywordMatcher(keyword, options = {}) {
         const matchFragments = !!options.matchFragments;
         const keywordStr = String(keyword || '').trim();
@@ -2353,30 +2348,6 @@ class LeakLockPanel {
             return (candidateText) => boundaryRegex.test(String(candidateText || ''));
         }
         return (candidateText) => String(candidateText || '').toLowerCase().includes(keywordLower);
-    }
-
-    _extractNameStatusPaths(rawLine) {
-        const line = String(rawLine || '').trim();
-        if (!line || line.startsWith('COMMIT\t')) {
-            return [];
-        }
-        const parts = line.split('\t');
-        if (parts.length < 2) {
-            return [];
-        }
-        const status = (parts[0] || '').trim().toUpperCase();
-        if (!status) {
-            return [];
-        }
-
-        if ((status.startsWith('R') || status.startsWith('C')) && parts.length >= 3) {
-            const oldPath = (parts[1] || '').trim();
-            const newPath = (parts[2] || '').trim();
-            return [oldPath, newPath].filter(Boolean);
-        }
-
-        const filePath = (parts[1] || '').trim();
-        return filePath ? [filePath] : [];
     }
 
     async _scanGitHistoryForKeywords(scanPath) {
@@ -2566,14 +2537,15 @@ class LeakLockPanel {
                 this._scanProgress = { stage: 'process', message: 'Searching git history file names for configured keywords...' };
                 this._updateWebviewContent();
 
-                const perKeywordCap = keywordConfig.maxMatchesPerKeyword * 3;
+                const perKeywordCap = keywordConfig.maxMatchesPerKeyword;
                 const requestedMaxCount = Math.max(100, keywordConfig.keywords.length * perKeywordCap);
                 const gitMaxCount = Math.min(maxFileNameHistoryLogCount, requestedMaxCount);
                 const gitArgs = [
                     '-C', repoDir,
                     'log', '--all', '--no-color',
                     '--name-status',
-                    '--pretty=format:COMMIT%x09%H%x09%aI',
+                    '-z',
+                    '--pretty=format:COMMIT%x09%H%x09%aI%x00',
                     `--max-count=${gitMaxCount}`,
                     '--',
                     '.'
@@ -2611,7 +2583,7 @@ class LeakLockPanel {
                         reject(error);
                     };
 
-                    const processLine = (rawLine) => {
+                    const processNameStatusRecord = (rawRecord, nextRecordSupplier) => {
                         if (findings.length >= maxTotalFindings) {
                             if (!stoppedEarly) {
                                 stoppedEarly = true;
@@ -2620,12 +2592,12 @@ class LeakLockPanel {
                             return;
                         }
 
-                        const line = String(rawLine || '').trimEnd();
-                        if (!line.trim()) {
+                        const record = String(rawRecord || '').replace(/\r$/, '');
+                        if (!record) {
                             return;
                         }
-                        if (line.startsWith('COMMIT\t')) {
-                            const parts = line.split('\t');
+                        if (record.startsWith('COMMIT\t')) {
+                            const parts = record.split('\t');
                             currentCommit = parts[1] || null;
                             currentDate = parts[2] || null;
                             return;
@@ -2634,7 +2606,30 @@ class LeakLockPanel {
                             return;
                         }
 
-                        const filePaths = this._extractNameStatusPaths(line);
+                        let filePaths = [];
+                        const tabIndex = record.indexOf('\t');
+                        if (tabIndex !== -1) {
+                            const status = record.slice(0, tabIndex).toUpperCase();
+                            const firstPath = record.slice(tabIndex + 1);
+                            if ((status.startsWith('R') || status.startsWith('C'))) {
+                                const secondPath = nextRecordSupplier();
+                                filePaths = [firstPath, secondPath].filter((p) => typeof p === 'string' && p.length > 0);
+                            } else {
+                                filePaths = firstPath ? [firstPath] : [];
+                            }
+                        } else {
+                            // With -z name-status, Git may emit status and paths as separate NUL records.
+                            const status = record.toUpperCase();
+                            if (status.startsWith('R') || status.startsWith('C')) {
+                                const oldPath = nextRecordSupplier();
+                                const newPath = nextRecordSupplier();
+                                filePaths = [oldPath, newPath].filter((p) => typeof p === 'string' && p.length > 0);
+                            } else {
+                                const filePath = nextRecordSupplier();
+                                filePaths = filePath ? [filePath] : [];
+                            }
+                        }
+
                         if (filePaths.length === 0) {
                             return;
                         }
@@ -2663,12 +2658,17 @@ class LeakLockPanel {
 
                     gitLog.stdout.on('data', (chunk) => {
                         stdoutBuffer += chunk.toString();
-                        let newlineIndex = stdoutBuffer.indexOf('\n');
-                        while (newlineIndex !== -1) {
-                            const line = stdoutBuffer.slice(0, newlineIndex).replace(/\r$/, '');
-                            stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-                            processLine(line);
-                            newlineIndex = stdoutBuffer.indexOf('\n');
+                        const records = stdoutBuffer.split('\0');
+                        stdoutBuffer = records.pop() || '';
+                        for (let i = 0; i < records.length; i++) {
+                            const consumeNext = () => {
+                                if (i + 1 >= records.length) {
+                                    return '';
+                                }
+                                i += 1;
+                                return records[i];
+                            };
+                            processNameStatusRecord(records[i], consumeNext);
                         }
                     });
 
@@ -2682,7 +2682,7 @@ class LeakLockPanel {
 
                     gitLog.on('close', (code, signal) => {
                         if (stdoutBuffer) {
-                            processLine(stdoutBuffer.replace(/\r$/, ''));
+                            processNameStatusRecord(stdoutBuffer.replace(/\r$/, ''), () => '');
                             stdoutBuffer = '';
                         }
                         if (stoppedEarly) {
