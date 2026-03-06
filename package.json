@@ -99,6 +99,13 @@
           "maximum": 500,
           "description": "Maximum number of keyword findings to collect per keyword and search mode."
         },
+        "leakLock.gitHistoryKeywordSearch.shortKeywordFileHistoryMaxCount": {
+          "type": "integer",
+          "default": 300,
+          "minimum": 100,
+          "maximum": 5000,
+          "description": "Maximum `git log --max-count` used for short keyword (<=3 chars) file-history scans. Increase for deeper history at higher runtime cost."
+        },
         "leakLock.gitHistoryKeywordSearch.keywords": {
           "type": "array",
           "default": [

@@ -2273,10 +2273,15 @@ class LeakLockPanel {
         const enabled = !!config.get('gitHistoryKeywordSearch.enabled', false);
         const rawKeywords = config.get('gitHistoryKeywordSearch.keywords', []);
         const rawMaxMatchesPerKeyword = config.get('gitHistoryKeywordSearch.maxMatchesPerKeyword', 25);
+        const rawShortKeywordFileHistoryMaxCount = config.get('gitHistoryKeywordSearch.shortKeywordFileHistoryMaxCount', 300);
         const parsedMaxMatchesPerKeyword = Number(rawMaxMatchesPerKeyword);
+        const parsedShortKeywordFileHistoryMaxCount = Number(rawShortKeywordFileHistoryMaxCount);
         const maxMatchesPerKeyword = Number.isFinite(parsedMaxMatchesPerKeyword)
             ? Math.floor(parsedMaxMatchesPerKeyword)
             : 25;
+        const shortKeywordFileHistoryMaxCount = Number.isFinite(parsedShortKeywordFileHistoryMaxCount)
+            ? Math.floor(parsedShortKeywordFileHistoryMaxCount)
+            : 300;
         const searchCommitMessages = !!config.get('gitHistoryKeywordSearch.searchCommitMessages', true);
         const searchFileHistory = !!config.get('gitHistoryKeywordSearch.searchFileHistory', true);
         const searchFileNames = !!config.get('gitHistoryKeywordSearch.searchFileNames', false);
@@ -2289,6 +2294,7 @@ class LeakLockPanel {
             enabled,
             keywords,
             maxMatchesPerKeyword: Math.max(1, Math.min(500, maxMatchesPerKeyword)),
+            shortKeywordFileHistoryMaxCount: Math.max(100, Math.min(5000, shortKeywordFileHistoryMaxCount)),
             searchCommitMessages,
             searchFileHistory,
             searchFileNames
@@ -2581,8 +2587,10 @@ class LeakLockPanel {
 
                     // Process longer keywords with full history window.
                     await runFileHistoryPass(longKeywords);
-                    // Process short/high-frequency keywords separately with tighter git max-count cap.
-                    await runFileHistoryPass(shortKeywords, { maxCountCap: 300 });
+                    // Process short/high-frequency keywords separately with a configurable git max-count cap.
+                    await runFileHistoryPass(shortKeywords, {
+                        maxCountCap: keywordConfig.shortKeywordFileHistoryMaxCount
+                    });
                 }
             }
 
@@ -2705,7 +2713,7 @@ class LeakLockPanel {
                             return;
                         }
 
-                        const isNameStatusToken = (token) => /^[ACDMRTUXB][0-9]*$/i.test(token);
+                        const isNameStatusToken = (token) => /^[ACDMRTUXTB][0-9]*$/i.test(token);
                         let statusToken = '';
                         let initialPaths = [];
                         const tabIndex = record.indexOf('\t');
