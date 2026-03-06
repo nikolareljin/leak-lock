@@ -2380,7 +2380,7 @@ class LeakLockPanel {
             (keywordConfig.searchFileNames ? 1 : 0);
         const maxTotalFindings = Math.max(50, Math.min(2000, keywordConfig.keywords.length * keywordConfig.maxMatchesPerKeyword * Math.max(1, totalSearchModes)));
         const maxCommitLogCount = 5000;
-        const maxFileHistoryLogCount = 3000;
+        const maxFileHistoryLogCount = Math.min(5000, keywordConfig.shortKeywordFileHistoryMaxCount ?? 3000);
         const maxFileNameHistoryLogCount = 4000;
 
         const addFinding = (filePath, keyword, description, commitHash, commitDate) => {
@@ -2510,6 +2510,7 @@ class LeakLockPanel {
                             '-C', repoDir,
                             'log', '--all', '--no-color',
                             '--regexp-ignore-case',
+                            '--extended-regexp',
                             '--pretty=format:COMMIT%x09%H%x09%aI',
                             '-p',
                             '-U0',
