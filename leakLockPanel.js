@@ -2462,6 +2462,10 @@ class LeakLockPanel {
 
                 const fileHistoryKeywords = keywordConfig.keywords;
                 if (fileHistoryKeywords.length > 0) {
+                    const shortestKeywordLength = fileHistoryKeywords.reduce(
+                        (minLen, keyword) => Math.min(minLen, String(keyword || '').trim().length),
+                        Number.POSITIVE_INFINITY
+                    );
                     const combinedPattern = fileHistoryKeywords
                         .map((keyword) => {
                             const escaped = this._escapeRegex(keyword);
@@ -2477,7 +2481,13 @@ class LeakLockPanel {
                             Math.max(1, fileHistoryKeywords.length) *
                             commitSafetyFactor
                     );
-                    const gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
+                    let gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
+                    if (shortestKeywordLength <= 3) {
+                        // Very short tokens can make -G match an excessive portion of history.
+                        // Clamp commit count to reduce maxBuffer/timeout failures in buffered execFile mode.
+                        const shortKeywordCap = 300;
+                        gitMaxCount = Math.max(100, Math.min(gitMaxCount, shortKeywordCap));
+                    }
                     const { stdout } = await execFileAsync('git', [
                         '-C', repoDir,
                         'log', '--all', '--no-color',
