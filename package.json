@@ -75,22 +75,22 @@
         "leakLock.gitHistoryKeywordSearch.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable attribution-policy keyword scanning in git history (commit messages and historical file content changes)."
+          "description": "Enable attribution-policy keyword scanning in git history (commit messages, historical file content changes, and historical file names)."
         },
         "leakLock.gitHistoryKeywordSearch.searchCommitMessages": {
           "type": "boolean",
           "default": true,
-          "description": "When keyword history scan is enabled, search commit messages."
+          "description": "When git-history keyword search is enabled, search commit messages."
         },
         "leakLock.gitHistoryKeywordSearch.searchFileHistory": {
           "type": "boolean",
           "default": true,
-          "description": "When git-history text search is enabled, search historical file content changes (supports arbitrary text terms)."
+          "description": "When git-history keyword search is enabled, search historical file content changes (supports arbitrary text terms)."
         },
         "leakLock.gitHistoryKeywordSearch.searchFileNames": {
           "type": "boolean",
           "default": false,
-          "description": "When git-history text search is enabled, search historical file names (can increase scan time on large repositories)."
+          "description": "When git-history keyword search is enabled, search historical file names (can increase scan time on large repositories)."
         },
         "leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword": {
           "type": "integer",
