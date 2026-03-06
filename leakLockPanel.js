@@ -2481,6 +2481,7 @@ class LeakLockPanel {
                             longKeywords.push(normalized);
                         }
                     }
+                    const fileHistoryMatcherMap = new Map(fileHistoryKeywordMatchers.map((entry) => [entry.keyword, entry.matches]));
 
                     const runFileHistoryPass = async (passKeywords, options = {}) => {
                         if (!Array.isArray(passKeywords) || passKeywords.length === 0) {
@@ -2521,14 +2522,6 @@ class LeakLockPanel {
                             '.'
                         ], gitLogOptions);
 
-                        const matcherMap = new Map();
-                        for (const keyword of passKeywords) {
-                            const matcherEntry = fileHistoryKeywordMatchers.find((entry) => entry.keyword === keyword);
-                            if (matcherEntry) {
-                                matcherMap.set(keyword, matcherEntry.matches);
-                            }
-                        }
-
                         const lines = stdout.split('\n');
                         let currentCommit = null;
                         let currentDate = null;
@@ -2568,7 +2561,7 @@ class LeakLockPanel {
                                 if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
                                     continue;
                                 }
-                                const matches = matcherMap.get(keyword);
+                                const matches = fileHistoryMatcherMap.get(keyword);
                                 if (!matches || !matches(patchLine)) {
                                     continue;
                                 }
