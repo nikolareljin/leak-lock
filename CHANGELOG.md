@@ -3,7 +3,7 @@
 ## 0.5.0
 ### Added
 - **Expanded Git-History Text Search**: Supports arbitrary text terms across commit messages and historical file content without skipping short terms.
-- **Git-History Filename Search**: Added optional filename matching mode via `leakLock.gitHistoryKeywordSearch.searchFileNames`.
+- **Git-History Filename Search**: Added optional filename matching mode via `leakLock.gitHistoryKeywordSearch.searchFileNames` (disabled by default / opt-in).
 
 ## 0.4.1
 ### Fixed
