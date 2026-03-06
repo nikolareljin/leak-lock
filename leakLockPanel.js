@@ -2465,8 +2465,9 @@ class LeakLockPanel {
                     const combinedPattern = fileHistoryKeywords
                         .map((keyword) => {
                             const escaped = this._escapeRegex(keyword);
-                            const isWordLike = /^[A-Za-z0-9]+$/.test(keyword);
-                            return isWordLike ? `\\b${escaped}\\b` : escaped;
+                            // git log -G uses POSIX ERE (no \b word-boundary token).
+                            // Keep the prefilter broad and rely on JS matchers for word semantics.
+                            return escaped;
                         })
                         .join('|');
                     const commitSafetyFactor = 3;
