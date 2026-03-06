@@ -89,8 +89,8 @@
         },
         "leakLock.gitHistoryKeywordSearch.searchFileNames": {
           "type": "boolean",
-          "default": true,
-          "description": "When git-history text search is enabled, search historical file names."
+          "default": false,
+          "description": "When git-history text search is enabled, search historical file names (can increase scan time on large repositories)."
         },
         "leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword": {
           "type": "integer",

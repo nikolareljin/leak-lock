@@ -2279,7 +2279,7 @@ class LeakLockPanel {
             : 25;
         const searchCommitMessages = !!config.get('gitHistoryKeywordSearch.searchCommitMessages', true);
         const searchFileHistory = !!config.get('gitHistoryKeywordSearch.searchFileHistory', true);
-        const searchFileNames = !!config.get('gitHistoryKeywordSearch.searchFileNames', true);
+        const searchFileNames = !!config.get('gitHistoryKeywordSearch.searchFileNames', false);
 
         const keywords = Array.isArray(rawKeywords)
             ? [...new Set(rawKeywords.map((k) => String(k || '').trim()).filter(Boolean))]
@@ -2340,7 +2340,12 @@ class LeakLockPanel {
             return () => false;
         }
         if (matchFragments) {
-            return (candidateText) => String(candidateText || '').toLowerCase().includes(keywordLower);
+            return (candidateText) => {
+                if (candidateText && typeof candidateText === 'object' && typeof candidateText.lowerText === 'string') {
+                    return candidateText.lowerText.includes(keywordLower);
+                }
+                return String(candidateText || '').toLowerCase().includes(keywordLower);
+            };
         }
         // Reduce false positives for word-like keywords by requiring whole-word matches.
         const isWordLike = /^[A-Za-z0-9]+$/.test(keywordStr);
@@ -2387,9 +2392,13 @@ class LeakLockPanel {
         const commitModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
         const fileModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
         const fileNameModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
-        const commitKeywordMatchers = keywordConfig.keywords.map((keyword) => ({ keyword, matches: this._buildKeywordMatcher(keyword, { matchFragments: false }) }));
-        const fileHistoryKeywordMatchers = keywordConfig.keywords.map((keyword) => ({ keyword, matches: this._buildKeywordMatcher(keyword, { matchFragments: false }) }));
-        const fileNameKeywordMatchers = keywordConfig.keywords.map((keyword) => ({ keyword, matches: this._buildKeywordMatcher(keyword, { matchFragments: true }) }));
+        const buildKeywordMatchers = (keywords, options = {}) => keywords.map((keyword) => ({
+            keyword,
+            matches: this._buildKeywordMatcher(keyword, options)
+        }));
+        const commitKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: false });
+        const fileHistoryKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: false });
+        const fileNameKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
 
         try {
             if (keywordConfig.searchCommitMessages) {
@@ -2555,6 +2564,7 @@ class LeakLockPanel {
                     let currentCommit = null;
                     let currentDate = null;
                     let stdoutBuffer = '';
+                    let stdoutBufferIndex = 0;
                     let stderrBuffer = '';
                     let pendingNameStatus = null;
                     let stoppedEarly = false;
@@ -2591,12 +2601,13 @@ class LeakLockPanel {
                             return;
                         }
                         for (const fileNamePath of filePaths) {
+                            const fileNamePathLower = String(fileNamePath || '').toLowerCase();
                             for (const { keyword, matches } of fileNameKeywordMatchers) {
                                 const existingCount = fileNameModeMatchCountByKeyword.get(keyword) || 0;
                                 if (existingCount >= perKeywordCap) {
                                     continue;
                                 }
-                                if (!matches(fileNamePath)) {
+                                if (!matches({ lowerText: fileNamePathLower })) {
                                     continue;
                                 }
                                 const added = addFinding(
@@ -2678,15 +2689,25 @@ class LeakLockPanel {
                         };
                     };
 
+                    const processStdoutBufferRecords = () => {
+                        let nulIndex = stdoutBuffer.indexOf('\0', stdoutBufferIndex);
+                        while (nulIndex !== -1) {
+                            const record = stdoutBuffer.slice(stdoutBufferIndex, nulIndex);
+                            stdoutBufferIndex = nulIndex + 1;
+                            processNameStatusRecord(record);
+                            nulIndex = stdoutBuffer.indexOf('\0', stdoutBufferIndex);
+                        }
+
+                        // Avoid unbounded growth while minimizing repeated string allocations.
+                        if (stdoutBufferIndex > 1024 * 1024) {
+                            stdoutBuffer = stdoutBuffer.slice(stdoutBufferIndex);
+                            stdoutBufferIndex = 0;
+                        }
+                    };
+
                     gitLog.stdout.on('data', (chunk) => {
                         stdoutBuffer += stdoutDecoder.write(chunk);
-                        let nulIndex = stdoutBuffer.indexOf('\0');
-                        while (nulIndex !== -1) {
-                            const record = stdoutBuffer.slice(0, nulIndex);
-                            stdoutBuffer = stdoutBuffer.slice(nulIndex + 1);
-                            processNameStatusRecord(record);
-                            nulIndex = stdoutBuffer.indexOf('\0');
-                        }
+                        processStdoutBufferRecords();
                     });
 
                     gitLog.stderr.on('data', (chunk) => {
@@ -2702,19 +2723,12 @@ class LeakLockPanel {
                         if (flushText) {
                             stdoutBuffer += flushText;
                         }
-                        let nulIndex = stdoutBuffer.indexOf('\0');
-                        while (nulIndex !== -1) {
-                            const record = stdoutBuffer.slice(0, nulIndex);
-                            if (record) {
-                                processNameStatusRecord(record);
-                            }
-                            stdoutBuffer = stdoutBuffer.slice(nulIndex + 1);
-                            nulIndex = stdoutBuffer.indexOf('\0');
+                        processStdoutBufferRecords();
+                        if (stdoutBufferIndex < stdoutBuffer.length) {
+                            processNameStatusRecord(stdoutBuffer.slice(stdoutBufferIndex));
                         }
-                        if (stdoutBuffer) {
-                            processNameStatusRecord(stdoutBuffer);
-                            stdoutBuffer = '';
-                        }
+                        stdoutBuffer = '';
+                        stdoutBufferIndex = 0;
                         if (stoppedEarly) {
                             settleResolve();
                             return;
@@ -2728,7 +2742,14 @@ class LeakLockPanel {
                             return;
                         }
                         const reason = signal ? `signal ${signal}` : `exit code ${code}`;
-                        settleReject(new Error(`git log filename history failed (${reason}): ${stderrBuffer.trim()}`));
+                        const stderrSnippet = stderrBuffer.trim();
+                        const maxStderrLength = 600;
+                        const truncatedStderr = stderrSnippet.length > maxStderrLength
+                            ? `${stderrSnippet.slice(0, maxStderrLength)}...`
+                            : stderrSnippet;
+                        const context = `maxCount=${gitMaxCount}`;
+                        const errorDetail = truncatedStderr ? `: ${truncatedStderr}` : '';
+                        settleReject(new Error(`git log filename history failed (${reason}, ${context})${errorDetail}`));
                     });
                 });
             }
