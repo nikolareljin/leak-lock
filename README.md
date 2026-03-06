@@ -101,6 +101,7 @@ code --install-extension leak-lock-0.0.1.vsix
   - `leakLock.gitHistoryKeywordSearch.searchFileHistory`
   - `leakLock.gitHistoryKeywordSearch.searchFileNames`
   - `leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword`
+  - `leakLock.gitHistoryKeywordSearch.shortKeywordFileHistoryMaxCount`
 
 Note: `leakLock.gitHistoryKeywordSearch.searchFileNames` is disabled by default (opt-in) because it can increase scan time on large repositories.
 
