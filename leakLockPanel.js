@@ -2462,100 +2462,127 @@ class LeakLockPanel {
 
                 const fileHistoryKeywords = keywordConfig.keywords;
                 if (fileHistoryKeywords.length > 0) {
-                    const shortestKeywordLength = fileHistoryKeywords.reduce(
-                        (minLen, keyword) => Math.min(minLen, String(keyword || '').trim().length),
-                        Number.POSITIVE_INFINITY
-                    );
-                    const combinedPattern = fileHistoryKeywords
-                        .map((keyword) => {
-                            const escaped = this._escapeRegex(keyword);
-                            // git log -G uses POSIX ERE (no \b word-boundary token).
-                            // Keep the prefilter broad and rely on JS matchers for word semantics.
-                            return escaped;
-                        })
-                        .join('|');
-                    const commitSafetyFactor = 3;
-                    const requestedMaxCount = Math.max(
-                        100,
-                        Math.max(1, keywordConfig.maxMatchesPerKeyword) *
-                            Math.max(1, fileHistoryKeywords.length) *
-                            commitSafetyFactor
-                    );
-                    let gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
-                    if (shortestKeywordLength <= 3) {
-                        // Very short tokens can make -G match an excessive portion of history.
-                        // Clamp commit count to reduce maxBuffer/timeout failures in buffered execFile mode.
-                        const shortKeywordCap = 300;
-                        gitMaxCount = Math.max(100, Math.min(gitMaxCount, shortKeywordCap));
+                    const shortKeywords = [];
+                    const longKeywords = [];
+                    for (const keyword of fileHistoryKeywords) {
+                        const normalized = String(keyword || '').trim();
+                        if (!normalized) {
+                            continue;
+                        }
+                        if (normalized.length <= 3) {
+                            shortKeywords.push(normalized);
+                        } else {
+                            longKeywords.push(normalized);
+                        }
                     }
-                    const { stdout } = await execFileAsync('git', [
-                        '-C', repoDir,
-                        'log', '--all', '--no-color',
-                        '--regexp-ignore-case',
-                        '--pretty=format:COMMIT%x09%H%x09%aI',
-                        '-p',
-                        '-U0',
-                        '--pickaxe-regex',
-                        '-G', combinedPattern,
-                        `--max-count=${gitMaxCount}`,
-                        '--',
-                        '.'
-                    ], gitLogOptions);
 
-                    const lines = stdout.split('\n');
-                    let currentCommit = null;
-                    let currentDate = null;
-                    let currentFile = null;
-                    for (const rawLine of lines) {
-                        if (findings.length >= maxTotalFindings) {
-                            break;
+                    const runFileHistoryPass = async (passKeywords, options = {}) => {
+                        if (!Array.isArray(passKeywords) || passKeywords.length === 0) {
+                            return;
                         }
-                        const line = rawLine.trimEnd();
-                        if (!line.trim()) {
-                            continue;
+                        const combinedPattern = passKeywords
+                            .map((keyword) => {
+                                const escaped = this._escapeRegex(keyword);
+                                // git log -G uses POSIX ERE (no \b word-boundary token).
+                                // Keep the prefilter broad and rely on JS matchers for word semantics.
+                                return escaped;
+                            })
+                            .join('|');
+                        const commitSafetyFactor = 3;
+                        const requestedMaxCount = Math.max(
+                            100,
+                            Math.max(1, keywordConfig.maxMatchesPerKeyword) *
+                                Math.max(1, passKeywords.length) *
+                                commitSafetyFactor
+                        );
+                        let gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
+                        if (Number.isFinite(options.maxCountCap) && options.maxCountCap > 0) {
+                            gitMaxCount = Math.max(100, Math.min(gitMaxCount, options.maxCountCap));
                         }
-                        if (line.startsWith('COMMIT\t')) {
-                            const parts = line.split('\t');
-                            currentCommit = parts[1] || null;
-                            currentDate = parts[2] || null;
-                            currentFile = null;
-                            continue;
-                        }
-                        if (line.startsWith('diff --git ')) {
-                            const match = rawLine.match(/^diff --git a\/(.+?) b\/(.+)$/);
-                            if (match) {
-                                currentFile = match[2];
+
+                        const { stdout } = await execFileAsync('git', [
+                            '-C', repoDir,
+                            'log', '--all', '--no-color',
+                            '--regexp-ignore-case',
+                            '--pretty=format:COMMIT%x09%H%x09%aI',
+                            '-p',
+                            '-U0',
+                            '--pickaxe-regex',
+                            '-G', combinedPattern,
+                            `--max-count=${gitMaxCount}`,
+                            '--',
+                            '.'
+                        ], gitLogOptions);
+
+                        const matcherMap = new Map();
+                        for (const keyword of passKeywords) {
+                            const matcherEntry = fileHistoryKeywordMatchers.find((entry) => entry.keyword === keyword);
+                            if (matcherEntry) {
+                                matcherMap.set(keyword, matcherEntry.matches);
                             }
-                            continue;
                         }
-                        if (!currentCommit || !currentFile) {
-                            continue;
-                        }
-                        // Restrict to added/removed lines only; exclude diff headers.
-                        if (!(line.startsWith('+') || line.startsWith('-')) || line.startsWith('+++') || line.startsWith('---')) {
-                            continue;
-                        }
-                        const patchLine = line.slice(1);
-                        for (const { keyword, matches } of fileHistoryKeywordMatchers) {
-                            const existingCount = fileModeMatchCountByKeyword.get(keyword) || 0;
-                            if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+
+                        const lines = stdout.split('\n');
+                        let currentCommit = null;
+                        let currentDate = null;
+                        let currentFile = null;
+                        for (const rawLine of lines) {
+                            if (findings.length >= maxTotalFindings) {
+                                break;
+                            }
+                            const line = rawLine.trimEnd();
+                            if (!line.trim()) {
                                 continue;
                             }
-                            if (!matches(patchLine)) {
+                            if (line.startsWith('COMMIT\t')) {
+                                const parts = line.split('\t');
+                                currentCommit = parts[1] || null;
+                                currentDate = parts[2] || null;
+                                currentFile = null;
                                 continue;
                             }
-                            const added = addFinding(
-                                currentFile,
-                                keyword,
-                                `Keyword "${keyword}" found in historical file content changes`,
-                                currentCommit,
-                                currentDate
-                            );
-                            if (added) {
-                                fileModeMatchCountByKeyword.set(keyword, existingCount + 1);
+                            if (line.startsWith('diff --git ')) {
+                                const match = rawLine.match(/^diff --git a\/(.+?) b\/(.+)$/);
+                                if (match) {
+                                    currentFile = match[2];
+                                }
+                                continue;
+                            }
+                            if (!currentCommit || !currentFile) {
+                                continue;
+                            }
+                            // Restrict to added/removed lines only; exclude diff headers.
+                            if (!(line.startsWith('+') || line.startsWith('-')) || line.startsWith('+++') || line.startsWith('---')) {
+                                continue;
+                            }
+                            const patchLine = line.slice(1);
+                            for (const keyword of passKeywords) {
+                                const existingCount = fileModeMatchCountByKeyword.get(keyword) || 0;
+                                if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+                                    continue;
+                                }
+                                const matches = matcherMap.get(keyword);
+                                if (!matches || !matches(patchLine)) {
+                                    continue;
+                                }
+                                const added = addFinding(
+                                    currentFile,
+                                    keyword,
+                                    `Keyword "${keyword}" found in historical file content changes`,
+                                    currentCommit,
+                                    currentDate
+                                );
+                                if (added) {
+                                    fileModeMatchCountByKeyword.set(keyword, existingCount + 1);
+                                }
                             }
                         }
-                    }
+                    };
+
+                    // Process longer keywords with full history window.
+                    await runFileHistoryPass(longKeywords);
+                    // Process short/high-frequency keywords separately with tighter git max-count cap.
+                    await runFileHistoryPass(shortKeywords, { maxCountCap: 300 });
                 }
             }
 
@@ -2571,7 +2598,7 @@ class LeakLockPanel {
                     'log', '--all', '--no-color',
                     '--name-status',
                     '-z',
-                    '--pretty=format:COMMIT%x09%H%x09%aI%x00',
+                    '--pretty=format:%H%x09%aI%x00',
                     `--max-count=${gitMaxCount}`,
                     '--',
                     '.'
@@ -2653,10 +2680,15 @@ class LeakLockPanel {
                         if (!record) {
                             return;
                         }
-                        if (record.startsWith('COMMIT\t')) {
-                            const parts = record.split('\t');
-                            currentCommit = parts[1] || null;
-                            currentDate = parts[2] || null;
+                        // Detect commit headers by hash/date shape to avoid collisions with filenames.
+                        let commitMatch = /^([0-9a-f]{40})\t([^\t]*)/i.exec(record);
+                        if (!commitMatch) {
+                            // Backward-compatible fallback for legacy markers.
+                            commitMatch = /^COMMIT\t([0-9a-f]{40})\t([^\t]*)/i.exec(record);
+                        }
+                        if (commitMatch) {
+                            currentCommit = commitMatch[1] || null;
+                            currentDate = commitMatch[2] || null;
                             pendingNameStatus = null;
                             return;
                         }
