@@ -2396,7 +2396,8 @@ class LeakLockPanel {
             keyword,
             matches: this._buildKeywordMatcher(keyword, options)
         }));
-        const commitKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: false });
+        // Commit-message prefilter uses git --grep substring semantics; keep JS matcher aligned.
+        const commitKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
         const fileHistoryKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: false });
         const fileNameKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
 
@@ -2462,7 +2463,11 @@ class LeakLockPanel {
                 const fileHistoryKeywords = keywordConfig.keywords;
                 if (fileHistoryKeywords.length > 0) {
                     const combinedPattern = fileHistoryKeywords
-                        .map((keyword) => this._escapeRegex(keyword))
+                        .map((keyword) => {
+                            const escaped = this._escapeRegex(keyword);
+                            const isWordLike = /^[A-Za-z0-9]+$/.test(keyword);
+                            return isWordLike ? `\\b${escaped}\\b` : escaped;
+                        })
                         .join('|');
                     const commitSafetyFactor = 3;
                     const requestedMaxCount = Math.max(
