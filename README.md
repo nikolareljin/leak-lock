@@ -99,16 +99,21 @@ code --install-extension leak-lock-0.0.1.vsix
 - Optionally tune:
   - `leakLock.gitHistoryKeywordSearch.searchCommitMessages`
   - `leakLock.gitHistoryKeywordSearch.searchFileHistory`
+  - `leakLock.gitHistoryKeywordSearch.searchFileNames`
   - `leakLock.gitHistoryKeywordSearch.maxMatchesPerKeyword`
+  - `leakLock.gitHistoryKeywordSearch.shortKeywordFileHistoryMaxCount`
+
+Note: `leakLock.gitHistoryKeywordSearch.searchFileNames` is disabled by default (opt-in) because it can increase scan time on large repositories.
 
 Default keyword profile (designed for attribution-policy and secret hygiene):
 - Agent/AI attribution terms: `agent`, `assistant`, `claude`, `codex`, `copilot`, `gemini`, `gpt`, `chatgpt`, `openai`, `anthropic`, `aider`, `cursor`, `windsurf`, `meldbot`, `openclaw`, `nanoclaw`
 - Sensitive terms: `password`, `token`, `api_key`, `secret`
-Note: In file-history mode, very short keywords are skipped to reduce noise and improve performance.
+The keyword list can include arbitrary text terms and filename fragments, not only predefined security words.
 
 Example use case:
 - Detect commit messages that mention coding agents.
 - Detect potentially sensitive terms in historical file changes.
+- Detect historical filenames that include specific terms (for example `id_rsa`, `secrets`, or custom naming conventions).
 
 ### 7. Remove Unwanted Files (New)
 - Open from sidebar: click "🗑️ Remove files"
@@ -150,6 +155,13 @@ Full-width main area interface showing:
 - Directory selection with auto-detection
 - Scanning controls and progress
 - Results display in wide table format
+
+## Search Git Commit messages
+
+This allows searching Git Commit history for messages with certain content. It could be useful when determining if any credentials or keywords unwillingly went out.
+
+<img width="299" height="373" alt="image" src="https://github.com/user-attachments/assets/7f526020-8803-4279-8163-ce14f9ea700c" />
+
 
 ### Scanning Process
 
