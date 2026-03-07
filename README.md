@@ -156,6 +156,13 @@ Full-width main area interface showing:
 - Scanning controls and progress
 - Results display in wide table format
 
+## Search Git Commit messages
+
+This allows searching Git Commit history for messages with certain content. It could be useful when determining if any credentials or keywords unwillingly went out.
+
+<img width="299" height="373" alt="image" src="https://github.com/user-attachments/assets/7f526020-8803-4279-8163-ce14f9ea700c" />
+
+
 ### Scanning Process
 
 <img width="1701" height="859" alt="image" src="https://github.com/user-attachments/assets/dd8af4e9-c873-4435-9bd5-cbc60584ee73" />
