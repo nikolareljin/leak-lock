@@ -15,6 +15,7 @@ class LeakLockSidebarProvider {
         this._installProgress = null;
         this._workspaceGitRepo = null;
         this._showDependencyDetails = false;
+        this._showGitHistorySection = false;
     }
 
     resolveWebviewView(webviewView, context, _token) {
@@ -29,7 +30,7 @@ class LeakLockSidebarProvider {
 
         // Handle messages from the webview
         webviewView.webview.onDidReceiveMessage(
-            message => {
+            async message => {
                 switch (message.command) {
                     case 'installDependencies':
                         this._installDependencies();
@@ -61,6 +62,46 @@ class LeakLockSidebarProvider {
                             directory: this._selectedDirectory || this._workspaceGitRepo || null
                         });
                         break;
+                    case 'toggleGitHistorySection':
+                        this._showGitHistorySection = !this._showGitHistorySection;
+                        this._updateView();
+                        break;
+                    case 'updateGitHistorySetting': {
+                        const cfg = vscode.workspace.getConfiguration('leakLock');
+                        await cfg.update(
+                            `gitHistoryKeywordSearch.${message.key}`,
+                            message.value,
+                            vscode.ConfigurationTarget.Global
+                        );
+                        this._updateView();
+                        break;
+                    }
+                    case 'addGitHistoryKeyword': {
+                        const keyword = (message.keyword || '').trim();
+                        if (!keyword) break;
+                        const cfg = vscode.workspace.getConfiguration('leakLock');
+                        const current = cfg.get('gitHistoryKeywordSearch.keywords') || [];
+                        if (!current.includes(keyword)) {
+                            await cfg.update(
+                                'gitHistoryKeywordSearch.keywords',
+                                [...current, keyword],
+                                vscode.ConfigurationTarget.Global
+                            );
+                        }
+                        this._updateView();
+                        break;
+                    }
+                    case 'removeGitHistoryKeyword': {
+                        const cfg = vscode.workspace.getConfiguration('leakLock');
+                        const current = cfg.get('gitHistoryKeywordSearch.keywords') || [];
+                        await cfg.update(
+                            'gitHistoryKeywordSearch.keywords',
+                            current.filter(k => k !== message.keyword),
+                            vscode.ConfigurationTarget.Global
+                        );
+                        this._updateView();
+                        break;
+                    }
                 }
             },
             undefined,
@@ -259,12 +300,144 @@ class LeakLockSidebarProvider {
                     font-size: 11px;
                     margin-top: 5px;
                 }
+
+                .toggle-row {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    margin: 6px 0;
+                    font-size: 12px;
+                }
+
+                .toggle-btn {
+                    width: 36px;
+                    height: 18px;
+                    border-radius: 9px;
+                    border: none;
+                    cursor: pointer;
+                    position: relative;
+                    transition: background 0.2s;
+                    flex-shrink: 0;
+                }
+
+                .toggle-btn.on {
+                    background: var(--vscode-button-background);
+                }
+
+                .toggle-btn.off {
+                    background: var(--vscode-button-secondaryBackground);
+                }
+
+                .toggle-btn::after {
+                    content: '';
+                    position: absolute;
+                    top: 2px;
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 50%;
+                    background: var(--vscode-button-foreground);
+                    transition: left 0.2s;
+                }
+
+                .toggle-btn.on::after { left: 20px; }
+                .toggle-btn.off::after { left: 2px; }
+
+                .keyword-list {
+                    margin: 6px 0;
+                    max-height: 120px;
+                    overflow-y: auto;
+                }
+
+                .keyword-item {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 2px 4px;
+                    margin: 2px 0;
+                    background: var(--vscode-textCodeBlock-background);
+                    border-radius: 3px;
+                    font-size: 11px;
+                    font-family: var(--vscode-editor-font-family);
+                }
+
+                .keyword-remove {
+                    background: none;
+                    border: none;
+                    color: var(--vscode-inputValidation-errorForeground);
+                    cursor: pointer;
+                    font-size: 13px;
+                    padding: 0 3px;
+                    line-height: 1;
+                }
+
+                .keyword-add-row {
+                    display: flex;
+                    gap: 4px;
+                    margin-top: 6px;
+                }
+
+                .keyword-input {
+                    flex: 1;
+                    background: var(--vscode-input-background);
+                    color: var(--vscode-input-foreground);
+                    border: 1px solid var(--vscode-input-border);
+                    border-radius: 3px;
+                    padding: 3px 6px;
+                    font-size: 11px;
+                    font-family: var(--vscode-editor-font-family);
+                    min-width: 0;
+                }
+
+                .keyword-add-btn {
+                    background: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    border: none;
+                    border-radius: 3px;
+                    padding: 3px 8px;
+                    cursor: pointer;
+                    font-size: 11px;
+                    white-space: nowrap;
+                }
+
+                .keyword-add-btn:hover {
+                    background: var(--vscode-button-hoverBackground);
+                }
+
+                .number-input {
+                    width: 60px;
+                    background: var(--vscode-input-background);
+                    color: var(--vscode-input-foreground);
+                    border: 1px solid var(--vscode-input-border);
+                    border-radius: 3px;
+                    padding: 3px 6px;
+                    font-size: 11px;
+                    text-align: right;
+                }
+
+                .section-toggle-header {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    cursor: pointer;
+                    margin: 0;
+                    padding: 0;
+                }
+
+                .section-toggle-header h3 {
+                    margin: 0;
+                }
+
+                .chevron {
+                    font-size: 10px;
+                    color: var(--vscode-descriptionForeground);
+                }
             </style>
         </head>
         <body>
             ${this._getDependenciesSection()}
             ${this._getDirectorySection()}
             ${this._getScanSection()}
+            ${this._getGitHistorySection()}
             ${this._getRemoveFilesSection()}
             
             <script>
@@ -297,6 +470,39 @@ class LeakLockSidebarProvider {
                 function openRemoveFiles() {
                     vscode.postMessage({ command: 'openRemoveFiles' });
                 }
+
+                function toggleGitHistorySection() {
+                    vscode.postMessage({ command: 'toggleGitHistorySection' });
+                }
+
+                function toggleGitHistorySetting(key, current) {
+                    vscode.postMessage({ command: 'updateGitHistorySetting', key, value: !current });
+                }
+
+                function updateMaxMatches(value) {
+                    const n = parseInt(value, 10);
+                    if (!isNaN(n) && n >= 1 && n <= 500) {
+                        vscode.postMessage({ command: 'updateGitHistorySetting', key: 'maxMatchesPerKeyword', value: n });
+                    }
+                }
+
+                function addKeyword() {
+                    const input = document.getElementById('keyword-input');
+                    const keyword = (input?.value || '').trim();
+                    if (!keyword) return;
+                    vscode.postMessage({ command: 'addGitHistoryKeyword', keyword });
+                    if (input) input.value = '';
+                }
+
+                function removeKeyword(keyword) {
+                    vscode.postMessage({ command: 'removeGitHistoryKeyword', keyword });
+                }
+
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' && document.activeElement?.id === 'keyword-input') {
+                        addKeyword();
+                    }
+                });
             </script>
         </body>
         </html>`;
@@ -562,6 +768,81 @@ class LeakLockSidebarProvider {
                     ${buttonText}
                 </button>
                 ${!canScan ? '<div class="warning-text">Complete setup steps above first</div>' : scanInfo}
+            </div>
+        `;
+    }
+
+    _getGitHistorySection() {
+        const cfg = vscode.workspace.getConfiguration('leakLock');
+        const enabled = cfg.get('gitHistoryKeywordSearch.enabled', false);
+        const searchCommitMessages = cfg.get('gitHistoryKeywordSearch.searchCommitMessages', true);
+        const searchFileHistory = cfg.get('gitHistoryKeywordSearch.searchFileHistory', true);
+        const maxMatches = cfg.get('gitHistoryKeywordSearch.maxMatchesPerKeyword', 25);
+        const keywords = cfg.get('gitHistoryKeywordSearch.keywords', []);
+
+        const chevron = this._showGitHistorySection ? '▲' : '▼';
+        const enabledClass = enabled ? 'on' : 'off';
+        const commitClass = searchCommitMessages ? 'on' : 'off';
+        const fileHistClass = searchFileHistory ? 'on' : 'off';
+
+        const keywordItems = keywords.map(k =>
+            `<div class="keyword-item">
+                <span>${k}</span>
+                <button class="keyword-remove" onclick="removeKeyword(${JSON.stringify(k)})" title="Remove">✕</button>
+            </div>`
+        ).join('');
+
+        const expandedContent = this._showGitHistorySection ? `
+            <div style="margin-top: 12px;">
+                <div class="toggle-row">
+                    <span>Search commit messages</span>
+                    <button class="toggle-btn ${commitClass}"
+                        onclick="toggleGitHistorySetting('searchCommitMessages', ${searchCommitMessages})"
+                        title="${searchCommitMessages ? 'Enabled' : 'Disabled'}">
+                    </button>
+                </div>
+                <div class="toggle-row">
+                    <span>Search file history</span>
+                    <button class="toggle-btn ${fileHistClass}"
+                        onclick="toggleGitHistorySetting('searchFileHistory', ${searchFileHistory})"
+                        title="${searchFileHistory ? 'Enabled' : 'Disabled'}">
+                    </button>
+                </div>
+                <div class="toggle-row" style="margin-top: 8px;">
+                    <span>Max matches per keyword</span>
+                    <input class="number-input" type="number" min="1" max="500" value="${maxMatches}"
+                        onchange="updateMaxMatches(this.value)"
+                        onblur="updateMaxMatches(this.value)" />
+                </div>
+
+                <div style="margin-top: 10px; font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 4px;">
+                    Keywords (${keywords.length})
+                </div>
+                <div class="keyword-list">
+                    ${keywordItems || '<div style="font-size:11px;color:var(--vscode-descriptionForeground);padding:4px;">No keywords configured</div>'}
+                </div>
+                <div class="keyword-add-row">
+                    <input id="keyword-input" class="keyword-input" type="text" placeholder="Add keyword…" />
+                    <button class="keyword-add-btn" onclick="addKeyword()">Add</button>
+                </div>
+            </div>
+        ` : '';
+
+        return `
+            <div class="section">
+                <div class="section-toggle-header" onclick="toggleGitHistorySection()">
+                    <h3>🔎 Git History Search</h3>
+                    <span class="chevron">${chevron}</span>
+                </div>
+                <div class="toggle-row" style="margin-top: 10px;">
+                    <span style="font-weight: 600;">Enable git history scanning</span>
+                    <button class="toggle-btn ${enabledClass}"
+                        onclick="toggleGitHistorySetting('enabled', ${enabled})"
+                        title="${enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}">
+                    </button>
+                </div>
+                ${!enabled ? `<div style="font-size:10px;color:var(--vscode-descriptionForeground);margin-top:4px;">Scans commit messages and file history for configured keywords.</div>` : ''}
+                ${expandedContent}
             </div>
         `;
     }
