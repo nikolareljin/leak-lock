@@ -2,6 +2,7 @@
 
 const vscode = require('vscode');
 const { exec, spawn, execFile } = require('child_process');
+const { StringDecoder } = require('string_decoder');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -2272,12 +2273,18 @@ class LeakLockPanel {
         const enabled = !!config.get('gitHistoryKeywordSearch.enabled', false);
         const rawKeywords = config.get('gitHistoryKeywordSearch.keywords', []);
         const rawMaxMatchesPerKeyword = config.get('gitHistoryKeywordSearch.maxMatchesPerKeyword', 25);
+        const rawShortKeywordFileHistoryMaxCount = config.get('gitHistoryKeywordSearch.shortKeywordFileHistoryMaxCount', 300);
         const parsedMaxMatchesPerKeyword = Number(rawMaxMatchesPerKeyword);
+        const parsedShortKeywordFileHistoryMaxCount = Number(rawShortKeywordFileHistoryMaxCount);
         const maxMatchesPerKeyword = Number.isFinite(parsedMaxMatchesPerKeyword)
             ? Math.floor(parsedMaxMatchesPerKeyword)
             : 25;
+        const shortKeywordFileHistoryMaxCount = Number.isFinite(parsedShortKeywordFileHistoryMaxCount)
+            ? Math.floor(parsedShortKeywordFileHistoryMaxCount)
+            : 300;
         const searchCommitMessages = !!config.get('gitHistoryKeywordSearch.searchCommitMessages', true);
         const searchFileHistory = !!config.get('gitHistoryKeywordSearch.searchFileHistory', true);
+        const searchFileNames = !!config.get('gitHistoryKeywordSearch.searchFileNames', false);
 
         const keywords = Array.isArray(rawKeywords)
             ? [...new Set(rawKeywords.map((k) => String(k || '').trim()).filter(Boolean))]
@@ -2287,8 +2294,10 @@ class LeakLockPanel {
             enabled,
             keywords,
             maxMatchesPerKeyword: Math.max(1, Math.min(500, maxMatchesPerKeyword)),
+            shortKeywordFileHistoryMaxCount: Math.max(100, Math.min(5000, shortKeywordFileHistoryMaxCount)),
             searchCommitMessages,
-            searchFileHistory
+            searchFileHistory,
+            searchFileNames
         };
     }
 
@@ -2329,20 +2338,28 @@ class LeakLockPanel {
         return `git-history:commit-message [id:${messageID}]`;
     }
 
-    _keywordMatchesText(text, keyword) {
-        const normalizedText = String(text || '');
+    _buildKeywordMatcher(keyword, options = {}) {
+        const matchFragments = !!options.matchFragments;
         const keywordStr = String(keyword || '').trim();
         const keywordLower = keywordStr.toLowerCase();
         if (!keywordLower) {
-            return false;
+            return () => false;
+        }
+        if (matchFragments) {
+            return (candidateText) => {
+                if (candidateText && typeof candidateText === 'object' && typeof candidateText.lowerText === 'string') {
+                    return candidateText.lowerText.includes(keywordLower);
+                }
+                return String(candidateText || '').toLowerCase().includes(keywordLower);
+            };
         }
         // Reduce false positives for word-like keywords by requiring whole-word matches.
         const isWordLike = /^[A-Za-z0-9]+$/.test(keywordStr);
         if (isWordLike) {
             const boundaryRegex = new RegExp(`\\b${this._escapeRegex(keywordStr)}\\b`, 'i');
-            return boundaryRegex.test(normalizedText);
+            return (candidateText) => boundaryRegex.test(String(candidateText || ''));
         }
-        return normalizedText.toLowerCase().includes(keywordLower);
+        return (candidateText) => String(candidateText || '').toLowerCase().includes(keywordLower);
     }
 
     async _scanGitHistoryForKeywords(scanPath) {
@@ -2357,10 +2374,14 @@ class LeakLockPanel {
         const gitLogOptions = { timeout: 20000, maxBuffer: 50 * 1024 * 1024 };
         const findings = [];
         const seen = new Set();
-        const totalSearchModes = (keywordConfig.searchCommitMessages ? 1 : 0) + (keywordConfig.searchFileHistory ? 1 : 0);
+        const totalSearchModes =
+            (keywordConfig.searchCommitMessages ? 1 : 0) +
+            (keywordConfig.searchFileHistory ? 1 : 0) +
+            (keywordConfig.searchFileNames ? 1 : 0);
         const maxTotalFindings = Math.max(50, Math.min(2000, keywordConfig.keywords.length * keywordConfig.maxMatchesPerKeyword * Math.max(1, totalSearchModes)));
         const maxCommitLogCount = 5000;
-        const maxFileHistoryLogCount = 3000;
+        const maxFileHistoryLogCount = Math.min(5000, keywordConfig.shortKeywordFileHistoryMaxCount ?? 3000);
+        const maxFileNameHistoryLogCount = 4000;
 
         const addFinding = (filePath, keyword, description, commitHash, commitDate) => {
             if (findings.length >= maxTotalFindings) {
@@ -2376,6 +2397,15 @@ class LeakLockPanel {
         };
         const commitModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
         const fileModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
+        const fileNameModeMatchCountByKeyword = new Map(keywordConfig.keywords.map((kw) => [kw, 0]));
+        const buildKeywordMatchers = (keywords, options = {}) => keywords.map((keyword) => ({
+            keyword,
+            matches: this._buildKeywordMatcher(keyword, options)
+        }));
+        // Commit-message prefilter uses git --grep substring semantics; keep JS matcher aligned.
+        const commitKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
+        const fileHistoryKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: false });
+        const fileNameKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
 
         try {
             if (keywordConfig.searchCommitMessages) {
@@ -2410,12 +2440,12 @@ class LeakLockPanel {
                     const commitDate = record.slice(firstTab + 1, secondTab).trim();
                     const fullMessage = record.slice(secondTab + 1).trim();
                     const commitMessagePathLabel = this._formatCommitMessagePathLabel(fullMessage, commitHash);
-                    for (const keyword of keywordConfig.keywords) {
+                    for (const { keyword, matches } of commitKeywordMatchers) {
                         const existingCount = commitModeMatchCountByKeyword.get(keyword) || 0;
                         if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
                             continue;
                         }
-                        if (!this._keywordMatchesText(fullMessage, keyword)) {
+                        if (!matches(fullMessage)) {
                             continue;
                         }
                         const added = addFinding(
@@ -2436,88 +2466,342 @@ class LeakLockPanel {
                 this._scanProgress = { stage: 'process', message: 'Searching git file history for configured keywords...' };
                 this._updateWebviewContent();
 
-                const fileHistoryKeywords = keywordConfig.keywords.filter((keyword) => keyword.length > 3);
+                const fileHistoryKeywords = keywordConfig.keywords;
                 if (fileHistoryKeywords.length > 0) {
-                    const combinedPattern = fileHistoryKeywords
-                        .map((keyword) => this._escapeRegex(keyword))
-                        .join('|');
-                    const commitSafetyFactor = 3;
-                    const requestedMaxCount = Math.max(
-                        100,
-                        Math.max(1, keywordConfig.maxMatchesPerKeyword) *
-                            Math.max(1, fileHistoryKeywords.length) *
-                            commitSafetyFactor
-                    );
-                    const gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
-                    const { stdout } = await execFileAsync('git', [
-                        '-C', repoDir,
-                        'log', '--all', '--no-color',
-                        '--regexp-ignore-case',
-                        '--pretty=format:COMMIT%x09%H%x09%aI',
-                        '-p',
-                        '-U0',
-                        '--pickaxe-regex',
-                        '-G', combinedPattern,
-                        `--max-count=${gitMaxCount}`,
-                        '--',
-                        '.'
-                    ], gitLogOptions);
-
-                    const lines = stdout.split('\n');
-                    let currentCommit = null;
-                    let currentDate = null;
-                    let currentFile = null;
-                    for (const rawLine of lines) {
-                        if (findings.length >= maxTotalFindings) {
-                            break;
-                        }
-                        const line = rawLine.trimEnd();
-                        if (!line.trim()) {
+                    const shortKeywords = [];
+                    const longKeywords = [];
+                    for (const keyword of fileHistoryKeywords) {
+                        const normalized = String(keyword || '').trim();
+                        if (!normalized) {
                             continue;
                         }
-                        if (line.startsWith('COMMIT\t')) {
-                            const parts = line.split('\t');
-                            currentCommit = parts[1] || null;
-                            currentDate = parts[2] || null;
-                            currentFile = null;
-                            continue;
-                        }
-                        if (line.startsWith('diff --git ')) {
-                            const match = rawLine.match(/^diff --git a\/(.+?) b\/(.+)$/);
-                            if (match) {
-                                currentFile = match[2];
-                            }
-                            continue;
-                        }
-                        if (!currentCommit || !currentFile) {
-                            continue;
-                        }
-                        // Restrict to added/removed lines only; exclude diff headers.
-                        if (!(line.startsWith('+') || line.startsWith('-')) || line.startsWith('+++') || line.startsWith('---')) {
-                            continue;
-                        }
-                        const patchLine = line.slice(1);
-                        for (const keyword of fileHistoryKeywords) {
-                            const existingCount = fileModeMatchCountByKeyword.get(keyword) || 0;
-                            if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
-                                continue;
-                            }
-                            if (!this._keywordMatchesText(patchLine, keyword)) {
-                                continue;
-                            }
-                            const added = addFinding(
-                                currentFile,
-                                keyword,
-                                `Keyword "${keyword}" found in historical file content changes`,
-                                currentCommit,
-                                currentDate
-                            );
-                            if (added) {
-                                fileModeMatchCountByKeyword.set(keyword, existingCount + 1);
-                            }
+                        if (normalized.length <= 3) {
+                            shortKeywords.push(normalized);
+                        } else {
+                            longKeywords.push(normalized);
                         }
                     }
+                    const fileHistoryMatcherMap = new Map(fileHistoryKeywordMatchers.map((entry) => [entry.keyword, entry.matches]));
+
+                    const runFileHistoryPass = async (passKeywords, options = {}) => {
+                        if (!Array.isArray(passKeywords) || passKeywords.length === 0) {
+                            return;
+                        }
+                        const combinedPattern = passKeywords
+                            .map((keyword) => {
+                                const escaped = this._escapeRegex(keyword);
+                                // git log -G uses POSIX ERE (no \b word-boundary token).
+                                // Keep the prefilter broad and rely on JS matchers for word semantics.
+                                return escaped;
+                            })
+                            .join('|');
+                        const commitSafetyFactor = 3;
+                        const requestedMaxCount = Math.max(
+                            100,
+                            Math.max(1, keywordConfig.maxMatchesPerKeyword) *
+                                Math.max(1, passKeywords.length) *
+                                commitSafetyFactor
+                        );
+                        let gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
+                        if (Number.isFinite(options.maxCountCap) && options.maxCountCap > 0) {
+                            gitMaxCount = Math.max(100, Math.min(gitMaxCount, options.maxCountCap));
+                        }
+
+                        const { stdout } = await execFileAsync('git', [
+                            '-C', repoDir,
+                            'log', '--all', '--no-color',
+                            '--regexp-ignore-case',
+                            '--extended-regexp',
+                            '--pretty=format:COMMIT%x09%H%x09%aI',
+                            '-p',
+                            '-U0',
+                            '--pickaxe-regex',
+                            '-G', combinedPattern,
+                            `--max-count=${gitMaxCount}`,
+                            '--',
+                            '.'
+                        ], gitLogOptions);
+
+                        const lines = stdout.split('\n');
+                        let currentCommit = null;
+                        let currentDate = null;
+                        let currentFile = null;
+                        for (const rawLine of lines) {
+                            if (findings.length >= maxTotalFindings) {
+                                break;
+                            }
+                            const line = rawLine.trimEnd();
+                            if (!line.trim()) {
+                                continue;
+                            }
+                            if (line.startsWith('COMMIT\t')) {
+                                const parts = line.split('\t');
+                                currentCommit = parts[1] || null;
+                                currentDate = parts[2] || null;
+                                currentFile = null;
+                                continue;
+                            }
+                            if (line.startsWith('diff --git ')) {
+                                const match = rawLine.match(/^diff --git a\/(.+?) b\/(.+)$/);
+                                if (match) {
+                                    currentFile = match[2];
+                                }
+                                continue;
+                            }
+                            if (!currentCommit || !currentFile) {
+                                continue;
+                            }
+                            // Restrict to added/removed lines only; exclude diff headers.
+                            if (!(line.startsWith('+') || line.startsWith('-')) || line.startsWith('+++') || line.startsWith('---')) {
+                                continue;
+                            }
+                            const patchLine = line.slice(1);
+                            for (const keyword of passKeywords) {
+                                const existingCount = fileModeMatchCountByKeyword.get(keyword) || 0;
+                                if (existingCount >= keywordConfig.maxMatchesPerKeyword) {
+                                    continue;
+                                }
+                                const matches = fileHistoryMatcherMap.get(keyword);
+                                if (!matches || !matches(patchLine)) {
+                                    continue;
+                                }
+                                const added = addFinding(
+                                    currentFile,
+                                    keyword,
+                                    `Keyword "${keyword}" found in historical file content changes`,
+                                    currentCommit,
+                                    currentDate
+                                );
+                                if (added) {
+                                    fileModeMatchCountByKeyword.set(keyword, existingCount + 1);
+                                }
+                            }
+                        }
+                    };
+
+                    // Process longer keywords with full history window.
+                    await runFileHistoryPass(longKeywords);
+                    // Process short/high-frequency keywords separately with a configurable git max-count cap.
+                    await runFileHistoryPass(shortKeywords, {
+                        maxCountCap: keywordConfig.shortKeywordFileHistoryMaxCount
+                    });
                 }
+            }
+
+            if (keywordConfig.searchFileNames) {
+                this._scanProgress = { stage: 'process', message: 'Searching git history file names for configured keywords...' };
+                this._updateWebviewContent();
+
+                const perKeywordCap = keywordConfig.maxMatchesPerKeyword;
+                const requestedMaxCount = Math.max(100, keywordConfig.keywords.length * perKeywordCap);
+                const gitMaxCount = Math.min(maxFileNameHistoryLogCount, requestedMaxCount);
+                const gitArgs = [
+                    '-C', repoDir,
+                    'log', '--all', '--no-color',
+                    '--name-status',
+                    '-z',
+                    '--pretty=format:%H%x09%aI%x00',
+                    `--max-count=${gitMaxCount}`,
+                    '--',
+                    '.'
+                ];
+                await new Promise((resolve, reject) => {
+                    let currentCommit = null;
+                    let currentDate = null;
+                    let stdoutBuffer = '';
+                    let stdoutBufferIndex = 0;
+                    let stderrBuffer = '';
+                    let pendingNameStatus = null;
+                    let stoppedEarly = false;
+                    let timedOut = false;
+                    let settled = false;
+                    const gitLog = spawn('git', gitArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+                    const stdoutDecoder = new StringDecoder('utf8');
+                    const timeoutMs = Math.max(1000, gitLogOptions.timeout || 20000);
+                    const timeoutHandle = setTimeout(() => {
+                        timedOut = true;
+                        gitLog.kill();
+                    }, timeoutMs);
+
+                    const settleResolve = () => {
+                        if (settled) {
+                            return;
+                        }
+                        settled = true;
+                        clearTimeout(timeoutHandle);
+                        resolve();
+                    };
+
+                    const settleReject = (error) => {
+                        if (settled) {
+                            return;
+                        }
+                        settled = true;
+                        clearTimeout(timeoutHandle);
+                        reject(error);
+                    };
+
+                    const emitFilePaths = (filePaths) => {
+                        if (!Array.isArray(filePaths) || filePaths.length === 0) {
+                            return;
+                        }
+                        for (const fileNamePath of filePaths) {
+                            const fileNamePathLower = String(fileNamePath || '').toLowerCase();
+                            for (const { keyword, matches } of fileNameKeywordMatchers) {
+                                const existingCount = fileNameModeMatchCountByKeyword.get(keyword) || 0;
+                                if (existingCount >= perKeywordCap) {
+                                    continue;
+                                }
+                                if (!matches({ lowerText: fileNamePathLower })) {
+                                    continue;
+                                }
+                                const added = addFinding(
+                                    fileNamePath,
+                                    keyword,
+                                    `Keyword "${keyword}" found in historical file name`,
+                                    currentCommit,
+                                    currentDate
+                                );
+                                if (added) {
+                                    fileNameModeMatchCountByKeyword.set(keyword, existingCount + 1);
+                                }
+                            }
+                        }
+                    };
+
+                    const processNameStatusRecord = (rawRecord) => {
+                        if (findings.length >= maxTotalFindings) {
+                            if (!stoppedEarly) {
+                                stoppedEarly = true;
+                                gitLog.kill();
+                            }
+                            return;
+                        }
+
+                        const record = String(rawRecord || '');
+                        if (!record) {
+                            return;
+                        }
+                        // Detect commit headers by hash/date shape to avoid collisions with filenames.
+                        let commitMatch = /^([0-9a-f]{40})\t([^\t]*)/i.exec(record);
+                        if (!commitMatch) {
+                            // Backward-compatible fallback for legacy markers.
+                            commitMatch = /^COMMIT\t([0-9a-f]{40})\t([^\t]*)/i.exec(record);
+                        }
+                        if (commitMatch) {
+                            currentCommit = commitMatch[1] || null;
+                            currentDate = commitMatch[2] || null;
+                            pendingNameStatus = null;
+                            return;
+                        }
+                        if (!currentCommit) {
+                            return;
+                        }
+
+                        if (pendingNameStatus) {
+                            pendingNameStatus.paths.push(record);
+                            if (pendingNameStatus.paths.length >= pendingNameStatus.expectedPathCount) {
+                                emitFilePaths(pendingNameStatus.paths.slice(0, pendingNameStatus.expectedPathCount));
+                                pendingNameStatus = null;
+                            }
+                            return;
+                        }
+
+                        const isNameStatusToken = (token) => /^[ACDMRTUXTB][0-9]*$/i.test(token);
+                        let statusToken = '';
+                        let initialPaths = [];
+                        const tabIndex = record.indexOf('\t');
+                        if (tabIndex !== -1) {
+                            const maybeStatus = record.slice(0, tabIndex);
+                            if (isNameStatusToken(maybeStatus)) {
+                                statusToken = maybeStatus.toUpperCase();
+                                const pathFromToken = record.slice(tabIndex + 1);
+                                if (pathFromToken) {
+                                    initialPaths.push(pathFromToken);
+                                }
+                            }
+                        }
+                        if (!statusToken && isNameStatusToken(record)) {
+                            statusToken = record.toUpperCase();
+                        }
+                        if (!statusToken) {
+                            return;
+                        }
+
+                        const expectedPathCount = (statusToken.startsWith('R') || statusToken.startsWith('C')) ? 2 : 1;
+                        if (initialPaths.length >= expectedPathCount) {
+                            emitFilePaths(initialPaths.slice(0, expectedPathCount));
+                            return;
+                        }
+                        pendingNameStatus = {
+                            expectedPathCount,
+                            paths: initialPaths
+                        };
+                    };
+
+                    const processStdoutBufferRecords = () => {
+                        let nulIndex = stdoutBuffer.indexOf('\0', stdoutBufferIndex);
+                        while (nulIndex !== -1) {
+                            const record = stdoutBuffer.slice(stdoutBufferIndex, nulIndex);
+                            stdoutBufferIndex = nulIndex + 1;
+                            processNameStatusRecord(record);
+                            nulIndex = stdoutBuffer.indexOf('\0', stdoutBufferIndex);
+                        }
+
+                        // Avoid unbounded growth while minimizing repeated string allocations.
+                        if (stdoutBufferIndex > 1024 * 1024) {
+                            stdoutBuffer = stdoutBuffer.slice(stdoutBufferIndex);
+                            stdoutBufferIndex = 0;
+                        }
+                    };
+
+                    gitLog.stdout.on('data', (chunk) => {
+                        stdoutBuffer += stdoutDecoder.write(chunk);
+                        processStdoutBufferRecords();
+                    });
+
+                    gitLog.stderr.on('data', (chunk) => {
+                        stderrBuffer += chunk.toString();
+                    });
+
+                    gitLog.on('error', (error) => {
+                        settleReject(error);
+                    });
+
+                    gitLog.on('close', (code, signal) => {
+                        const flushText = stdoutDecoder.end();
+                        if (flushText) {
+                            stdoutBuffer += flushText;
+                        }
+                        processStdoutBufferRecords();
+                        if (stdoutBufferIndex < stdoutBuffer.length) {
+                            processNameStatusRecord(stdoutBuffer.slice(stdoutBufferIndex));
+                        }
+                        stdoutBuffer = '';
+                        stdoutBufferIndex = 0;
+                        if (stoppedEarly) {
+                            settleResolve();
+                            return;
+                        }
+                        if (timedOut) {
+                            settleReject(new Error(`git log filename history timed out after ${timeoutMs}ms`));
+                            return;
+                        }
+                        if (code === 0) {
+                            settleResolve();
+                            return;
+                        }
+                        const reason = signal ? `signal ${signal}` : `exit code ${code}`;
+                        const stderrSnippet = stderrBuffer.trim();
+                        const maxStderrLength = 600;
+                        const truncatedStderr = stderrSnippet.length > maxStderrLength
+                            ? `${stderrSnippet.slice(0, maxStderrLength)}...`
+                            : stderrSnippet;
+                        const context = `maxCount=${gitMaxCount}`;
+                        const errorDetail = truncatedStderr ? `: ${truncatedStderr}` : '';
+                        settleReject(new Error(`git log filename history failed (${reason}, ${context})${errorDetail}`));
+                    });
+                });
             }
         } catch (error) {
             console.warn('Keyword history scan skipped:', error.message);
