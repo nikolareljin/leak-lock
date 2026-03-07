@@ -6,7 +6,7 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
 [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
