@@ -1,506 +1,488 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Leak Lock Documentation</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leak Lock — find secrets in git history, remove them from every ref</title>
+<meta name="description" content="A VS Code extension that scans your repository for secrets and rewrites them out of every branch and tag — including the ones that only exist on the remote.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;700&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* Paper is cool and slightly violet — the evidence blocks are the dark ones. */
+  --paper:#F2F1F6;
+  --paper-raised:#FBFAFD;
+  --ink:#211C3B;
+  --ink-soft:#585276;
+  --rule:#D9D6E4;
+  /* Two signal colours, straight from the tool's own output. */
+  --amber:#B4620A;
+  --amber-bright:#F0A030;
+  --mint:#0E7A63;
+  --mint-bright:#4FD6B0;
+  --terminal:#191534;
+  --terminal-dim:#8F88BC;
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background: #f8f9fa;
-        }
+  --display:"Bricolage Grotesque",system-ui,sans-serif;
+  --body:"Public Sans",system-ui,-apple-system,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
 
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 2rem 0;
-            text-align: center;
-        }
+  --gutter:clamp(1.25rem,5vw,4rem);
+  --measure:68rem;
+}
 
-        .header h1 {
-            font-size: 3rem;
-            margin-bottom: 0.5rem;
-        }
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--body);
+  font-size:clamp(1rem,0.96rem + 0.2vw,1.0625rem);
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{font-family:var(--display);font-weight:800;line-height:1.02;letter-spacing:-0.035em;margin:0}
+p{margin:0}
+a{color:inherit}
+code{font-family:var(--mono);font-size:.875em}
 
-        .header p {
-            font-size: 1.2rem;
-            opacity: 0.9;
-        }
+.wrap{max-width:var(--measure);margin-inline:auto;padding-inline:var(--gutter)}
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 2rem;
-        }
+/* ---------- masthead ---------- */
+.masthead{
+  position:sticky;top:0;z-index:50;
+  background:color-mix(in srgb,var(--paper) 88%,transparent);
+  backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--rule);
+}
+.masthead .wrap{display:flex;align-items:center;gap:1.5rem;height:3.5rem}
+.brand{display:flex;align-items:center;gap:.55rem;font-family:var(--display);font-weight:800;letter-spacing:-0.03em;text-decoration:none;font-size:1.05rem;white-space:nowrap}
+.brand svg{width:1.15rem;height:1.15rem;flex:none}
+.masthead nav{margin-left:auto;display:flex;gap:1.25rem;font-size:.875rem;font-weight:500}
+.masthead nav a{color:var(--ink-soft);text-decoration:none;border-bottom:1px solid transparent;padding-bottom:2px;white-space:nowrap}
+.masthead nav a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+@media (max-width:40rem){.masthead nav a.opt{display:none}}
 
-        .nav {
-            background: white;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            position: sticky;
-            top: 0;
-            z-index: 100;
-        }
+/* ---------- hero ---------- */
+.hero{padding-block:clamp(3rem,9vw,6rem) clamp(2rem,5vw,3rem)}
+.eyebrow{
+  font-family:var(--mono);font-size:.75rem;font-weight:400;
+  letter-spacing:.04em;color:var(--ink-soft);
+  display:block;margin-bottom:1.25rem;
+}
+.hero h1{font-size:clamp(2.5rem,1.4rem + 5.2vw,5rem);max-width:16ch}
+/* The pivot of the sentence, and of the product. */
+.hero h1 .turn{display:block;color:var(--amber)}
+.hero .lede{
+  margin-top:1.5rem;max-width:52ch;font-size:clamp(1.0625rem,1rem + 0.35vw,1.25rem);
+  color:var(--ink-soft);
+}
+.hero .lede strong{color:var(--ink);font-weight:600}
 
-        .nav-container {
-            display: flex;
-            justify-content: center;
-            flex-wrap: wrap;
-            gap: 0;
-        }
+.cta-row{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:2rem;align-items:center}
+.btn{
+  display:inline-flex;align-items:center;gap:.5rem;
+  font-family:var(--body);font-weight:600;font-size:.9375rem;
+  padding:.7rem 1.15rem;border-radius:2px;text-decoration:none;
+  border:1px solid var(--ink);transition:transform .12s ease,background .12s ease,color .12s ease;
+}
+.btn-primary{background:var(--ink);color:var(--paper)}
+.btn-primary:hover{background:var(--amber);border-color:var(--amber);transform:translateY(-1px)}
+.btn-ghost{background:transparent;color:var(--ink)}
+.btn-ghost:hover{background:var(--ink);color:var(--paper);transform:translateY(-1px)}
 
-        .nav-item {
-            padding: 1rem 2rem;
-            text-decoration: none;
-            color: #333;
-            font-weight: 500;
-            transition: all 0.3s ease;
-            border-bottom: 3px solid transparent;
-        }
+/* ---------- signature: the ref listing ---------- */
+.evidence{margin-top:clamp(2.5rem,6vw,3.5rem)}
+.evidence-head{display:flex;flex-wrap:wrap;align-items:flex-end;gap:1rem 1.5rem;margin-bottom:.85rem}
+.evidence-head h2{font-size:1.0625rem;font-family:var(--body);font-weight:600;letter-spacing:0}
+.evidence-head p{font-size:.875rem;color:var(--ink-soft);max-width:44ch;margin-top:.25rem}
 
-        .nav-item:hover, .nav-item.active {
-            background: #f8f9fa;
-            border-bottom-color: #667eea;
-            color: #667eea;
-        }
+.toggle{
+  display:inline-flex;border:1px solid var(--rule);border-radius:2px;overflow:hidden;
+  background:var(--paper-raised);margin-left:auto;flex:none;
+}
+.toggle button{
+  font-family:var(--mono);font-size:.75rem;font-weight:400;
+  padding:.5rem .85rem;border:0;background:transparent;color:var(--ink-soft);
+  cursor:pointer;transition:background .15s ease,color .15s ease;
+}
+.toggle button + button{border-left:1px solid var(--rule)}
+.toggle button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.toggle button:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
 
-        .content {
-            padding: 3rem 0;
-        }
+.terminal{
+  background:var(--terminal);
+  border-radius:3px;
+  padding:clamp(1rem,3vw,1.6rem);
+  font-family:var(--mono);font-size:clamp(.7rem,.62rem + .35vw,.8125rem);
+  line-height:1.9;
+  overflow-x:auto;
+  box-shadow:0 1px 0 rgba(33,28,59,.08),0 18px 40px -24px rgba(33,28,59,.55);
+}
+.terminal .cmd{color:var(--terminal-dim);white-space:pre}
+.terminal .cmd::before{content:"$ ";color:var(--mint-bright)}
+.ref-list{list-style:none;margin:.65rem 0 0;padding:0;min-width:30rem}
+.ref-list li{display:flex;align-items:baseline;gap:1rem;color:#E6E3F5;white-space:nowrap}
+.ref-list .path{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis}
+.ref-list .path .ns{color:var(--terminal-dim)}
+.ref-list .verdict{flex:none;transition:color .3s ease}
+.ref-list .state-clean .verdict{color:var(--mint-bright)}
+.ref-list .state-dirty .verdict{color:var(--amber-bright);font-weight:700}
+.terminal .summary{
+  margin-top:.9rem;padding-top:.75rem;border-top:1px solid rgba(143,136,188,.28);
+  white-space:pre-wrap;
+}
+.terminal .summary.is-clean{color:var(--mint-bright)}
+.terminal .summary.is-dirty{color:var(--amber-bright)}
+.caption{margin-top:.75rem;font-size:.8125rem;color:var(--ink-soft);max-width:62ch}
 
-        .docs-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 2rem;
-            margin-top: 2rem;
-        }
+/* On narrow screens the verdict is the whole point, so it must not be the
+   thing that scrolls out of view. Wrap the path instead. */
+@media (max-width:44rem){
+  .ref-list{min-width:0}
+  .ref-list li{display:grid;grid-template-columns:1fr auto;gap:0 1rem;white-space:normal;padding-block:.15rem}
+  .ref-list .path{white-space:normal;word-break:break-all;line-height:1.5}
+  .terminal .cmd{white-space:normal;word-break:break-all}
+}
 
-        .doc-card {
-            background: white;
-            border-radius: 10px;
-            padding: 2rem;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
+@media (prefers-reduced-motion:no-preference){
+  .ref-list li{animation:settle .35s ease both}
+  @keyframes settle{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+}
 
-        .doc-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 8px 25px rgba(0,0,0,0.15);
-        }
+/* ---------- generic section ---------- */
+.section{padding-block:clamp(3rem,7vw,5rem);border-top:1px solid var(--rule)}
+.section-label{font-family:var(--mono);font-size:.75rem;color:var(--ink-soft);display:block;margin-bottom:.9rem}
+.section h2{font-size:clamp(1.75rem,1.3rem + 1.8vw,2.6rem);max-width:20ch}
+.section .intro{margin-top:1rem;max-width:56ch;color:var(--ink-soft)}
 
-        .doc-card h3 {
-            color: #667eea;
-            margin-bottom: 1rem;
-            font-size: 1.5rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
+/* ---------- what it finds ---------- */
+.finds{display:grid;gap:1px;margin-top:2.5rem;background:var(--rule);border:1px solid var(--rule);border-radius:3px;overflow:hidden}
+@media (min-width:48rem){.finds{grid-template-columns:repeat(3,1fr)}}
+.find{background:var(--paper-raised);padding:1.5rem 1.35rem}
+.find h3{font-size:1.0625rem;font-family:var(--body);font-weight:600;letter-spacing:0;margin-bottom:.5rem}
+.find p{font-size:.9375rem;color:var(--ink-soft)}
+.find code{background:var(--paper);padding:.1em .35em;border-radius:2px}
 
-        .doc-card p {
-            color: #666;
-            margin-bottom: 1.5rem;
-        }
+/* ---------- the sequence (order genuinely carries information here) ---------- */
+.sequence{margin-top:2.5rem;counter-reset:step}
+.step{
+  display:grid;grid-template-columns:2.75rem 1fr;gap:1.25rem;
+  padding:1.1rem .75rem 1.1rem 0;border-top:1px solid var(--rule);
+}
+.step:last-child{border-bottom:1px solid var(--rule)}
+.step::before{
+  counter-increment:step;content:counter(step,decimal-leading-zero);
+  font-family:var(--mono);font-size:.8125rem;color:var(--amber);padding-top:.25em;padding-left:.75rem;
+}
+/* ::before occupies column 1; the text keeps column 2 on both rows. */
+.step h3{grid-column:2;font-family:var(--mono);font-size:.9375rem;font-weight:700;letter-spacing:0;line-height:1.5}
+.step p{grid-column:2;font-size:.9375rem;color:var(--ink-soft);margin-top:.3rem;max-width:62ch}
+.step.pivot{background:linear-gradient(90deg,color-mix(in srgb,var(--amber-bright) 16%,transparent),transparent 70%)}
+.step.pivot h3{color:var(--amber)}
 
-        .doc-card ul {
-            list-style: none;
-            margin-bottom: 1.5rem;
-        }
+/* ---------- install ---------- */
+.install{display:grid;gap:1.25rem;margin-top:2.5rem}
+@media (min-width:44rem){.install{grid-template-columns:repeat(3,1fr)}}
+.route{border:1px solid var(--rule);border-radius:3px;padding:1.35rem;background:var(--paper-raised);display:flex;flex-direction:column;gap:.6rem}
+.route h3{font-size:.9375rem;font-family:var(--body);font-weight:600;letter-spacing:0}
+.route p{font-size:.875rem;color:var(--ink-soft);flex:1}
+.route pre{
+  margin:0;background:var(--terminal);color:#E6E3F5;border-radius:2px;
+  padding:.7rem .8rem;font-family:var(--mono);font-size:.75rem;overflow-x:auto;line-height:1.6;
+}
+.route a{font-size:.875rem;font-weight:600;color:var(--amber);text-decoration:none;border-bottom:1px solid currentColor;align-self:flex-start}
+.route a:hover{color:var(--ink)}
 
-        .doc-card li {
-            padding: 0.5rem 0;
-            border-bottom: 1px solid #eee;
-        }
+/* ---------- expectations ---------- */
+.expect{margin-top:2.5rem;display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:3px;overflow:hidden}
+@media (min-width:44rem){.expect{grid-template-columns:1fr 1fr}}
+.expect > div{background:var(--paper-raised);padding:1.4rem 1.35rem}
+.expect h3{font-size:.9375rem;font-family:var(--body);font-weight:600;letter-spacing:0;margin-bottom:.45rem;display:flex;gap:.5rem;align-items:baseline}
+.expect h3 .mark{font-family:var(--mono);font-size:.8125rem;flex:none}
+.expect .warn .mark{color:var(--amber)}
+.expect .ok .mark{color:var(--mint)}
+.expect p{font-size:.9375rem;color:var(--ink-soft)}
 
-        .doc-card li:last-child {
-            border-bottom: none;
-        }
+/* ---------- footer ---------- */
+footer{border-top:1px solid var(--rule);padding-block:2.5rem 3.5rem;font-size:.875rem;color:var(--ink-soft)}
+footer .wrap{display:flex;flex-wrap:wrap;gap:1rem 2rem;align-items:center}
+footer a{color:var(--ink-soft);text-decoration:none;border-bottom:1px solid var(--rule)}
+footer a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+footer .credit{margin-left:auto}
 
-        .btn {
-            display: inline-block;
-            padding: 0.75rem 1.5rem;
-            background: #667eea;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            font-weight: 500;
-            transition: background 0.3s ease;
-        }
-
-        .btn:hover {
-            background: #5a67d8;
-        }
-
-        .btn-secondary {
-            background: #718096;
-        }
-
-        .btn-secondary:hover {
-            background: #4a5568;
-        }
-
-        .quick-start {
-            background: white;
-            border-radius: 10px;
-            padding: 2rem;
-            margin: 2rem 0;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-
-        .quick-start h2 {
-            color: #667eea;
-            margin-bottom: 1rem;
-        }
-
-        .steps {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 1.5rem;
-            margin-top: 1.5rem;
-        }
-
-        .step {
-            text-align: center;
-            padding: 1.5rem;
-            border: 2px solid #e2e8f0;
-            border-radius: 10px;
-            transition: border-color 0.3s ease;
-        }
-
-        .step:hover {
-            border-color: #667eea;
-        }
-
-        .step-number {
-            background: #667eea;
-            color: white;
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 1rem;
-            font-weight: bold;
-        }
-
-        .footer {
-            background: #2d3748;
-            color: white;
-            text-align: center;
-            padding: 2rem 0;
-            margin-top: 3rem;
-        }
-
-        .features {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 1.5rem;
-            margin: 2rem 0;
-        }
-
-        .feature {
-            background: white;
-            padding: 1.5rem;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-
-        .feature-icon {
-            font-size: 2rem;
-            margin-bottom: 1rem;
-        }
-
-        .code {
-            background: #f7fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 5px;
-            padding: 1rem;
-            font-family: 'Monaco', 'Consolas', monospace;
-            margin: 1rem 0;
-            overflow-x: auto;
-        }
-
-        @media (max-width: 768px) {
-            .container {
-                padding: 0 1rem;
-            }
-            
-            .header h1 {
-                font-size: 2rem;
-            }
-            
-            .nav-item {
-                padding: 0.75rem 1rem;
-            }
-        }
-    </style>
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+</style>
 </head>
 <body>
-    <header class="header">
-        <div class="container">
-            <h1>🛡️ Leak Lock</h1>
-            <p>Secure your code repositories by detecting and removing sensitive information</p>
-        </div>
-    </header>
 
-    <nav class="nav">
-        <div class="container">
-            <div class="nav-container">
-                <a href="#overview" class="nav-item active">Overview</a>
-                <a href="#quick-start" class="nav-item">Quick Start</a>
-                <a href="#documentation" class="nav-item">Documentation</a>
-                <a href="#demo" class="nav-item">Demo</a>
-                <a href="#development" class="nav-item">Development</a>
-            </div>
-        </div>
+<header class="masthead">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2 4 5.5v6c0 4.6 3.2 8.9 8 10.5 4.8-1.6 8-5.9 8-10.5v-6L12 2Z"/></svg>
+      Leak Lock
+    </a>
+    <nav>
+      <a class="opt" href="#finds">What it finds</a>
+      <a href="#rewrite">How it removes</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/nikolareljin/leak-lock">GitHub</a>
     </nav>
+  </div>
+</header>
 
-    <main class="content">
-        <div class="container">
-            <!-- Overview Section -->
-            <section id="overview">
-                <h2>🌟 Overview</h2>
-                <p>Leak Lock is a powerful VS Code extension that helps developers secure their repositories by automatically detecting and removing sensitive information from git history.</p>
-                
-                <div class="features">
-                    <div class="feature">
-                        <div class="feature-icon">🔍</div>
-                        <h3>Smart Detection</h3>
-                        <p>Detects 100+ types of secrets with low false positives using advanced pattern matching</p>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">🖥️</div>
-                        <h3>Modern Interface</h3>
-                        <p>Full-width main area display perfect for reviewing scan results and taking action</p>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">🤖</div>
-                        <h3>Automated Workflow</h3>
-                        <p>One-click dependency installation and guided secret removal process</p>
-                    </div>
-                    <div class="feature">
-                        <div class="feature-icon">🛡️</div>
-                        <h3>Enterprise Ready</h3>
-                        <p>Docker integration, automated cleanup, and secure handling of sensitive data</p>
-                    </div>
-                </div>
-            </section>
+<main id="top">
 
-            <!-- Quick Start Section -->
-            <section id="quick-start">
-                <div class="quick-start">
-                    <h2>🚀 Quick Start</h2>
-                    <p>Get started with Leak Lock in minutes</p>
-                    
-                    <div class="steps">
-                        <div class="step">
-                            <div class="step-number">1</div>
-                            <h3>Install</h3>
-                            <p>Install from VS Code Marketplace or load from VSIX file</p>
-                            <div class="code">code --install-extension leak-lock</div>
-                        </div>
-                        <div class="step">
-                            <div class="step-number">2</div>
-                            <h3>Open</h3>
-                            <p>Click the shield icon in the activity bar and launch the scanner</p>
-                        </div>
-                        <div class="step">
-                            <div class="step-number">3</div>
-                            <h3>Setup</h3>
-                            <p>Install dependencies (Docker, Nosey Parker, BFG tool) with one click</p>
-                        </div>
-                        <div class="step">
-                            <div class="step-number">4</div>
-                            <h3>Scan</h3>
-                            <p>Scan your repository and review detected secrets in the results table</p>
-                        </div>
-                        <div class="step">
-                            <div class="step-number">5</div>
-                            <h3>Clean</h3>
-                            <p>Select secrets to remove and execute git history cleanup</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
+  <section class="hero wrap">
+    <span class="eyebrow">VS Code extension · scans with Nosey Parker · rewrites with BFG or git</span>
+    <h1>Your secret isn't in your repo.<span class="turn">It's in your refs.</span></h1>
+    <p class="lede">
+      Leak Lock scans a repository's full git history for credentials, then removes them from
+      <strong>every branch and tag</strong> — including the ones that exist only on the remote,
+      which is where most cleanups quietly leave the key behind.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#install">Install the extension</a>
+      <a class="btn btn-ghost" href="#rewrite">See how the rewrite works</a>
+    </div>
 
-            <!-- Documentation Section -->
-            <section id="documentation">
-                <h2>📖 Documentation</h2>
-                <div class="docs-grid">
-                    <div class="doc-card">
-                        <h3>👥 User Documentation</h3>
-                        <p>Complete guides for using Leak Lock effectively</p>
-                        <ul>
-                            <li>📖 Complete User Guide</li>
-                            <li>⚡ Quick Reference</li>
-                            <li>❓ FAQ & Troubleshooting</li>
-                            <li>🛡️ Security Best Practices</li>
-                        </ul>
-                        <a href="../USER_GUIDE.md" class="btn">Read User Guide</a>
-                    </div>
-
-                    <div class="doc-card">
-                        <h3>🛠️ Technical Documentation</h3>
-                        <p>Deep dive into architecture and APIs</p>
-                        <ul>
-                            <li>🏗️ Architecture Overview</li>
-                            <li>🔧 Complete API Reference</li>
-                            <li>📁 File Structure Guide</li>
-                            <li>📊 Data Flow Diagrams</li>
-                        </ul>
-                        <a href="../ARCHITECTURE.md" class="btn">View Architecture</a>
-                    </div>
-
-                    <div class="doc-card">
-                        <h3>🚀 Development</h3>
-                        <p>Contributing and development setup</p>
-                        <ul>
-                            <li>🏁 Development Setup</li>
-                            <li>🤝 Contributing Guidelines</li>
-                            <li>🧪 Testing Procedures</li>
-                            <li>📦 Release Process</li>
-                        </ul>
-                        <a href="../DEVELOPMENT.md" class="btn btn-secondary">Start Contributing</a>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Demo Section -->
-            <section id="demo">
-                <h2>📸 Demo & Screenshots</h2>
-                <div class="quick-start">
-                    <h3>🎬 Extension Walkthrough</h3>
-                    <p>See Leak Lock in action from installation to secret removal</p>
-                    
-                    <!-- Placeholder for demo content -->
-                    <div style="background: #f7fafc; border: 2px dashed #cbd5e0; padding: 3rem; text-align: center; margin: 1rem 0; border-radius: 10px;">
-                        <h4>📹 Demo Video Coming Soon</h4>
-                        <p>Complete walkthrough showing:</p>
-                        <ul style="list-style: none; margin: 1rem 0;">
-                            <li>✅ Extension installation and setup</li>
-                            <li>✅ Dependency installation process</li>
-                            <li>✅ Repository scanning workflow</li>
-                            <li>✅ Results review and secret selection</li>
-                            <li>✅ BFG cleanup execution</li>
-                        </ul>
-                    </div>
-
-                    <h3>🖼️ Interface Screenshots</h3>
-                    <div class="features">
-                        <div class="feature">
-                            <h4>🏠 Welcome View</h4>
-                            <p>Activity bar integration with launch button</p>
-                        </div>
-                        <div class="feature">
-                            <h4>🖥️ Main Scanner</h4>
-                            <p>Full-width interface with all controls</p>
-                        </div>
-                        <div class="feature">
-                            <h4>📊 Results Display</h4>
-                            <p>Detailed table with secret classifications</p>
-                        </div>
-                        <div class="feature">
-                            <h4>🔧 Remediation</h4>
-                            <p>Step-by-step secret removal process</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Development Section -->
-            <section id="development">
-                <h2>🛠️ Development</h2>
-                <div class="docs-grid">
-                    <div class="doc-card">
-                        <h3>🏁 Getting Started</h3>
-                        <p>Set up your development environment</p>
-                        <div class="code">git clone https://github.com/nikolareljin/leak-lock.git
-cd leak-lock
-npm install
-code .</div>
-                        <p>Press F5 to launch the extension in development mode</p>
-                    </div>
-
-                    <div class="doc-card">
-                        <h3>🧪 Testing</h3>
-                        <p>Run tests and validate functionality</p>
-                        <div class="code">npm test</div>
-                        <p>Manual testing with F5 launch and extension host</p>
-                    </div>
-
-                    <div class="doc-card">
-                        <h3>🤝 Contributing</h3>
-                        <p>Areas where you can help</p>
-                        <ul>
-                            <li>🔍 New secret detection patterns</li>
-                            <li>🎨 UI/UX improvements</li>
-                            <li>📖 Documentation enhancements</li>
-                            <li>🧪 Test coverage expansion</li>
-                        </ul>
-                    </div>
-                </div>
-            </section>
+    <div class="evidence">
+      <div class="evidence-head">
+        <div>
+          <h2>After the cleanup, on the server</h2>
+          <p>Same repository, same rewrite. The difference is which refs actually got pushed.</p>
         </div>
-    </main>
-
-    <footer class="footer">
-        <div class="container">
-            <p>&copy; 2025 Leak Lock. Made with ❤️ for secure development.</p>
-            <p>
-                <a href="https://github.com/nikolareljin/leak-lock" style="color: #90cdf4; text-decoration: none;">GitHub</a> |
-                <a href="https://marketplace.visualstudio.com/items?itemName=leak-lock" style="color: #90cdf4; text-decoration: none;">VS Code Marketplace</a> |
-                <a href="../index.md" style="color: #90cdf4; text-decoration: none;">Documentation</a>
-            </p>
+        <div class="toggle" role="group" aria-label="Compare cleanup approaches">
+          <button type="button" data-mode="naive" aria-pressed="true">git push --force --all</button>
+          <button type="button" data-mode="leaklock" aria-pressed="false">Leak Lock</button>
         </div>
-    </footer>
+      </div>
 
-    <script>
-        // Simple navigation highlighting
-        document.addEventListener('DOMContentLoaded', function() {
-            const navItems = document.querySelectorAll('.nav-item');
-            const sections = document.querySelectorAll('section');
+      <div class="terminal">
+        <div class="cmd">git for-each-ref --format='%(refname)' | leak-lock verify</div>
+        <ul class="ref-list" id="refList"></ul>
+        <div class="summary" id="refSummary" role="status"></div>
+      </div>
+      <p class="caption" id="refCaption"></p>
+    </div>
+  </section>
 
-            function updateActiveNav() {
-                let current = '';
-                sections.forEach(section => {
-                    const sectionTop = section.offsetTop;
-                    const sectionHeight = section.clientHeight;
-                    if (scrollY >= sectionTop - 200) {
-                        current = section.getAttribute('id');
-                    }
-                });
+  <section class="section wrap" id="finds">
+    <span class="section-label">what it finds</span>
+    <h2>Three passes over the same repository</h2>
+    <p class="intro">
+      Scanning runs Nosey Parker in Docker across your working tree and your history, then adds an
+      optional keyword pass for the things regexes don't catch.
+    </p>
+    <div class="finds">
+      <div class="find">
+        <h3>Credentials in your files</h3>
+        <p>Over 100 credential types — API keys, tokens, private keys, database URLs — each with the file and line, clickable straight into the editor.</p>
+      </div>
+      <div class="find">
+        <h3>Credentials in your history</h3>
+        <p>A secret that was committed and later deleted is still in the history. Those findings carry the branch, commit hash, and date they came from.</p>
+      </div>
+      <div class="find">
+        <h3>Keywords you choose</h3>
+        <p>An opt-in pass over commit messages, historical file contents, and filenames. Useful for terms like <code>id_rsa</code> or your own naming conventions.</p>
+      </div>
+    </div>
+  </section>
 
-                navItems.forEach(item => {
-                    item.classList.remove('active');
-                    if (item.getAttribute('href') === '#' + current) {
-                        item.classList.add('active');
-                    }
-                });
-            }
+  <section class="section wrap" id="rewrite">
+    <span class="section-label">how it removes · v0.6.0</span>
+    <h2>Nine steps, in this order</h2>
+    <p class="intro">
+      The order is the point. Every rewrite — BFG, <code>filter-branch</code>, or <code>filter-repo</code> —
+      runs this sequence, whether you press the button in the panel or copy the generated script and
+      run it yourself.
+    </p>
 
-            window.addEventListener('scroll', updateActiveNav);
-            
-            // Smooth scrolling for navigation links
-            navItems.forEach(item => {
-                item.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    const targetId = this.getAttribute('href').substring(1);
-                    const targetSection = document.getElementById(targetId);
-                    if (targetSection) {
-                        targetSection.scrollIntoView({ behavior: 'smooth' });
-                    }
-                });
-            });
-        });
-    </script>
+    <div class="sequence">
+      <div class="step">
+        <h3>git fetch --prune --tags</h3>
+        <p>Plan against current refs, not whatever your last fetch happened to leave behind.</p>
+      </div>
+      <div class="step">
+        <h3>Check for unpushed commits</h3>
+        <p>Step 4 resets local branches to their remote counterparts. If a local branch is ahead, those commits would be discarded — so the rewrite stops and names the branches instead.</p>
+      </div>
+      <div class="step">
+        <h3>Detach HEAD</h3>
+        <p>Git refuses to force-update the branch you're standing on. Without detaching, the loop below silently skips exactly that branch.</p>
+      </div>
+      <div class="step pivot">
+        <h3>Create a local branch for every remote branch</h3>
+        <p>This is the step that closes the leak. <code>git push --force --all</code> expands to <code>refs/heads/*</code> only, so a branch that exists solely as <code>refs/remotes/origin/*</code> gets rewritten locally and never pushed — and the old history returns on your next fetch.</p>
+      </div>
+      <div class="step">
+        <h3>Rewrite across all refs</h3>
+        <p>BFG for speed, <code>filter-branch</code> for exact paths, or <code>filter-repo</code> for text replacement. All of them run over every ref.</p>
+      </div>
+      <div class="step">
+        <h3>Drop backup refs, expire the reflog, repack</h3>
+        <p><code>refs/original/*</code> and the reflog still point at the old objects. Until they're gone, so is the secret — locally, at least.</p>
+      </div>
+      <div class="step">
+        <h3>git push --force --atomic</h3>
+        <p>Atomic matters: if one ref is rejected — a protected branch, say — the server rejects the whole push, instead of leaving you with some branches clean and others still leaking.</p>
+      </div>
+      <div class="step">
+        <h3>Restore your branch</h3>
+        <p>You end up back on the branch you started from, not detached at some rewritten commit.</p>
+      </div>
+      <div class="step">
+        <h3>Verify every ref on the server</h3>
+        <p>Re-fetch, then check each remote branch and tag. Anything still carrying the secret is reported by name. A cleanup you can't verify isn't finished.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section wrap" id="install">
+    <span class="section-label">install</span>
+    <h2>Three ways in</h2>
+    <p class="intro">
+      Docker, Nosey Parker, Java, and BFG are set up on first run — the panel shows what's already
+      present and installs the rest.
+    </p>
+    <div class="install">
+      <div class="route">
+        <h3>VS Code Marketplace</h3>
+        <p>Search for “Leak Lock” in the Extensions view, or open the listing directly.</p>
+        <a href="https://marketplace.visualstudio.com/items?itemName=nikolareljin.leak-lock">Open the listing</a>
+      </div>
+      <div class="route">
+        <h3>Command line</h3>
+        <p>If you'd rather not leave the terminal.</p>
+        <pre><code>code --install-extension \
+  nikolareljin.leak-lock</code></pre>
+      </div>
+      <div class="route">
+        <h3>From a VSIX</h3>
+        <p>Take a packaged build from the releases page and install the file directly.</p>
+        <a href="https://github.com/nikolareljin/leak-lock/releases">Browse releases</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section wrap" id="expect">
+    <span class="section-label">what to expect</span>
+    <h2>It rewrites history. Plan for that.</h2>
+    <p class="intro">
+      Removing a secret from git means rewriting every commit that touched it. Here's what that
+      costs, and what the extension does to keep it survivable.
+    </p>
+    <div class="expect">
+      <div class="warn">
+        <h3><span class="mark">!</span> Every commit hash changes</h3>
+        <p>Everyone working on the repository re-clones or hard-resets after the rewrite. Agree on a time before you run it.</p>
+      </div>
+      <div class="warn">
+        <h3><span class="mark">!</span> Unpushed work blocks the rewrite</h3>
+        <p>If a local branch has commits the remote doesn't, the rewrite stops and lists them. Push them first — Leak Lock won't discard them for you.</p>
+      </div>
+      <div class="warn">
+        <h3><span class="mark">!</span> The credential is already compromised</h3>
+        <p>Anything that reached a remote should be treated as leaked. Rotate the credential first; cleaning history is the second step, not the first.</p>
+      </div>
+      <div class="ok">
+        <h3><span class="mark">✓</span> Nothing runs without review</h3>
+        <p>Every cleanup is prepared first: a full script you can read, save, and run yourself, plus a plan naming each ref that will be force-updated.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Leak Lock — MIT licensed</span>
+    <a href="https://github.com/nikolareljin/leak-lock">Source</a>
+    <a href="https://github.com/nikolareljin/leak-lock/blob/main/docs/USER_GUIDE.md">User guide</a>
+    <a href="https://github.com/nikolareljin/leak-lock/blob/main/docs/REMOVE_FILES.md">Removing files</a>
+    <a href="https://github.com/nikolareljin/leak-lock/issues">Report an issue</a>
+    <span class="credit">Scanning by <a href="https://github.com/praetorian-inc/noseyparker">Nosey Parker</a>, rewriting by <a href="https://rtyley.github.io/bfg-repo-cleaner/">BFG</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  // Both states are the same repository after the same rewrite. Only the push
+  // strategy differs — which is exactly the argument this page is making.
+  var REFS = [
+    { ns: 'refs/heads/',          name: 'main',            remoteOnly: false },
+    { ns: 'refs/heads/',          name: 'release/0.4.1',   remoteOnly: false },
+    { ns: 'refs/remotes/origin/', name: 'feat/checkout',   remoteOnly: true  },
+    { ns: 'refs/remotes/origin/', name: 'fix/webhook-url', remoteOnly: true  },
+    { ns: 'refs/tags/',           name: 'v1.0.0',          remoteOnly: false }
+  ];
+
+  var MODES = {
+    naive: {
+      isDirty: function (ref) { return ref.remoteOnly; },
+      summary: 'STILL PRESENT: 2 refs\nrefs/heads/* was pushed. The remote-only branches were not.',
+      caption: '“--all” expands to refs/heads/* only. Branches that exist just on the remote are rewritten locally, never pushed, and restore the old history on your next fetch.'
+    },
+    leaklock: {
+      isDirty: function () { return false; },
+      summary: 'Verified clean on every remote ref.',
+      caption: 'Leak Lock creates a local branch for every remote branch before rewriting, pushes with --atomic, then re-fetches and checks each ref on the server.'
+    }
+  };
+
+  var list = document.getElementById('refList');
+  var summary = document.getElementById('refSummary');
+  var caption = document.getElementById('refCaption');
+  var buttons = Array.prototype.slice.call(document.querySelectorAll('.toggle button'));
+
+  function render(mode) {
+    var config = MODES[mode];
+    list.innerHTML = '';
+
+    REFS.forEach(function (ref, i) {
+      var dirty = config.isDirty(ref);
+
+      var li = document.createElement('li');
+      li.className = dirty ? 'state-dirty' : 'state-clean';
+      li.style.animationDelay = (i * 45) + 'ms';
+
+      var path = document.createElement('span');
+      path.className = 'path';
+      var ns = document.createElement('span');
+      ns.className = 'ns';
+      ns.textContent = ref.ns;
+      path.appendChild(ns);
+      path.appendChild(document.createTextNode(ref.name));
+
+      var verdict = document.createElement('span');
+      verdict.className = 'verdict';
+      verdict.textContent = dirty ? 'STILL PRESENT' : 'clean';
+
+      li.appendChild(path);
+      li.appendChild(verdict);
+      list.appendChild(li);
+    });
+
+    summary.textContent = config.summary;
+    summary.className = 'summary ' + (mode === 'naive' ? 'is-dirty' : 'is-clean');
+    caption.textContent = config.caption;
+
+    buttons.forEach(function (btn) {
+      btn.setAttribute('aria-pressed', String(btn.dataset.mode === mode));
+    });
+  }
+
+  buttons.forEach(function (btn) {
+    btn.addEventListener('click', function () { render(btn.dataset.mode); });
+  });
+
+  render('naive');
+}());
+</script>
+
 </body>
 </html>
