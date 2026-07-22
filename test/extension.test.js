@@ -184,3 +184,27 @@ suite('Scan finding selection', () => {
 		assert.deepStrictEqual([...panel._ensureScanSelection()], [0]);
 	});
 });
+
+suite('BFG target escaping', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel() {
+		return new LeakLockPanel({ fsPath: '/tmp/ext' });
+	}
+
+	// A name with regex metacharacters must not widen what BFG deletes. Both
+	// combined and individual modes have to escape it the same way.
+	const TARGETS = [{ path: '/repo/[old].env', type: 'file', base: '[old].env' }];
+
+	test('combined mode escapes regex metacharacters', () => {
+		const args = panel()._buildBfgArgs(TARGETS);
+		assert.deepStrictEqual(args, ['--delete-files', '\\[old\\]\\.env']);
+	});
+
+	test('individual-mode script escapes each target the same way', () => {
+		const script = panel()._buildIndividualBfgCommands('/repo', TARGETS);
+		assert.ok(script.includes('--delete-files'), 'emits the delete flag');
+		assert.ok(script.includes('\\[old\\]\\.env'), 'escapes the metacharacters');
+		assert.ok(!/--delete-files '\[old\]\.env'/.test(script), 'raw unescaped name must not appear');
+	});
+});
