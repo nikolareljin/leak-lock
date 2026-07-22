@@ -1,5 +1,20 @@
 # Change Log
 
+## 0.6.0
+### Added
+- **Finding Selection Controls**: The scan results table now has a header select-all checkbox, `Select all` / `Clear all` buttons, and a live "N of M cleanable findings selected" counter. Cleanup buttons are disabled while nothing is selected.
+- **Ref-by-Ref Push Plan**: Preparing a cleanup shows exactly which branches will be force-updated, which exist only on the remote, which will be created, and which tags are affected — instead of a blanket `git push --force --all` (LL-002).
+- **Rewrite Preflight**: All refs are refreshed before a rewrite is planned, and the rewrite is blocked (with the branch list) when local branches hold commits the remote does not have (LL-001).
+- **Post-Run Verification**: After a cleanup, every remote branch and tag is re-checked and any ref where the target survived is reported.
+- **Save as .sh**: The prepared cleanup is a complete, reviewable bash script that can be copied or saved to disk.
+
+### Fixed
+- **History Rewrites Now Reach Every Remote Branch**: `git push --force --all` expands to `refs/heads/*` only, so branches that existed solely as `refs/remotes/origin/*` were rewritten locally but never pushed — the leaked secret survived on the server and returned on the next fetch. Leak Lock now materialises a local branch for every remote branch before rewriting and pushes with `--atomic`.
+- **Selection No Longer Resets On Prepare**: Checkbox state and replacement values are held by the extension rather than the webview DOM, so preparing a command (which re-renders the panel) no longer re-checks every unchecked finding or discards edited replacement text.
+- **Git-History Keyword Hits No Longer Falsely Selectable**: These findings rendered as checked but were silently dropped during cleanup; they are now consistently marked as excluded.
+- **`git filter-repo` Remote Restoration**: `filter-repo` deletes the `origin` remote by design, which made the subsequent force-push fail. The remote is now restored before pushing.
+- **BFG Failures No Longer Force-Push**: A failed BFG run previously continued to the force-push stage, rewriting the remote for a rewrite that never happened.
+
 ## 0.5.0
 ### Added
 - **Expanded Git-History Text Search**: Supports arbitrary text terms across commit messages and historical file content without skipping short terms.

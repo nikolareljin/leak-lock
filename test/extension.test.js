@@ -41,3 +41,146 @@ suite('Leak Lock Extension Test Suite', () => {
 		assert.strictEqual(true, typeof vscode !== 'undefined');
 	});
 });
+
+suite('Ref-complete rewrite script', () => {
+	const gitRewrite = require('../git-rewrite');
+
+	function script(extra = {}) {
+		return gitRewrite.buildRewriteScript({
+			repoDir: '/tmp/repo',
+			rewriteLines: ['git filter-branch --force -- --all'],
+			verifyRegex: '(^|/)secret\\.txt$',
+			...extra
+		});
+	}
+
+	test('materialises a local branch for every remote branch', () => {
+		const out = script();
+		// Without this loop, remote-only branches keep the leaked history.
+		assert.ok(out.includes("refs/remotes/origin"), 'should enumerate remote refs');
+		assert.ok(out.includes('git branch --force --no-track'), 'should materialise remote branches');
+		assert.ok(out.includes('git checkout --detach'), 'must detach before force-updating branches');
+	});
+
+	test('pushes atomically and never with a bare --force --all', () => {
+		const out = script();
+		assert.ok(out.includes('git push --force --atomic --all'), 'branches pushed atomically');
+		assert.ok(out.includes('git push --force --atomic --tags'), 'tags pushed atomically');
+		// Comment lines quote the old broken command on purpose - only check code.
+		const code = out.split('\n').filter(line => !line.trim().startsWith('#'));
+		const nonAtomic = code.filter(line => /git push --force --(all|tags)\b/.test(line));
+		assert.deepStrictEqual(nonAtomic, [], 'every push must go through --atomic');
+	});
+
+	test('blocks when local branches hold unpushed commits', () => {
+		const out = script();
+		assert.ok(out.includes('git rev-list --count'), 'compares local against remote');
+		assert.ok(out.includes('Refusing to rewrite'), 'aborts instead of discarding commits');
+		assert.ok(out.includes('exit 1'), 'non-zero exit on the blocked path');
+	});
+
+	test('verifies every remote ref after pushing', () => {
+		const out = script();
+		const verifyIndex = out.indexOf('git ls-tree -r --name-only');
+		const pushIndex = out.indexOf('git push --force --atomic --all');
+		assert.ok(verifyIndex > -1, 'emits a verification loop');
+		assert.ok(verifyIndex > pushIndex, 'verification runs after the push');
+		assert.ok(out.includes('STILL PRESENT'), 'reports refs that are still dirty');
+	});
+
+	test('restores the remote that git filter-repo deletes', () => {
+		const out = script({ restoreRemote: true, remoteUrl: 'git@github.com:acme/repo.git' });
+		assert.ok(
+			out.includes('git remote add') && out.includes('git@github.com:acme/repo.git'),
+			're-adds the remote before pushing'
+		);
+		const addIndex = out.indexOf('git remote add');
+		const pushIndex = out.indexOf('git push --force --atomic --all');
+		assert.ok(addIndex < pushIndex, 'remote must be restored before the push');
+	});
+
+	test('shellQuote neutralises embedded quotes', () => {
+		assert.strictEqual(gitRewrite.shellQuote("a'b"), `'a'\\''b'`);
+		assert.strictEqual(gitRewrite.shellQuote('plain'), `'plain'`);
+	});
+
+	test('escapeRegex escapes regex metacharacters', () => {
+		assert.strictEqual(gitRewrite.escapeRegex('a.b*c'), 'a\\.b\\*c');
+	});
+
+	test('AheadBranchesError names the branches that would lose commits', () => {
+		const err = new gitRewrite.AheadBranchesError([{ branch: 'feature', count: 3 }]);
+		assert.strictEqual(err.name, 'AheadBranchesError');
+		assert.ok(err.message.includes('feature'));
+		assert.deepStrictEqual(err.branches, [{ branch: 'feature', count: 3 }]);
+	});
+});
+
+suite('Scan finding selection', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panelWith(results) {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._scanResults = results;
+		panel._resetScanSelection();
+		return panel;
+	}
+
+	const FINDINGS = [
+		{ fullSecret: 'aaa', severity: 'high' },                       // 0 eligible
+		{ fullSecret: 'bbb', isDependency: true },                     // 1 dependency
+		{ fullSecret: 'ccc', includeInCleanup: false },                // 2 excluded
+		{ fullSecret: 'ddd', ruleName: 'git_history_keyword' },        // 3 keyword-only
+		{ fullSecret: 'eee' }                                          // 4 eligible
+	];
+
+	test('only cleanable findings are selectable by default', () => {
+		const panel = panelWith(FINDINGS);
+		assert.deepStrictEqual(panel._eligibleFindingIndexes(), [0, 4]);
+		assert.deepStrictEqual([...panel._ensureScanSelection()], [0, 4]);
+	});
+
+	test('git-history keyword hits are never offered for cleanup', () => {
+		const panel = panelWith(FINDINGS);
+		// These used to render as checked but were silently dropped at resolve time.
+		assert.strictEqual(panel._isCleanupEligible(FINDINGS[3]), false);
+		panel._setScanSelection(3, true);
+		assert.ok(!panel._ensureScanSelection().has(3));
+	});
+
+	test('deselecting a finding survives a re-render', () => {
+		const panel = panelWith(FINDINGS);
+		panel._setScanSelection(0, false);
+		// _resolveScanReplacements reads persisted state, not the webview DOM,
+		// so a prepare-triggered re-render cannot resurrect the finding.
+		const resolved = panel._resolveScanReplacements({ 'idx:0': '*****', 'idx:4': '*****' });
+		assert.deepStrictEqual(Object.keys(resolved), ['eee']);
+	});
+
+	test('clear all then select all round-trips', () => {
+		const panel = panelWith(FINDINGS);
+		panel._setAllScanSelection(false);
+		assert.strictEqual(panel._ensureScanSelection().size, 0);
+		assert.deepStrictEqual(panel._resolveScanReplacements({}), {});
+		panel._setAllScanSelection(true);
+		assert.deepStrictEqual([...panel._ensureScanSelection()], [0, 4]);
+	});
+
+	test('custom replacement values persist per finding', () => {
+		const panel = panelWith(FINDINGS);
+		panel._setScanReplacement(0, 'REDACTED');
+		assert.strictEqual(panel._getReplacementValue(0), 'REDACTED');
+		assert.strictEqual(panel._getReplacementValue(4), '*****');
+		const resolved = panel._resolveScanReplacements({});
+		assert.strictEqual(resolved['aaa'], 'REDACTED');
+		assert.strictEqual(resolved['eee'], '*****');
+	});
+
+	test('a new scan drops selection from the previous result set', () => {
+		const panel = panelWith(FINDINGS);
+		panel._setAllScanSelection(false);
+		panel._scanResults = [{ fullSecret: 'zzz' }];
+		panel._resetScanSelection();
+		assert.deepStrictEqual([...panel._ensureScanSelection()], [0]);
+	});
+});
