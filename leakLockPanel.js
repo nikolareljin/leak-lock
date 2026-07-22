@@ -1002,6 +1002,19 @@ class LeakLockPanel {
                         refreshSelectionUi();
                     }
 
+                    // Wire the bulk controls via addEventListener rather than inline
+                    // onclick/onchange: it is the VS Code-recommended pattern and keeps
+                    // working if a Content-Security-Policy (which blocks inline handlers)
+                    // is ever added to this webview.
+                    (function wireSelectionControls() {
+                        const selectAllBtn = document.getElementById('ll-select-all');
+                        if (selectAllBtn) { selectAllBtn.addEventListener('click', function () { setAllFindings(true); }); }
+                        const clearAllBtn = document.getElementById('ll-clear-all');
+                        if (clearAllBtn) { clearAllBtn.addEventListener('click', function () { setAllFindings(false); }); }
+                        const masterBox = document.getElementById('select-all-findings');
+                        if (masterBox) { masterBox.addEventListener('change', function () { setAllFindings(masterBox.checked); }); }
+                    })();
+
                     let replacementDebounce = null;
 
                     document.addEventListener('change', function (event) {
@@ -2151,7 +2164,7 @@ class LeakLockPanel {
 
             return `
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
-                    <td><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" ${cleanupDisabled ? 'disabled' : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></td>
+                    <td><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" ${cleanupDisabled ? `disabled title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></td>
                     <td title="${escapeHtml(result.file)}${contextNote}${cleanupNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
@@ -2238,8 +2251,8 @@ class LeakLockPanel {
                 <div style="margin-bottom: 15px;">
                     <strong>Found ${this._scanResults.length} findings:</strong>
                     <div class="export-actions">
-                        <button class="scan-button" onclick="setAllFindings(true)">☑️ Select all</button>
-                        <button class="scan-button" onclick="setAllFindings(false)">☐ Clear all</button>
+                        <button class="scan-button" id="ll-select-all" type="button">☑️ Select all</button>
+                        <button class="scan-button" id="ll-clear-all" type="button">☐ Clear all</button>
                         <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
                         <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
                     </div>
@@ -2263,8 +2276,7 @@ class LeakLockPanel {
                             <th style="width: 40px;" title="Select or clear every cleanable finding">
                                 <input type="checkbox" id="select-all-findings" class="checkbox"
                                     ${eligibleIndexes.length === 0 ? 'disabled' : ''}
-                                    ${selectedCount > 0 && selectedCount === eligibleIndexes.length ? 'checked' : ''}
-                                    onchange="setAllFindings(this.checked)">
+                                    ${selectedCount > 0 && selectedCount === eligibleIndexes.length ? 'checked' : ''}>
                             </th>
                             <th style="width: 20%;">File</th>
                             <th style="width: 50px;">Line</th>
@@ -4162,6 +4174,24 @@ class LeakLockPanel {
             && !result.isDependency
             && result.includeInCleanup !== false
             && result.ruleName !== 'git_history_keyword';
+    }
+
+    /** Why a finding's checkbox is disabled - shown as its tooltip so the user
+     *  understands why "Select all" leaves it unchecked. */
+    _cleanupIneligibleReason(result) {
+        if (!result) {
+            return 'Not cleanable.';
+        }
+        if (result.isDependency) {
+            return 'In a dependency directory (node_modules, vendor, …) — not cleaned.';
+        }
+        if (result.ruleName === 'git_history_keyword') {
+            return 'Git-history keyword reference, not a secret value — nothing to redact.';
+        }
+        if (result.includeInCleanup === false) {
+            return 'Excluded from cleanup.';
+        }
+        return 'Not cleanable.';
     }
 
     /** Indices of every finding that can be cleaned. */
