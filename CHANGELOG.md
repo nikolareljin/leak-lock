@@ -16,6 +16,7 @@
 - **BFG Failures No Longer Force-Push**: A failed BFG run previously continued to the force-push stage, rewriting the remote for a rewrite that never happened.
 - **Individual-Mode BFG Now Escapes Target Names**: In one-command-per-item removal, a selected name containing regex metacharacters (for example `[old].env`) was passed to BFG as a pattern and could match more paths than selected. It is now escaped literally, matching combined mode.
 - **No-Remote Repositories Are Blocked, Not Broken**: Preparing a cleanup in a repository with no configured remote previously produced a script that failed on its first fetch/push. Preparation now stops with a clear message instead of offering a plan that cannot run.
+- **Git-History File-Content Search Now Actually Runs**: The `git log` invocation combined `-G` with `--pickaxe-regex`, which git rejects (`options '-G' and '--pickaxe-regex' cannot be used together`), so searching historical file content silently found nothing. The invalid flag is removed. File-content and filename searches now match literal substrings (a secret is routinely embedded inside a larger token), so a term that appears anywhere in a historical file is found instead of being dropped by whole-word matching.
 
 ## 0.5.0
 ### Added

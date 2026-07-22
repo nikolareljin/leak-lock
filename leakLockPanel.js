@@ -2710,7 +2710,12 @@ class LeakLockPanel {
         }));
         // Commit-message prefilter uses git --grep substring semantics; keep JS matcher aligned.
         const commitKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
-        const fileHistoryKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: false });
+        // File CONTENT search must be literal substring: a secret is routinely
+        // embedded inside a larger token (a URL, a base64 blob, a concatenated
+        // identifier). `git log -G` already prefilters on the raw substring, so a
+        // word-boundary JS matcher would find the commit via pickaxe and then
+        // silently drop it — the exact "it's in the file but search misses it" bug.
+        const fileHistoryKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
         const fileNameKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
 
         try {
@@ -2821,7 +2826,10 @@ class LeakLockPanel {
                             '--pretty=format:COMMIT%x09%H%x09%aI',
                             '-p',
                             '-U0',
-                            '--pickaxe-regex',
+                            // `-G` already takes a regex; `--pickaxe-regex` only applies to
+                            // `-S` and git aborts if both are given ("options '-G' and
+                            // '--pickaxe-regex' cannot be used together"), which used to make
+                            // the entire file-content history search fail silently.
                             '-G', combinedPattern,
                             `--max-count=${gitMaxCount}`,
                             '--',

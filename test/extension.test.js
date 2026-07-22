@@ -208,3 +208,66 @@ suite('BFG target escaping', () => {
 		assert.ok(!/--delete-files '\[old\]\.env'/.test(script), 'raw unescaped name must not appear');
 	});
 });
+
+suite('Git history keyword search (file content)', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	let repo;
+
+	function git(args) {
+		cp.execFileSync('git', ['-C', repo, ...args], {
+			env: {
+				...process.env,
+				GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+				GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+				GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+			}
+		});
+	}
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-hist-'));
+		cp.execFileSync('git', ['-C', repo, 'init', '-q', '-b', 'main']);
+		// The keyword SECRET123 is embedded inside a larger token — no word boundary.
+		fs.writeFileSync(path.join(repo, 'config.ini'), 'url = https://api.example.com/xyzSECRET123def/callback\n');
+		git(['add', '-A']); git(['commit', '-qm', 'add config']);
+		fs.writeFileSync(path.join(repo, 'config.ini'), 'url = https://api.example.com/redacted/callback\n');
+		git(['add', '-A']); git(['commit', '-qm', 'redact']);
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	function panelFor(keyword) {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._scanRepoRoot = repo;
+		panel._updateWebviewContent = () => {};
+		panel._getKeywordSearchConfig = () => ({
+			enabled: true,
+			keywords: [keyword],
+			maxMatchesPerKeyword: 25,
+			shortKeywordFileHistoryMaxCount: 300,
+			searchCommitMessages: false,
+			searchFileHistory: true,
+			searchFileNames: false
+		});
+		return panel;
+	}
+
+	// Regression: `git log -G` combined with `--pickaxe-regex` is rejected by git,
+	// which made the whole file-content search fail silently and find nothing.
+	test('finds a keyword embedded inside a token in historical file content', async () => {
+		const findings = await panelFor('SECRET123')._scanGitHistoryForKeywords(repo);
+		assert.ok(findings.some(f => f.secret === 'SECRET123'), 'embedded keyword should be found in file history');
+	});
+
+	test('finds a keyword that is a substring of a larger word', async () => {
+		const findings = await panelFor('api')._scanGitHistoryForKeywords(repo);
+		assert.ok(findings.some(f => f.secret === 'api'), 'substring keyword should be found in file history');
+	});
+});
