@@ -2615,7 +2615,10 @@ class LeakLockPanel {
             description,
             'git_history_keyword',
             null,
-            { forceGitHistory: true, includeInCleanup: false }
+            // Keyword-history matches are selectable and cleanable like any other
+            // finding: selecting one redacts that string from history via BFG
+            // --replace-text. They are checked by default alongside real secrets.
+            { forceGitHistory: true, includeInCleanup: true }
         );
         result.commitHash = commitHash || null;
         result.commitDate = commitDate || null;
@@ -4180,8 +4183,7 @@ class LeakLockPanel {
     _isCleanupEligible(result) {
         return !!result
             && !result.isDependency
-            && result.includeInCleanup !== false
-            && result.ruleName !== 'git_history_keyword';
+            && result.includeInCleanup !== false;
     }
 
     /** Why a finding's checkbox is disabled - shown as its tooltip so the user
@@ -4192,9 +4194,6 @@ class LeakLockPanel {
         }
         if (result.isDependency) {
             return 'In a dependency directory (node_modules, vendor, …) — not cleaned.';
-        }
-        if (result.ruleName === 'git_history_keyword') {
-            return 'Git-history keyword reference, not a secret value — nothing to redact.';
         }
         if (result.includeInCleanup === false) {
             return 'Excluded from cleanup.';
