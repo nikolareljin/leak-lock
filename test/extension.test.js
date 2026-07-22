@@ -127,25 +127,37 @@ suite('Scan finding selection', () => {
 	}
 
 	const FINDINGS = [
-		{ fullSecret: 'aaa', severity: 'high' },                       // 0 eligible
-		{ fullSecret: 'bbb', isDependency: true },                     // 1 dependency
-		{ fullSecret: 'ccc', includeInCleanup: false },                // 2 excluded
-		{ fullSecret: 'ddd', ruleName: 'git_history_keyword' },        // 3 keyword-only
-		{ fullSecret: 'eee' }                                          // 4 eligible
+		{ fullSecret: 'aaa', severity: 'high' },                          // 0 eligible
+		{ fullSecret: 'bbb', isDependency: true },                        // 1 dependency (never selectable)
+		{ fullSecret: 'ccc', includeInCleanup: false },                   // 2 explicitly excluded
+		{ fullSecret: 'ddd', ruleName: 'git_history_keyword', includeInCleanup: true }, // 3 keyword — now selectable
+		{ fullSecret: 'eee' }                                             // 4 eligible
 	];
 
-	test('only cleanable findings are selectable by default', () => {
+	test('secrets and keyword-history hits are selectable by default; deps/excluded are not', () => {
 		const panel = panelWith(FINDINGS);
-		assert.deepStrictEqual(panel._eligibleFindingIndexes(), [0, 4]);
-		assert.deepStrictEqual([...panel._ensureScanSelection()], [0, 4]);
+		assert.deepStrictEqual(panel._eligibleFindingIndexes(), [0, 3, 4]);
+		assert.deepStrictEqual([...panel._ensureScanSelection()], [0, 3, 4]);
 	});
 
-	test('git-history keyword hits are never offered for cleanup', () => {
+	test('git-history keyword hits are offered for cleanup', () => {
 		const panel = panelWith(FINDINGS);
-		// These used to render as checked but were silently dropped at resolve time.
-		assert.strictEqual(panel._isCleanupEligible(FINDINGS[3]), false);
-		panel._setScanSelection(3, true);
-		assert.ok(!panel._ensureScanSelection().has(3));
+		// Keyword-history matches are now cleanable: selecting one redacts that
+		// string from history via BFG --replace-text.
+		assert.strictEqual(panel._isCleanupEligible(FINDINGS[3]), true);
+		assert.ok(panel._ensureScanSelection().has(3), 'keyword hit is checked by default');
+		const resolved = panel._resolveScanReplacements({});
+		assert.strictEqual(resolved['ddd'], '*****', 'keyword string is included in the cleanup map');
+	});
+
+	test('dependency and explicitly-excluded findings stay non-selectable', () => {
+		const panel = panelWith(FINDINGS);
+		assert.strictEqual(panel._isCleanupEligible(FINDINGS[1]), false);
+		assert.strictEqual(panel._isCleanupEligible(FINDINGS[2]), false);
+		panel._setScanSelection(1, true);
+		panel._setScanSelection(2, true);
+		assert.ok(!panel._ensureScanSelection().has(1));
+		assert.ok(!panel._ensureScanSelection().has(2));
 	});
 
 	test('deselecting a finding survives a re-render', () => {
@@ -154,7 +166,7 @@ suite('Scan finding selection', () => {
 		// _resolveScanReplacements reads persisted state, not the webview DOM,
 		// so a prepare-triggered re-render cannot resurrect the finding.
 		const resolved = panel._resolveScanReplacements({ 'idx:0': '*****', 'idx:4': '*****' });
-		assert.deepStrictEqual(Object.keys(resolved), ['eee']);
+		assert.deepStrictEqual(Object.keys(resolved).sort(), ['ddd', 'eee']);
 	});
 
 	test('clear all then select all round-trips', () => {
@@ -163,7 +175,7 @@ suite('Scan finding selection', () => {
 		assert.strictEqual(panel._ensureScanSelection().size, 0);
 		assert.deepStrictEqual(panel._resolveScanReplacements({}), {});
 		panel._setAllScanSelection(true);
-		assert.deepStrictEqual([...panel._ensureScanSelection()], [0, 4]);
+		assert.deepStrictEqual([...panel._ensureScanSelection()], [0, 3, 4]);
 	});
 
 	test('custom replacement values persist per finding', () => {

@@ -2,7 +2,8 @@
 
 ## 0.6.0
 ### Added
-- **Finding Selection Controls**: The scan results table now has a header select-all checkbox, `Select all` / `Clear all` buttons, and a live "N of M cleanable findings selected" counter. Cleanup buttons are disabled while nothing is selected. Rows that cannot be cleaned (dependencies, git-history keyword references) are disabled with a tooltip explaining why, and the bulk controls are wired with event listeners so they keep working under a strict Content-Security-Policy.
+- **Finding Selection Controls**: The scan results table now has a header select-all checkbox, `Select all` / `Clear all` buttons, and a live "N of M cleanable findings selected" counter. Cleanup buttons are disabled while nothing is selected. The bulk controls are wired with event listeners so they keep working under a strict Content-Security-Policy.
+- **Git-History Keyword Matches Are Cleanable**: Keyword findings from git-history search are now selectable and checked by default, just like detected secrets. Selecting one redacts that string from history via BFG `--replace-text`. Only findings in dependency directories remain non-selectable (with a tooltip explaining why).
 - **Ref-by-Ref Push Plan**: Preparing a cleanup shows exactly which branches will be force-updated, which exist only on the remote, which will be created, and which tags are affected — instead of a blanket `git push --force --all` (LL-002).
 - **Rewrite Preflight**: All refs are refreshed before a rewrite is planned, and the rewrite is blocked (with the branch list) when local branches hold commits the remote does not have (LL-001).
 - **Post-Run Verification**: After a cleanup, every remote branch and tag is re-checked and any ref where the target survived is reported.
