@@ -6,6 +6,7 @@ const { StringDecoder } = require('string_decoder');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const gitRewrite = require('./git-rewrite');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -13,6 +14,7 @@ const MAX_VOLUME_NAME_LENGTH = 255; // Maximum Docker volume name length
 const DOCKER_PULL_TIMEOUT = 120000; // Docker pull timeout in milliseconds (2 minutes)
 const SCAN_TIMEOUT = 300000; // Scan timeout in milliseconds (5 minutes)
 const SECRET_TRUNCATE_LENGTH = 50; // Length to truncate secrets for display
+const GIT_MAX_BUFFER = 64 * 1024 * 1024; // History rewrites emit a lot of stdout
 const REMOTE_HEAD_FILTER_PATTERN = /\bHEAD$/; // Pattern to filter out remote HEAD refs
 
 // Cross-platform sensitive system directories
@@ -285,7 +287,15 @@ class LeakLockPanel {
             replacements: null,
             replacementsFile: null,
             preparing: false,
-            running: false
+            running: false,
+            // Selection and replacement text live here, not in the webview DOM:
+            // every prepare/refresh rebuilds the HTML, which would otherwise
+            // reset the user's choices back to "everything checked".
+            selection: null, // Set<number>; null = seed with all eligible findings
+            replacementValues: {}, // { [findingIndex]: string }
+            pushPlan: null, // ref-by-ref preview of the force-push
+            blockedBranches: null, // local branches with unpushed commits
+            verifyResult: null // offending refs reported after a run
         };
         this._dependenciesInstalled = false;
         this._panel = null;
@@ -304,7 +314,10 @@ class LeakLockPanel {
             details: [], // per-target info after prepare
             deletionMode: 'bfg', // 'bfg' | 'git'
             preview: null, // { branches/remotes/tags }
-            lastFetchAt: null
+            lastFetchAt: null,
+            pushPlan: null, // ref-by-ref preview of the force-push
+            blockedBranches: null, // local branches with unpushed commits
+            verifyResult: null // offending refs reported after a run
         };
     }
 
@@ -375,6 +388,18 @@ class LeakLockPanel {
                         break;
                     case 'scan.runGit':
                         LeakLockPanel.currentPanel._runPreparedScanCleanup('git');
+                        break;
+                    case 'scan.setSelection':
+                        LeakLockPanel.currentPanel._setScanSelection(message.index, message.selected);
+                        break;
+                    case 'scan.setAllSelection':
+                        LeakLockPanel.currentPanel._setAllScanSelection(message.selected);
+                        break;
+                    case 'scan.setReplacement':
+                        LeakLockPanel.currentPanel._setScanReplacement(message.index, message.value);
+                        break;
+                    case 'scan.saveScript':
+                        LeakLockPanel.currentPanel._saveCleanupScript();
                         break;
                     case 'scan.exportJson':
                         LeakLockPanel.currentPanel._exportScanResultsJson();
@@ -539,6 +564,32 @@ class LeakLockPanel {
                     }
                     .checkbox {
                         margin-right: 5px;
+                    }
+                    .selection-counter {
+                        margin-top: 6px;
+                        font-size: 0.85em;
+                        color: var(--vscode-descriptionForeground);
+                    }
+                    .rewrite-blocked {
+                        margin-top: 12px;
+                        padding: 10px;
+                        border-radius: 4px;
+                        background: var(--vscode-inputValidation-errorBackground);
+                        border-left: 3px solid var(--vscode-inputValidation-errorBorder);
+                    }
+                    .verify-clean {
+                        margin-top: 12px;
+                        padding: 10px;
+                        border-radius: 4px;
+                        background: var(--vscode-inputValidation-infoBackground);
+                        border-left: 3px solid var(--vscode-gitDecoration-addedResourceForeground);
+                    }
+                    .push-plan {
+                        margin-top: 10px;
+                        padding: 10px;
+                        border-radius: 4px;
+                        background: var(--vscode-textCodeBlock-background);
+                        border-left: 3px solid var(--vscode-textLink-foreground);
                     }
                     .manual-command {
                         background-color: var(--vscode-textCodeBlock-background);
@@ -830,6 +881,10 @@ class LeakLockPanel {
                         .warning-text,
                         .secret-checkbox,
                         .replacement-input,
+                        .selection-counter,
+                        .push-plan,
+                        .rewrite-blocked,
+                        .verify-clean,
                         button,
                         #detail-dialog-overlay {
                             display: none !important;
@@ -898,6 +953,85 @@ class LeakLockPanel {
                         });
                         
                         return replacements;
+                    }
+
+                    // --- Selection state ---
+                    // Every change is mirrored to the extension immediately, because
+                    // any re-render (prepare, refetch, progress) rebuilds this DOM
+                    // from extension state. Without the round-trip the user's
+                    // choices would be silently reset to "everything checked".
+                    function findingCheckboxes() {
+                        return Array.prototype.slice.call(
+                            document.querySelectorAll('.secret-checkbox:not([disabled])')
+                        );
+                    }
+
+                    function refreshSelectionUi() {
+                        const boxes = findingCheckboxes();
+                        const selected = boxes.filter(b => b.checked).length;
+                        const total = boxes.length;
+
+                        const counter = document.getElementById('selection-counter');
+                        if (counter) {
+                            counter.textContent = selected + ' of ' + total +
+                                ' cleanable finding' + (total === 1 ? '' : 's') + ' selected';
+                        }
+
+                        const master = document.getElementById('select-all-findings');
+                        if (master) {
+                            master.checked = total > 0 && selected === total;
+                            // HTML has no "indeterminate" attribute - it is a property only.
+                            master.indeterminate = selected > 0 && selected < total;
+                        }
+
+                        ['prepare-bfg-button', 'prepare-git-button'].forEach(function (id) {
+                            const btn = document.getElementById(id);
+                            if (btn) {
+                                btn.disabled = selected === 0;
+                            }
+                        });
+                    }
+
+                    function setAllFindings(selected) {
+                        findingCheckboxes().forEach(function (box) {
+                            box.checked = selected;
+                        });
+                        vscode.postMessage({ command: 'scan.setAllSelection', selected: !!selected });
+                        refreshSelectionUi();
+                    }
+
+                    let replacementDebounce = null;
+
+                    document.addEventListener('change', function (event) {
+                        const box = event.target.closest('.secret-checkbox');
+                        if (box && !box.disabled) {
+                            vscode.postMessage({
+                                command: 'scan.setSelection',
+                                index: box.getAttribute('data-finding-index'),
+                                selected: box.checked
+                            });
+                            refreshSelectionUi();
+                        }
+                    });
+
+                    document.addEventListener('input', function (event) {
+                        const input = event.target.closest('.replacement-input');
+                        if (!input || input.disabled) {
+                            return;
+                        }
+                        const index = input.getAttribute('data-finding-index');
+                        const value = input.value;
+                        clearTimeout(replacementDebounce);
+                        replacementDebounce = setTimeout(function () {
+                            vscode.postMessage({ command: 'scan.setReplacement', index: index, value: value });
+                        }, 200);
+                    });
+
+                    document.addEventListener('DOMContentLoaded', refreshSelectionUi);
+                    refreshSelectionUi();
+
+                    function saveScanScript() {
+                        vscode.postMessage({ command: 'scan.saveScript' });
                     }
 
                     function prepareBfgCommand() {
@@ -1413,30 +1547,40 @@ class LeakLockPanel {
         }
     }
 
-    _buildBfgCommand(repoDir, targets) {
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+    /** BFG arguments for the selected targets, shared by script and execution. */
+    _buildBfgArgs(targets) {
         const fileNames = targets.filter(t => t.type === 'file').map(t => t.base);
         const dirNames = targets.filter(t => t.type === 'directory').map(t => t.base);
 
         const args = [];
         if (fileNames.length > 0) {
-            const fileRegex = this._shellEscapeDoubleQuotes(fileNames.map(n => this._escapeRegex(n)).join('|'));
-            args.push(`--delete-files "${fileRegex}"`);
+            args.push('--delete-files', fileNames.map(n => this._escapeRegex(n)).join('|'));
         }
         if (dirNames.length > 0) {
-            const dirRegex = this._shellEscapeDoubleQuotes(dirNames.map(n => this._escapeRegex(n)).join('|'));
-            args.push(`--delete-folders "${dirRegex}"`);
+            args.push('--delete-folders', dirNames.map(n => this._escapeRegex(n)).join('|'));
         }
-        const bfgCmd = `java -jar \"${bfgPath}\" ${args.join(' ')} \"${repoDir}\"`;
-        const full = `cd \"${repoDir}\" && ${bfgCmd} && git reflog expire --expire=now --all && git gc --prune=now --aggressive && git push --force --all && git push --force --tags`;
-        return full;
+        return args;
     }
 
-    _stripForcePush(command) {
-        if (!command) {
-            return command;
+    /** grep -E pattern matching any selected target basename, for verification. */
+    _buildTargetVerifyRegex(targets) {
+        const names = targets.map(t => this._escapeRegex(t.base)).filter(Boolean);
+        if (names.length === 0) {
+            return null;
         }
-        return command.replace(/\s*&&\s*git push --force --all\s*&&\s*git push --force --tags\s*$/, '');
+        return `(^|/)(${names.join('|')})(/|$)`;
+    }
+
+    _buildBfgCommand(repoDir, targets) {
+        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const args = this._buildBfgArgs(targets).map(a => gitRewrite.shellQuote(a)).join(' ');
+        return gitRewrite.buildRewriteScript({
+            repoDir,
+            rewriteLines: [
+                `java -jar ${gitRewrite.shellQuote(bfgPath)} ${args} ${gitRewrite.shellQuote(repoDir)}`
+            ],
+            verifyRegex: this._buildTargetVerifyRegex(targets)
+        });
     }
 
     async _prepareBfgRemovalCommand() {
@@ -1449,8 +1593,19 @@ class LeakLockPanel {
         try {
             const validatedRepo = validatePath(repo);
             this._removalState.preparing = true;
+            this._removalState.blockedBranches = null;
+            this._removalState.verifyResult = null;
             this._updateWebviewContent();
-            await this._gitFetchAll(validatedRepo);
+
+            const preflight = await this._rewritePreflight(validatedRepo);
+            if (preflight.blocked) {
+                this._removalState.blockedBranches = preflight.ahead;
+                this._removalState.preparedCommand = null;
+                this._removalState.preparedMode = null;
+                return;
+            }
+            this._removalState.pushPlan = preflight.pushPlan;
+
             const mode = this._removalState.combineMode;
             let cmd;
             if (mode === 'combined') {
@@ -1490,17 +1645,15 @@ class LeakLockPanel {
 
     _buildIndividualBfgCommands(repoDir, targets) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-        const parts = [];
-        parts.push(`cd \"${this._shellEscapeDoubleQuotes(repoDir)}\"`);
-        for (const t of targets) {
-            const base = this._shellEscapeDoubleQuotes(t.base);
+        const rewriteLines = targets.map(t => {
             const flag = t.type === 'directory' ? '--delete-folders' : '--delete-files';
-            parts.push(`java -jar \"${this._shellEscapeDoubleQuotes(bfgPath)}\" ${flag} \"${base}\" \"${this._shellEscapeDoubleQuotes(repoDir)}\"`);
-        }
-        // Run cleanup once at the end
-        parts.push('git reflog expire --expire=now --all');
-        parts.push('git gc --prune=now --aggressive');
-        return parts.join(' && ');
+            return `java -jar ${gitRewrite.shellQuote(bfgPath)} ${flag} ${gitRewrite.shellQuote(t.base)} ${gitRewrite.shellQuote(repoDir)}`;
+        });
+        return gitRewrite.buildRewriteScript({
+            repoDir,
+            rewriteLines,
+            verifyRegex: this._buildTargetVerifyRegex(targets)
+        });
     }
 
     _setDeletionMode(mode) {
@@ -1631,18 +1784,17 @@ class LeakLockPanel {
         return rmCmds.length ? rmCmds : 'echo no-op';
     }
 
-    _buildGitFilterBranchCommandForDisplay(repoDir, indexFilter) {
-        // Build a display-only version of the command for UI purposes
-        // This is NOT executed - actual execution uses execFile
-        const repoEsc = this._shellEscapeDoubleQuotes(repoDir);
-        const cmd = [
-            `cd \"${repoEsc}\"`,
-            `git filter-branch --force --index-filter \"${indexFilter}\" --prune-empty --tag-name-filter cat -- --all`,
-            `git for-each-ref --format=\"delete %(refname)\" refs/original/ | git update-ref --stdin`,
-            `git reflog expire --expire=now --all`,
-            `git gc --prune=now --aggressive`
-        ].join(' && ');
-        return cmd;
+    _buildGitFilterBranchCommandForDisplay(repoDir, indexFilter, targets = []) {
+        // Display/copy version of the command. Execution goes through
+        // gitRewrite.runRewrite(), which follows the exact same sequence.
+        return gitRewrite.buildRewriteScript({
+            repoDir,
+            rewriteLines: [
+                `git filter-branch --force --index-filter ${gitRewrite.shellQuote(indexFilter)} \\`,
+                '\t--prune-empty --tag-name-filter cat -- --all'
+            ],
+            verifyRegex: this._buildTargetVerifyRegex(targets)
+        });
     }
 
     async _prepareGitRemovalCommand() {
@@ -1655,14 +1807,25 @@ class LeakLockPanel {
         try {
             const validatedRepo = validatePath(repo);
             this._removalState.preparing = true;
+            this._removalState.blockedBranches = null;
+            this._removalState.verifyResult = null;
             this._updateWebviewContent();
-            await this._gitFetchAll(validatedRepo);
+
+            const preflight = await this._rewritePreflight(validatedRepo);
+            if (preflight.blocked) {
+                this._removalState.blockedBranches = preflight.ahead;
+                this._removalState.preparedCommand = null;
+                this._removalState.preparedMode = null;
+                return;
+            }
+            this._removalState.pushPlan = preflight.pushPlan;
+
             // Store the index filter and repo path for execution
             const indexFilter = this._buildGitFilterBranchIndexFilter(targets);
             this._removalState.preparedIndexFilter = indexFilter;
             this._removalState.repoDir = validatedRepo;
             // Build display-only command for UI
-            const displayCmd = this._buildGitFilterBranchCommandForDisplay(validatedRepo, indexFilter);
+            const displayCmd = this._buildGitFilterBranchCommandForDisplay(validatedRepo, indexFilter, targets);
             this._removalState.preparedCommand = displayCmd;
             this._removalState.preparedMode = 'git';
         } catch (e) {
@@ -1690,72 +1853,43 @@ class LeakLockPanel {
 
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
+        let report = null;
         try {
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: 'Running path-based removal (git filter-branch)...',
                 cancellable: false,
             }, async (progress) => {
-                progress.report({ increment: 10, message: 'Fetching remotes...' });
-                await this._gitFetchAll(repo);
-                
-                progress.report({ increment: 30, message: 'Rewriting history...' });
-                // Run git filter-branch using execFile
-                // Note: --index-filter expects a shell script string, but all paths are escaped
-                // via _shellEscapeDoubleQuotes() in _buildGitFilterBranchIndexFilter()
-                await execFileAsync('git', [
-                    'filter-branch',
-                    '--force',
-                    '--index-filter',
-                    indexFilter,
-                    '--prune-empty',
-                    '--tag-name-filter',
-                    'cat',
-                    '--',
-                    '--all'
-                ], { cwd: repo });
-                
-                progress.report({ increment: 50, message: 'Cleaning up refs...' });
-                // Clean up original refs created by filter-branch
-                // First get the refs to delete, then use spawn to pipe them to update-ref
-                const { stdout: refsOut } = await execFileAsync('git', [
-                    'for-each-ref',
-                    '--format=delete %(refname)',
-                    'refs/original/'
-                ], { cwd: repo });
-                if (refsOut.trim()) {
-                    // Update refs using stdin
-                    await new Promise((resolve, reject) => {
-                        const proc = spawn('git', ['update-ref', '--stdin'], { cwd: repo });
-                        proc.stdin.write(refsOut);
-                        proc.stdin.end();
-                        proc.on('close', (code) => {
-                            if (code === 0) resolve();
-                            else reject(new Error(`git update-ref failed with exit code ${code}`));
-                        });
-                        proc.on('error', reject);
-                    });
-                }
-                
-                progress.report({ increment: 70, message: 'Expiring reflog...' });
-                await execFileAsync('git', ['reflog', 'expire', '--expire=now', '--all'], { cwd: repo });
-                
-                progress.report({ increment: 85, message: 'Running garbage collection...' });
-                await execFileAsync('git', ['gc', '--prune=now', '--aggressive'], { cwd: repo });
-                
-                progress.report({ increment: 100, message: 'Cleanup complete' });
+                report = await gitRewrite.runRewrite({
+                    repoDir: repo,
+                    progress: (message) => progress.report({ increment: 10, message }),
+                    verify: { pathPattern: this._buildTargetVerifyRegex(this._removalState.targets) },
+                    rewrite: async () => {
+                        // --index-filter expects a shell script string, but all paths are
+                        // escaped via _shellEscapeDoubleQuotes() in _buildGitFilterBranchIndexFilter()
+                        await execFileAsync('git', [
+                            'filter-branch',
+                            '--force',
+                            '--index-filter',
+                            indexFilter,
+                            '--prune-empty',
+                            '--tag-name-filter',
+                            'cat',
+                            '--',
+                            '--all'
+                        ], { cwd: repo, maxBuffer: GIT_MAX_BUFFER });
+                    }
+                });
             });
-            const result = await vscode.window.showInformationMessage(
-                '✅ Path-based removal complete. Your git history has been cleaned. Do you want to force push to update remote repositories now?',
-                'Force Push Now',
-                'Skip'
-            );
-            if (result === 'Force Push Now') {
-                await execFileAsync('git', ['push', '--force', '--all'], { cwd: repo });
-                await execFileAsync('git', ['push', '--force', '--tags'], { cwd: repo });
-            }
+            this._removalState.verifyResult = report ? report.offenders : null;
+            this._reportRewriteOutcome('Path-based removal', report);
         } catch (e) {
+            if (e instanceof gitRewrite.AheadBranchesError) {
+                this._removalState.blockedBranches = e.branches;
+            }
             vscode.window.showErrorMessage(`Path-based removal failed: ${e.message}`);
+        } finally {
+            this._updateWebviewContent();
         }
     }
 
@@ -1779,29 +1913,44 @@ class LeakLockPanel {
         this._updateWebviewContent();
 
         const util = require('util');
-        const execAsync = util.promisify(exec);
+        const execFileAsync = util.promisify(execFile);
+        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const targets = this._removalState.targets;
+        let report = null;
         try {
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: 'Running BFG to remove files...',
                 cancellable: false,
             }, async (progress) => {
-                progress.report({ increment: 10, message: 'Fetching remotes...' });
-                await this._gitFetchAll(repo);
-                progress.report({ increment: 20, message: 'Executing BFG...' });
-                await execAsync(this._stripForcePush(cmd));
-                progress.report({ increment: 60, message: 'Cleaning git history...' });
+                report = await gitRewrite.runRewrite({
+                    repoDir: repo,
+                    progress: (message) => progress.report({ increment: 10, message }),
+                    verify: { pathPattern: this._buildTargetVerifyRegex(targets) },
+                    rewrite: async () => {
+                        const runs = this._removalState.combineMode === 'individual'
+                            ? targets.map(t => [
+                                t.type === 'directory' ? '--delete-folders' : '--delete-files',
+                                t.base
+                            ])
+                            : [this._buildBfgArgs(targets)];
+                        for (const args of runs) {
+                            await execFileAsync(
+                                'java',
+                                ['-jar', bfgPath, ...args, repo],
+                                { cwd: repo, maxBuffer: GIT_MAX_BUFFER }
+                            );
+                        }
+                    }
+                });
             });
 
-            const result = await vscode.window.showInformationMessage(
-                '✅ Removal complete. Your git history has been cleaned. Do you want to force push to update remote repositories now?',
-                'Force Push Now',
-                'Skip'
-            );
-            if (result === 'Force Push Now') {
-                await execAsync(`cd "${repo.replace(/"/g, '\\"')}" && git push --force --all && git push --force --tags`);
-            }
+            this._removalState.verifyResult = report ? report.offenders : null;
+            this._reportRewriteOutcome('Removal', report);
         } catch (e) {
+            if (e instanceof gitRewrite.AheadBranchesError) {
+                this._removalState.blockedBranches = e.branches;
+            }
             vscode.window.showErrorMessage(`Removal failed: ${e.message}`);
         } finally {
             this._removalState.running = false;
@@ -1874,13 +2023,20 @@ class LeakLockPanel {
             ? 'Remote refs may be outdated (older than 15 minutes). Fetch to ensure cleanup considers latest branches and tags.'
             : 'Remotes fetched recently; cleanup reflects current branches and tags.';
 
+        const selection = this._ensureScanSelection();
+        const eligibleIndexes = this._eligibleFindingIndexes();
+        const selectedCount = eligibleIndexes.filter(i => selection.has(i)).length;
+
         const branchDataMap = {}; // index -> branches array, populated during map
         const resultsRows = this._scanResults.map((result, index) => {
             const isDependency = result.isDependency;
             const isGitHistory = result.isGitHistory;
             const isUntracked = result.isUntracked;
             const includeInCleanup = result.includeInCleanup !== false;
-            const cleanupDisabled = isDependency || !includeInCleanup;
+            // One predicate for "can be cleaned", so the checkbox never offers a
+            // finding that the cleanup would silently skip.
+            const cleanupDisabled = !this._isCleanupEligible(result);
+            const isSelected = selection.has(index);
 
             // Choose appropriate icon and styling
             let icon = '📄';
@@ -1982,7 +2138,7 @@ class LeakLockPanel {
 
             return `
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
-                    <td><input type="checkbox" class="secret-checkbox checkbox" ${cleanupDisabled ? 'disabled' : 'checked'}></td>
+                    <td><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" ${cleanupDisabled ? 'disabled' : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></td>
                     <td title="${escapeHtml(result.file)}${contextNote}${cleanupNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
@@ -2002,7 +2158,7 @@ class LeakLockPanel {
                         </span>
                     </td>
                     <td>
-                        <input type="text" class="replacement-input" value="*****" placeholder="Replacement value" ${cleanupDisabled ? 'disabled' : ''}>
+                        <input type="text" class="replacement-input" data-finding-index="${index}" value="${escapeHtml(this._getReplacementValue(index))}" placeholder="Replacement value" ${cleanupDisabled ? 'disabled' : ''}>
                     </td>
                     <td title="${escapeHtml(gitInfoTooltip)}" style="font-size: 0.85em; line-height: 1.4; overflow: visible; white-space: normal; word-break: break-word;">
                         ${gitInfoHtml}
@@ -2052,8 +2208,12 @@ class LeakLockPanel {
         `;
         const preparedBlockGit = `
             <div id="scan-prepared-command-git" class="danger-command">${escapeHtml(gitCommandText)}</div>
-            ${prepared && this._scanCleanup.preparedMode === 'git' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\'scan-prepared-command-git\')">📋 Copy command</button></div>' : ''}
+            ${prepared && this._scanCleanup.preparedMode === 'git' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\'scan-prepared-command-git\')">📋 Copy command</button></div><div style="margin-top:6px;"><button class="scan-button" onclick="saveScanScript()">💾 Save as .sh</button></div>' : ''}
         `;
+        const noneSelected = selectedCount === 0;
+        const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches);
+        const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
+        const verifyBlock = this._renderVerifyResult(this._scanCleanup.verifyResult);
 
         return `
             <div class="scan-section">
@@ -2065,8 +2225,13 @@ class LeakLockPanel {
                 <div style="margin-bottom: 15px;">
                     <strong>Found ${this._scanResults.length} findings:</strong>
                     <div class="export-actions">
+                        <button class="scan-button" onclick="setAllFindings(true)">☑️ Select all</button>
+                        <button class="scan-button" onclick="setAllFindings(false)">☐ Clear all</button>
                         <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
                         <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
+                    </div>
+                    <div id="selection-counter" class="selection-counter" data-selected="${selectedCount}" data-total="${eligibleIndexes.length}">
+                        ${selectedCount} of ${eligibleIndexes.length} cleanable finding${eligibleIndexes.length === 1 ? '' : 's'} selected
                     </div>
                     <div style="margin-top: 8px;">
                         <div>${severitySummary}</div>
@@ -2082,7 +2247,12 @@ class LeakLockPanel {
                 <table class="results-table">
                     <thead>
                         <tr>
-                            <th style="width: 40px;">Fix</th>
+                            <th style="width: 40px;" title="Select or clear every cleanable finding">
+                                <input type="checkbox" id="select-all-findings" class="checkbox"
+                                    ${eligibleIndexes.length === 0 ? 'disabled' : ''}
+                                    ${selectedCount > 0 && selectedCount === eligibleIndexes.length ? 'checked' : ''}
+                                    onchange="setAllFindings(this.checked)">
+                            </th>
                             <th style="width: 20%;">File</th>
                             <th style="width: 50px;">Line</th>
                             <th style="width: 20%;">Secret</th>
@@ -2095,6 +2265,8 @@ class LeakLockPanel {
                         ${resultsRows}
                     </tbody>
                 </table>
+                ${blockedBlock}
+                ${verifyBlock}
                 <div class="run-section" style="margin-top: 18px;">
                     <h3>⚡ BFG-based cleanup (recommended)</h3>
                     <p class="warning-text">⚠️ WARNING: This will permanently modify your git history!</p>
@@ -2102,9 +2274,10 @@ class LeakLockPanel {
                         BFG is faster, but it will remove files/directories with the same name everywhere in history. Git-only cleanup does not.
                     </p>
                     <div style="margin-top: 8px;">
-                        <button class="scan-button" onclick="prepareBfgCommand()">⚙️ Prepare BFG command</button>
+                        <button class="scan-button" id="prepare-bfg-button" onclick="prepareBfgCommand()" ${noneSelected ? 'disabled' : ''}>⚙️ Prepare BFG command</button>
                     </div>
                     ${preparedBlockBfg}
+                    ${this._scanCleanup.preparedMode === 'bfg' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
                         <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
                     </div>
@@ -2117,17 +2290,106 @@ class LeakLockPanel {
                         Git-only cleanup is path-aware and won’t remove same-name files elsewhere, but it is slower than BFG.
                     </p>
                     <div style="margin-top: 8px;">
-                        <button class="scan-button" onclick="prepareGitCommand()">⚙️ Prepare Git-only command</button>
+                        <button class="scan-button" id="prepare-git-button" onclick="prepareGitCommand()" ${noneSelected ? 'disabled' : ''}>⚙️ Prepare Git-only command</button>
                     </div>
                     ${preparedBlockGit}
+                    ${this._scanCleanup.preparedMode === 'git' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
                         <button class="danger-button" onclick="runPreparedGit()" ${!prepared || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
                     </div>
                 </div>
-                
+
                 <div style="margin-top: 10px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
                     💡 <strong>Tip:</strong> Review each secret carefully before applying fixes. Some may be test data or false positives.
                 </div>
+            </div>
+        `;
+    }
+
+    /** Write the prepared rewrite script to a file the user picks. */
+    async _saveCleanupScript() {
+        const script = this._scanCleanup.preparedCommand || this._removalState.preparedCommand;
+        if (!script) {
+            vscode.window.showWarningMessage('Prepare a cleanup command first.');
+            return;
+        }
+        const target = await vscode.window.showSaveDialog({
+            filters: { 'Shell script': ['sh'] },
+            saveLabel: 'Save cleanup script'
+        });
+        if (!target) {
+            return;
+        }
+        try {
+            fs.writeFileSync(target.fsPath, script, { mode: 0o755 });
+            vscode.window.showInformationMessage(`Cleanup script saved to ${target.fsPath}`);
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to save script: ${e.message}`);
+        }
+    }
+
+    /** Blocking banner: a rewrite here would discard unpushed local commits. */
+    _renderBlockedBranches(branches) {
+        if (!branches || branches.length === 0) {
+            return '';
+        }
+        const rows = branches
+            .map(b => `<li><code>${escapeHtml(b.branch)}</code> — ${b.count} unpushed commit${b.count === 1 ? '' : 's'}</li>`)
+            .join('');
+        return `
+            <div class="rewrite-blocked">
+                <strong>⛔ Rewrite blocked — unpushed local commits</strong>
+                <p style="margin: 6px 0; font-size: 0.9em;">
+                    A ref-complete rewrite resets every local branch to its remote counterpart.
+                    These branches would lose commits, so Leak Lock stopped before touching anything:
+                </p>
+                <ul style="margin: 6px 0 6px 18px;">${rows}</ul>
+                <p style="margin: 6px 0; font-size: 0.9em;">Push them, then prepare again.</p>
+            </div>
+        `;
+    }
+
+    /** Explicit ref-by-ref push plan, instead of a blind `push --force --all`. */
+    _renderPushPlan(plan) {
+        if (!plan) {
+            return '';
+        }
+        const list = (label, refs, hint) => {
+            if (!refs || refs.length === 0) {
+                return '';
+            }
+            return `<div style="margin-top:6px;"><strong>${label}</strong> <span style="font-size:0.85em; color: var(--vscode-descriptionForeground);">${hint}</span><div style="font-family: monospace; font-size:0.85em; margin-top:2px;">${refs.map(r => escapeHtml(r)).join(', ')}</div></div>`;
+        };
+        return `
+            <div class="push-plan">
+                <strong>📋 Push plan (${escapeHtml(plan.remote)})</strong>
+                ${list('Force-updated branches:', plan.forceUpdate, '— rewritten history replaces the remote')}
+                ${list('Remote-only branches:', plan.remoteOnly, '— materialised locally so they are not skipped')}
+                ${list('Created on remote:', plan.create, '— exist locally only')}
+                ${list('Tags:', plan.tags, '— force-updated')}
+            </div>
+        `;
+    }
+
+    /** Post-run verification: did the leak survive on any remote ref? */
+    _renderVerifyResult(offenders) {
+        if (!offenders) {
+            return '';
+        }
+        if (offenders.length === 0) {
+            return `
+                <div class="verify-clean">
+                    <strong>✅ Verified clean on every remote ref</strong>
+                </div>
+            `;
+        }
+        const rows = offenders
+            .map(o => `<li><code>${escapeHtml(o.ref)}</code> — ${escapeHtml(o.reason)}: <code>${escapeHtml(o.match)}</code></li>`)
+            .join('');
+        return `
+            <div class="rewrite-blocked">
+                <strong>⚠️ Still present after the rewrite</strong>
+                <ul style="margin: 6px 0 6px 18px;">${rows}</ul>
             </div>
         `;
     }
@@ -2141,6 +2403,11 @@ class LeakLockPanel {
             this._scanCleanup.preparedMode = null;
             this._scanCleanup.replacements = null;
             this._scanCleanup.replacementsFile = null;
+            this._scanCleanup.pushPlan = null;
+            this._scanCleanup.blockedBranches = null;
+            this._scanCleanup.verifyResult = null;
+            // Indices from the previous scan no longer refer to the same findings.
+            this._resetScanSelection();
             this._updateWebviewContent();
 
             // Determine and validate scan path
@@ -2223,6 +2490,7 @@ class LeakLockPanel {
 
             // Update results
             this._scanResults = allResults;
+            this._resetScanSelection();
             this._isScanning = false;
             this._scanProgress = null;
 
@@ -3831,44 +4099,141 @@ class LeakLockPanel {
         }
     }
 
-    _buildScanBfgReplaceCommand(scanPath, replacementsFile) {
+    _buildScanBfgReplaceCommand(scanPath, replacementsFile, secrets = []) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-        return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && java -jar \"${this._shellEscapeDoubleQuotes(bfgPath)}\" --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" && git reflog expire --expire=now --all && git gc --prune=now --aggressive && git push --force --all && git push --force --tags`;
+        return gitRewrite.buildRewriteScript({
+            repoDir: scanPath,
+            remote: gitRewrite.DEFAULT_REMOTE,
+            rewriteLines: [
+                `java -jar ${gitRewrite.shellQuote(bfgPath)} --replace-text ${gitRewrite.shellQuote(replacementsFile)}`
+            ],
+            verifyLiterals: secrets
+        });
     }
 
-    _buildScanGitReplaceCommand(scanPath, replacementsFile) {
-        return `cd \"${this._shellEscapeDoubleQuotes(scanPath)}\" && git filter-repo --replace-text \"${this._shellEscapeDoubleQuotes(replacementsFile)}\" --force && git reflog expire --expire=now --all && git gc --prune=now --aggressive && git push --force --all && git push --force --tags`;
+    _buildScanGitReplaceCommand(scanPath, replacementsFile, secrets = [], remoteUrl = null) {
+        return gitRewrite.buildRewriteScript({
+            repoDir: scanPath,
+            remote: gitRewrite.DEFAULT_REMOTE,
+            rewriteLines: [
+                `git filter-repo --replace-text ${gitRewrite.shellQuote(replacementsFile)} --force`
+            ],
+            verifyLiterals: secrets,
+            // filter-repo deletes the remote by design, so the push stage would
+            // fail immediately after an otherwise successful rewrite.
+            restoreRemote: true,
+            remoteUrl
+        });
     }
 
-    _resolveScanReplacements(replacements) {
-        if (!replacements || typeof replacements !== 'object') {
-            return {};
+    /**
+     * Single source of truth for "can this finding be cleaned?".
+     * The row renderer and the replacement resolver used to disagree, so
+     * git-history keyword hits rendered as selectable but were silently dropped.
+     */
+    _isCleanupEligible(result) {
+        return !!result
+            && !result.isDependency
+            && result.includeInCleanup !== false
+            && result.ruleName !== 'git_history_keyword';
+    }
+
+    /** Indices of every finding that can be cleaned. */
+    _eligibleFindingIndexes() {
+        const indexes = [];
+        this._scanResults.forEach((result, index) => {
+            if (this._isCleanupEligible(result)) {
+                indexes.push(index);
+            }
+        });
+        return indexes;
+    }
+
+    /** Lazily seeds the selection with all eligible findings (previous default). */
+    _ensureScanSelection() {
+        if (!this._scanCleanup.selection) {
+            this._scanCleanup.selection = new Set(this._eligibleFindingIndexes());
         }
+        return this._scanCleanup.selection;
+    }
+
+    /** Called whenever _scanResults is replaced - old indices no longer apply. */
+    _resetScanSelection() {
+        this._scanCleanup.selection = null;
+        this._scanCleanup.replacementValues = {};
+    }
+
+    _getReplacementValue(index) {
+        const stored = this._scanCleanup.replacementValues[index];
+        return typeof stored === 'string' && stored.length > 0 ? stored : '*****';
+    }
+
+    _setScanSelection(index, selected) {
+        const idx = Number(index);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= this._scanResults.length) {
+            return;
+        }
+        if (!this._isCleanupEligible(this._scanResults[idx])) {
+            return;
+        }
+        const selection = this._ensureScanSelection();
+        if (selected) {
+            selection.add(idx);
+        } else {
+            selection.delete(idx);
+        }
+    }
+
+    _setAllScanSelection(selected) {
+        this._scanCleanup.selection = selected
+            ? new Set(this._eligibleFindingIndexes())
+            : new Set();
+    }
+
+    _setScanReplacement(index, value) {
+        const idx = Number(index);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= this._scanResults.length) {
+            return;
+        }
+        this._scanCleanup.replacementValues[idx] = typeof value === 'string' ? value : '';
+    }
+
+    /**
+     * Build the secret -> replacement map from persisted selection state.
+     * The webview payload is only a hint; extension state is authoritative so a
+     * dropped message can never silently widen or narrow the cleanup.
+     */
+    _resolveScanReplacements(replacements) {
         const resolved = {};
-        for (const [key, replacement] of Object.entries(replacements)) {
-            if (key.startsWith('idx:')) {
-                const idx = Number(key.slice(4));
-                if (!Number.isInteger(idx) || idx < 0 || idx >= this._scanResults.length) {
+
+        if (replacements && typeof replacements === 'object') {
+            for (const [key, replacement] of Object.entries(replacements)) {
+                if (key.startsWith('idx:')) {
+                    // Indices are reconciled against persisted state below.
                     continue;
                 }
-                const result = this._scanResults[idx];
-                if (!result || result.isDependency || result.includeInCleanup === false || result.ruleName === 'git_history_keyword') {
-                    continue;
-                }
-                const secretValue = result.fullSecret || result.secret;
-                if (!secretValue) {
-                    continue;
-                }
-                resolved[secretValue] = replacement || '*****';
+                // Backward compatibility for callers that pass secret->replacement maps.
+                resolved[key] = replacement || '*****';
+            }
+        }
+
+        const selection = this._ensureScanSelection();
+        for (const idx of selection) {
+            const result = this._scanResults[idx];
+            if (!this._isCleanupEligible(result)) {
                 continue;
             }
-            // Backward compatibility for callers that pass secret->replacement maps.
-            resolved[key] = replacement || '*****';
+            const secretValue = result.fullSecret || result.secret;
+            if (!secretValue) {
+                continue;
+            }
+            resolved[secretValue] = this._getReplacementValue(idx);
         }
+
         return resolved;
     }
 
-    _prepareScanReplacementCommand(mode, replacements) {
+    async _prepareScanReplacementCommand(mode, replacements) {
         const resolvedReplacements = this._resolveScanReplacements(replacements);
         if (!resolvedReplacements || Object.keys(resolvedReplacements).length === 0) {
             vscode.window.showWarningMessage('No secrets selected for removal.');
@@ -3881,27 +4246,70 @@ class LeakLockPanel {
         }
         const replacementsFile = path.join(scanPath, 'leak-lock-replacements.txt');
         this._scanCleanup.preparing = true;
+        this._scanCleanup.blockedBranches = null;
+        this._scanCleanup.verifyResult = null;
         this._updateWebviewContent();
         try {
+            // Preflight: refresh every ref, then refuse to plan a rewrite that
+            // would discard unpushed local commits (LL-001).
+            const preflight = await this._rewritePreflight(scanPath);
+            if (preflight.blocked) {
+                this._scanCleanup.blockedBranches = preflight.ahead;
+                this._scanCleanup.preparedCommand = null;
+                this._scanCleanup.preparedMode = null;
+                return;
+            }
+
+            const secrets = Object.keys(resolvedReplacements);
             const command = mode === 'git'
-                ? this._buildScanGitReplaceCommand(scanPath, replacementsFile)
-                : this._buildScanBfgReplaceCommand(scanPath, replacementsFile);
+                ? this._buildScanGitReplaceCommand(scanPath, replacementsFile, secrets, preflight.remoteUrl)
+                : this._buildScanBfgReplaceCommand(scanPath, replacementsFile, secrets);
             this._scanCleanup.preparedCommand = command;
             this._scanCleanup.preparedMode = mode;
             this._scanCleanup.replacements = resolvedReplacements;
             this._scanCleanup.replacementsFile = replacementsFile;
+            this._scanCleanup.pushPlan = preflight.pushPlan;
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to prepare cleanup: ${e.message}`);
         } finally {
             this._scanCleanup.preparing = false;
             this._updateWebviewContent();
         }
     }
 
-    _prepareScanBfgCommand(replacements) {
-        this._prepareScanReplacementCommand('bfg', replacements);
+    /**
+     * Shared rewrite preflight: refresh all refs, build the ref-by-ref push
+     * plan (LL-002), and detect local branches whose commits a rewrite would
+     * discard (LL-001). Returns { blocked, ahead, pushPlan, remoteUrl }.
+     */
+    async _rewritePreflight(repoDir, remote = gitRewrite.DEFAULT_REMOTE) {
+        const hasRemote = await gitRewrite.hasRemote(repoDir, remote);
+        if (!hasRemote) {
+            return { blocked: false, ahead: [], pushPlan: null, remoteUrl: null, noRemote: true };
+        }
+        await gitRewrite.fetchAllRefs(repoDir, remote);
+        this._removalState.lastFetchAt = new Date().toISOString();
+
+        const unsafe = await gitRewrite.findUnsafeLocalBranches(repoDir, remote);
+        if (unsafe.ahead.length > 0) {
+            vscode.window.showErrorMessage(
+                `Cannot rewrite history: ${unsafe.ahead.length} local branch(es) have commits that are not on ${remote}. ` +
+                `Push them first, then prepare again.`
+            );
+            return { blocked: true, ahead: unsafe.ahead, pushPlan: null, remoteUrl: null };
+        }
+
+        const pushPlan = await gitRewrite.buildPushPlan(repoDir, remote);
+        const remoteUrl = await gitRewrite.getRemoteUrl(repoDir, remote);
+        return { blocked: false, ahead: [], pushPlan, remoteUrl, localOnly: unsafe.localOnly };
     }
 
-    _prepareScanGitCommand(replacements) {
-        this._prepareScanReplacementCommand('git', replacements);
+    async _prepareScanBfgCommand(replacements) {
+        await this._prepareScanReplacementCommand('bfg', replacements);
+    }
+
+    async _prepareScanGitCommand(replacements) {
+        await this._prepareScanReplacementCommand('git', replacements);
     }
 
     async _runPreparedScanCleanup(mode) {
@@ -3949,6 +4357,7 @@ class LeakLockPanel {
             return;
         }
 
+        let report = null;
         try {
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
@@ -3962,18 +4371,24 @@ class LeakLockPanel {
                 ).join('\n');
                 fs.writeFileSync(replacementsFile, replacementLines);
 
-                progress.report({ increment: 10, message: "Fetching remotes..." });
-                await this._gitFetchAll(scanPath);
-
-                progress.report({ increment: 40, message: "Running git filter-repo..." });
                 const util = require('util');
                 const execFileAsync = util.promisify(execFile);
-                await execFileAsync('git', ['filter-repo', '--replace-text', replacementsFile, '--force'], { cwd: scanPath });
 
-                progress.report({ increment: 20, message: "Expiring reflog..." });
-                await execFileAsync('git', ['reflog', 'expire', '--expire=now', '--all'], { cwd: scanPath });
-                progress.report({ increment: 20, message: "Running garbage collection..." });
-                await execFileAsync('git', ['gc', '--prune=now', '--aggressive'], { cwd: scanPath });
+                // runRewrite owns the ref-complete sequence: refresh refs,
+                // block on unpushed commits, materialise every remote branch,
+                // rewrite, repack, atomic push, restore branch, verify.
+                report = await gitRewrite.runRewrite({
+                    repoDir: scanPath,
+                    progress: (message) => progress.report({ increment: 10, message }),
+                    verify: { literals: Object.keys(replacements) },
+                    rewrite: async () => {
+                        await execFileAsync(
+                            'git',
+                            ['filter-repo', '--replace-text', replacementsFile, '--force'],
+                            { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
+                        );
+                    }
+                });
 
                 try {
                     fs.unlinkSync(replacementsFile);
@@ -3982,20 +4397,45 @@ class LeakLockPanel {
                 }
             });
 
-            const result = await vscode.window.showInformationMessage(
-                '✅ Git-only cleanup completed. Your git history has been cleaned. Do you want to force push to update remote repositories now?',
-                'Force Push Now',
-                'Skip'
-            );
-            if (result === 'Force Push Now') {
-                const util = require('util');
-                const execFileAsync = util.promisify(execFile);
-                await execFileAsync('git', ['push', '--force', '--all'], { cwd: scanPath });
-                await execFileAsync('git', ['push', '--force', '--tags'], { cwd: scanPath });
-            }
+            this._scanCleanup.verifyResult = report ? report.offenders : null;
+            this._reportRewriteOutcome('Git-only cleanup', report);
         } catch (error) {
+            if (error instanceof gitRewrite.AheadBranchesError) {
+                this._scanCleanup.blockedBranches = error.branches;
+                this._updateWebviewContent();
+            }
             vscode.window.showErrorMessage(`Git-only cleanup failed: ${error.message}`);
         }
+    }
+
+    /**
+     * Surface what actually reached the remote: which refs were force-updated
+     * and whether the leak survived anywhere.
+     */
+    _reportRewriteOutcome(label, report) {
+        if (!report) {
+            vscode.window.showInformationMessage(`✅ ${label} completed.`);
+            return;
+        }
+        for (const warning of report.warnings || []) {
+            vscode.window.showWarningMessage(warning);
+        }
+        if (report.remoteRestored) {
+            vscode.window.showInformationMessage(
+                'git filter-repo removed the origin remote; Leak Lock restored it before pushing.'
+            );
+        }
+        const refCount = (report.materialized || []).length;
+        if (report.offenders && report.offenders.length > 0) {
+            const refs = report.offenders.map(o => `${o.ref} (${o.reason})`).join(', ');
+            vscode.window.showErrorMessage(
+                `⚠️ ${label} finished but the target is STILL PRESENT on: ${refs}`
+            );
+            return;
+        }
+        vscode.window.showInformationMessage(
+            `✅ ${label} completed. ${refCount} branch(es) plus tags force-pushed and verified clean on every remote ref.`
+        );
     }
 
     async _fixSecrets(replacements) {
@@ -4081,6 +4521,7 @@ class LeakLockPanel {
                 return;
             }
 
+            let report = null;
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: "Running BFG cleanup...",
@@ -4097,40 +4538,25 @@ class LeakLockPanel {
 
                 fs.writeFileSync(replacementsFile, replacementLines);
 
-                progress.report({ increment: 10, message: "Fetching remotes..." });
-                await this._gitFetchAll(scanPath);
-
-                progress.report({ increment: 10, message: "Running BFG tool..." });
-
-                // Run BFG command
                 const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-                const bfgCommand = `cd "${scanPath}" && java -jar "${bfgPath}" --replace-text "${replacementsFile}"`;
-
                 const util = require('util');
-                const execAsync = util.promisify(exec);
+                const execFileAsync = util.promisify(execFile);
 
-                try {
-                    const bfgResult = await execAsync(bfgCommand);
-                    console.log('BFG result:', bfgResult.stdout);
-                    progress.report({ increment: 40, message: "BFG cleanup completed ✓" });
-                } catch (bfgError) {
-                    console.error('BFG error:', bfgError);
-                    // Continue even if BFG has issues - it might still have worked
-                }
-
-                progress.report({ increment: 15, message: "Expiring reflog..." });
-
-                // Git cleanup commands
-                try {
-                    await execAsync(`cd "${scanPath}" && git reflog expire --expire=now --all`);
-                    progress.report({ increment: 15, message: "Running garbage collection..." });
-
-                    await execAsync(`cd "${scanPath}" && git gc --prune=now --aggressive`);
-                    progress.report({ increment: 0, message: "Git cleanup completed ✓" });
-                } catch (gitError) {
-                    console.error('Git cleanup error:', gitError);
-                    vscode.window.showWarningMessage('BFG completed but git cleanup had issues. You may need to run git cleanup manually.');
-                }
+                report = await gitRewrite.runRewrite({
+                    repoDir: scanPath,
+                    progress: (message) => progress.report({ increment: 10, message }),
+                    verify: { literals: Object.keys(replacements) },
+                    rewrite: async () => {
+                        // A BFG failure must abort before the force-push: pushing a
+                        // rewrite that did not happen destroys remote history for nothing.
+                        const bfgResult = await execFileAsync(
+                            'java',
+                            ['-jar', bfgPath, '--replace-text', replacementsFile],
+                            { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
+                        );
+                        console.log('BFG result:', bfgResult.stdout);
+                    }
+                });
 
                 // Clean up the temporary file
                 try {
@@ -4140,19 +4566,16 @@ class LeakLockPanel {
                 }
             });
 
-            // Show success message with next steps
+            this._scanCleanup.verifyResult = report ? report.offenders : null;
+            this._reportRewriteOutcome('BFG cleanup', report);
+
             const result = await vscode.window.showInformationMessage(
-                '✅ BFG cleanup completed successfully!\n\nYour git history has been cleaned. Do you want to force push to update remote repositories now?',
-                'Force Push Now',
+                'Open a terminal to inspect the repository?',
                 'Show Git Status',
                 'Skip'
             );
 
-            if (result === 'Force Push Now') {
-                const util = require('util');
-                const execAsync = util.promisify(exec);
-                await execAsync(`cd "${scanPath}" && git push --force --all && git push --force --tags`);
-            } else if (result === 'Show Git Status') {
+            if (result === 'Show Git Status') {
                 // Open a new terminal and show git status
                 const terminal = vscode.window.createTerminal('Git Status');
                 terminal.sendText(`cd "${scanPath}" && git status`);
@@ -4161,12 +4584,17 @@ class LeakLockPanel {
 
             // Clear scan results since they may no longer be relevant
             this._scanResults = [];
+            this._resetScanSelection();
             if (this._panel) {
                 this._panel.webview.html = this._getHtmlForWebview();
             }
 
         } catch (error) {
             console.error('BFG execution error:', error);
+            if (error instanceof gitRewrite.AheadBranchesError) {
+                this._scanCleanup.blockedBranches = error.branches;
+                this._updateWebviewContent();
+            }
             vscode.window.showErrorMessage(`❌ BFG cleanup failed: ${error.message}`);
         }
     }
