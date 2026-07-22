@@ -295,6 +295,7 @@ class LeakLockPanel {
             replacementValues: {}, // { [findingIndex]: string }
             pushPlan: null, // ref-by-ref preview of the force-push
             blockedBranches: null, // local branches with unpushed commits
+            blockedReason: null, // 'unpushed-commits' | 'no-remote' | null
             verifyResult: null // offending refs reported after a run
         };
         this._dependenciesInstalled = false;
@@ -317,6 +318,7 @@ class LeakLockPanel {
             lastFetchAt: null,
             pushPlan: null, // ref-by-ref preview of the force-push
             blockedBranches: null, // local branches with unpushed commits
+            blockedReason: null, // 'unpushed-commits' | 'no-remote' | null
             verifyResult: null // offending refs reported after a run
         };
     }
@@ -1594,16 +1596,19 @@ class LeakLockPanel {
             const validatedRepo = validatePath(repo);
             this._removalState.preparing = true;
             this._removalState.blockedBranches = null;
+            this._removalState.blockedReason = null;
             this._removalState.verifyResult = null;
             this._updateWebviewContent();
 
             const preflight = await this._rewritePreflight(validatedRepo);
             if (preflight.blocked) {
                 this._removalState.blockedBranches = preflight.ahead;
+                this._removalState.blockedReason = preflight.reason;
                 this._removalState.preparedCommand = null;
                 this._removalState.preparedMode = null;
                 return;
             }
+            this._removalState.blockedReason = null;
             this._removalState.pushPlan = preflight.pushPlan;
 
             const mode = this._removalState.combineMode;
@@ -1647,7 +1652,10 @@ class LeakLockPanel {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
         const rewriteLines = targets.map(t => {
             const flag = t.type === 'directory' ? '--delete-folders' : '--delete-files';
-            return `java -jar ${gitRewrite.shellQuote(bfgPath)} ${flag} ${gitRewrite.shellQuote(t.base)} ${gitRewrite.shellQuote(repoDir)}`;
+            // BFG treats the argument as a pattern - escape metacharacters so a
+            // name like `[old].env` matches literally, exactly as combined mode does.
+            const pattern = gitRewrite.shellQuote(this._escapeRegex(t.base));
+            return `java -jar ${gitRewrite.shellQuote(bfgPath)} ${flag} ${pattern} ${gitRewrite.shellQuote(repoDir)}`;
         });
         return gitRewrite.buildRewriteScript({
             repoDir,
@@ -1808,16 +1816,19 @@ class LeakLockPanel {
             const validatedRepo = validatePath(repo);
             this._removalState.preparing = true;
             this._removalState.blockedBranches = null;
+            this._removalState.blockedReason = null;
             this._removalState.verifyResult = null;
             this._updateWebviewContent();
 
             const preflight = await this._rewritePreflight(validatedRepo);
             if (preflight.blocked) {
                 this._removalState.blockedBranches = preflight.ahead;
+                this._removalState.blockedReason = preflight.reason;
                 this._removalState.preparedCommand = null;
                 this._removalState.preparedMode = null;
                 return;
             }
+            this._removalState.blockedReason = null;
             this._removalState.pushPlan = preflight.pushPlan;
 
             // Store the index filter and repo path for execution
@@ -1931,7 +1942,9 @@ class LeakLockPanel {
                         const runs = this._removalState.combineMode === 'individual'
                             ? targets.map(t => [
                                 t.type === 'directory' ? '--delete-folders' : '--delete-files',
-                                t.base
+                                // BFG reads this as a pattern; escape so the literal
+                                // name is matched, matching combined mode's behavior.
+                                this._escapeRegex(t.base)
                             ])
                             : [this._buildBfgArgs(targets)];
                         for (const args of runs) {
@@ -2211,7 +2224,7 @@ class LeakLockPanel {
             ${prepared && this._scanCleanup.preparedMode === 'git' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\'scan-prepared-command-git\')">📋 Copy command</button></div><div style="margin-top:6px;"><button class="scan-button" onclick="saveScanScript()">💾 Save as .sh</button></div>' : ''}
         `;
         const noneSelected = selectedCount === 0;
-        const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches);
+        const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
         const verifyBlock = this._renderVerifyResult(this._scanCleanup.verifyResult);
 
@@ -2329,7 +2342,19 @@ class LeakLockPanel {
     }
 
     /** Blocking banner: a rewrite here would discard unpushed local commits. */
-    _renderBlockedBranches(branches) {
+    _renderBlockedBranches(branches, reason) {
+        if (reason === 'no-remote') {
+            return `
+            <div class="rewrite-blocked">
+                <strong>⛔ Rewrite blocked — no remote configured</strong>
+                <p style="margin: 6px 0; font-size: 0.9em;">
+                    History cleanup fetches from and force-pushes to a remote, so it needs one.
+                    Add a remote and prepare again:
+                </p>
+                <ul style="margin: 6px 0 6px 18px;"><li><code>git remote add origin &lt;url&gt;</code></li></ul>
+            </div>
+        `;
+        }
         if (!branches || branches.length === 0) {
             return '';
         }
@@ -2405,6 +2430,7 @@ class LeakLockPanel {
             this._scanCleanup.replacementsFile = null;
             this._scanCleanup.pushPlan = null;
             this._scanCleanup.blockedBranches = null;
+            this._scanCleanup.blockedReason = null;
             this._scanCleanup.verifyResult = null;
             // Indices from the previous scan no longer refer to the same findings.
             this._resetScanSelection();
@@ -4247,6 +4273,7 @@ class LeakLockPanel {
         const replacementsFile = path.join(scanPath, 'leak-lock-replacements.txt');
         this._scanCleanup.preparing = true;
         this._scanCleanup.blockedBranches = null;
+        this._scanCleanup.blockedReason = null;
         this._scanCleanup.verifyResult = null;
         this._updateWebviewContent();
         try {
@@ -4255,10 +4282,12 @@ class LeakLockPanel {
             const preflight = await this._rewritePreflight(scanPath);
             if (preflight.blocked) {
                 this._scanCleanup.blockedBranches = preflight.ahead;
+                this._scanCleanup.blockedReason = preflight.reason;
                 this._scanCleanup.preparedCommand = null;
                 this._scanCleanup.preparedMode = null;
                 return;
             }
+            this._scanCleanup.blockedReason = null;
 
             const secrets = Object.keys(resolvedReplacements);
             const command = mode === 'git'
@@ -4285,7 +4314,15 @@ class LeakLockPanel {
     async _rewritePreflight(repoDir, remote = gitRewrite.DEFAULT_REMOTE) {
         const hasRemote = await gitRewrite.hasRemote(repoDir, remote);
         if (!hasRemote) {
-            return { blocked: false, ahead: [], pushPlan: null, remoteUrl: null, noRemote: true };
+            // The whole flow is remote-centric: runRewrite() fetches from and
+            // force-pushes to the remote. Without one, every prepared plan would
+            // fail on the first `git fetch ... ${remote}`. Block instead of
+            // offering a script that cannot run.
+            vscode.window.showErrorMessage(
+                `No "${remote}" remote is configured. Add one (git remote add ${remote} <url>) and prepare again — ` +
+                `history cleanup rewrites and pushes every remote branch and tag.`
+            );
+            return { blocked: true, reason: 'no-remote', ahead: [], pushPlan: null, remoteUrl: null };
         }
         await gitRewrite.fetchAllRefs(repoDir, remote);
         this._removalState.lastFetchAt = new Date().toISOString();
@@ -4296,7 +4333,7 @@ class LeakLockPanel {
                 `Cannot rewrite history: ${unsafe.ahead.length} local branch(es) have commits that are not on ${remote}. ` +
                 `Push them first, then prepare again.`
             );
-            return { blocked: true, ahead: unsafe.ahead, pushPlan: null, remoteUrl: null };
+            return { blocked: true, reason: 'unpushed-commits', ahead: unsafe.ahead, pushPlan: null, remoteUrl: null };
         }
 
         const pushPlan = await gitRewrite.buildPushPlan(repoDir, remote);
