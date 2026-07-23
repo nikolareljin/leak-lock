@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leak Lock — find secrets in git history and remove them from every ref</title>
 <meta name="description" content="A VS Code / OpenVSX extension that scans a repository for credentials, files, and keywords, then rewrites them out of every branch and tag — with a script you can read, run, and verify.">
-<!-- Base64-encoded so the `<`, `>` and emoji in the SVG can't break data-URI parsing in stricter browsers. -->
-<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMDAgMTAwJz48dGV4dCB5PScuOWVtJyBmb250LXNpemU9JzkwJz7wn5uh77iPPC90ZXh0Pjwvc3ZnPg==">
+<!-- NR-shield app mark, base64-encoded so its `<`/`>` can't break data-URI parsing in stricter browsers. -->
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzNCc+PHBhdGggZD0nTTE2IDEuNSAzLjUgNS44djkuM0MzLjUgMjMgOC42IDI4LjIgMTYgMzAuNWM3LjQtMi4zIDEyLjUtNy41IDEyLjUtMTUuNFY1LjhMMTYgMS41WicgZmlsbD0nI0I0NjIwQScgc3Ryb2tlPScjMjExQzNCJyBzdHJva2Utd2lkdGg9JzEuMicgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjx0ZXh0IHg9JzE2JyB5PScyMScgdGV4dC1hbmNob3I9J21pZGRsZScgZmlsbD0nI2ZmZicgZm9udC1mYW1pbHk9J0FyaWFsLEhlbHZldGljYSxzYW5zLXNlcmlmJyBmb250LXdlaWdodD0nYm9sZCcgZm9udC1zaXplPScxMycgbGV0dGVyLXNwYWNpbmc9Jy0xJz5OUjwvdGV4dD48L3N2Zz4=">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;700&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -21,6 +21,7 @@
   --amber-bright:#F0A030;
   --mint:#0E7A63;
   --terminal:#191534;
+  --dim:#B9B3DA;          /* muted light text, for use on the dark band */
 
   --display:"Bricolage Grotesque",system-ui,sans-serif;
   --body:"Public Sans",system-ui,-apple-system,sans-serif;
@@ -51,33 +52,41 @@ code{font-family:var(--mono);font-size:.875em}
 /* ---------- masthead ---------- */
 .masthead{
   position:sticky;top:0;z-index:50;
-  background:color-mix(in srgb,var(--paper) 88%,transparent);
+  background:color-mix(in srgb,var(--terminal) 90%,transparent);
   backdrop-filter:blur(10px);
-  border-bottom:1px solid var(--rule);
+  border-bottom:1px solid rgba(143,136,188,.22);
 }
 .masthead .wrap{display:flex;align-items:center;gap:1.5rem;height:3.5rem}
-.brand{display:flex;align-items:center;gap:.55rem;font-family:var(--display);font-weight:800;letter-spacing:-0.03em;text-decoration:none;font-size:1.05rem;white-space:nowrap}
-.brand svg{width:1.15rem;height:1.15rem;flex:none}
+.brand{display:flex;align-items:center;gap:.55rem;font-family:var(--display);font-weight:800;letter-spacing:-0.03em;text-decoration:none;font-size:1.05rem;white-space:nowrap;color:#F3F1FA}
+.brand .logo{width:1.4rem;height:1.5rem;flex:none}
+.masthead .brand .logo path{stroke:#F3F1FA}
 .masthead nav{margin-left:auto;display:flex;gap:1.25rem;font-size:.875rem;font-weight:500}
-.masthead nav a{color:var(--ink-soft);text-decoration:none;border-bottom:1px solid transparent;padding-bottom:2px;white-space:nowrap}
-.masthead nav a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+.masthead nav a{color:var(--dim);text-decoration:none;border-bottom:1px solid transparent;padding-bottom:2px;white-space:nowrap}
+.masthead nav a:hover{color:#F3F1FA;border-bottom-color:#F3F1FA}
 @media (max-width:44rem){.masthead nav a.opt{display:none}}
 
-/* ---------- hero ---------- */
-.hero{padding-block:clamp(3rem,9vw,5.5rem) clamp(2rem,5vw,3rem)}
+/* ---------- hero (dark brand band) ---------- */
+.band{background:var(--terminal);color:#EDEBF7}
+.hero{padding-block:clamp(3rem,9vw,5.5rem) clamp(2.5rem,6vw,4rem)}
 .eyebrow{
   font-family:var(--mono);font-size:.75rem;font-weight:400;
-  letter-spacing:.04em;color:var(--ink-soft);
+  letter-spacing:.04em;color:var(--dim);
   display:block;margin-bottom:1.25rem;
 }
 .hero h1{font-size:clamp(2.35rem,1.4rem + 4.6vw,4.5rem);max-width:18ch}
-.hero h1 .turn{color:var(--amber)}
+.hero h1 .turn{color:var(--amber-bright)}
 .hero .lede{
   margin-top:1.5rem;max-width:54ch;font-size:clamp(1.0625rem,1rem + 0.35vw,1.25rem);
-  color:var(--ink-soft);
+  color:var(--dim);
 }
-.hero .lede strong{color:var(--ink);font-weight:600}
+.hero .lede strong{color:#fff;font-weight:600}
 .cta-row{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:2rem;align-items:center}
+/* Buttons re-tuned for the dark band. */
+.band .btn{border-color:#EDEBF7}
+.band .btn-primary{background:var(--amber);color:#fff;border-color:var(--amber)}
+.band .btn-primary:hover{background:var(--amber-bright);border-color:var(--amber-bright);color:var(--terminal)}
+.band .btn-ghost{background:transparent;color:#EDEBF7}
+.band .btn-ghost:hover{background:#EDEBF7;color:var(--terminal)}
 .btn{
   display:inline-flex;align-items:center;gap:.5rem;
   font-family:var(--body);font-weight:600;font-size:.9375rem;
@@ -158,8 +167,12 @@ footer .credit{margin-left:auto}
 
 <header class="masthead">
   <div class="wrap">
-    <a class="brand" href="#top">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2 4 5.5v6c0 4.6 3.2 8.9 8 10.5 4.8-1.6 8-5.9 8-10.5v-6L12 2Z"/></svg>
+    <a class="brand" href="#top" aria-label="Leak Lock home">
+      <!-- App logo: NR monogram in a shield (matches media/icon.svg). -->
+      <svg class="logo" viewBox="0 0 32 34" aria-hidden="true">
+        <path d="M16 1.5 3.5 5.8v9.3C3.5 23 8.6 28.2 16 30.5c7.4-2.3 12.5-7.5 12.5-15.4V5.8L16 1.5Z" fill="var(--amber)" stroke="var(--ink)" stroke-width="1.2" stroke-linejoin="round"/>
+        <text x="16" y="21" text-anchor="middle" fill="#fff" font-family="'Bricolage Grotesque',system-ui,sans-serif" font-weight="800" font-size="13" letter-spacing="-1">NR</text>
+      </svg>
       Leak Lock
     </a>
     <nav>
@@ -173,7 +186,8 @@ footer .credit{margin-left:auto}
 
 <main id="top">
 
-  <section class="hero wrap">
+  <section class="band">
+   <div class="hero wrap">
     <span class="eyebrow">VS Code &amp; OpenVSX extension · scans with Nosey Parker · rewrites with BFG or git</span>
     <h1>Find the secrets in your git history — then <span class="turn">actually remove them.</span></h1>
     <p class="lede">
@@ -186,6 +200,7 @@ footer .credit{margin-left:auto}
       <a class="btn btn-primary" href="#install">Install the extension</a>
       <a class="btn btn-ghost" href="#what">See what it does</a>
     </div>
+   </div>
   </section>
 
   <!-- ============ WHAT IT DOES ============ -->
