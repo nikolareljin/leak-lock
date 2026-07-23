@@ -57,7 +57,9 @@ class LeakLockSidebarProvider {
                         this._updateView();
                         break;
                     case 'openWebsite':
-                        vscode.commands.executeCommand('leak-lock.openWebsite');
+                        // Awaited so a failure to open the browser rejects here
+                        // rather than becoming an unhandled promise.
+                        await vscode.commands.executeCommand('leak-lock.openWebsite');
                         break;
                     case 'openRemoveFiles':
                         // Open the main panel in Remove Files mode with current selection
