@@ -296,7 +296,11 @@ class LeakLockPanel {
             pushPlan: null, // ref-by-ref preview of the force-push
             blockedBranches: null, // local branches with unpushed commits
             blockedReason: null, // 'unpushed-commits' | 'no-remote' | null
-            verifyResult: null // offending refs reported after a run
+            verifyResult: null, // offending refs reported after a run
+            // After the LOCAL rewrite runs, this holds everything needed to
+            // force-push. The panel shows a persistent confirmation and the push
+            // only happens once the user confirms it here. null = nothing staged.
+            pendingPush: null // { repoDir, remote, verify, label, refCount }
         };
         this._dependenciesInstalled = false;
         this._panel = null;
@@ -410,6 +414,12 @@ class LeakLockPanel {
                         break;
                     case 'scan.runGit':
                         LeakLockPanel.currentPanel._runPreparedScanCleanup('git');
+                        break;
+                    case 'scan.confirmForcePush':
+                        LeakLockPanel.currentPanel._confirmForcePush();
+                        break;
+                    case 'scan.cancelForcePush':
+                        LeakLockPanel.currentPanel._cancelForcePush();
                         break;
                     case 'scan.setSelection':
                         LeakLockPanel.currentPanel._setScanSelection(message.index, message.selected);
@@ -622,6 +632,20 @@ class LeakLockPanel {
                         border-radius: 4px;
                         background: var(--vscode-inputValidation-infoBackground);
                         border-left: 3px solid var(--vscode-gitDecoration-addedResourceForeground);
+                    }
+                    /* Persistent force-push confirmation. Deliberately loud and never
+                       auto-dismissed: the remote is only changed after the user acts here. */
+                    .pending-push {
+                        margin-top: 16px;
+                        padding: 14px 16px;
+                        border-radius: 6px;
+                        background: var(--vscode-inputValidation-warningBackground, #fff3cd);
+                        border: 2px solid var(--vscode-inputValidation-warningBorder, #d9b64a);
+                    }
+                    .pending-push code {
+                        background: var(--vscode-textCodeBlock-background);
+                        padding: 1px 5px;
+                        border-radius: 3px;
                     }
                     .push-plan {
                         margin-top: 10px;
@@ -1126,6 +1150,14 @@ class LeakLockPanel {
 
                     function runPreparedGit() {
                         vscode.postMessage({ command: 'scan.runGit' });
+                    }
+
+                    function confirmForcePush() {
+                        vscode.postMessage({ command: 'scan.confirmForcePush' });
+                    }
+
+                    function cancelForcePush() {
+                        vscode.postMessage({ command: 'scan.cancelForcePush' });
                     }
 
                     function exportScanResultsJson() {
@@ -2305,6 +2337,7 @@ class LeakLockPanel {
         const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
         const verifyBlock = this._renderVerifyResult(this._scanCleanup.verifyResult);
+        const pendingPushBlock = this._renderPendingPush(this._scanCleanup.pendingPush);
 
         return `
             <div class="scan-section">
@@ -2355,6 +2388,7 @@ class LeakLockPanel {
                         ${resultsRows}
                     </tbody>
                 </table>
+                ${pendingPushBlock}
                 ${blockedBlock}
                 ${verifyBlock}
                 <div class="run-section" style="margin-top: 18px;">
@@ -2498,6 +2532,43 @@ class LeakLockPanel {
         `;
     }
 
+    /**
+     * Persistent confirmation gate: the local rewrite is done, the remote is
+     * NOT yet changed. This block stays on screen until the user confirms or
+     * cancels the force-push — it is never auto-dismissed.
+     */
+    _renderPendingPush(pending) {
+        if (!pending) {
+            return '';
+        }
+        const remote = escapeHtml(pending.remote || 'origin');
+        const refCount = Number(pending.refCount) || 0;
+        const restoredNote = pending.remoteRestored
+            ? '<p style="margin:6px 0;font-size:0.85em;">The remote was missing after the rewrite and was restored before this step.</p>'
+            : '';
+        return `
+            <div class="pending-push">
+                <strong>🛑 Confirm force-push — this will rewrite remote git history</strong>
+                <p style="margin: 8px 0;">
+                    Your <strong>local</strong> history has been rewritten and the secret removed, but
+                    <strong>nothing has been pushed yet — the remote is unchanged</strong>.
+                </p>
+                <p style="margin: 8px 0;">
+                    Confirming will <strong>force-push every branch and tag</strong>${refCount ? ` (${refCount} branch${refCount === 1 ? '' : 'es'} plus tags)` : ''}
+                    to <code>${remote}</code> in a single atomic push, <strong>overwriting the history on the server</strong>.
+                    This <strong>rewrites git history and cannot be undone</strong>: everyone with a clone must
+                    re-clone or hard-reset afterward.
+                </p>
+                ${restoredNote}
+                <p style="margin: 10px 0 8px; font-weight: 600;">Do you want to force-push the rewritten history now?</p>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px;">
+                    <button class="danger-button" onclick="confirmForcePush()">❗ Yes, force-push to ${remote}</button>
+                    <button class="scan-button" onclick="cancelForcePush()">Cancel (keep remote unchanged)</button>
+                </div>
+            </div>
+        `;
+    }
+
     async _scanRepository(useWorkspace = false) {
         try {
             // Show scanning in progress
@@ -2511,6 +2582,7 @@ class LeakLockPanel {
             this._scanCleanup.blockedBranches = null;
             this._scanCleanup.blockedReason = null;
             this._scanCleanup.verifyResult = null;
+            this._scanCleanup.pendingPush = null;
             // Indices from the previous scan no longer refer to the same findings.
             this._resetScanSelection();
             this._updateWebviewContent();
@@ -4562,13 +4634,14 @@ class LeakLockPanel {
                 const util = require('util');
                 const execFileAsync = util.promisify(execFile);
 
-                // runRewrite owns the ref-complete sequence: refresh refs,
-                // block on unpushed commits, materialise every remote branch,
-                // rewrite, repack, atomic push, restore branch, verify.
+                // runRewrite does the full LOCAL rewrite (refresh refs, block on
+                // unpushed commits, materialise every remote branch, rewrite,
+                // repack, restore branch) but push:false stops before the remote
+                // is touched. The force-push waits for explicit confirmation.
                 report = await gitRewrite.runRewrite({
                     repoDir: scanPath,
+                    push: false,
                     progress: (message) => progress.report({ increment: 10, message }),
-                    verify: { literals: Object.keys(replacements) },
                     rewrite: async () => {
                         await execFileAsync(
                             'git',
@@ -4585,8 +4658,9 @@ class LeakLockPanel {
                 }
             });
 
-            this._scanCleanup.verifyResult = report ? report.offenders : null;
-            this._reportRewriteOutcome('Git-only cleanup', report);
+            this._stagePushForConfirmation('Git-only cleanup', scanPath, report, {
+                literals: Object.keys(replacements)
+            });
         } catch (error) {
             if (error instanceof gitRewrite.AheadBranchesError) {
                 this._scanCleanup.blockedBranches = error.branches;
@@ -4594,6 +4668,90 @@ class LeakLockPanel {
             }
             vscode.window.showErrorMessage(`Git-only cleanup failed: ${error.message}`);
         }
+    }
+
+    /**
+     * Phase A finished: the LOCAL history has been rewritten but the remote is
+     * untouched. Stage the force-push and surface a persistent confirmation in
+     * the panel — nothing reaches the remote until the user confirms it there.
+     */
+    _stagePushForConfirmation(label, repoDir, report, verify) {
+        this._scanCleanup.verifyResult = null;
+        this._scanCleanup.pendingPush = {
+            repoDir,
+            remote: gitRewrite.DEFAULT_REMOTE,
+            verify,
+            label,
+            refCount: report ? (report.materialized || []).length : 0,
+            remoteRestored: report ? !!report.remoteRestored : false
+        };
+        for (const warning of (report && report.warnings) || []) {
+            vscode.window.showWarningMessage(warning);
+        }
+        this._updateWebviewContent();
+        vscode.window.showInformationMessage(
+            `${label}: local history rewritten. Review the confirmation in the panel and confirm to force-push — the remote has not been changed yet.`
+        );
+    }
+
+    /**
+     * Phase B: the user confirmed in the panel. Force-push the rewritten history
+     * and verify. Only now is the remote changed.
+     */
+    async _confirmForcePush() {
+        const pending = this._scanCleanup.pendingPush;
+        if (!pending) {
+            vscode.window.showWarningMessage('Nothing staged to push. Run a cleanup first.');
+            return;
+        }
+        let offenders = null;
+        try {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Force-pushing rewritten history...',
+                cancellable: false
+            }, async (progress) => {
+                progress.report({ increment: 30, message: 'Force-pushing every branch and tag...' });
+                await gitRewrite.pushRewritten(pending.repoDir, pending.remote);
+                progress.report({ increment: 60, message: 'Verifying every remote ref...' });
+                offenders = await gitRewrite.verifyRemoteRefs(pending.repoDir, pending.remote, pending.verify || {});
+            });
+
+            this._scanCleanup.verifyResult = offenders;
+            this._scanCleanup.pendingPush = null;
+
+            if (offenders && offenders.length > 0) {
+                const refs = offenders.map(o => `${o.ref} (${o.reason})`).join(', ');
+                vscode.window.showErrorMessage(
+                    `⚠️ ${pending.label}: force-push done but the target is STILL PRESENT on: ${refs}`
+                );
+                this._updateWebviewContent();
+            } else {
+                vscode.window.showInformationMessage(
+                    `✅ ${pending.label}: rewritten history force-pushed and verified clean on every remote ref. Everyone with a clone must now re-clone or hard-reset.`
+                );
+                // The findings no longer reflect the rewritten history.
+                this._scanResults = [];
+                this._resetScanSelection();
+                this._updateWebviewContent();
+            }
+        } catch (error) {
+            vscode.window.showErrorMessage(`Force-push failed: ${error.message}`);
+            this._updateWebviewContent();
+        }
+    }
+
+    /** The user declined the force-push. The local rewrite stays; the remote is untouched. */
+    _cancelForcePush() {
+        if (!this._scanCleanup.pendingPush) {
+            return;
+        }
+        this._scanCleanup.pendingPush = null;
+        this._updateWebviewContent();
+        vscode.window.showWarningMessage(
+            'Force-push cancelled. Your LOCAL history was rewritten, but the remote was NOT changed. ' +
+            'To discard the local rewrite, re-clone the repository; to push later, prepare and run the cleanup again.'
+        );
     }
 
     /**
@@ -4733,8 +4891,8 @@ class LeakLockPanel {
 
                 report = await gitRewrite.runRewrite({
                     repoDir: scanPath,
+                    push: false,
                     progress: (message) => progress.report({ increment: 10, message }),
-                    verify: { literals: Object.keys(replacements) },
                     rewrite: async () => {
                         // A BFG failure must abort before the force-push: pushing a
                         // rewrite that did not happen destroys remote history for nothing.
@@ -4755,28 +4913,9 @@ class LeakLockPanel {
                 }
             });
 
-            this._scanCleanup.verifyResult = report ? report.offenders : null;
-            this._reportRewriteOutcome('BFG cleanup', report);
-
-            const result = await vscode.window.showInformationMessage(
-                'Open a terminal to inspect the repository?',
-                'Show Git Status',
-                'Skip'
-            );
-
-            if (result === 'Show Git Status') {
-                // Open a new terminal and show git status
-                const terminal = vscode.window.createTerminal('Git Status');
-                terminal.sendText(`cd "${scanPath}" && git status`);
-                terminal.show();
-            }
-
-            // Clear scan results since they may no longer be relevant
-            this._scanResults = [];
-            this._resetScanSelection();
-            if (this._panel) {
-                this._panel.webview.html = this._getHtmlForWebview();
-            }
+            this._stagePushForConfirmation('BFG cleanup', scanPath, report, {
+                literals: Object.keys(replacements)
+            });
 
         } catch (error) {
             console.error('BFG execution error:', error);
