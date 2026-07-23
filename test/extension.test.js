@@ -79,13 +79,20 @@ suite('Project website link', () => {
 		const provider = new LeakLockSidebarProvider(vscode.Uri.file(__dirname));
 		const html = provider._getHtmlForWebview();
 
+		// Assert on the control itself, not just the helper it calls: a bare
+		// openWebsite() function would satisfy a looser check even after the
+		// button was deleted from the markup.
 		assert.ok(
-			html.includes('openWebsite()'),
-			'the sidebar should render a control that reaches the website'
+			/<button[^>]*onclick="openWebsite\(\)"/.test(html),
+			'the sidebar should render a button wired to openWebsite()'
+		);
+		assert.ok(
+			html.includes('Open the Leak Lock website'),
+			'that button needs a visible label'
 		);
 		assert.ok(
 			html.includes("command: 'openWebsite'"),
-			'that control should post an openWebsite message to the extension'
+			'the handler should post an openWebsite message to the extension'
 		);
 	});
 
