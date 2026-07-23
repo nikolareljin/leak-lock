@@ -175,6 +175,6 @@
     "eslint": "^9.16.0"
   },
   "dependencies": {
-    "globals": "^15.15.0"
+    "globals": "^17.7.0"
   }
 }
