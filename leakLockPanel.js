@@ -599,7 +599,11 @@ class LeakLockPanel {
                         border-radius: 4px;
                         font-family: monospace;
                         margin-top: 10px;
-                        word-break: break-all;
+                        /* Preserve the script's line breaks; without this the div
+                           collapses every newline to a space and the copied text
+                           becomes one unrunnable line. */
+                        white-space: pre-wrap;
+                        overflow-wrap: anywhere;
                     }
                     .danger-command {
                         background: var(--vscode-inputValidation-errorBackground);
@@ -609,7 +613,8 @@ class LeakLockPanel {
                         border-radius: 4px;
                         font-family: monospace;
                         margin-top: 10px;
-                        word-break: break-all;
+                        white-space: pre-wrap;
+                        overflow-wrap: anywhere;
                     }
                     .hidden {
                         display: none;
@@ -1083,7 +1088,10 @@ class LeakLockPanel {
                         try {
                             const el = document.getElementById(id);
                             if (!el) return;
-                            const text = el.innerText || el.textContent || '';
+                            // textContent preserves the raw newlines; innerText returns the
+                            // rendered text, which would collapse them and yield a script
+                            // that is one unrunnable line.
+                            const text = el.textContent || el.innerText || '';
                             if (navigator.clipboard && navigator.clipboard.writeText) {
                                 navigator.clipboard.writeText(text);
                             } else {
@@ -1297,7 +1305,7 @@ class LeakLockPanel {
                     .button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 8px 14px; border-radius: 4px; cursor: pointer; }
                     .button:hover { background: var(--vscode-button-hoverBackground); }
                     .hint { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
-                    .manual-command { background: var(--vscode-textCodeBlock-background); padding: 10px; border-radius: 4px; font-family: monospace; word-break: break-all; }
+                    .manual-command { background: var(--vscode-textCodeBlock-background); padding: 10px; border-radius: 4px; font-family: monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
                     .danger { color: var(--vscode-errorForeground); font-weight: bold; }
                     .danger-section { border: 1px solid var(--vscode-inputValidation-errorBorder); background: var(--vscode-inputValidation-errorBackground); padding: 12px; border-radius: 6px; }
                     .danger-button { background: #c62828; color: #fff; border: none; padding: 10px 16px; border-radius: 4px; font-weight: bold; cursor: pointer; }
@@ -1420,7 +1428,8 @@ class LeakLockPanel {
                         try {
                             const el = document.getElementById('prepared-command') || document.getElementById('prepared-command-git');
                             if (!el) return;
-                            const text = el.innerText || el.textContent || '';
+                            // textContent keeps the raw newlines (innerText collapses them).
+                            const text = el.textContent || el.innerText || '';
                             if (navigator.clipboard && navigator.clipboard.writeText) {
                                 navigator.clipboard.writeText(text);
                             } else {
