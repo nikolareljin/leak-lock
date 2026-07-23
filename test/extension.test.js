@@ -205,6 +205,17 @@ suite('Scan finding selection', () => {
 		assert.deepStrictEqual([...panel._ensureScanSelection()], [0, 3, 4]);
 	});
 
+	test('a fresh replacement value from the prepare payload beats stale state', () => {
+		const panel = panelWith(FINDINGS);
+		// State holds an old value (as if the debounced post had not yet arrived)...
+		panel._setScanReplacement(0, 'OLD');
+		// ...but the prepare message carries the live DOM value for that row.
+		const resolved = panel._resolveScanReplacements({ 'idx:0': 'FRESH' });
+		assert.strictEqual(resolved['aaa'], 'FRESH', 'payload value wins over stale state');
+		// And state is reconciled so a later re-render shows the fresh value.
+		assert.strictEqual(panel._getReplacementValue(0), 'FRESH');
+	});
+
 	test('custom replacement values persist per finding', () => {
 		const panel = panelWith(FINDINGS);
 		panel._setScanReplacement(0, 'REDACTED');
