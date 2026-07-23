@@ -1,0 +1,27 @@
+name: CI
+
+# Lint + test on every pull request and on release branches, so changes are
+# gated before they reach main. Publishing stays in publish.yml.
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ 'release/**' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: nikolareljin/ci-helpers/.github/workflows/node.yml@production
+    with:
+      node_version: "20"
+      lint_command: "npm ci && npm run lint"
+      # vscode-test launches a real VS Code (Electron) instance, which needs a
+      # virtual display on Linux. node_modules is already present from the lint
+      # step, which runs first.
+      test_command: "sudo apt-get update && sudo apt-get install -y xvfb && xvfb-run -a -s '-screen 0 1024x768x24' npm test"
+      # No build step: this extension ships its sources directly (the package.json
+      # "build" script targets a src/ directory that does not exist).
+      build_command: ""
