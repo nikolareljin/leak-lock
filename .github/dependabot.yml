@@ -1,0 +1,47 @@
+version: 2
+
+# Without this file only Dependabot *security* updates run (those need no
+# config, which is where PR #56 came from). Adding it turns on scheduled
+# version updates as well, so routine bumps arrive before an advisory forces
+# them.
+updates:
+  # ---- npm (dev tooling: eslint, @vscode/test-cli, mocha, types) ----
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      # Batch the low-risk bumps into one PR; majors stay separate so a
+      # breaking change to the test runner or eslint gets reviewed alone.
+      npm-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ---- GitHub Actions used by ci.yml, pages.yml and publish.yml ----
+  # Only semver refs are considered, so the reusable workflow pinned to
+  # ci-helpers@production is left alone — that floating tag is advanced by
+  # its own release flow, never by a bump here.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
