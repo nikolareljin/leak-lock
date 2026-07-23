@@ -284,7 +284,10 @@ function activate(context) {
 			}
 		} catch (error) {
 			console.error('Failed to open the project website:', error);
-			vscode.window.showErrorMessage(`Failed to open ${WEBSITE_URL}: ${error.message}`);
+			// Not every rejection is an Error, and reading .message off a
+			// string or plain object would show the user "undefined".
+			const reason = error instanceof Error ? error.message : String(error);
+			vscode.window.showErrorMessage(`Failed to open ${WEBSITE_URL}: ${reason}`);
 		}
 	});
 
