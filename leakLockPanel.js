@@ -1039,6 +1039,14 @@ class LeakLockPanel {
 
                     let replacementDebounce = null;
 
+                    function postReplacement(input) {
+                        vscode.postMessage({
+                            command: 'scan.setReplacement',
+                            index: input.getAttribute('data-finding-index'),
+                            value: input.value
+                        });
+                    }
+
                     document.addEventListener('change', function (event) {
                         const box = event.target.closest('.secret-checkbox');
                         if (box && !box.disabled) {
@@ -1048,6 +1056,15 @@ class LeakLockPanel {
                                 selected: box.checked
                             });
                             refreshSelectionUi();
+                            return;
+                        }
+                        // A replacement input fires 'change' when it loses focus - e.g. the
+                        // moment the user clicks Prepare. Flush the pending debounce and post
+                        // the value now so Prepare never reads a stale replacement.
+                        const input = event.target.closest('.replacement-input');
+                        if (input && !input.disabled) {
+                            clearTimeout(replacementDebounce);
+                            postReplacement(input);
                         }
                     });
 
@@ -1056,11 +1073,9 @@ class LeakLockPanel {
                         if (!input || input.disabled) {
                             return;
                         }
-                        const index = input.getAttribute('data-finding-index');
-                        const value = input.value;
                         clearTimeout(replacementDebounce);
                         replacementDebounce = setTimeout(function () {
-                            vscode.postMessage({ command: 'scan.setReplacement', index: index, value: value });
+                            postReplacement(input);
                         }, 200);
                     });
 
@@ -4288,17 +4303,21 @@ class LeakLockPanel {
     }
 
     /**
-     * Build the secret -> replacement map from persisted selection state.
-     * The webview payload is only a hint; extension state is authoritative so a
-     * dropped message can never silently widen or narrow the cleanup.
+     * Build the secret -> replacement map. Which findings are included comes
+     * from persisted selection state (authoritative, so a dropped message can't
+     * silently widen or narrow the cleanup). The replacement VALUE prefers the
+     * prepare payload, which collectReplacements() reads live from the DOM at
+     * click time — this beats the debounced state, so a value typed immediately
+     * before clicking Prepare is never stale.
      */
     _resolveScanReplacements(replacements) {
         const resolved = {};
+        const payloadByIdx = {};
 
         if (replacements && typeof replacements === 'object') {
             for (const [key, replacement] of Object.entries(replacements)) {
                 if (key.startsWith('idx:')) {
-                    // Indices are reconciled against persisted state below.
+                    payloadByIdx[key.slice(4)] = replacement;
                     continue;
                 }
                 // Backward compatibility for callers that pass secret->replacement maps.
@@ -4316,7 +4335,13 @@ class LeakLockPanel {
             if (!secretValue) {
                 continue;
             }
-            resolved[secretValue] = this._getReplacementValue(idx);
+            const fresh = payloadByIdx[String(idx)];
+            const value = (typeof fresh === 'string' && fresh.length > 0)
+                ? fresh
+                : this._getReplacementValue(idx);
+            // Keep extension state in sync so a later re-render shows the same value.
+            this._scanCleanup.replacementValues[idx] = value;
+            resolved[secretValue] = value;
         }
 
         return resolved;
