@@ -31,6 +31,10 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          # Enable Pages (build_type=workflow) on first run instead of failing
+          # when it hasn't been turned on in repo settings yet.
+          enablement: true
 
       - name: Upload site
         uses: actions/upload-pages-artifact@v3
