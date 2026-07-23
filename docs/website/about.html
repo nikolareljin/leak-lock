@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>About — Nik Reljin</title>
+<meta name="description" content="Nik Reljin — engineer building across backend, frontend, cloud, local AI, security tooling, and the occasional history-driven game.">
+<!-- NR-shield app mark, base64-encoded so its `<`/`>` can't break data-URI parsing in stricter browsers. -->
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzNCc+PHBhdGggZD0nTTE2IDEuNSAzLjUgNS44djkuM0MzLjUgMjMgOC42IDI4LjIgMTYgMzAuNWM3LjQtMi4zIDEyLjUtNy41IDEyLjUtMTUuNFY1LjhMMTYgMS41WicgZmlsbD0nI0I0NjIwQScgc3Ryb2tlPScjMjExQzNCJyBzdHJva2Utd2lkdGg9JzEuMicgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjx0ZXh0IHg9JzE2JyB5PScyMScgdGV4dC1hbmNob3I9J21pZGRsZScgZmlsbD0nI2ZmZicgZm9udC1mYW1pbHk9J0FyaWFsLEhlbHZldGljYSxzYW5zLXNlcmlmJyBmb250LXdlaWdodD0nYm9sZCcgZm9udC1zaXplPScxMycgbGV0dGVyLXNwYWNpbmc9Jy0xJz5OUjwvdGV4dD48L3N2Zz4=">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;700&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F2F1F6;
+  --paper-raised:#FBFAFD;
+  --ink:#211C3B;
+  --ink-soft:#585276;
+  --rule:#D9D6E4;
+  --amber:#B4620A;
+  --amber-bright:#F0A030;
+  --mint:#0E7A63;
+  --terminal:#191534;
+  --dim:#B9B3DA;
+
+  --display:"Bricolage Grotesque",system-ui,sans-serif;
+  --body:"Public Sans",system-ui,-apple-system,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+
+  --gutter:clamp(1.25rem,5vw,4rem);
+  --measure:68rem;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--body);font-size:clamp(1rem,0.96rem + 0.2vw,1.0625rem);
+  line-height:1.6;-webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{font-family:var(--display);font-weight:800;line-height:1.05;letter-spacing:-0.035em;margin:0}
+p{margin:0}
+a{color:inherit}
+code{font-family:var(--mono);font-size:.875em}
+.wrap{max-width:var(--measure);margin-inline:auto;padding-inline:var(--gutter)}
+
+/* ---------- masthead ---------- */
+.masthead{
+  position:sticky;top:0;z-index:50;
+  background:color-mix(in srgb,var(--terminal) 90%,transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid rgba(143,136,188,.22);
+}
+.masthead .wrap{display:flex;align-items:center;gap:1.5rem;height:3.5rem}
+.brand{display:flex;align-items:center;gap:.55rem;font-family:var(--display);font-weight:800;letter-spacing:-0.03em;text-decoration:none;font-size:1.05rem;white-space:nowrap;color:#F3F1FA}
+.brand .logo{width:1.4rem;height:1.5rem;flex:none}
+.masthead .brand .logo path{stroke:#F3F1FA}
+.masthead nav{margin-left:auto;display:flex;gap:1.25rem;font-size:.875rem;font-weight:500}
+.masthead nav a{color:var(--dim);text-decoration:none;border-bottom:1px solid transparent;padding-bottom:2px;white-space:nowrap}
+.masthead nav a:hover{color:#F3F1FA;border-bottom-color:#F3F1FA}
+
+/* ---------- hero band ---------- */
+.band{background:var(--terminal);color:#EDEBF7}
+.hero{padding-block:clamp(3rem,9vw,5rem) clamp(2.5rem,6vw,3.5rem)}
+.eyebrow{font-family:var(--mono);font-size:.75rem;letter-spacing:.04em;color:var(--dim);display:block;margin-bottom:1.1rem}
+.hero h1{font-size:clamp(2.5rem,1.6rem + 4vw,4rem)}
+.hero .lede{margin-top:1.35rem;max-width:56ch;font-size:clamp(1.0625rem,1rem + 0.35vw,1.2rem);color:var(--dim)}
+.hero .lede strong{color:#fff;font-weight:600}
+
+.cta-row{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:2rem;align-items:center}
+.btn{
+  display:inline-flex;align-items:center;gap:.5rem;
+  font-family:var(--body);font-weight:600;font-size:.9375rem;
+  padding:.7rem 1.15rem;border-radius:2px;text-decoration:none;
+  border:1px solid #EDEBF7;color:#EDEBF7;background:transparent;
+  transition:transform .12s ease,background .12s ease,color .12s ease;
+}
+.btn:hover{transform:translateY(-1px)}
+.btn svg{width:1.05rem;height:1.05rem;flex:none}
+.btn-kofi{background:var(--amber);border-color:var(--amber);color:#fff}
+.btn-kofi:hover{background:var(--amber-bright);border-color:var(--amber-bright);color:var(--terminal)}
+.btn-ghost:hover{background:#EDEBF7;color:var(--terminal)}
+
+/* ---------- sections ---------- */
+.section{padding-block:clamp(2.75rem,7vw,4.5rem);border-top:1px solid var(--rule)}
+.section-label{font-family:var(--mono);font-size:.75rem;color:var(--ink-soft);display:block;margin-bottom:.9rem}
+.section h2{font-size:clamp(1.6rem,1.25rem + 1.6vw,2.25rem);max-width:24ch}
+.section .intro{margin-top:1rem;max-width:60ch;color:var(--ink-soft)}
+
+/* interests chips */
+.chips{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1.75rem}
+.chip{font-family:var(--mono);font-size:.75rem;color:var(--ink-soft);background:var(--paper-raised);border:1px solid var(--rule);border-radius:2px;padding:.4rem .65rem}
+
+/* project cards */
+.projects{display:grid;gap:1.25rem;margin-top:2rem}
+@media (min-width:44rem){.projects{grid-template-columns:repeat(2,1fr)}}
+.project{border:1px solid var(--rule);border-radius:3px;padding:1.35rem;background:var(--paper-raised);display:flex;flex-direction:column;gap:.5rem;text-decoration:none;transition:border-color .12s ease,transform .12s ease}
+.project:hover{border-color:var(--amber);transform:translateY(-2px)}
+.project .kicker{font-family:var(--mono);font-size:.7rem;color:var(--amber);letter-spacing:.03em}
+.project h3{font-size:1.0625rem;font-family:var(--body);font-weight:600;letter-spacing:0}
+.project p{font-size:.9rem;color:var(--ink-soft);flex:1}
+.project .go{font-size:.8125rem;font-weight:600;color:var(--amber)}
+
+/* elsewhere links */
+.links{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:1.75rem}
+.linkchip{display:inline-flex;align-items:center;gap:.5rem;border:1px solid var(--rule);border-radius:2px;padding:.6rem .95rem;text-decoration:none;color:var(--ink);background:var(--paper-raised);font-size:.9rem;font-weight:600;transition:border-color .12s ease,color .12s ease}
+.linkchip:hover{border-color:var(--amber);color:var(--amber)}
+.linkchip svg{width:1.1rem;height:1.1rem;flex:none}
+
+/* footer */
+footer{border-top:1px solid var(--rule);padding-block:2.5rem 3.5rem;font-size:.875rem;color:var(--ink-soft)}
+footer .wrap{display:flex;flex-wrap:wrap;gap:1rem 2rem;align-items:center}
+footer a{color:var(--ink-soft);text-decoration:none;border-bottom:1px solid var(--rule)}
+footer a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+footer .credit{margin-left:auto}
+
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="Leak Lock home">
+      <svg class="logo" viewBox="0 0 32 34" aria-hidden="true">
+        <path d="M16 1.5 3.5 5.8v9.3C3.5 23 8.6 28.2 16 30.5c7.4-2.3 12.5-7.5 12.5-15.4V5.8L16 1.5Z" fill="var(--amber)" stroke="var(--ink)" stroke-width="1.2" stroke-linejoin="round"/>
+        <text x="16" y="21" text-anchor="middle" fill="#fff" font-family="'Bricolage Grotesque',system-ui,sans-serif" font-weight="800" font-size="13" letter-spacing="-1">NR</text>
+      </svg>
+      Leak Lock
+    </a>
+    <nav>
+      <a href="index.html">Leak Lock</a>
+      <a href="https://github.com/nikolareljin">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="band">
+   <div class="hero wrap">
+    <span class="eyebrow">about</span>
+    <h1>Nik Reljin</h1>
+    <p class="lede">
+      Engineer who builds across the stack — <strong>backend, frontend, cloud, and CI/CD</strong> — with
+      a soft spot for AI that runs on your own machine, developer security tooling, and the occasional
+      history-driven game. I like turning messy problems into small, self-contained tools.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-kofi" href="https://ko-fi.com/nikolareljin">Support me on Ko-Fi ☕</a>
+      <a class="btn btn-ghost" href="https://www.linkedin.com/in/nikolareljin">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4.98 3.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5ZM3 9h4v12H3V9Zm7 0h3.8v1.7h.05c.53-1 1.83-2.05 3.77-2.05 4.03 0 4.78 2.65 4.78 6.1V21h-4v-5.4c0-1.3-.02-2.96-1.8-2.96-1.8 0-2.08 1.4-2.08 2.86V21h-4V9Z"/></svg>
+        LinkedIn
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/nikolareljin">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.22-3.37-1.22-.46-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.9 1.57 2.36 1.12 2.94.85.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.05 0-1.12.39-2.03 1.03-2.74-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.71 1.03 1.62 1.03 2.74 0 3.92-2.34 4.79-4.57 5.04.36.32.68.94.68 1.9v2.82c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
+        GitHub
+      </a>
+    </div>
+   </div>
+  </section>
+
+  <section class="section wrap">
+    <span class="section-label">what i'm into</span>
+    <h2>Interests</h2>
+    <p class="intro">
+      Mostly the space where practical engineering meets something a bit more curious — running models
+      locally, making security boring (in a good way), and rebuilding history as software.
+    </p>
+    <div class="chips">
+      <span class="chip">Local &amp; edge AI · RAG</span>
+      <span class="chip">Developer security tooling</span>
+      <span class="chip">Cloud &amp; CI/CD automation</span>
+      <span class="chip">Strategy &amp; retro game dev</span>
+      <span class="chip">Byzantine history</span>
+      <span class="chip">Self-contained CLIs</span>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <span class="section-label">a few projects</span>
+    <h2>Things I've been building</h2>
+    <div class="projects">
+      <a class="project" href="https://github.com/nikolareljin/leak-lock">
+        <span class="kicker">security · vs code</span>
+        <h3>Leak Lock</h3>
+        <p>Finds secrets in a repo's full git history and rewrites them out of every branch and tag — with a script you can read and verify.</p>
+        <span class="go">github.com/nikolareljin/leak-lock →</span>
+      </a>
+      <a class="project" href="https://github.com/nikolareljin/scan-context">
+        <span class="kicker">ai · medical imaging</span>
+        <h3>ScanContext</h3>
+        <p>A local medical image viewer, report parser, and AI-assisted annotation tool — DICOM, OCR, translation, and region marking, all on your own machine.</p>
+        <span class="go">github.com/nikolareljin/scan-context →</span>
+      </a>
+      <a class="project" href="https://github.com/nikolareljin/local-ai-lab">
+        <span class="kicker">ai · learning</span>
+        <h3>local-ai-lab</h3>
+        <p>A hands-on lab for building local AI one lesson at a time — run and understand models without shipping your data to anyone's cloud.</p>
+        <span class="go">github.com/nikolareljin/local-ai-lab →</span>
+      </a>
+      <a class="project" href="https://github.com/nikolareljin/500ad">
+        <span class="kicker">game · strategy</span>
+        <h3>500 A.D.</h3>
+        <p>A mobile-friendly turn-based strategy game set in the Byzantine Empire, 500–1453 AD: maps, units, city-building, and tactical combat.</p>
+        <span class="go">github.com/nikolareljin/500ad →</span>
+      </a>
+      <a class="project" href="https://github.com/nikolareljin/nomisma">
+        <span class="kicker">ai · numismatics</span>
+        <h3>Nomisma</h3>
+        <p>AI-powered coin analysis and cataloging — digital-microscope capture, automated identification and valuation, and eBay marketplace integration.</p>
+        <span class="go">github.com/nikolareljin/nomisma →</span>
+      </a>
+      <a class="project" href="https://github.com/nikolareljin/nr-post-exporter">
+        <span class="kicker">wordpress · tooling</span>
+        <h3>NR Post Exporter</h3>
+        <p>A WordPress plugin to export and import individual posts — carrying meta, terms, and revisions — as portable JSON.</p>
+        <span class="go">github.com/nikolareljin/nr-post-exporter →</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <span class="section-label">elsewhere</span>
+    <h2>Find me / support the work</h2>
+    <p class="intro">If something here was useful, a coffee is always appreciated — it keeps the side projects moving.</p>
+    <div class="links">
+      <a class="linkchip" href="https://www.linkedin.com/in/nikolareljin">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4.98 3.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5ZM3 9h4v12H3V9Zm7 0h3.8v1.7h.05c.53-1 1.83-2.05 3.77-2.05 4.03 0 4.78 2.65 4.78 6.1V21h-4v-5.4c0-1.3-.02-2.96-1.8-2.96-1.8 0-2.08 1.4-2.08 2.86V21h-4V9Z"/></svg>
+        LinkedIn
+      </a>
+      <a class="linkchip" href="https://github.com/nikolareljin">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.22-3.37-1.22-.46-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.9 1.57 2.36 1.12 2.94.85.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.05 0-1.12.39-2.03 1.03-2.74-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.71 1.03 1.62 1.03 2.74 0 3.92-2.34 4.79-4.57 5.04.36.32.68.94.68 1.9v2.82c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
+        GitHub
+      </a>
+      <a class="linkchip" href="https://ko-fi.com/nikolareljin">
+        <span aria-hidden="true">☕</span> Ko-Fi
+      </a>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© Nik Reljin — MIT-licensed projects</span>
+    <a href="index.html">Leak Lock</a>
+    <a href="https://github.com/nikolareljin">GitHub</a>
+    <span class="credit"><a href="https://ko-fi.com/nikolareljin">Buy me a coffee ☕</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
