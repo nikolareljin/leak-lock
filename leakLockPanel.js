@@ -355,13 +355,26 @@ class LeakLockPanel {
         LeakLockPanel._currentPanel = panel;
     }
 
-    static createOrShow(extensionUri) {
+    /**
+     * @param {vscode.Uri} extensionUri
+     * @param {(panel: LeakLockPanel) => void} [initialize] Stages panel state
+     *   (view mode, target directory, …) before the webview is rendered. It
+     *   runs ahead of the single initial html assignment so the panel opens
+     *   straight into the requested view instead of rendering the default one
+     *   and replacing it a moment later — replacing it destroys the webview
+     *   document and can abort VS Code's in-flight service worker
+     *   registration.
+     */
+    static createOrShow(extensionUri, initialize) {
         const column = vscode.window.activeTextEditor
             ? vscode.window.activeTextEditor.viewColumn
             : undefined;
 
         // If we already have a panel, show it
         if (LeakLockPanel.currentPanel) {
+            if (initialize) {
+                initialize(LeakLockPanel.currentPanel);
+            }
             LeakLockPanel.currentPanel._panel.reveal(column);
             return;
         }
@@ -381,6 +394,10 @@ class LeakLockPanel {
         LeakLockPanel.currentPanel = new LeakLockPanel(extensionUri);
         LeakLockPanel.currentPanel._panel = panel;
         LeakLockPanel.currentPanel._setupPanelListeners();
+        if (initialize) {
+            initialize(LeakLockPanel.currentPanel);
+        }
+        LeakLockPanel.currentPanel._initialRenderDone = true;
         LeakLockPanel.currentPanel._panel.webview.html = LeakLockPanel.currentPanel._getHtmlForWebview();
 
         // Handle messages from the webview
@@ -2127,8 +2144,8 @@ class LeakLockPanel {
                 this._removalState.preview = null;
                 this._removalState.details = [];
             }
-            if (this._panel && this._viewMode === 'removeFiles') {
-                this._panel.webview.html = this._getHtmlForWebview();
+            if (this._viewMode === 'removeFiles') {
+                this._updateWebviewContent();
             }
         } catch { }
     }
@@ -3474,7 +3491,15 @@ class LeakLockPanel {
 
     // Add method to update webview content
     _updateWebviewContent() {
-        if (this._panel) {
+        // Before the first render the caller is only staging state, and
+        // createOrShow performs the single initial assignment. Assigning
+        // webview.html tears down the iframe document and builds a new one;
+        // doing that while VS Code's webview service worker is still
+        // registering against the old document makes register() reject with
+        // "InvalidStateError: The document is in an invalid state", which the
+        // user sees as "Error loading webview: Could not register service
+        // worker".
+        if (this._panel && this._initialRenderDone) {
             this._panel.webview.html = this._getHtmlForWebview();
         }
     }

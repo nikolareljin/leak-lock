@@ -56,6 +56,9 @@ class LeakLockSidebarProvider {
                         this._showDependencyDetails = false;
                         this._updateView();
                         break;
+                    case 'openWebsite':
+                        vscode.commands.executeCommand('leak-lock.openWebsite');
+                        break;
                     case 'openRemoveFiles':
                         // Open the main panel in Remove Files mode with current selection
                         vscode.commands.executeCommand('leak-lock.openRemoveFiles', {
@@ -471,6 +474,10 @@ class LeakLockSidebarProvider {
                     vscode.postMessage({ command: 'openRemoveFiles' });
                 }
 
+                function openWebsite() {
+                    vscode.postMessage({ command: 'openWebsite' });
+                }
+
                 function toggleGitHistorySection() {
                     vscode.postMessage({ command: 'toggleGitHistorySection' });
                 }
@@ -856,6 +863,15 @@ class LeakLockSidebarProvider {
                 </div>
                 <button class="scan-button" onclick="openRemoveFiles()">
                     🗑️ Remove files
+                </button>
+            </div>
+
+            <div class="section">
+                <div style="font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 8px;">
+                    Guides, screenshots and install instructions
+                </div>
+                <button class="scan-button" onclick="openWebsite()">
+                    <span aria-hidden="true">🌐</span> Open the Leak Lock website
                 </button>
             </div>
         `;

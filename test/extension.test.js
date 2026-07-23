@@ -42,6 +42,115 @@ suite('Leak Lock Extension Test Suite', () => {
 	});
 });
 
+suite('Project website link', () => {
+	const WEBSITE_URL = 'https://nikolareljin.github.io/leak-lock/';
+
+	test('registers a command that opens the project website', async () => {
+		const commands = await vscode.commands.getCommands();
+		assert.ok(
+			commands.includes('leak-lock.openWebsite'),
+			'openWebsite command should be registered'
+		);
+	});
+
+	test('the website command is exposed in the Command Palette', () => {
+		const pkg = require('../package.json');
+		const entry = (pkg.contributes.commands || [])
+			.find(c => c.command === 'leak-lock.openWebsite');
+		assert.ok(entry, 'openWebsite should be declared in contributes.commands');
+		assert.ok(entry.title && entry.title.trim().length > 0, 'it needs a palette title');
+	});
+
+	test('the site URL is defined once, in config', () => {
+		// Every view links to the same place; a URL copied into each one drifts
+		// and sends users to a dead link from whichever copy went stale.
+		const config = require('../config');
+		assert.strictEqual(config.WEBSITE_URL, WEBSITE_URL);
+	});
+
+	test('the Control Panel offers a way to reach the website', () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+		const provider = new LeakLockSidebarProvider(vscode.Uri.file(__dirname));
+		const html = provider._getHtmlForWebview();
+
+		assert.ok(
+			html.includes('openWebsite()'),
+			'the sidebar should render a control that reaches the website'
+		);
+		assert.ok(
+			html.includes("command: 'openWebsite'"),
+			'that control should post an openWebsite message to the extension'
+		);
+	});
+
+	test('the command opens the published site in an external browser', async () => {
+		const original = vscode.env.openExternal;
+		let opened = null;
+		try {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				value: async (uri) => { opened = uri.toString(); return true; },
+				configurable: true
+			});
+			await vscode.commands.executeCommand('leak-lock.openWebsite');
+		} finally {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				value: original,
+				configurable: true
+			});
+		}
+
+		assert.ok(opened, 'the command should hand the URL to the OS browser');
+		assert.strictEqual(opened.replace(/\/$/, ''), WEBSITE_URL.replace(/\/$/, ''));
+	});
+});
+
+suite('Webview initialises with a single render', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	teardown(() => {
+		if (LeakLockPanel.currentPanel) {
+			LeakLockPanel.currentPanel.dispose?.();
+			LeakLockPanel.currentPanel = undefined;
+		}
+	});
+
+	// Reassigning webview.html destroys the iframe document and builds a new
+	// one. Doing that while VS Code's webview service worker is still
+	// registering makes register() reject with
+	// "InvalidStateError: The document is in an invalid state", surfaced as
+	// "Error loading webview: Could not register service worker".
+	// The panel must therefore open already in its target mode, rather than
+	// rendering the default view and swapping it a few milliseconds later.
+	test('Remove Files opens directly in removeFiles mode', async () => {
+		await vscode.commands.executeCommand('leak-lock.openRemoveFiles');
+
+		assert.ok(LeakLockPanel.currentPanel, 'a panel should exist');
+		assert.strictEqual(
+			LeakLockPanel.currentPanel._viewMode,
+			'removeFiles',
+			'the first render must already be the Remove Files view'
+		);
+	});
+
+	test('a scan request applies its directory before the first render', async () => {
+		// 'scan' is the default mode, so mode alone proves nothing here; the
+		// directory handed over by the sidebar is what must already be in
+		// place when the webview document is first built.
+		const directory = __dirname;
+		await vscode.commands.executeCommand('leak-lock.startScan', {
+			directory,
+			dependenciesReady: false
+		});
+
+		assert.ok(LeakLockPanel.currentPanel, 'a panel should exist');
+		assert.strictEqual(
+			LeakLockPanel.currentPanel._selectedDirectory,
+			directory,
+			'the directory must be applied before the panel renders'
+		);
+	});
+});
+
 suite('Ref-complete rewrite script', () => {
 	const gitRewrite = require('../git-rewrite');
 
