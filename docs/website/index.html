@@ -138,8 +138,22 @@ code{font-family:var(--mono);font-size:.875em}
 .card .tag{font-family:var(--mono);font-size:.7rem;color:var(--ink-soft)}
 .card pre{
   margin:0;background:var(--terminal);color:#E6E3F5;border-radius:2px;
-  padding:.7rem .8rem;font-family:var(--mono);font-size:.75rem;overflow-x:auto;line-height:1.6;white-space:pre-wrap;word-break:break-word;
+  padding:.7rem 2.6rem .7rem .8rem;font-family:var(--mono);font-size:.75rem;overflow-x:auto;line-height:1.6;white-space:pre-wrap;word-break:break-word;
 }
+/* Copy-to-clipboard button, injected by script onto each command block. */
+.snippet{position:relative}
+.copy-btn{
+  position:absolute;top:.45rem;right:.45rem;
+  display:inline-flex;align-items:center;gap:.3rem;
+  font-family:var(--mono);font-size:.65rem;font-weight:700;letter-spacing:.03em;
+  color:var(--dim);background:rgba(143,136,188,.14);
+  border:1px solid rgba(143,136,188,.32);border-radius:2px;
+  padding:.28rem .5rem;cursor:pointer;line-height:1;
+  transition:background .12s ease,color .12s ease,border-color .12s ease;
+}
+.copy-btn:hover{color:#fff;background:rgba(143,136,188,.28)}
+.copy-btn:focus-visible{outline:2px solid var(--amber-bright);outline-offset:1px}
+.copy-btn.copied{color:#0B0A1E;background:var(--mint-bright,#4FD6B0);border-color:transparent}
 .card a.link{font-size:.875rem;font-weight:600;color:var(--amber);text-decoration:none;border-bottom:1px solid currentColor;align-self:flex-start}
 .card a.link:hover{color:var(--ink)}
 
@@ -361,6 +375,69 @@ codium  --install-extension nikolareljin.leak-lock</code></pre>
     <span class="credit">Scanning by <a href="https://github.com/praetorian-inc/noseyparker">Nosey Parker</a>, rewriting by <a href="https://rtyley.github.io/bfg-repo-cleaner/">BFG</a></span>
   </div>
 </footer>
+
+<script>
+(function () {
+  // Progressive enhancement: each command block gets a copy button. If the
+  // browser has no clipboard support at all, no button is added — the text
+  // is still selectable by hand.
+  var canCopy = (navigator.clipboard && navigator.clipboard.writeText) ||
+                document.queryCommandSupported && document.queryCommandSupported('copy');
+  if (!canCopy) return;
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    // Fallback for non-secure contexts (e.g. plain http:// previews) where
+    // navigator.clipboard is unavailable.
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy') ? resolve() : reject(); }
+      catch (e) { reject(e); }
+      finally { document.body.removeChild(ta); }
+    });
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.card pre'), function (pre) {
+    var wrap = document.createElement('div');
+    wrap.className = 'snippet';
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy-btn';
+    btn.textContent = 'Copy';
+    btn.setAttribute('aria-label', 'Copy command to clipboard');
+    wrap.appendChild(btn);
+
+    var reset;
+    btn.addEventListener('click', function () {
+      var text = pre.innerText.replace(/\s+$/, '');
+      copyText(text).then(function () {
+        btn.textContent = 'Copied';
+        btn.classList.add('copied');
+        clearTimeout(reset);
+        reset = setTimeout(function () {
+          btn.textContent = 'Copy';
+          btn.classList.remove('copied');
+        }, 1600);
+      }).catch(function () {
+        btn.textContent = 'Press ⌘/Ctrl+C';
+        clearTimeout(reset);
+        reset = setTimeout(function () { btn.textContent = 'Copy'; }, 1600);
+      });
+    });
+  });
+}());
+</script>
 
 </body>
 </html>
