@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Leak Lock — find secrets in git history, remove them from every ref</title>
-<meta name="description" content="A VS Code extension that scans your repository for secrets and rewrites them out of every branch and tag — including the ones that only exist on the remote.">
+<title>Leak Lock — find secrets in git history and remove them from every ref</title>
+<meta name="description" content="A VS Code / OpenVSX extension that scans a repository for credentials, files, and keywords, then rewrites them out of every branch and tag — with a script you can read, run, and verify.">
 <!-- Base64-encoded so the `<`, `>` and emoji in the SVG can't break data-URI parsing in stricter browsers. -->
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMDAgMTAwJz48dGV4dCB5PScuOWVtJyBmb250LXNpemU9JzkwJz7wn5uh77iPPC90ZXh0Pjwvc3ZnPg==">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -12,19 +12,15 @@
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;700&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  /* Paper is cool and slightly violet — the evidence blocks are the dark ones. */
   --paper:#F2F1F6;
   --paper-raised:#FBFAFD;
   --ink:#211C3B;
   --ink-soft:#585276;
   --rule:#D9D6E4;
-  /* Two signal colours, straight from the tool's own output. */
   --amber:#B4620A;
   --amber-bright:#F0A030;
   --mint:#0E7A63;
-  --mint-bright:#4FD6B0;
   --terminal:#191534;
-  --terminal-dim:#8F88BC;
 
   --display:"Bricolage Grotesque",system-ui,sans-serif;
   --body:"Public Sans",system-ui,-apple-system,sans-serif;
@@ -45,7 +41,7 @@ body{
   line-height:1.6;
   -webkit-font-smoothing:antialiased;
 }
-h1,h2,h3{font-family:var(--display);font-weight:800;line-height:1.02;letter-spacing:-0.035em;margin:0}
+h1,h2,h3{font-family:var(--display);font-weight:800;line-height:1.05;letter-spacing:-0.035em;margin:0}
 p{margin:0}
 a{color:inherit}
 code{font-family:var(--mono);font-size:.875em}
@@ -65,24 +61,22 @@ code{font-family:var(--mono);font-size:.875em}
 .masthead nav{margin-left:auto;display:flex;gap:1.25rem;font-size:.875rem;font-weight:500}
 .masthead nav a{color:var(--ink-soft);text-decoration:none;border-bottom:1px solid transparent;padding-bottom:2px;white-space:nowrap}
 .masthead nav a:hover{color:var(--ink);border-bottom-color:var(--ink)}
-@media (max-width:40rem){.masthead nav a.opt{display:none}}
+@media (max-width:44rem){.masthead nav a.opt{display:none}}
 
 /* ---------- hero ---------- */
-.hero{padding-block:clamp(3rem,9vw,6rem) clamp(2rem,5vw,3rem)}
+.hero{padding-block:clamp(3rem,9vw,5.5rem) clamp(2rem,5vw,3rem)}
 .eyebrow{
   font-family:var(--mono);font-size:.75rem;font-weight:400;
   letter-spacing:.04em;color:var(--ink-soft);
   display:block;margin-bottom:1.25rem;
 }
-.hero h1{font-size:clamp(2.5rem,1.4rem + 5.2vw,5rem);max-width:16ch}
-/* The pivot of the sentence, and of the product. */
-.hero h1 .turn{display:block;color:var(--amber)}
+.hero h1{font-size:clamp(2.35rem,1.4rem + 4.6vw,4.5rem);max-width:18ch}
+.hero h1 .turn{color:var(--amber)}
 .hero .lede{
-  margin-top:1.5rem;max-width:52ch;font-size:clamp(1.0625rem,1rem + 0.35vw,1.25rem);
+  margin-top:1.5rem;max-width:54ch;font-size:clamp(1.0625rem,1rem + 0.35vw,1.25rem);
   color:var(--ink-soft);
 }
 .hero .lede strong{color:var(--ink);font-weight:600}
-
 .cta-row{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:2rem;align-items:center}
 .btn{
   display:inline-flex;align-items:center;gap:.5rem;
@@ -95,111 +89,53 @@ code{font-family:var(--mono);font-size:.875em}
 .btn-ghost{background:transparent;color:var(--ink)}
 .btn-ghost:hover{background:var(--ink);color:var(--paper);transform:translateY(-1px)}
 
-/* ---------- signature: the ref listing ---------- */
-.evidence{margin-top:clamp(2.5rem,6vw,3.5rem)}
-.evidence-head{display:flex;flex-wrap:wrap;align-items:flex-end;gap:1rem 1.5rem;margin-bottom:.85rem}
-.evidence-head h2{font-size:1.0625rem;font-family:var(--body);font-weight:600;letter-spacing:0}
-.evidence-head p{font-size:.875rem;color:var(--ink-soft);max-width:44ch;margin-top:.25rem}
-
-.toggle{
-  display:inline-flex;border:1px solid var(--rule);border-radius:2px;overflow:hidden;
-  background:var(--paper-raised);margin-left:auto;flex:none;
-}
-.toggle button{
-  font-family:var(--mono);font-size:.75rem;font-weight:400;
-  padding:.5rem .85rem;border:0;background:transparent;color:var(--ink-soft);
-  cursor:pointer;transition:background .15s ease,color .15s ease;
-}
-.toggle button + button{border-left:1px solid var(--rule)}
-.toggle button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
-.toggle button:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
-
-.terminal{
-  background:var(--terminal);
-  border-radius:3px;
-  padding:clamp(1rem,3vw,1.6rem);
-  font-family:var(--mono);font-size:clamp(.7rem,.62rem + .35vw,.8125rem);
-  line-height:1.9;
-  overflow-x:auto;
-  box-shadow:0 1px 0 rgba(33,28,59,.08),0 18px 40px -24px rgba(33,28,59,.55);
-}
-.terminal .cmd{color:var(--terminal-dim);white-space:pre}
-.terminal .cmd::before{content:"$ ";color:var(--mint-bright)}
-.ref-list{list-style:none;margin:.65rem 0 0;padding:0;min-width:30rem}
-.ref-list li{display:flex;align-items:baseline;gap:1rem;color:#E6E3F5;white-space:nowrap}
-.ref-list .path{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis}
-.ref-list .path .ns{color:var(--terminal-dim)}
-.ref-list .verdict{flex:none;transition:color .3s ease}
-.ref-list .state-clean .verdict{color:var(--mint-bright)}
-.ref-list .state-dirty .verdict{color:var(--amber-bright);font-weight:700}
-.terminal .summary{
-  margin-top:.9rem;padding-top:.75rem;border-top:1px solid rgba(143,136,188,.28);
-  white-space:pre-wrap;
-}
-.terminal .summary.is-clean{color:var(--mint-bright)}
-.terminal .summary.is-dirty{color:var(--amber-bright)}
-.caption{margin-top:.75rem;font-size:.8125rem;color:var(--ink-soft);max-width:62ch}
-
-/* On narrow screens the verdict is the whole point, so it must not be the
-   thing that scrolls out of view. Wrap the path instead. */
-@media (max-width:44rem){
-  .ref-list{min-width:0}
-  .ref-list li{display:grid;grid-template-columns:1fr auto;gap:0 1rem;white-space:normal;padding-block:.15rem}
-  .ref-list .path{white-space:normal;word-break:break-all;line-height:1.5}
-  .terminal .cmd{white-space:normal;word-break:break-all}
-}
-
-@media (prefers-reduced-motion:no-preference){
-  .ref-list li{animation:settle .35s ease both}
-  @keyframes settle{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
-}
-
 /* ---------- generic section ---------- */
-.section{padding-block:clamp(3rem,7vw,5rem);border-top:1px solid var(--rule)}
+.section{padding-block:clamp(2.75rem,7vw,4.5rem);border-top:1px solid var(--rule)}
 .section-label{font-family:var(--mono);font-size:.75rem;color:var(--ink-soft);display:block;margin-bottom:.9rem}
-.section h2{font-size:clamp(1.75rem,1.3rem + 1.8vw,2.6rem);max-width:20ch}
-.section .intro{margin-top:1rem;max-width:56ch;color:var(--ink-soft)}
+.section h2{font-size:clamp(1.75rem,1.3rem + 1.8vw,2.5rem);max-width:22ch}
+.section .intro{margin-top:1rem;max-width:58ch;color:var(--ink-soft)}
 
-/* ---------- what it finds ---------- */
-.finds{display:grid;gap:1px;margin-top:2.5rem;background:var(--rule);border:1px solid var(--rule);border-radius:3px;overflow:hidden}
-@media (min-width:48rem){.finds{grid-template-columns:repeat(3,1fr)}}
-.find{background:var(--paper-raised);padding:1.5rem 1.35rem}
-.find h3{font-size:1.0625rem;font-family:var(--body);font-weight:600;letter-spacing:0;margin-bottom:.5rem}
-.find p{font-size:.9375rem;color:var(--ink-soft)}
-.find code{background:var(--paper);padding:.1em .35em;border-radius:2px}
-
-/* ---------- the sequence (order genuinely carries information here) ---------- */
-.sequence{margin-top:2.5rem;counter-reset:step}
+/* ---------- numbered steps (the flow + the setup) ---------- */
+.steps{margin-top:2.25rem;counter-reset:step}
 .step{
   display:grid;grid-template-columns:2.75rem 1fr;gap:1.25rem;
   padding:1.1rem .75rem 1.1rem 0;border-top:1px solid var(--rule);
 }
-.step:last-child{border-bottom:1px solid var(--rule)}
+.steps .step:last-child{border-bottom:1px solid var(--rule)}
 .step::before{
   counter-increment:step;content:counter(step,decimal-leading-zero);
-  font-family:var(--mono);font-size:.8125rem;color:var(--amber);padding-top:.25em;padding-left:.75rem;
+  font-family:var(--mono);font-size:.8125rem;color:var(--amber);padding-top:.2em;padding-left:.75rem;
 }
-/* ::before occupies column 1; the text keeps column 2 on both rows. */
-.step h3{grid-column:2;font-family:var(--mono);font-size:.9375rem;font-weight:700;letter-spacing:0;line-height:1.5}
-.step p{grid-column:2;font-size:.9375rem;color:var(--ink-soft);margin-top:.3rem;max-width:62ch}
-.step.pivot{background:linear-gradient(90deg,color-mix(in srgb,var(--amber-bright) 16%,transparent),transparent 70%)}
+.step h3{grid-column:2;font-family:var(--body);font-size:1.0625rem;font-weight:600;letter-spacing:0;line-height:1.4}
+.step p{grid-column:2;font-size:.9375rem;color:var(--ink-soft);margin-top:.35rem;max-width:64ch}
+.step p code{background:var(--paper-raised);padding:.1em .35em;border-radius:2px}
+.step.pivot{background:linear-gradient(90deg,color-mix(in srgb,var(--amber-bright) 15%,transparent),transparent 70%)}
 .step.pivot h3{color:var(--amber)}
 
-/* ---------- install ---------- */
-.install{display:grid;gap:1.25rem;margin-top:2.5rem}
-@media (min-width:44rem){.install{grid-template-columns:repeat(3,1fr)}}
-.route{border:1px solid var(--rule);border-radius:3px;padding:1.35rem;background:var(--paper-raised);display:flex;flex-direction:column;gap:.6rem}
-.route h3{font-size:.9375rem;font-family:var(--body);font-weight:600;letter-spacing:0}
-.route p{font-size:.875rem;color:var(--ink-soft);flex:1}
-.route pre{
+/* ---------- under the hood (compact) ---------- */
+.hood{margin-top:2rem;background:var(--terminal);border-radius:4px;padding:clamp(1.1rem,3vw,1.6rem) clamp(1.1rem,3vw,1.8rem);color:#E6E3F5;font-size:.9375rem}
+.hood ol{margin:0;padding-left:1.3rem;display:grid;gap:.55rem}
+.hood li{line-height:1.5}
+.hood li b{color:#fff;font-weight:600}
+.hood code{font-family:var(--mono);font-size:.85em;color:var(--amber-bright)}
+.hood .note{margin-top:1.1rem;padding-top:1rem;border-top:1px solid rgba(143,136,188,.28);color:#B9B3DA;font-size:.875rem}
+
+/* ---------- three-up cards (install / editors) ---------- */
+.cards{display:grid;gap:1.25rem;margin-top:2.25rem}
+@media (min-width:44rem){.cards{grid-template-columns:repeat(3,1fr)}}
+.card{border:1px solid var(--rule);border-radius:3px;padding:1.35rem;background:var(--paper-raised);display:flex;flex-direction:column;gap:.6rem}
+.card h3{font-size:.9375rem;font-family:var(--body);font-weight:600;letter-spacing:0}
+.card p{font-size:.875rem;color:var(--ink-soft);flex:1}
+.card .tag{font-family:var(--mono);font-size:.7rem;color:var(--ink-soft)}
+.card pre{
   margin:0;background:var(--terminal);color:#E6E3F5;border-radius:2px;
-  padding:.7rem .8rem;font-family:var(--mono);font-size:.75rem;overflow-x:auto;line-height:1.6;
+  padding:.7rem .8rem;font-family:var(--mono);font-size:.75rem;overflow-x:auto;line-height:1.6;white-space:pre-wrap;word-break:break-word;
 }
-.route a{font-size:.875rem;font-weight:600;color:var(--amber);text-decoration:none;border-bottom:1px solid currentColor;align-self:flex-start}
-.route a:hover{color:var(--ink)}
+.card a.link{font-size:.875rem;font-weight:600;color:var(--amber);text-decoration:none;border-bottom:1px solid currentColor;align-self:flex-start}
+.card a.link:hover{color:var(--ink)}
 
 /* ---------- expectations ---------- */
-.expect{margin-top:2.5rem;display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:3px;overflow:hidden}
+.expect{margin-top:2.25rem;display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:3px;overflow:hidden}
 @media (min-width:44rem){.expect{grid-template-columns:1fr 1fr}}
 .expect > div{background:var(--paper-raised);padding:1.4rem 1.35rem}
 .expect h3{font-size:.9375rem;font-family:var(--body);font-weight:600;letter-spacing:0;margin-bottom:.45rem;display:flex;gap:.5rem;align-items:baseline}
@@ -227,9 +163,9 @@ footer .credit{margin-left:auto}
       Leak Lock
     </a>
     <nav>
-      <a class="opt" href="#finds">What it finds</a>
-      <a href="#rewrite">How it removes</a>
+      <a class="opt" href="#what">What it does</a>
       <a href="#install">Install</a>
+      <a href="#setup">Set it up</a>
       <a href="https://github.com/nikolareljin/leak-lock">GitHub</a>
     </nav>
   </div>
@@ -238,163 +174,162 @@ footer .credit{margin-left:auto}
 <main id="top">
 
   <section class="hero wrap">
-    <span class="eyebrow">VS Code extension · scans with Nosey Parker · rewrites with BFG or git</span>
-    <h1>Your secret isn't in your repo.<span class="turn">It's in your refs.</span></h1>
+    <span class="eyebrow">VS Code &amp; OpenVSX extension · scans with Nosey Parker · rewrites with BFG or git</span>
+    <h1>Find the secrets in your git history — then <span class="turn">actually remove them.</span></h1>
     <p class="lede">
-      Leak Lock scans a repository's full git history for credentials, then removes them from
-      <strong>every branch and tag</strong> — including the ones that exist only on the remote,
-      which is where most cleanups quietly leave the key behind.
+      Leak Lock scans a repository for <strong>credentials, files, and keywords</strong>, shows every
+      finding, and rewrites them out of <strong>every branch and tag</strong> — including the refs that
+      only exist on the remote. It writes the cleanup as a bash script you can read, run from the panel,
+      and verify.
     </p>
     <div class="cta-row">
       <a class="btn btn-primary" href="#install">Install the extension</a>
-      <a class="btn btn-ghost" href="#rewrite">See how the rewrite works</a>
-    </div>
-
-    <div class="evidence">
-      <div class="evidence-head">
-        <div>
-          <h2>After the cleanup, on the server</h2>
-          <p>Same repository, same rewrite. The difference is which refs actually got pushed.</p>
-        </div>
-        <div class="toggle" role="group" aria-label="Compare cleanup approaches">
-          <button type="button" data-mode="naive" aria-pressed="true">git push --force --all</button>
-          <button type="button" data-mode="leaklock" aria-pressed="false">Leak Lock</button>
-        </div>
-      </div>
-
-      <div class="terminal">
-        <!-- The exact verify loop Leak Lock's generated script runs (step 9), not a separate CLI. -->
-        <div class="cmd">git for-each-ref --format='%(refname)' refs/remotes/origin refs/tags |
-while read -r ref; do git grep -qF "$SECRET" "$ref" && echo "STILL PRESENT (secret): $ref"; done</div>
-        <ul class="ref-list" id="refList"></ul>
-        <div class="summary" id="refSummary" role="status"></div>
-      </div>
-      <p class="caption" id="refCaption"></p>
+      <a class="btn btn-ghost" href="#what">See what it does</a>
     </div>
   </section>
 
-  <section class="section wrap" id="finds">
-    <span class="section-label">what it finds</span>
-    <h2>Three passes over the same repository</h2>
+  <!-- ============ WHAT IT DOES ============ -->
+  <section class="section wrap" id="what">
+    <span class="section-label">what it does</span>
+    <h2>Five steps, from finding to verified clean</h2>
     <p class="intro">
-      Scanning runs Nosey Parker in Docker across your working tree and your history, then adds an
-      optional keyword pass for the things regexes don't catch.
-    </p>
-    <div class="finds">
-      <div class="find">
-        <h3>Credentials in your files</h3>
-        <p>Over 100 credential types — API keys, tokens, private keys, database URLs — each with the file and line, clickable straight into the editor.</p>
-      </div>
-      <div class="find">
-        <h3>Credentials in your history</h3>
-        <p>A secret that was committed and later deleted is still in the history. Those findings carry the branch, commit hash, and date they came from.</p>
-      </div>
-      <div class="find">
-        <h3>Keywords you choose</h3>
-        <p>An opt-in pass over commit messages, historical file contents, and filenames. Useful for terms like <code>id_rsa</code> or your own naming conventions.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="section wrap" id="rewrite">
-    <span class="section-label">how it removes · v0.6.0</span>
-    <h2>Nine steps, in this order</h2>
-    <p class="intro">
-      The order is the point. Every rewrite — BFG, <code>filter-branch</code>, or <code>filter-repo</code> —
-      runs this sequence, whether you press the button in the panel or copy the generated script and
-      run it yourself.
+      The whole tool is one loop: scan, review, fix, and confirm. Nothing runs until you have looked
+      at the plan.
     </p>
 
-    <div class="sequence">
+    <div class="steps">
       <div class="step">
-        <h3>git fetch --prune --tags</h3>
-        <p>Plan against current refs, not whatever your last fetch happened to leave behind.</p>
+        <h3>Find secrets, files, and keywords</h3>
+        <p>Nosey Parker scans your working tree and full git history for 100+ credential types. On top of that: a path scan for files that shouldn't be there, and an opt-in keyword pass over commit messages, historical contents, and filenames for terms you choose — like <code>id_rsa</code> or an internal project name.</p>
       </div>
       <div class="step">
-        <h3>Check for unpushed commits</h3>
-        <p>Step 4 resets local branches to their remote counterparts. If a local branch is ahead, those commits would be discarded — so the rewrite stops and names the branches instead.</p>
+        <h3>Review every finding</h3>
+        <p>Findings land in a table in the main panel — each credential with its file and line, each history hit with the branch, commit, and date. Select exactly what you want to act on. Export the list to JSON or print it to PDF for a ticket or audit.</p>
       </div>
       <div class="step">
-        <h3>Detach HEAD</h3>
-        <p>Git refuses to force-update the branch you're standing on. Without detaching, the loop below silently skips exactly that branch.</p>
+        <h3>Replace strings or remove files</h3>
+        <p>Two remediation modes: replace a secret string with a placeholder everywhere it appears, or delete a file or path outright. Path removal targets <em>exact</em> paths across branches, remotes, and tags, and shows you the matching refs before anything is touched.</p>
       </div>
       <div class="step pivot">
-        <h3>Create a local branch for every remote branch</h3>
-        <p>This is the step that closes the leak. <code>git push --force --all</code> expands to <code>refs/heads/*</code> only, so a branch that exists solely as <code>refs/remotes/origin/*</code> gets rewritten locally and never pushed — and the old history returns on your next fetch.</p>
+        <h3>Get a bash script for the cleanup</h3>
+        <p>Every remediation is prepared as a complete, readable script — headed <code># Generated by Leak Lock</code> — that runs the rewrite across all refs. Save it, read it, hand it to a reviewer, or run it yourself outside the editor. No hidden magic.</p>
       </div>
       <div class="step">
-        <h3>Rewrite across all refs</h3>
-        <p>BFG for speed, <code>filter-branch</code> for exact paths, or <code>filter-repo</code> for text replacement. All of them run over every ref.</p>
-      </div>
-      <div class="step">
-        <h3>Drop backup refs, expire the reflog, repack</h3>
-        <p><code>refs/original/*</code> and the reflog still point at the old objects. Until they're gone, so is the secret — locally, at least.</p>
-      </div>
-      <div class="step">
-        <h3>git push --force --atomic</h3>
-        <p>Atomic matters: if one ref is rejected — a protected branch, say — the server rejects the whole push, instead of leaving you with some branches clean and others still leaking.</p>
-      </div>
-      <div class="step">
-        <h3>Restore your branch</h3>
-        <p>You end up back on the branch you started from, not detached at some rewritten commit.</p>
-      </div>
-      <div class="step">
-        <h3>Verify every ref on the server</h3>
-        <p>Re-fetch, then check each remote branch and tag. Anything still carrying the secret is reported by name. A cleanup you can't verify isn't finished.</p>
+        <h3>Run it, then verify</h3>
+        <p>Press the button to run the rewrite from the panel, or run the script by hand. Either way it force-pushes atomically, re-fetches, and checks every remote ref — reporting any that still carry the secret by name. A cleanup it can't verify isn't finished.</p>
       </div>
     </div>
   </section>
 
+  <!-- ============ UNDER THE HOOD (short) ============ -->
+  <section class="section wrap" id="hood">
+    <span class="section-label">under the hood · v0.6.0</span>
+    <h2>What the script actually does</h2>
+    <p class="intro">The generated script runs the same ordered sequence whether you press the button or run it yourself. In brief:</p>
+
+    <div class="hood">
+      <ol>
+        <li><b>Fetch &amp; prune</b> — plan against current refs, not a stale local view.</li>
+        <li><b>Check for unpushed commits</b> — stop and name them rather than discard them.</li>
+        <li><b>Recreate every remote-only branch locally</b> — the step that closes the leak: <code>push --force --all</code> only touches <code>refs/heads/*</code>, so remote-only branches would otherwise keep the old history.</li>
+        <li><b>Rewrite across all refs</b> — BFG, <code>filter-branch</code>, or <code>filter-repo</code>, over every branch and tag.</li>
+        <li><b>Drop backup refs, expire the reflog, repack</b> — so the old objects are actually gone.</li>
+        <li><b>Atomic force-push, then re-fetch and verify</b> — all refs in one transaction; then confirm each is clean on the server.</li>
+      </ol>
+      <p class="note">Rewriting history changes every commit hash — teammates re-clone afterward, and the leaked credential should be rotated regardless. It's a destructive operation, run with review.</p>
+    </div>
+  </section>
+
+  <!-- ============ INSTALL ============ -->
   <section class="section wrap" id="install">
     <span class="section-label">install</span>
-    <h2>Three ways in</h2>
+    <h2>Install in your editor</h2>
     <p class="intro">
-      Docker, Nosey Parker, Java, and BFG are set up on first run — the panel shows what's already
-      present and installs the rest.
+      Leak Lock ships to both the VS Code Marketplace and Open VSX, so it installs in VS Code and every
+      OpenVSX-based editor. The extension id is <code>nikolareljin.leak-lock</code> on both.
     </p>
-    <div class="install">
-      <div class="route">
+
+    <div class="cards">
+      <div class="card">
+        <span class="tag">VS Code</span>
         <h3>VS Code Marketplace</h3>
-        <p>Search for “Leak Lock” in the Extensions view, or open the listing directly.</p>
-        <a href="https://marketplace.visualstudio.com/items?itemName=nikolareljin.leak-lock">Open the listing</a>
-      </div>
-      <div class="route">
-        <h3>Command line</h3>
-        <p>If you'd rather not leave the terminal.</p>
+        <p>Extensions view (<code>Ctrl/Cmd+Shift+X</code>) → search “Leak Lock” → Install. Or from the terminal:</p>
         <pre><code>code --install-extension \
   nikolareljin.leak-lock</code></pre>
+        <a class="link" href="https://marketplace.visualstudio.com/items?itemName=nikolareljin.leak-lock">Open the listing</a>
       </div>
-      <div class="route">
+      <div class="card">
+        <span class="tag">Cursor · Windsurf · Antigravity · Kiro · VSCodium</span>
+        <h3>Open VSX</h3>
+        <p>OpenVSX editors can't use the MS Marketplace. Search “Leak Lock” in their Extensions view, or install from the CLI (swap in your editor's binary):</p>
+        <pre><code>cursor  --install-extension nikolareljin.leak-lock
+windsurf --install-extension nikolareljin.leak-lock
+codium  --install-extension nikolareljin.leak-lock</code></pre>
+        <a class="link" href="https://open-vsx.org/extension/nikolareljin/leak-lock">Open on Open VSX</a>
+      </div>
+      <div class="card">
+        <span class="tag">Offline / any editor</span>
         <h3>From a VSIX</h3>
-        <p>Take a packaged build from the releases page and install the file directly.</p>
-        <a href="https://github.com/nikolareljin/leak-lock/releases">Browse releases</a>
+        <p>Grab the packaged <code>.vsix</code> from Releases, then <em>Extensions: Install from VSIX…</em> in the Command Palette — works in any VS Code-compatible editor.</p>
+        <a class="link" href="https://github.com/nikolareljin/leak-lock/releases">Browse releases</a>
+      </div>
+    </div>
+    <p class="intro" style="margin-top:1.5rem">
+      Requires an editor on VS Code <code>1.96.0+</code>. Docker must be installed and running — the extension
+      installs the rest of its tooling for you (next section).
+    </p>
+  </section>
+
+  <!-- ============ SET IT UP ============ -->
+  <section class="section wrap" id="setup">
+    <span class="section-label">set it up</span>
+    <h2>Four steps in the Control Panel</h2>
+    <p class="intro">
+      Open the panel from the <strong>🛡️ shield icon</strong> in the Activity Bar, or run
+      <code>Open Leak Lock Scanner</code> from the Command Palette. Everything below happens in the
+      left-hand Control Panel, top to bottom.
+    </p>
+
+    <div class="steps">
+      <div class="step">
+        <h3>Install dependencies</h3>
+        <p>First run only. One click installs the tooling behind the scans and rewrites — the Nosey Parker Docker image, Java, and BFG — with progress shown inline. Docker itself must already be running.</p>
+      </div>
+      <div class="step">
+        <h3>Scan for issues</h3>
+        <p>Point it at a repository (git folders are auto-detected) and run the credential scan. Results fill the table in the main area for review.</p>
+      </div>
+      <div class="step">
+        <h3>Scan strings &amp; files</h3>
+        <p>Add the opt-in keyword pass for strings, filenames, and historical contents that the credential detectors don't cover. Use it for your own naming conventions and known-bad filenames.</p>
+      </div>
+      <div class="step">
+        <h3>Remove files &amp; directories</h3>
+        <p>The <strong>Remove Files</strong> button opens the guided removal UI. Choose paths to delete or strings to replace, preview the exact matches across every ref, then generate and run the cleanup.</p>
       </div>
     </div>
   </section>
 
+  <!-- ============ EXPECTATIONS ============ -->
   <section class="section wrap" id="expect">
-    <span class="section-label">what to expect</span>
+    <span class="section-label">before you run it</span>
     <h2>It rewrites history. Plan for that.</h2>
-    <p class="intro">
-      Removing a secret from git means rewriting every commit that touched it. Here's what that
-      costs, and what the extension does to keep it survivable.
-    </p>
     <div class="expect">
       <div class="warn">
         <h3><span class="mark">!</span> Every commit hash changes</h3>
-        <p>Everyone working on the repository re-clones or hard-resets after the rewrite. Agree on a time before you run it.</p>
+        <p>Everyone on the repo re-clones or hard-resets after a rewrite. Agree on a time before you run it.</p>
+      </div>
+      <div class="warn">
+        <h3><span class="mark">!</span> Rotate the credential first</h3>
+        <p>Anything that reached a remote is already compromised. Rotate it; cleaning history is the second step, not the first.</p>
       </div>
       <div class="warn">
         <h3><span class="mark">!</span> Unpushed work blocks the rewrite</h3>
-        <p>If a local branch has commits the remote doesn't, the rewrite stops and lists them. Push them first — Leak Lock won't discard them for you.</p>
-      </div>
-      <div class="warn">
-        <h3><span class="mark">!</span> The credential is already compromised</h3>
-        <p>Anything that reached a remote should be treated as leaked. Rotate the credential first; cleaning history is the second step, not the first.</p>
+        <p>If a local branch is ahead of its remote, the run stops and lists those commits instead of discarding them. Push first.</p>
       </div>
       <div class="ok">
         <h3><span class="mark">✓</span> Nothing runs without review</h3>
-        <p>Every cleanup is prepared first: a full script you can read, save, and run yourself, plus a plan naming each ref that will be force-updated.</p>
+        <p>Every cleanup is a script you can read and a plan naming each ref that will be force-updated. You approve it.</p>
       </div>
     </div>
   </section>
@@ -411,82 +346,6 @@ while read -r ref; do git grep -qF "$SECRET" "$ref" && echo "STILL PRESENT (secr
     <span class="credit">Scanning by <a href="https://github.com/praetorian-inc/noseyparker">Nosey Parker</a>, rewriting by <a href="https://rtyley.github.io/bfg-repo-cleaner/">BFG</a></span>
   </div>
 </footer>
-
-<script>
-(function () {
-  // Both states are the same repository after the same rewrite. Only the push
-  // strategy differs — which is exactly the argument this page is making.
-  var REFS = [
-    { ns: 'refs/heads/',          name: 'main',            remoteOnly: false },
-    { ns: 'refs/heads/',          name: 'release/0.4.1',   remoteOnly: false },
-    { ns: 'refs/remotes/origin/', name: 'feat/checkout',   remoteOnly: true  },
-    { ns: 'refs/remotes/origin/', name: 'fix/webhook-url', remoteOnly: true  },
-    { ns: 'refs/tags/',           name: 'v1.0.0',          remoteOnly: false }
-  ];
-
-  var MODES = {
-    naive: {
-      isDirty: function (ref) { return ref.remoteOnly; },
-      summary: 'Verification failed: see STILL PRESENT / VERIFY FAILED above.\nrefs/heads/* was pushed; the remote-only branches were not.',
-      caption: '“--all” expands to refs/heads/* only. Branches that exist just on the remote are rewritten locally, never pushed, and restore the old history on your next fetch.'
-    },
-    leaklock: {
-      isDirty: function () { return false; },
-      summary: 'Verified clean on every remote ref.',
-      caption: 'Leak Lock creates a local branch for every remote branch before rewriting, pushes with --atomic, then re-fetches and checks each ref on the server.'
-    }
-  };
-
-  var list = document.getElementById('refList');
-  var summary = document.getElementById('refSummary');
-  var caption = document.getElementById('refCaption');
-  var buttons = Array.prototype.slice.call(document.querySelectorAll('.toggle button'));
-
-  function render(mode) {
-    var config = MODES[mode];
-    list.innerHTML = '';
-
-    REFS.forEach(function (ref, i) {
-      var dirty = config.isDirty(ref);
-
-      var li = document.createElement('li');
-      li.className = dirty ? 'state-dirty' : 'state-clean';
-      li.style.animationDelay = (i * 45) + 'ms';
-
-      var path = document.createElement('span');
-      path.className = 'path';
-      var ns = document.createElement('span');
-      ns.className = 'ns';
-      ns.textContent = ref.ns;
-      path.appendChild(ns);
-      path.appendChild(document.createTextNode(ref.name));
-
-      var verdict = document.createElement('span');
-      verdict.className = 'verdict';
-      // Matches the generated script's exact emitted lines (git-rewrite.js).
-      verdict.textContent = dirty ? 'STILL PRESENT (secret)' : 'clean';
-
-      li.appendChild(path);
-      li.appendChild(verdict);
-      list.appendChild(li);
-    });
-
-    summary.textContent = config.summary;
-    summary.className = 'summary ' + (mode === 'naive' ? 'is-dirty' : 'is-clean');
-    caption.textContent = config.caption;
-
-    buttons.forEach(function (btn) {
-      btn.setAttribute('aria-pressed', String(btn.dataset.mode === mode));
-    });
-  }
-
-  buttons.forEach(function (btn) {
-    btn.addEventListener('click', function () { render(btn.dataset.mode); });
-  });
-
-  render('naive');
-}());
-</script>
 
 </body>
 </html>
