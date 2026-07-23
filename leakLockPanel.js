@@ -1671,12 +1671,26 @@ class LeakLockPanel {
     }
 
     /** grep -E pattern matching any selected target basename, for verification. */
-    _buildTargetVerifyRegex(targets) {
-        const names = targets.map(t => this._escapeRegex(t.base)).filter(Boolean);
-        if (names.length === 0) {
+    /**
+     * grep -E pattern for verifying a removal against `git ls-tree` output.
+     * @param {object} [options]
+     * @param {boolean} [options.exact] Match the full repo-relative path, anchored
+     *   at the start. Use for Git path-based removal, which targets exact paths —
+     *   otherwise removing `configs/secret.txt` would false-fail because
+     *   `docs/secret.txt` shares the basename. BFG deletes by name, so it matches
+     *   the basename anywhere (the default).
+     */
+    _buildTargetVerifyRegex(targets, options = {}) {
+        const exact = !!options.exact;
+        const parts = targets
+            .map(t => this._escapeRegex(exact ? t.path : t.base))
+            .filter(Boolean);
+        if (parts.length === 0) {
             return null;
         }
-        return `(^|/)(${names.join('|')})(/|$)`;
+        return exact
+            ? `^(${parts.join('|')})(/|$)`
+            : `(^|/)(${parts.join('|')})(/|$)`;
     }
 
     _buildBfgCommand(repoDir, targets) {
@@ -1910,7 +1924,8 @@ class LeakLockPanel {
                 `git filter-branch --force --index-filter ${gitRewrite.shellQuote(indexFilter)} \\`,
                 '\t--prune-empty --tag-name-filter cat -- --all'
             ],
-            verifyRegex: this._buildTargetVerifyRegex(targets)
+            // Git path-based removal targets exact paths — verify exact paths too.
+            verifyRegex: this._buildTargetVerifyRegex(targets, { exact: true })
         });
     }
 
@@ -1983,7 +1998,8 @@ class LeakLockPanel {
                 report = await gitRewrite.runRewrite({
                     repoDir: repo,
                     progress: (message) => progress.report({ increment: 10, message }),
-                    verify: { pathPattern: this._buildTargetVerifyRegex(this._removalState.targets) },
+                    // Path-based removal targets exact paths, so verify exact paths.
+                    verify: { pathPattern: this._buildTargetVerifyRegex(this._removalState.targets, { exact: true }) },
                     rewrite: async () => {
                         // --index-filter expects a shell script string, but all paths are
                         // escaped via _shellEscapeDoubleQuotes() in _buildGitFilterBranchIndexFilter()
