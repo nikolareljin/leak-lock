@@ -1,15 +1,19 @@
 const assert = require('assert');
 const vscode = require('vscode');
 
+// Every suite that drives commands or providers needs the extension running.
+// Suites must not depend on an earlier suite having done it, or they break when
+// run as a subset.
+async function activateExtension() {
+	const extension = vscode.extensions.getExtension('nikolareljin.leak-lock');
+	if (extension && !extension.isActive) {
+		await extension.activate();
+	}
+}
+
 suite('Leak Lock Extension Test Suite', () => {
 
-	suiteSetup(async () => {
-		// Ensure extension is activated
-		const extension = vscode.extensions.getExtension('nikolareljin.leak-lock');
-		if (extension && !extension.isActive) {
-			await extension.activate();
-		}
-	});
+	suiteSetup(activateExtension);
 
 	test('Extension should be present', () => {
 		const extension = vscode.extensions.getExtension('nikolareljin.leak-lock');
@@ -44,6 +48,8 @@ suite('Leak Lock Extension Test Suite', () => {
 
 suite('Project website link', () => {
 	const WEBSITE_URL = 'https://nikolareljin.github.io/leak-lock/';
+
+	suiteSetup(activateExtension);
 
 	test('registers a command that opens the project website', async () => {
 		const commands = await vscode.commands.getCommands();
@@ -106,6 +112,8 @@ suite('Project website link', () => {
 
 suite('Webview initialises with a single render', () => {
 	const LeakLockPanel = require('../leakLockPanel');
+
+	suiteSetup(activateExtension);
 
 	teardown(() => {
 		if (LeakLockPanel.currentPanel) {

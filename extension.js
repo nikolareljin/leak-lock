@@ -272,7 +272,7 @@ function activate(context) {
 	});
 
 	// Open the project website in the user's default browser. Also invoked by
-	// the "Website" links in the sidebar and the scanner panel.
+	// the website button in the sidebar Control Panel.
 	const openWebsiteCommand = vscode.commands.registerCommand('leak-lock.openWebsite', async function () {
 		const { WEBSITE_URL } = require('./config');
 		const opened = await vscode.env.openExternal(vscode.Uri.parse(WEBSITE_URL));
