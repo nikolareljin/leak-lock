@@ -422,7 +422,15 @@ function buildRewriteScript(options) {
         );
         if (verifyRegex) {
             lines.push(
-                `\tif git ls-tree -r --name-only "$ref" | grep -qE ${shellQuote(verifyRegex)}; then`,
+                // Capture git ls-tree's exit separately: a failure (bad ref/object)
+                // must be reported, not mistaken for "clean" the way a bare
+                // `if git ls-tree | grep` under set -e would.
+                '\tls_rc=0',
+                '\tfiles="$(git ls-tree -r --name-only "$ref" 2>/dev/null)" || ls_rc=$?',
+                '\tif [ "$ls_rc" -ne 0 ]; then',
+                '\t\techo "VERIFY FAILED (git ls-tree exit $ls_rc): $ref"',
+                '\t\tleftover=1',
+                `\telif printf '%s\\n' "$files" | grep -qE ${shellQuote(verifyRegex)}; then`,
                 '\t\techo "STILL PRESENT (path): $ref"',
                 '\t\tleftover=1',
                 '\tfi'
@@ -430,8 +438,16 @@ function buildRewriteScript(options) {
         }
         for (const literal of verifyLiterals) {
             lines.push(
-                `\tif git grep --quiet --fixed-strings -e ${shellQuote(literal)} "$ref" 2>/dev/null; then`,
+                // git grep exits 1 for "not found" (clean); any other exit (e.g.
+                // 128 for a bad ref) is a real failure and must be surfaced, not
+                // swallowed as clean.
+                '\tgrep_rc=0',
+                `\tgit grep --quiet --fixed-strings -e ${shellQuote(literal)} "$ref" 2>/dev/null || grep_rc=$?`,
+                '\tif [ "$grep_rc" -eq 0 ]; then',
                 '\t\techo "STILL PRESENT (secret): $ref"',
+                '\t\tleftover=1',
+                '\telif [ "$grep_rc" -ne 1 ]; then',
+                '\t\techo "VERIFY FAILED (git grep exit $grep_rc): $ref"',
                 '\t\tleftover=1',
                 '\tfi'
             );
