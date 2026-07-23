@@ -95,6 +95,17 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(out.startsWith('#!/bin/bash\n'), 'shebang is on its own line');
 	});
 
+	test('iterates refs with read -r, not word-splitting for-loops', () => {
+		const out = script();
+		// Robust iteration over one ref per line (git forbids whitespace/globs in
+		// ref names, but read -r is the correct idiom and the process substitution
+		// keeps loop-mutated variables out of a subshell).
+		assert.ok(out.includes('while IFS= read -r branch'), 'branch loops use read -r');
+		assert.ok(out.includes('while IFS= read -r ref'), 'the verify loop uses read -r');
+		assert.ok(!/for \w+ in \$\(/.test(out), 'no word-splitting for-in-$() loop remains');
+		assert.ok(out.includes('done < <(git for-each-ref'), 'fed via process substitution');
+	});
+
 	test('verifies every remote ref after pushing', () => {
 		const out = script();
 		const verifyIndex = out.indexOf('git ls-tree -r --name-only');

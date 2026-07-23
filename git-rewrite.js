@@ -324,14 +324,16 @@ function buildRewriteScript(options) {
         '# 2. Abort if any local branch holds commits the remote lacks - step 4',
         '#    force-resets local branches and would discard them.',
         'unpushed=""',
-        `for branch in $(git for-each-ref --format='%(refname:strip=2)' refs/heads); do`,
+        '# Iterate one ref per line with read -r; process substitution (not a pipe)',
+        '# keeps $unpushed in this shell rather than a subshell.',
+        'while IFS= read -r branch; do',
         `\tif git rev-parse --verify --quiet "refs/remotes/${remote}/\${branch}" >/dev/null; then`,
         `\t\tcount="$(git rev-list --count "${remote}/\${branch}..\${branch}")"`,
         '\t\tif [ "$count" -gt 0 ]; then',
         '\t\t\tunpushed="${unpushed}\\n  ${branch} (+${count} commit(s))"',
         '\t\tfi',
         '\tfi',
-        'done',
+        `done < <(git for-each-ref --format='%(refname:strip=2)' refs/heads)`,
         'if [ -n "$unpushed" ]; then',
         '\techo "Refusing to rewrite - these local branches have unpushed commits:" >&2',
         '\tprintf "%b\\n" "$unpushed" >&2',
@@ -351,9 +353,10 @@ function buildRewriteScript(options) {
         '# 4. Materialise a local branch for every remote branch. Without this,',
         '#    `git push --force --all` (refs/heads/* only) never touches',
         '#    remote-only branches and the old history survives on the server.',
-        `for branch in $(git for-each-ref --format='%(refname:strip=3)' refs/remotes/${remote} | grep -v '^HEAD$'); do`,
+        'while IFS= read -r branch; do',
+        '\tif [ "$branch" = "HEAD" ]; then continue; fi',
         `\tgit branch --force --no-track "\${branch}" "refs/remotes/${remote}/\${branch}"`,
-        'done',
+        `done < <(git for-each-ref --format='%(refname:strip=3)' refs/remotes/${remote})`,
         '',
         '# 5. Rewrite across ALL refs.'
     ];
@@ -395,7 +398,8 @@ function buildRewriteScript(options) {
             '# 9. Verify the remote is actually clean on EVERY ref.',
             `git fetch --prune --tags ${remoteQ}`,
             'leftover=0',
-            `for ref in $(git for-each-ref --format='%(refname)' refs/remotes/${remote} refs/tags | grep -v '/HEAD$'); do`
+            'while IFS= read -r ref; do',
+            '\tcase "$ref" in */HEAD) continue;; esac'
         );
         if (verifyRegex) {
             lines.push(
@@ -414,7 +418,7 @@ function buildRewriteScript(options) {
             );
         }
         lines.push(
-            'done',
+            `done < <(git for-each-ref --format='%(refname)' refs/remotes/${remote} refs/tags)`,
             'if [ "$leftover" -eq 0 ]; then',
             '\techo "Verified clean on every remote ref."',
             'fi'
