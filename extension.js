@@ -275,9 +275,16 @@ function activate(context) {
 	// the website button in the sidebar Control Panel.
 	const openWebsiteCommand = vscode.commands.registerCommand('leak-lock.openWebsite', async function () {
 		const { WEBSITE_URL } = require('./config');
-		const opened = await vscode.env.openExternal(vscode.Uri.parse(WEBSITE_URL));
-		if (!opened) {
-			vscode.window.showWarningMessage(`Could not open ${WEBSITE_URL} automatically.`);
+		// Uri.parse and openExternal can both throw; report the failure rather
+		// than leaving the button silently dead with an unhandled rejection.
+		try {
+			const opened = await vscode.env.openExternal(vscode.Uri.parse(WEBSITE_URL));
+			if (!opened) {
+				vscode.window.showWarningMessage(`Could not open ${WEBSITE_URL} automatically.`);
+			}
+		} catch (error) {
+			console.error('Failed to open the project website:', error);
+			vscode.window.showErrorMessage(`Failed to open ${WEBSITE_URL}: ${error.message}`);
 		}
 	});
 
