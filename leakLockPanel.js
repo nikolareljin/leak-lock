@@ -572,6 +572,23 @@ class LeakLockPanel {
                         font-size: 0.85em;
                         color: var(--vscode-descriptionForeground);
                     }
+                    /* Loud badge so a finding in third-party code (not the user's own
+                       source) is unmistakable and its disabled checkbox is explained. */
+                    .dep-badge {
+                        display: inline-block;
+                        margin-left: 6px;
+                        padding: 1px 7px;
+                        font-size: 0.68em;
+                        font-weight: 700;
+                        letter-spacing: 0.04em;
+                        text-transform: uppercase;
+                        border-radius: 8px;
+                        vertical-align: middle;
+                        white-space: nowrap;
+                        color: var(--vscode-inputValidation-warningForeground, #6b5200);
+                        background: var(--vscode-inputValidation-warningBackground, #fff3cd);
+                        border: 1px solid var(--vscode-inputValidation-warningBorder, #d9b64a);
+                    }
                     .rewrite-blocked {
                         margin-top: 12px;
                         padding: 10px;
@@ -2178,7 +2195,7 @@ class LeakLockPanel {
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
                         </span>
-                        ${isDependency ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(deps)</span>' : ''}
+                        ${isDependency ? '<span class="dep-badge" title="This finding is inside a third-party dependency (node_modules, vendor, …), not your own code. Dependencies are not selectable for cleanup — fix them by updating the package, not by rewriting your history.">Dependency · not your code</span>' : ''}
                         ${isGitHistory ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(history)</span>' : ''}
                         ${isUntracked ? '<span style="font-size: 0.7em; color: var(--vscode-descriptionForeground); margin-left: 5px;">(local)</span>' : ''}
                     </td>
@@ -2205,7 +2222,7 @@ class LeakLockPanel {
                             </span>
                             <span style="font-size: 0.9em;">
                                 ${escapeHtml(result.description)}
-                                ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(in dependency)</span>' : ''}
+                                ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">— in a third-party dependency, not your code (not selectable)</span>' : ''}
                                 ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
                                 ${!includeInCleanup ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(excluded from cleanup)</span>' : ''}
                             </span>
@@ -2272,8 +2289,8 @@ class LeakLockPanel {
                         <div>${severitySummary}</div>
                         ${dependencyWarnings.length > 0 ? `
                             <div style="margin-top: 8px; padding: 8px; background: var(--vscode-inputValidation-warningBackground); border-left: 3px solid ${severityColors.warning}; border-radius: 3px;">
-                                <strong>ℹ️ ${dependencyWarnings.length} findings in dependency directories</strong>
-                                <br><span style="font-size: 0.9em;">These are shown as warnings since they're in dependency folders (node_modules, vendor, etc.) and typically don't need fixing.</span>
+                                <strong>ℹ️ ${dependencyWarnings.length} finding${dependencyWarnings.length === 1 ? '' : 's'} in third-party dependencies (not your code)</strong>
+                                <br><span style="font-size: 0.9em;">These live in dependency folders (node_modules, vendor, etc.), not in your own source, so they are marked <strong>Dependency · not your code</strong> and can't be selected for history cleanup. Address them by updating or replacing the package.</span>
                             </div>
                         ` : ''}
                     </div>
@@ -4202,7 +4219,7 @@ class LeakLockPanel {
             return 'Not cleanable.';
         }
         if (result.isDependency) {
-            return 'In a dependency directory (node_modules, vendor, …) — not cleaned.';
+            return 'Third-party dependency (node_modules, vendor, …), not your code — not selectable. Fix it by updating the package, not by rewriting your history.';
         }
         if (result.includeInCleanup === false) {
             return 'Excluded from cleanup.';
