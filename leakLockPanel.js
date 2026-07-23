@@ -4580,8 +4580,9 @@ class LeakLockPanel {
             vscode.window.showWarningMessage(warning);
         }
         if (report.remoteRestored) {
+            const remoteName = report.remote || 'the remote';
             vscode.window.showInformationMessage(
-                'git filter-repo removed the origin remote; Leak Lock restored it before pushing.'
+                `The "${remoteName}" remote was missing after the rewrite (some rewrite tools drop it); Leak Lock restored it before pushing.`
             );
         }
         const refCount = (report.materialized || []).length;
