@@ -22,3 +22,18 @@ tsconfig.json
 .env
 .env.example
 bfg.jar
+
+# Documentation and the GitHub Pages site are published to the repo and to
+# nikolareljin.github.io/leak-lock — they are not part of the runtime, and the
+# site's screenshots alone are ~192K of dead weight in the .vsix. README.md and
+# CHANGELOG.md stay, since the Marketplace renders them; vsce rewrites the
+# README's relative docs/ links to absolute repository URLs, so they keep
+# working from the listing.
+docs/**
+
+# CI, release and Dependabot configuration — build-time only.
+.github/**
+
+# Contributor and scratch notes, not shipped to users.
+AGENTS.md
+TODO.txt
