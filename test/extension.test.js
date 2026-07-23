@@ -62,14 +62,18 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(out.includes('git checkout --detach'), 'must detach before force-updating branches');
 	});
 
-	test('pushes atomically and never with a bare --force --all', () => {
+	test('pushes branches and tags in one atomic transaction', () => {
 		const out = script();
-		assert.ok(out.includes('git push --force --atomic --all'), 'branches pushed atomically');
-		assert.ok(out.includes('git push --force --atomic --tags'), 'tags pushed atomically');
-		// Comment lines quote the old broken command on purpose - only check code.
 		const code = out.split('\n').filter(line => !line.trim().startsWith('#'));
-		const nonAtomic = code.filter(line => /git push --force --(all|tags)\b/.test(line));
-		assert.deepStrictEqual(nonAtomic, [], 'every push must go through --atomic');
+		const pushes = code.filter(line => /git push/.test(line));
+		// Exactly one push, covering both heads and tags atomically. Two pushes
+		// (--all then --tags) could leave branches rewritten but tags stale if the
+		// second is rejected.
+		assert.strictEqual(pushes.length, 1, 'a single push command, not one per ref class');
+		assert.ok(/git push --force --atomic/.test(pushes[0]), 'the push is atomic and forced');
+		assert.ok(pushes[0].includes("'refs/heads/*:refs/heads/*'"), 'includes all branches');
+		assert.ok(pushes[0].includes("'refs/tags/*:refs/tags/*'"), 'includes all tags');
+		assert.ok(!/--force --(all|tags)\b/.test(pushes[0]), 'no non-atomic --all/--tags push remains');
 	});
 
 	test('blocks when local branches hold unpushed commits', () => {
@@ -109,7 +113,7 @@ suite('Ref-complete rewrite script', () => {
 	test('verifies every remote ref after pushing', () => {
 		const out = script();
 		const verifyIndex = out.indexOf('git ls-tree -r --name-only');
-		const pushIndex = out.indexOf('git push --force --atomic --all');
+		const pushIndex = out.indexOf('git push --force --atomic');
 		assert.ok(verifyIndex > -1, 'emits a verification loop');
 		assert.ok(verifyIndex > pushIndex, 'verification runs after the push');
 		assert.ok(out.includes('STILL PRESENT'), 'reports refs that are still dirty');
@@ -122,7 +126,7 @@ suite('Ref-complete rewrite script', () => {
 			're-adds the remote before pushing'
 		);
 		const addIndex = out.indexOf('git remote add');
-		const pushIndex = out.indexOf('git push --force --atomic --all');
+		const pushIndex = out.indexOf('git push --force --atomic');
 		assert.ok(addIndex < pushIndex, 'remote must be restored before the push');
 	});
 
