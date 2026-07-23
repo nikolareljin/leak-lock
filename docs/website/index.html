@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leak Lock — find secrets in git history and remove them from every ref</title>
 <meta name="description" content="A VS Code / OpenVSX extension that scans a repository for credentials, files, and keywords, then rewrites them out of every branch and tag — with a script you can read, run, and verify.">
-<!-- NR-shield app mark, base64-encoded so its `<`/`>` can't break data-URI parsing in stricter browsers. -->
+<!-- NR-shield app mark, base64-encoded so the SVG's special characters need no URL-escaping in the data URI. -->
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzNCc+PHBhdGggZD0nTTE2IDEuNSAzLjUgNS44djkuM0MzLjUgMjMgOC42IDI4LjIgMTYgMzAuNWM3LjQtMi4zIDEyLjUtNy41IDEyLjUtMTUuNFY1LjhMMTYgMS41WicgZmlsbD0nI0I0NjIwQScgc3Ryb2tlPScjMjExQzNCJyBzdHJva2Utd2lkdGg9JzEuMicgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjx0ZXh0IHg9JzE2JyB5PScyMScgdGV4dC1hbmNob3I9J21pZGRsZScgZmlsbD0nI2ZmZicgZm9udC1mYW1pbHk9J0FyaWFsLEhlbHZldGljYSxzYW5zLXNlcmlmJyBmb250LXdlaWdodD0nYm9sZCcgZm9udC1zaXplPScxMycgbGV0dGVyLXNwYWNpbmc9Jy0xJz5OUjwvdGV4dD48L3N2Zz4=">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -189,10 +189,11 @@ footer .credit{margin-left:auto}
       </svg>
       Leak Lock
     </a>
-    <nav>
+    <nav aria-label="Primary">
       <a class="opt" href="#what">What it does</a>
       <a href="#install">Install</a>
       <a href="#setup">Set it up</a>
+      <a href="about.html">About</a>
       <a href="https://github.com/nikolareljin/leak-lock">GitHub</a>
     </nav>
   </div>
