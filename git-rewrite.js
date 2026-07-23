@@ -456,6 +456,11 @@ function buildRewriteScript(options) {
             `done < <(git for-each-ref --format='%(refname)' refs/remotes/${remote} refs/tags)`,
             'if [ "$leftover" -eq 0 ]; then',
             '\techo "Verified clean on every remote ref."',
+            'else',
+            // Exit non-zero so the failure is visible to automation / command
+            // chaining, not just printed. The EXIT trap still restores the branch.
+            '\techo "Verification failed: see STILL PRESENT / VERIFY FAILED above." >&2',
+            '\texit 1',
             'fi'
         );
     }

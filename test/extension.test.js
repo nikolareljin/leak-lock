@@ -130,6 +130,13 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(!/if git grep .* 2>\/dev\/null; then/.test(out), 'no bare if-git-grep that hides errors');
 	});
 
+	test('the script exits non-zero when verification finds a problem', () => {
+		const out = script({ verifyLiterals: ['sekret'] });
+		// leftover=1 must produce a non-zero exit so automation/chaining sees it.
+		assert.ok(/leftover" -eq 0 ]; then[\s\S]*else[\s\S]*exit 1/.test(out),
+			'verification failure exits 1');
+	});
+
 	test('restores the remote that git filter-repo deletes', () => {
 		const out = script({ restoreRemote: true, remoteUrl: 'git@github.com:acme/repo.git' });
 		assert.ok(
