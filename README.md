@@ -59,7 +59,7 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 code --install-extension nikolareljin.leak-lock
 
 # Or install from a VSIX downloaded from the Releases page
-code --install-extension leak-lock-<version>.vsix
+code --install-extension leak-lock-*.vsix
 ```
 
 ### 2. Open Leak Lock
