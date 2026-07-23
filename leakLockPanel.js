@@ -273,6 +273,9 @@ function sanitizeDockerVolumeName(name) {
 class LeakLockPanel {
     constructor(extensionUri) {
         this._extensionUri = extensionUri;
+        // Flipped once createOrShow has assigned the initial webview.html.
+        // Until then _updateWebviewContent must not render.
+        this._initialRenderDone = false;
         this._scanResults = [];
         this._replacementValues = {};
         this._selectedDirectory = null;
