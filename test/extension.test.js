@@ -363,3 +363,78 @@ suite('Git history keyword search (file content)', () => {
 		assert.ok(findings.some(f => f.secret === 'marker'), 'substring filename keyword should be found');
 	});
 });
+
+suite('Two-phase cleanup: local rewrite, then confirmed force-push', () => {
+	const gitRewrite = require('../git-rewrite');
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com',
+		FILTER_BRANCH_SQUELCH_WARNING: '1'
+	};
+	let base, origin, work;
+
+	suiteSetup(() => {
+		base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-2phase-'));
+		origin = path.join(base, 'origin.git');
+		work = path.join(base, 'work');
+		cp.execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin], { env });
+		cp.execFileSync('git', ['clone', '-q', origin, work], { env });
+		// A second file so removing secret.txt does not leave an empty commit
+		// that --prune-empty would drop (which would delete the branch entirely).
+		fs.writeFileSync(path.join(work, 'README.md'), '# app\n');
+		fs.writeFileSync(path.join(work, 'secret.txt'), 'token=SUPERSECRETVALUE123\n');
+		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
+		g(['add', '-A']); g(['commit', '-qm', 'add secret']); g(['push', '-q', 'origin', 'main']);
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	function serverHasSecret() {
+		return cp.execFileSync('git', ['--git-dir=' + origin, 'log', '--all', '-S', 'SUPERSECRETVALUE123', '--oneline'], { env })
+			.toString().trim().length > 0;
+	}
+
+	test('push:false rewrites locally and leaves the remote untouched', async () => {
+		const report = await gitRewrite.runRewrite({
+			repoDir: work,
+			push: false,
+			rewrite: async () => {
+				cp.execFileSync('git', ['filter-branch', '--force', '--index-filter',
+					'git rm -r --cached --ignore-unmatch secret.txt', '--prune-empty',
+					'--tag-name-filter', 'cat', '--', '--all'], { cwd: work, env, maxBuffer: 64 * 1024 * 1024 });
+			}
+		});
+		assert.strictEqual(report.pushed, false, 'runRewrite must not push when push:false');
+		assert.strictEqual(serverHasSecret(), true, 'the remote is still untouched after the local rewrite');
+	});
+
+	test('the confirmed push then cleans and verifies the remote', async () => {
+		await gitRewrite.pushRewritten(work, 'origin');
+		const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', { literals: ['SUPERSECRETVALUE123'] });
+		assert.deepStrictEqual(offenders, [], 'verification is clean after the confirmed push');
+		assert.strictEqual(serverHasSecret(), false, 'the secret is gone from the remote after confirmation');
+	});
+
+	test('staging sets a pending push; cancel clears it without pushing', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._stagePushForConfirmation('Git-only cleanup', '/repo', { materialized: ['main', 'dev'] }, { literals: ['x'] });
+		assert.ok(panel._scanCleanup.pendingPush, 'pendingPush is set after the local rewrite');
+		assert.strictEqual(panel._scanCleanup.pendingPush.refCount, 2);
+		const gate = panel._renderPendingPush(panel._scanCleanup.pendingPush);
+		assert.ok(/rewrite remote git history/.test(gate), 'the gate explains it changes git history');
+		assert.ok(/force-push the rewritten history now/.test(gate), 'the gate asks for confirmation');
+		panel._cancelForcePush();
+		assert.strictEqual(panel._scanCleanup.pendingPush, null, 'cancel clears the pending push');
+	});
+});
