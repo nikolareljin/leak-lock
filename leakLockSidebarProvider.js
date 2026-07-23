@@ -57,9 +57,13 @@ class LeakLockSidebarProvider {
                         this._updateView();
                         break;
                     case 'openWebsite':
-                        // Awaited so a failure to open the browser rejects here
-                        // rather than becoming an unhandled promise.
-                        await vscode.commands.executeCommand('leak-lock.openWebsite');
+                        // Awaiting alone would not help: nothing consumes this
+                        // handler's promise, so a rejection would go unhandled.
+                        try {
+                            await vscode.commands.executeCommand('leak-lock.openWebsite');
+                        } catch (error) {
+                            console.error('Failed to open the project website:', error);
+                        }
                         break;
                     case 'openRemoveFiles':
                         // Open the main panel in Remove Files mode with current selection

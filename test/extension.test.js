@@ -115,6 +115,24 @@ suite('Project website link', () => {
 		assert.ok(opened, 'the command should hand the URL to the OS browser');
 		assert.strictEqual(opened.replace(/\/$/, ''), WEBSITE_URL.replace(/\/$/, ''));
 	});
+
+	test('a browser that fails to open is reported, not left to reject', async () => {
+		const original = vscode.env.openExternal;
+		try {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				value: async () => { throw new Error('no handler for https'); },
+				configurable: true
+			});
+			// Must resolve. An unhandled rejection here would leave the user
+			// with a silently dead button.
+			await vscode.commands.executeCommand('leak-lock.openWebsite');
+		} finally {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				value: original,
+				configurable: true
+			});
+		}
+	});
 });
 
 suite('Webview initialises with a single render', () => {
