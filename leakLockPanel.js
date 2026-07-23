@@ -321,6 +321,26 @@ class LeakLockPanel {
             blockedReason: null, // 'unpushed-commits' | 'no-remote' | null
             verifyResult: null // offending refs reported after a run
         };
+        // Fetch timestamps keyed by repo path. The scan view and the Remove Files
+        // view can point at different repositories, so a single shared timestamp
+        // would let one view's "Refs status" describe the other's repo.
+        this._lastFetchAtByRepo = {};
+    }
+
+    /** Repo the scan-cleanup actions operate on (matches _prepareScanReplacementCommand). */
+    _scanCleanupRepo() {
+        return this._scanPath || this._selectedDirectory
+            || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+    }
+
+    _recordFetchAt(repoDir, iso) {
+        if (repoDir) {
+            this._lastFetchAtByRepo[repoDir] = iso || new Date().toISOString();
+        }
+    }
+
+    _getLastFetchAt(repoDir) {
+        return repoDir ? (this._lastFetchAtByRepo[repoDir] || null) : null;
     }
 
     static get currentPanel() {
@@ -1296,7 +1316,7 @@ class LeakLockPanel {
         const targets = this._removalState.targets;
         const hasTargets = targets.length > 0;
         const prepared = this._removalState.preparedCommand;
-        const lastFetchISO = this._removalState.lastFetchAt;
+        const lastFetchISO = this._getLastFetchAt(this._removalState.repoDir) || this._removalState.lastFetchAt;
         const isStale = this._isFetchStale(lastFetchISO);
         const fetchColor = isStale ? 'var(--vscode-inputValidation-warningForeground)' : 'var(--vscode-descriptionForeground)';
         const fetchNote = isStale ? ' (stale)' : '';
@@ -1747,6 +1767,7 @@ class LeakLockPanel {
             });
             const ts = new Date().toISOString();
             this._removalState.lastFetchAt = ts;
+            this._recordFetchAt(repoPath, ts);
             this._updateWebviewContent();
         } catch (e) {
             console.warn('git fetch failed or no remotes:', e.message);
@@ -1810,8 +1831,10 @@ class LeakLockPanel {
     }
 
     async _manualRefetch() {
-        // Determine best repo path available
-        let repo = this._removalState.repoDir || this._selectedDirectory;
+        // Fetch the repo the CURRENT view is about, so its "Refs status" updates.
+        let repo = this._viewMode === 'removeFiles'
+            ? (this._removalState.repoDir || this._selectedDirectory)
+            : this._scanCleanupRepo();
         if (!repo && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             repo = vscode.workspace.workspaceFolders[0].uri.fsPath;
         }
@@ -2081,8 +2104,9 @@ class LeakLockPanel {
             warning: '#ff9800'
         };
 
-        // Fetch status for secrets cleanup actions
-        const lastFetchISO = this._removalState.lastFetchAt;
+        // Fetch status for secrets cleanup actions — the scan repo's own fetch
+        // time, not whatever the Remove Files view last fetched.
+        const lastFetchISO = this._getLastFetchAt(this._scanCleanupRepo());
         const isStaleFetch = this._isFetchStale(lastFetchISO);
         const fetchColor = isStaleFetch ? 'var(--vscode-inputValidation-warningForeground)' : 'var(--vscode-descriptionForeground)';
         const fetchNote = isStaleFetch ? ' (stale)' : '';
@@ -4447,7 +4471,12 @@ class LeakLockPanel {
             return { blocked: true, reason: 'no-remote', ahead: [], pushPlan: null, remoteUrl: null };
         }
         await gitRewrite.fetchAllRefs(repoDir, remote);
-        this._removalState.lastFetchAt = new Date().toISOString();
+        const fetchedAt = new Date().toISOString();
+        this._recordFetchAt(repoDir, fetchedAt);
+        // Keep the Remove Files indicator in sync when this is its repo.
+        if (repoDir === this._removalState.repoDir) {
+            this._removalState.lastFetchAt = fetchedAt;
+        }
 
         const unsafe = await gitRewrite.findUnsafeLocalBranches(repoDir, remote);
         if (unsafe.ahead.length > 0) {
