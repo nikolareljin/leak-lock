@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leak Lock — find secrets in git history, remove them from every ref</title>
 <meta name="description" content="A VS Code extension that scans your repository for secrets and rewrites them out of every branch and tag — including the ones that only exist on the remote.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+<!-- Base64-encoded so the `<`, `>` and emoji in the SVG can't break data-URI parsing in stricter browsers. -->
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAxMDAgMTAwJz48dGV4dCB5PScuOWVtJyBmb250LXNpemU9JzkwJz7wn5uh77iPPC90ZXh0Pjwvc3ZnPg==">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;700&family=Public+Sans:wght@400;500;600&display=swap" rel="stylesheet">
@@ -262,7 +263,9 @@ footer .credit{margin-left:auto}
       </div>
 
       <div class="terminal">
-        <div class="cmd">git for-each-ref --format='%(refname)' | leak-lock verify</div>
+        <!-- The exact verify loop Leak Lock's generated script runs (step 9), not a separate CLI. -->
+        <div class="cmd">git for-each-ref --format='%(refname)' refs/remotes/origin refs/tags |
+while read -r ref; do git grep -qF "$SECRET" "$ref" && echo "STILL PRESENT (secret): $ref"; done</div>
         <ul class="ref-list" id="refList"></ul>
         <div class="summary" id="refSummary" role="status"></div>
       </div>
@@ -424,7 +427,7 @@ footer .credit{margin-left:auto}
   var MODES = {
     naive: {
       isDirty: function (ref) { return ref.remoteOnly; },
-      summary: 'STILL PRESENT: 2 refs\nrefs/heads/* was pushed. The remote-only branches were not.',
+      summary: 'Verification failed: see STILL PRESENT / VERIFY FAILED above.\nrefs/heads/* was pushed; the remote-only branches were not.',
       caption: '“--all” expands to refs/heads/* only. Branches that exist just on the remote are rewritten locally, never pushed, and restore the old history on your next fetch.'
     },
     leaklock: {
@@ -460,7 +463,8 @@ footer .credit{margin-left:auto}
 
       var verdict = document.createElement('span');
       verdict.className = 'verdict';
-      verdict.textContent = dirty ? 'STILL PRESENT' : 'clean';
+      // Matches the generated script's exact emitted lines (git-rewrite.js).
+      verdict.textContent = dirty ? 'STILL PRESENT (secret)' : 'clean';
 
       li.appendChild(path);
       li.appendChild(verdict);
