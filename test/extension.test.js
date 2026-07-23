@@ -291,13 +291,17 @@ suite('Git history keyword search (file content)', () => {
 		git(['add', '-A']); git(['commit', '-qm', 'add config']);
 		fs.writeFileSync(path.join(repo, 'config.ini'), 'url = https://api.example.com/redacted/callback\n');
 		git(['add', '-A']); git(['commit', '-qm', 'redact']);
+		// A file whose NAME carries a keyword, for the filename-search path.
+		fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'src', 'gammafile_marker.js'), 'noop\n');
+		git(['add', '-A']); git(['commit', '-qm', 'add gamma file']);
 	});
 
 	suiteTeardown(() => {
 		try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; }
 	});
 
-	function panelFor(keyword) {
+	function panelFor(keyword, mode) {
 		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
 		panel._scanRepoRoot = repo;
 		panel._updateWebviewContent = () => {};
@@ -307,8 +311,8 @@ suite('Git history keyword search (file content)', () => {
 			maxMatchesPerKeyword: 25,
 			shortKeywordFileHistoryMaxCount: 300,
 			searchCommitMessages: false,
-			searchFileHistory: true,
-			searchFileNames: false
+			searchFileHistory: mode !== 'names',
+			searchFileNames: mode === 'names'
 		});
 		return panel;
 	}
@@ -323,5 +327,21 @@ suite('Git history keyword search (file content)', () => {
 	test('finds a keyword that is a substring of a larger word', async () => {
 		const findings = await panelFor('api')._scanGitHistoryForKeywords(repo);
 		assert.ok(findings.some(f => f.secret === 'api'), 'substring keyword should be found in file history');
+	});
+
+	// Regression: `git log --name-status -z --pretty=format:...` prefixes the first
+	// status record with a newline ("\nA"), which defeated the status-token check,
+	// so filename search found nothing.
+	test('finds a keyword in a historical file name', async () => {
+		const findings = await panelFor('gammafile', 'names')._scanGitHistoryForKeywords(repo);
+		assert.ok(
+			findings.some(f => f.secret === 'gammafile' && /gammafile_marker\.js/.test(f.file)),
+			'filename keyword should be found via name-status parsing'
+		);
+	});
+
+	test('finds a keyword that is a substring of a historical file name', async () => {
+		const findings = await panelFor('marker', 'names')._scanGitHistoryForKeywords(repo);
+		assert.ok(findings.some(f => f.secret === 'marker'), 'substring filename keyword should be found');
 	});
 });

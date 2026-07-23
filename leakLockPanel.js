@@ -3036,7 +3036,12 @@ class LeakLockPanel {
                             return;
                         }
 
-                        const record = String(rawRecord || '');
+                        // `git log --pretty=format:...` emits a newline between the
+                        // commit header and its name-status list, so with -z the first
+                        // status record arrives as "\nA" / "\nR100". That leading
+                        // newline made the status-token check fail, so no file names
+                        // were ever matched. Strip it.
+                        const record = String(rawRecord || '').replace(/^\n+/, '');
                         if (!record) {
                             return;
                         }
