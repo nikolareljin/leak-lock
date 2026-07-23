@@ -133,6 +133,33 @@ suite('Project website link', () => {
 			});
 		}
 	});
+
+	test('a non-Error failure still produces a readable message', async () => {
+		const originalOpen = vscode.env.openExternal;
+		const originalShow = vscode.window.showErrorMessage;
+		let shown = null;
+		try {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				// Not every rejection is an Error; reading .message off a
+				// string yields undefined and a message that tells the user
+				// nothing.
+				value: async () => { throw 'protocol handler missing'; },
+				configurable: true
+			});
+			Object.defineProperty(vscode.window, 'showErrorMessage', {
+				value: (msg) => { shown = msg; return Promise.resolve(undefined); },
+				configurable: true
+			});
+			await vscode.commands.executeCommand('leak-lock.openWebsite');
+		} finally {
+			Object.defineProperty(vscode.env, 'openExternal', { value: originalOpen, configurable: true });
+			Object.defineProperty(vscode.window, 'showErrorMessage', { value: originalShow, configurable: true });
+		}
+
+		assert.ok(shown, 'the failure should be surfaced to the user');
+		assert.ok(shown.includes('protocol handler missing'), `message should carry the cause, got: ${shown}`);
+		assert.ok(!shown.includes('undefined'), `message should not read "undefined", got: ${shown}`);
+	});
 });
 
 suite('Webview initialises with a single render', () => {
