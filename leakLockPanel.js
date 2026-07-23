@@ -2722,6 +2722,11 @@ class LeakLockPanel {
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
         const gitLogOptions = { timeout: 20000, maxBuffer: 50 * 1024 * 1024 };
+        // The file-content pass runs `git log -G … -p` (pickaxe over full patches),
+        // which is the heaviest search and the most likely to hit a limit on a
+        // large repository. Give it a bigger buffer and a longer timeout so it
+        // does not silently fail on real-world histories.
+        const fileHistoryLogOptions = { timeout: 60000, maxBuffer: 256 * 1024 * 1024 };
         const findings = [];
         const seen = new Set();
         const totalSearchModes =
@@ -2761,6 +2766,11 @@ class LeakLockPanel {
         // silently drop it — the exact "it's in the file but search misses it" bug.
         const fileHistoryKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
         const fileNameKeywordMatchers = buildKeywordMatchers(keywordConfig.keywords, { matchFragments: true });
+
+        // Each pass is isolated: a failure in one (e.g. the content pass hitting a
+        // time or output limit on a very large repository) must not discard the
+        // findings from the others. Failed passes are reported, not swallowed.
+        const passErrors = [];
 
         try {
             if (keywordConfig.searchCommitMessages) {
@@ -2816,7 +2826,12 @@ class LeakLockPanel {
                     }
                 }
             }
+        } catch (e) {
+            console.warn('git-history commit-message search failed:', e.message);
+            passErrors.push('commit messages');
+        }
 
+        try {
             if (keywordConfig.searchFileHistory) {
                 this._scanProgress = { stage: 'process', message: 'Searching git file history for configured keywords...' };
                 this._updateWebviewContent();
@@ -2878,7 +2893,7 @@ class LeakLockPanel {
                             `--max-count=${gitMaxCount}`,
                             '--',
                             '.'
-                        ], gitLogOptions);
+                        ], fileHistoryLogOptions);
 
                         const lines = stdout.split('\n');
                         let currentCommit = null;
@@ -2945,7 +2960,12 @@ class LeakLockPanel {
                     });
                 }
             }
+        } catch (e) {
+            console.warn('git-history file-content search failed:', e.message);
+            passErrors.push('file content');
+        }
 
+        try {
             if (keywordConfig.searchFileNames) {
                 this._scanProgress = { stage: 'process', message: 'Searching git history file names for configured keywords...' };
                 this._updateWebviewContent();
@@ -3166,15 +3186,22 @@ class LeakLockPanel {
                     });
                 });
             }
-        } catch (error) {
-            console.warn('Keyword history scan skipped:', error.message);
+        } catch (e) {
+            console.warn('git-history file-name search failed:', e.message);
+            passErrors.push('file names');
+        }
+
+        if (passErrors.length > 0) {
+            const label = passErrors.join(', ');
             this._scanProgress = {
                 stage: 'process',
-                message: 'Keyword history scan was skipped due to a Git error. See extension logs for details.'
+                message: `Git-history keyword search could not finish for: ${label}.`
             };
             this._updateWebviewContent();
             vscode.window.showWarningMessage(
-                'LeakLock: Keyword history scan was skipped due to a Git error. See logs for details.'
+                `LeakLock: git-history keyword search could not finish for: ${label}. ` +
+                'On a large repository this usually means the search hit its time or output limit. ' +
+                'Any other passes still ran — see the logs for details.'
             );
         }
 
