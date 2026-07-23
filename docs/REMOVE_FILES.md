@@ -53,7 +53,7 @@ from the panel or from the generated script — follows the same sequence:
 4. Create/reset a local branch for **every** remote branch
 5. Rewrite across all refs
 6. Delete `refs/original/*`, expire the reflog, `git gc`
-7. `git push --force --atomic --all` and `--tags`
+7. Force-push every branch and tag in one atomic transaction: `git push --force --atomic <remote> 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'`
 8. Restore the originally checked-out branch
 9. Re-fetch and verify **every** remote branch and tag is clean
 

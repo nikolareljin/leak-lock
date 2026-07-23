@@ -2379,14 +2379,16 @@ class LeakLockPanel {
             vscode.window.showWarningMessage('Prepare a cleanup command first.');
             return;
         }
-        const target = await vscode.window.showSaveDialog({
-            filters: { 'Shell script': ['sh'] },
-            saveLabel: 'Save cleanup script'
-        });
-        if (!target) {
-            return;
-        }
+        // Wrap the whole flow, including showSaveDialog, so a dialog rejection can
+        // never surface as an unhandled promise rejection from the message handler.
         try {
+            const target = await vscode.window.showSaveDialog({
+                filters: { 'Shell script': ['sh'] },
+                saveLabel: 'Save cleanup script'
+            });
+            if (!target) {
+                return;
+            }
             fs.writeFileSync(target.fsPath, script, { mode: 0o755 });
             vscode.window.showInformationMessage(`Cleanup script saved to ${target.fsPath}`);
         } catch (e) {

@@ -119,6 +119,17 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(out.includes('STILL PRESENT'), 'reports refs that are still dirty');
 	});
 
+	test('verification surfaces git errors instead of treating them as clean', () => {
+		const out = script({ verifyLiterals: ['sekret'] });
+		// git grep exit 1 = clean; any other exit is a real failure that must be
+		// reported, not swallowed by a bare `if git grep` under set -e.
+		assert.ok(out.includes('grep_rc'), 'captures git grep exit code');
+		assert.ok(out.includes('VERIFY FAILED (git grep exit'), 'reports grep failures');
+		assert.ok(out.includes('ls_rc'), 'captures git ls-tree exit code');
+		assert.ok(out.includes('VERIFY FAILED (git ls-tree exit'), 'reports ls-tree failures');
+		assert.ok(!/if git grep .* 2>\/dev\/null; then/.test(out), 'no bare if-git-grep that hides errors');
+	});
+
 	test('restores the remote that git filter-repo deletes', () => {
 		const out = script({ restoreRemote: true, remoteUrl: 'git@github.com:acme/repo.git' });
 		assert.ok(
