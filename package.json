@@ -171,7 +171,7 @@
     "@types/node": "20.x",
     "@types/vscode": "^1.96.0",
     "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.5.2",
+    "@vscode/test-electron": "^3.0.0",
     "eslint": "^9.16.0"
   },
   "dependencies": {
