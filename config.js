@@ -4,6 +4,9 @@
  */
 
 module.exports = {
+    // Project Website (GitHub Pages) — linked from the sidebar and the panel
+    WEBSITE_URL: 'https://nikolareljin.github.io/leak-lock/',
+
     // BFG Tool Configuration
     BFG_JAR_PATH: '/tmp/bfg.jar',
     BFG_DOWNLOAD_URL: 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar',

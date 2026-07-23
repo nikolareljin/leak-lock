@@ -1,5 +1,32 @@
 # Change Log
 
+## 0.6.2
+### Fixed
+- **"Could not register service worker" When Opening the Panel**: Opening Remove Files or starting a scan from the sidebar created the panel, rendered the default view, and then reassigned `webview.html` 50–100 ms later to switch views. Reassigning it destroys the webview's iframe document and builds a new one, so when VS Code's service worker registration for the first document was still in flight it rejected with `InvalidStateError: The document is in an invalid state` — surfacing as `Error loading webview: Could not register service worker`. The panel now applies the requested view and directory *before* its single initial render, so the document is built once. The two timing constants that papered over the race are gone.
+
+### Added
+- **Website Link**: The Control Panel has an "Open the Leak Lock website" button, and `Leak Lock: Open Website` is available from the Command Palette. Both open the project site in your default browser.
+- **Dependabot Version Updates**: `.github/dependabot.yml` enables weekly npm and GitHub Actions update pull requests, grouping minor and patch bumps into one PR while leaving majors separate for individual review. Previously only Dependabot *security* updates ran, since those need no configuration file. The reusable workflow pinned to `ci-helpers@production` is untouched — that floating tag is advanced by its own release flow.
+
+### Changed
+- **Leaner Package**: The published `.vsix` no longer carries `docs/`, the GitHub Pages site, `.github/` workflows, or contributor notes — none of which the extension loads at runtime, and the site's screenshots alone were ~192 KB of dead weight. The package is now 17 files / 94 KB. The Marketplace listing is unaffected: it renders only `README.md`, `CHANGELOG.md`, `LICENSE` and the icon, and the README's relative `docs/` links are rewritten to absolute repository URLs when the package is built, so they keep working from the listing.
+
+### Security
+- Updated development dependencies flagged by advisories (lockfile only — no runtime dependencies changed):
+  - `brace-expansion` 1.1.12 → 1.1.16 and 2.0.2 → 2.1.2 (CVE-2026-13149)
+  - `minimatch` 3.1.2 → 3.1.5, 5.1.6 → 5.1.9 and 9.0.5 → 9.0.9 (ReDoS)
+  - `ajv` 6.12.6 → 6.15.0 (ReDoS via the `$data` option)
+  - `js-yaml` 4.1.1 → 4.3.0 (quadratic-complexity DoS in merge-key handling)
+  - `flatted` 3.3.3 → 3.4.3, `picomatch` 2.3.1 → 2.3.2
+- Three development-only advisories remain open with no upstream fix available: `mocha` pins `serialize-javascript@^6`, and the fix for that advisory landed in 7.0.7. They affect the test runner only and never ship in the extension.
+
+### Documentation
+- The GitHub Pages site now shows the interface — the scan results table with severity, file, line and originating commit; the Control Panel; the git-history keyword search; and the guided file-removal flow. Both pages carry the same primary navigation.
+
+## 0.6.1
+### Documentation
+- Published the project site to GitHub Pages from `docs/website/`, built around the scan → fix → verify flow, with the shield mark, a dark brand band, copy buttons on the install commands, and an About page. No extension code changed in this release.
+
 ## 0.6.0
 ### Added
 - **Force-Push Confirmation Gate**: Running a secrets cleanup now happens in two explicit steps. First the cleanup rewrites your **local** history and removes the secret — the remote is **not** touched. The panel then shows a persistent confirmation that does not auto-dismiss, explains that continuing will rewrite remote git history irreversibly, and asks you to confirm. Only after you confirm does Leak Lock force-push the rewritten branches and tags (in a single atomic push) and verify the remote is clean. Cancelling keeps the remote unchanged.
