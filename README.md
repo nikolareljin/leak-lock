@@ -6,7 +6,7 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
 [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
@@ -123,8 +123,24 @@ Example use case:
 - Option B (safe): Git path-based, exact paths across branches
 - Click "🔎 Preview matches" for path-based mode to see exact files across branches, remotes, and tags
 - Remotes are fetched automatically to avoid missing references
-- Prepare and review the generated command
+- Prepare and review the generated script (copy it, or "💾 Save as .sh")
 - Final step (red): confirm to run (BFG or Git) and rewrite history
+
+### 8. Ref-Complete History Rewrites (New in 0.6.0)
+`git push --force --all` only pushes `refs/heads/*`, so a branch that exists solely on the
+remote keeps its leaked history. Every Leak Lock rewrite now materialises a local branch for
+each remote branch first, pushes with `--atomic`, and verifies every remote branch and tag
+afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrites).
+
+- **Preflight** blocks the rewrite if local branches hold unpushed commits (they would be discarded)
+- **Push plan** lists every ref that will be force-updated or created, before you run anything
+- **Verification** reports any ref where the secret or file survived
+
+### 9. Selecting What Gets Cleaned (New in 0.6.0)
+- Per-finding checkboxes, a header select-all, and `Select all` / `Clear all` buttons
+- A live "N of M cleanable findings selected" counter
+- Selections and custom replacement values persist across panel refreshes (previously,
+  preparing a command re-checked everything)
 
 ---
 
