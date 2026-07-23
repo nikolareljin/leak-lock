@@ -38,7 +38,11 @@ async function git(repoDir, args, options = {}) {
 
 async function gitLines(repoDir, args) {
     const { stdout } = await git(repoDir, args);
-    return stdout.split('\n').map(line => line.trim()).filter(Boolean);
+    // Strip only a trailing CR (Windows line endings), never trim: file paths
+    // from `git ls-tree` can legitimately contain leading/trailing spaces, and
+    // trimming them would corrupt the "verified clean" path check. Ref names
+    // carry no whitespace, so this is a no-op for them.
+    return stdout.split('\n').map(line => line.replace(/\r$/, '')).filter(Boolean);
 }
 
 /** POSIX single-quote escaping, for values embedded in a generated shell script. */
