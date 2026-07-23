@@ -284,8 +284,19 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
                 await git(repoDir, ['grep', '--quiet', '--fixed-strings', '-e', literal, ref]);
                 offenders.push({ ref, reason: 'secret still present', match: literal });
                 break;
-            } catch {
-                // Non-zero exit from `git grep` means "not found" - the goal.
+            } catch (e) {
+                // git grep exits 1 for "not found" (the clean case). Any other
+                // exit (e.g. 128 for a bad ref/object) is a real failure - never
+                // treat it as clean, or verification silently lies. Surface it.
+                if (!e || e.code !== 1) {
+                    offenders.push({
+                        ref,
+                        reason: `verification failed (git grep exit ${e && e.code !== undefined ? e.code : 'unknown'})`,
+                        match: literal
+                    });
+                    break;
+                }
+                // exit 1: literal not present in this ref - keep checking.
             }
         }
     }
