@@ -237,8 +237,16 @@ async function expireReflogAndGc(repoDir) {
  * (a protected branch, say) instead of leaving the remote half-rewritten.
  */
 async function pushRewritten(repoDir, remote = DEFAULT_REMOTE) {
-    await git(repoDir, ['push', '--force', '--atomic', '--all', remote]);
-    await git(repoDir, ['push', '--force', '--atomic', '--tags', remote]);
+    // One atomic transaction over every branch AND tag. Two separate pushes
+    // (--all then --tags) are each atomic on their own, but if the first
+    // succeeds and the second is rejected (e.g. a protected tag), the remote is
+    // left with rewritten branches but stale, still-leaking tags. A single push
+    // with both wildcard refspecs is genuinely all-or-nothing.
+    await git(repoDir, [
+        'push', '--force', '--atomic', remote,
+        'refs/heads/*:refs/heads/*',
+        'refs/tags/*:refs/tags/*'
+    ]);
 }
 
 /**
@@ -381,10 +389,10 @@ function buildRewriteScript(options) {
 
     lines.push(
         '',
-        '# 7. --atomic: the server rejects the WHOLE push if any single ref fails',
-        '#    (e.g. a protected branch) instead of leaving a half-rewritten remote.',
-        `git push --force --atomic --all ${remoteQ}`,
-        `git push --force --atomic --tags ${remoteQ}`,
+        '# 7. --atomic over branches AND tags in ONE push: the server rejects the',
+        '#    WHOLE push if any single ref fails (a protected branch or tag), so',
+        '#    the remote is never left with rewritten branches but stale tags.',
+        `git push --force --atomic ${remoteQ} ${shellQuote('refs/heads/*:refs/heads/*')} ${shellQuote('refs/tags/*:refs/tags/*')}`,
         '',
         '# 8. Restore the branch that was checked out before the rewrite.',
         'if [ -n "$current_branch" ]; then',
