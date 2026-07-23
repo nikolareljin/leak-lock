@@ -6,12 +6,10 @@
 
 ### Added
 - **Website Link**: The Control Panel has an "Open the Leak Lock website" button, and `Leak Lock: Open Website` is available from the Command Palette. Both open the project site in your default browser.
+- **Dependabot Version Updates**: `.github/dependabot.yml` enables weekly npm and GitHub Actions update pull requests, grouping minor and patch bumps into one PR while leaving majors separate for individual review. Previously only Dependabot *security* updates ran, since those need no configuration file. The reusable workflow pinned to `ci-helpers@production` is untouched — that floating tag is advanced by its own release flow.
 
 ### Changed
 - **Leaner Package**: The published `.vsix` no longer carries `docs/`, the GitHub Pages site, `.github/` workflows, or contributor notes — none of which the extension loads at runtime, and the site's screenshots alone were ~192 KB of dead weight. The package is now 17 files / 94 KB. The Marketplace listing is unaffected: it renders only `README.md`, `CHANGELOG.md`, `LICENSE` and the icon, and the README's relative `docs/` links are rewritten to absolute repository URLs when the package is built, so they keep working from the listing.
-
-### Added
-- **Dependabot Version Updates**: `.github/dependabot.yml` enables weekly npm and GitHub Actions update pull requests, grouping minor and patch bumps into one PR while leaving majors separate for individual review. Previously only Dependabot *security* updates ran, since those need no configuration file. The reusable workflow pinned to `ci-helpers@production` is untouched — that floating tag is advanced by its own release flow.
 
 ### Security
 - Updated development dependencies flagged by advisories (lockfile only — no runtime dependencies changed):

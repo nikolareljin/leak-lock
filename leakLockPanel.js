@@ -397,8 +397,11 @@ class LeakLockPanel {
         if (initialize) {
             initialize(LeakLockPanel.currentPanel);
         }
-        LeakLockPanel.currentPanel._initialRenderDone = true;
         LeakLockPanel.currentPanel._panel.webview.html = LeakLockPanel.currentPanel._getHtmlForWebview();
+        // Set only once the document actually exists, so the flag never claims
+        // a render that has not happened. Both statements run in the same tick,
+        // so no update can be missed in between.
+        LeakLockPanel.currentPanel._initialRenderDone = true;
 
         // Handle messages from the webview
         panel.webview.onDidReceiveMessage(
