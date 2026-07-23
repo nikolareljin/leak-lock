@@ -129,6 +129,23 @@ code{font-family:var(--mono);font-size:.875em}
 .hood code{font-family:var(--mono);font-size:.85em;color:var(--amber-bright)}
 .hood .note{margin-top:1.1rem;padding-top:1rem;border-top:1px solid rgba(143,136,188,.28);color:#B9B3DA;font-size:.875rem}
 
+/* ---------- screenshots ----------
+   The captures are of a dark editor, so each one sits in a dark inset frame
+   rather than directly on the paper background. Images keep their natural
+   aspect ratio and are capped by height, because the panels vary from a tall
+   422px sidebar to a wide results table. */
+.shots{margin-top:2.25rem;display:grid;gap:1.25rem}
+.shots-3{margin-top:1.25rem}
+@media (min-width:52rem){.shots-3{grid-template-columns:repeat(3,1fr)}}
+figure.shot{margin:0;display:flex;flex-direction:column;background:var(--paper-raised);border:1px solid var(--rule);border-radius:3px;overflow:hidden}
+.shot .frame{display:flex;justify-content:center;align-items:flex-start;background:var(--terminal);padding:1rem;flex:1}
+.shot .frame img{display:block;width:auto;max-width:100%;height:auto;border-radius:2px}
+.shot.lead .frame img{max-height:34rem}
+.shots-3 .frame img{max-height:20rem}
+.shot figcaption{padding:1rem 1.15rem;border-top:1px solid var(--rule);font-size:.875rem;color:var(--ink-soft)}
+.shot figcaption b{display:block;font-weight:600;color:var(--ink);font-size:.9375rem;margin-bottom:.3rem}
+.shot a.frame:hover{outline:1px solid var(--amber)}
+
 /* ---------- three-up cards (install / editors) ---------- */
 .cards{display:grid;gap:1.25rem;margin-top:2.25rem}
 @media (min-width:44rem){.cards{grid-template-columns:repeat(3,1fr)}}
@@ -191,6 +208,7 @@ footer .credit{margin-left:auto}
     </a>
     <nav aria-label="Primary">
       <a class="opt" href="#what">What it does</a>
+      <a class="opt" href="#screens">Screenshots</a>
       <a href="#install">Install</a>
       <a href="#setup">Set it up</a>
       <a href="about.html">About</a>
@@ -248,6 +266,69 @@ footer .credit{margin-left:auto}
         <h3>Run it, then verify</h3>
         <p>Press the button to run the rewrite from the panel, or run the script by hand. Either way it force-pushes atomically, re-fetches, and checks every remote ref — reporting any that still carry the secret by name. A cleanup it can't verify isn't finished.</p>
       </div>
+    </div>
+  </section>
+
+  <!-- ============ SCREENSHOTS ============ -->
+  <section class="section wrap" id="screens">
+    <span class="section-label">the interface</span>
+    <h2>What it looks like in the editor</h2>
+    <p class="intro">
+      Two surfaces: a <strong>Control Panel</strong> docked in the sidebar for setup and scanning, and a
+      full-width scanner in the main editor area where findings are reviewed and cleaned up.
+    </p>
+
+    <div class="shots">
+      <figure class="shot lead">
+        <a class="frame" href="img/scan-results-table.png">
+          <img src="img/scan-results-table.png" width="1322" height="1246" loading="lazy" decoding="async"
+               alt="The Leak Lock scanner showing six potential secrets in a table — each row lists the file, line number, the matched secret, a replacement value, the branch, commit hash and date it was found in, and a LOW or HIGH severity label. Below the table are buttons to prepare and run a BFG-based or git-only cleanup.">
+        </a>
+        <figcaption>
+          <b>Review every finding, then generate the cleanup</b>
+          One row per secret, with the file and line, the commit and branch it lives in, and a severity
+          label. Tick the ones you want cleaned, set what each is replaced with, then prepare a BFG or
+          git-only script — nothing is rewritten until you have read it.
+        </figcaption>
+      </figure>
+    </div>
+
+    <div class="shots shots-3">
+      <figure class="shot">
+        <a class="frame" href="img/control-panel.png">
+          <img src="img/control-panel.png" width="422" height="1009" loading="lazy" decoding="async"
+               alt="The Control Panel sidebar, with a Dependencies Setup section showing Docker Engine, Nosey Parker image, Java runtime and BFG all installed, a Target Directory section with a detected git repository, and a Start Scan button.">
+        </a>
+        <figcaption>
+          <b>Control Panel</b>
+          Dependency status, the auto-detected target repository, and the scan trigger — one click
+          installs Docker's Nosey Parker image, Java and BFG on first run.
+        </figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a class="frame" href="img/keyword-history-search.png">
+          <img src="img/keyword-history-search.png" width="299" height="373" loading="lazy" decoding="async"
+               alt="The Git History Search panel, with toggles for enabling git history scanning, searching commit messages and searching file history, a maximum matches per keyword field, and a list of twenty keywords each with a remove button.">
+        </a>
+        <figcaption>
+          <b>Keyword history search</b>
+          An opt-in pass over commit messages, historical file contents and filenames for terms you
+          choose, beyond what the credential detectors catch.
+        </figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a class="frame" href="img/remove-files.png">
+          <img src="img/remove-files.png" width="942" height="1307" loading="lazy" decoding="async"
+               alt="The Remove Unwanted Files view, with the selected repository, a file and directory picker, options to prepare a single combined BFG command or one per item, a path-based git alternative with a preview-matches button, and red confirmation panels for the final history rewrite.">
+        </a>
+        <figcaption>
+          <b>Guided file removal</b>
+          Pick paths to delete, preview the exact branches, remotes and tags they match, then confirm
+          the rewrite behind a clearly marked final step.
+        </figcaption>
+      </figure>
     </div>
   </section>
 
