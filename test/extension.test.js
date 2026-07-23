@@ -279,6 +279,30 @@ suite('BFG target escaping', () => {
 		assert.ok(script.includes('\\[old\\]\\.env'), 'escapes the metacharacters');
 		assert.ok(!/--delete-files '\[old\]\.env'/.test(script), 'raw unescaped name must not appear');
 	});
+
+	// BFG verifies by name (it deletes by name); Git path-based removal verifies
+	// the exact repo-relative path, so a same-named file elsewhere is not a false
+	// "STILL PRESENT" failure.
+	const PATH_TARGETS = [{ path: 'configs/secret.txt', type: 'file', base: 'secret.txt' }];
+
+	test('basename verification matches the name anywhere (BFG mode)', () => {
+		const re = new RegExp(panel()._buildTargetVerifyRegex(PATH_TARGETS));
+		assert.ok(re.test('configs/secret.txt'), 'matches the target');
+		assert.ok(re.test('docs/secret.txt'), 'BFG deletes by name, so same name elsewhere matches');
+	});
+
+	test('exact verification matches only the target path (Git mode)', () => {
+		const re = new RegExp(panel()._buildTargetVerifyRegex(PATH_TARGETS, { exact: true }));
+		assert.ok(re.test('configs/secret.txt'), 'matches the exact target path');
+		assert.strictEqual(re.test('docs/secret.txt'), false, 'a same-named file elsewhere is NOT a false match');
+	});
+
+	test('exact verification treats a directory target as a path prefix', () => {
+		const re = new RegExp(panel()._buildTargetVerifyRegex(
+			[{ path: 'configs/old', type: 'directory', base: 'old' }], { exact: true }));
+		assert.ok(re.test('configs/old/keys.pem'), 'matches files under the directory');
+		assert.strictEqual(re.test('other/old/keys.pem'), false, 'does not match a same-named dir elsewhere');
+	});
 });
 
 suite('Git history keyword search (file content)', () => {
