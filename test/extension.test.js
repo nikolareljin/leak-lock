@@ -79,6 +79,22 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(out.includes('exit 1'), 'non-zero exit on the blocked path');
 	});
 
+	test('restores the working branch on any exit, not only success', () => {
+		const out = script();
+		// A rejected push (protected branch) would abort under `set -e` before the
+		// explicit restore; the trap guarantees the repo is never left detached.
+		assert.ok(/trap '.*git checkout --quiet "\$current_branch".*' EXIT/.test(out),
+			'installs an EXIT trap that restores the branch');
+	});
+
+	test('is emitted as a multi-line script, not a single line', () => {
+		// The webview used to collapse the newlines; the raw script must contain
+		// real line breaks so a copy of it is runnable.
+		const out = script();
+		assert.ok(out.split('\n').length > 20, 'script spans many lines');
+		assert.ok(out.startsWith('#!/bin/bash\n'), 'shebang is on its own line');
+	});
+
 	test('verifies every remote ref after pushing', () => {
 		const out = script();
 		const verifyIndex = out.indexOf('git ls-tree -r --name-only');
