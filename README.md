@@ -6,10 +6,10 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.6.2-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
-[📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
+[🌐 Website](https://nikolareljin.github.io/leak-lock/) • [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
 
 ---
 
@@ -58,8 +58,8 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 # Install from VS Code Marketplace
 code --install-extension nikolareljin.leak-lock
 
-# Or install from VSIX
-code --install-extension leak-lock-0.0.1.vsix
+# Or install from a VSIX downloaded from the Releases page
+code --install-extension leak-lock-*.vsix
 ```
 
 ### 2. Open Leak Lock
@@ -354,12 +354,18 @@ We welcome contributions! Areas for improvement:
 
 ## 📋 Release Notes
 
-### **v0.0.1 (Current)**
-- ✨ Initial release with core functionality
-- 🛡️ Main area interface for wide result display
-- 🔧 Automated dependency installation
-- 🎯 Smart directory selection for git repositories
-- 🧹 Complete cleanup on uninstall
+Full history is in the [CHANGELOG](CHANGELOG.md).
+
+### **v0.6.2 (Current)**
+- 📦 Slimmer package — docs and the website are no longer bundled into the `.vsix`
+- 🔒 Security bumps for `brace-expansion`, `minimatch`, `ajv` and `js-yaml` (dev dependencies)
+- 🤖 Dependabot now opens weekly npm and GitHub Actions update PRs
+
+### **v0.6.0**
+- ✅ Two-step force-push confirmation before the remote is touched
+- ☑️ Select-all / clear-all controls over what gets cleaned
+- 🌿 Ref-by-ref push plan, rewrite preflight and post-run verification
+- 📄 Cleanups saved as a reviewable `.sh` script
 
 ---
 
@@ -371,6 +377,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## 🆘 Support
 
+- 🌐 [Website](https://nikolareljin.github.io/leak-lock/) - Overview, screenshots and install instructions
 - 📖 [Documentation](./docs/) - Comprehensive guides
 - 💬 [Issues](https://github.com/nikolareljin/leak-lock/issues) - Bug reports
 - 📧 Contact: Create an issue for support

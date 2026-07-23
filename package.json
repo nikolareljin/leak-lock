@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -52,6 +52,10 @@
       {
         "command": "leak-lock.cleanup",
         "title": "Clean Up Leak Lock Dependencies"
+      },
+      {
+        "command": "leak-lock.openWebsite",
+        "title": "Leak Lock: Open Website"
       }
     ],
     "configuration": {

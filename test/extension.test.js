@@ -1,15 +1,22 @@
 const assert = require('assert');
 const vscode = require('vscode');
 
+// Every suite that drives commands or providers needs the extension running.
+// Suites must not depend on an earlier suite having done it, or they break when
+// run as a subset.
+async function activateExtension() {
+	const extension = vscode.extensions.getExtension('nikolareljin.leak-lock');
+	// Fail here rather than letting a subset run collapse later with a
+	// confusing "command not found".
+	assert.ok(extension, 'the leak-lock extension must be installed to run these tests');
+	if (!extension.isActive) {
+		await extension.activate();
+	}
+}
+
 suite('Leak Lock Extension Test Suite', () => {
 
-	suiteSetup(async () => {
-		// Ensure extension is activated
-		const extension = vscode.extensions.getExtension('nikolareljin.leak-lock');
-		if (extension && !extension.isActive) {
-			await extension.activate();
-		}
-	});
+	suiteSetup(activateExtension);
 
 	test('Extension should be present', () => {
 		const extension = vscode.extensions.getExtension('nikolareljin.leak-lock');
@@ -39,6 +46,180 @@ suite('Leak Lock Extension Test Suite', () => {
 		assert.strictEqual(-1, [1, 2, 3].indexOf(5));
 		assert.strictEqual(-1, [1, 2, 3].indexOf(0));
 		assert.strictEqual(true, typeof vscode !== 'undefined');
+	});
+});
+
+suite('Project website link', () => {
+	const WEBSITE_URL = 'https://nikolareljin.github.io/leak-lock/';
+
+	suiteSetup(activateExtension);
+
+	test('registers a command that opens the project website', async () => {
+		const commands = await vscode.commands.getCommands();
+		assert.ok(
+			commands.includes('leak-lock.openWebsite'),
+			'openWebsite command should be registered'
+		);
+	});
+
+	test('the website command is exposed in the Command Palette', () => {
+		const pkg = require('../package.json');
+		const entry = (pkg.contributes.commands || [])
+			.find(c => c.command === 'leak-lock.openWebsite');
+		assert.ok(entry, 'openWebsite should be declared in contributes.commands');
+		assert.ok(entry.title && entry.title.trim().length > 0, 'it needs a palette title');
+	});
+
+	test('the site URL is defined once, in config', () => {
+		// Every view links to the same place; a URL copied into each one drifts
+		// and sends users to a dead link from whichever copy went stale.
+		const config = require('../config');
+		assert.strictEqual(config.WEBSITE_URL, WEBSITE_URL);
+	});
+
+	test('the Control Panel offers a way to reach the website', () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+		const provider = new LeakLockSidebarProvider(vscode.Uri.file(__dirname));
+		const html = provider._getHtmlForWebview();
+
+		// Assert on the control itself, not just the helper it calls: a bare
+		// openWebsite() function would satisfy a looser check even after the
+		// button was deleted from the markup.
+		assert.ok(
+			/<button[^>]*onclick="openWebsite\(\)"/.test(html),
+			'the sidebar should render a button wired to openWebsite()'
+		);
+		assert.ok(
+			html.includes('Open the Leak Lock website'),
+			'that button needs a visible label'
+		);
+		assert.ok(
+			html.includes("command: 'openWebsite'"),
+			'the handler should post an openWebsite message to the extension'
+		);
+	});
+
+	test('the command opens the published site in an external browser', async () => {
+		const original = vscode.env.openExternal;
+		let opened = null;
+		try {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				value: async (uri) => { opened = uri.toString(); return true; },
+				configurable: true
+			});
+			await vscode.commands.executeCommand('leak-lock.openWebsite');
+		} finally {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				value: original,
+				configurable: true
+			});
+		}
+
+		assert.ok(opened, 'the command should hand the URL to the OS browser');
+		assert.strictEqual(opened.replace(/\/$/, ''), WEBSITE_URL.replace(/\/$/, ''));
+	});
+
+	test('a browser that fails to open is reported, not left to reject', async () => {
+		const originalOpen = vscode.env.openExternal;
+		const originalShow = vscode.window.showErrorMessage;
+		let shown = null;
+		try {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				value: async () => { throw new Error('no handler for https'); },
+				configurable: true
+			});
+			Object.defineProperty(vscode.window, 'showErrorMessage', {
+				value: (msg) => { shown = msg; return Promise.resolve(undefined); },
+				configurable: true
+			});
+			// Must resolve: an unhandled rejection would leave the user with a
+			// silently dead button.
+			await vscode.commands.executeCommand('leak-lock.openWebsite');
+		} finally {
+			Object.defineProperty(vscode.env, 'openExternal', { value: originalOpen, configurable: true });
+			Object.defineProperty(vscode.window, 'showErrorMessage', { value: originalShow, configurable: true });
+		}
+
+		// Resolving is not enough — swallowing the error silently would also
+		// resolve. The user has to be told.
+		assert.ok(shown, 'the failure should be surfaced to the user');
+		assert.ok(shown.includes('no handler for https'), `message should carry the cause, got: ${shown}`);
+	});
+
+	test('a non-Error failure still produces a readable message', async () => {
+		const originalOpen = vscode.env.openExternal;
+		const originalShow = vscode.window.showErrorMessage;
+		let shown = null;
+		try {
+			Object.defineProperty(vscode.env, 'openExternal', {
+				// Not every rejection is an Error; reading .message off a
+				// string yields undefined and a message that tells the user
+				// nothing.
+				value: async () => { throw 'protocol handler missing'; },
+				configurable: true
+			});
+			Object.defineProperty(vscode.window, 'showErrorMessage', {
+				value: (msg) => { shown = msg; return Promise.resolve(undefined); },
+				configurable: true
+			});
+			await vscode.commands.executeCommand('leak-lock.openWebsite');
+		} finally {
+			Object.defineProperty(vscode.env, 'openExternal', { value: originalOpen, configurable: true });
+			Object.defineProperty(vscode.window, 'showErrorMessage', { value: originalShow, configurable: true });
+		}
+
+		assert.ok(shown, 'the failure should be surfaced to the user');
+		assert.ok(shown.includes('protocol handler missing'), `message should carry the cause, got: ${shown}`);
+		assert.ok(!shown.includes('undefined'), `message should not read "undefined", got: ${shown}`);
+	});
+});
+
+suite('Webview initialises with a single render', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	suiteSetup(activateExtension);
+
+	teardown(() => {
+		if (LeakLockPanel.currentPanel) {
+			LeakLockPanel.currentPanel.dispose?.();
+			LeakLockPanel.currentPanel = undefined;
+		}
+	});
+
+	// Reassigning webview.html destroys the iframe document and builds a new
+	// one. Doing that while VS Code's webview service worker is still
+	// registering makes register() reject with
+	// "InvalidStateError: The document is in an invalid state", surfaced as
+	// "Error loading webview: Could not register service worker".
+	// The panel must therefore open already in its target mode, rather than
+	// rendering the default view and swapping it a few milliseconds later.
+	test('Remove Files opens directly in removeFiles mode', async () => {
+		await vscode.commands.executeCommand('leak-lock.openRemoveFiles');
+
+		assert.ok(LeakLockPanel.currentPanel, 'a panel should exist');
+		assert.strictEqual(
+			LeakLockPanel.currentPanel._viewMode,
+			'removeFiles',
+			'the first render must already be the Remove Files view'
+		);
+	});
+
+	test('a scan request applies its directory before the first render', async () => {
+		// 'scan' is the default mode, so mode alone proves nothing here; the
+		// directory handed over by the sidebar is what must already be in
+		// place when the webview document is first built.
+		const directory = __dirname;
+		await vscode.commands.executeCommand('leak-lock.startScan', {
+			directory,
+			dependenciesReady: false
+		});
+
+		assert.ok(LeakLockPanel.currentPanel, 'a panel should exist');
+		assert.strictEqual(
+			LeakLockPanel.currentPanel._selectedDirectory,
+			directory,
+			'the directory must be applied before the panel renders'
+		);
 	});
 });
 

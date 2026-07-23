@@ -7,11 +7,6 @@ const vscode = require('vscode');
 
 const dockerImage = 'ghcr.io/praetorian-inc/noseyparker:latest';
 
-// Panel initialization delays (in milliseconds)
-// These timeouts ensure the webview panel is fully initialized before calling methods on it
-const PANEL_INIT_DELAY_MS = 50; // Delay for showRemoveFilesUI initialization
-const PANEL_SCAN_INIT_DELAY_MS = 100; // Delay for startScanFromSidebar initialization
-
 /**
  * Check if dependencies are already installed
  */
@@ -218,27 +213,20 @@ function activate(context) {
 
 	// Register command to open Remove Files flow
 	const openRemoveFilesCommand = vscode.commands.registerCommand('leak-lock.openRemoveFiles', function (options) {
-		LeakLockPanel.createOrShow(context.extensionUri);
-		// Ensure panel is initialized before switching mode
-		setTimeout(() => {
-			if (LeakLockPanel.currentPanel && typeof LeakLockPanel.currentPanel.showRemoveFilesUI === 'function') {
-				LeakLockPanel.currentPanel.showRemoveFilesUI(options?.directory);
-			}
-		}, PANEL_INIT_DELAY_MS);
+		// Set the view mode as part of panel creation, so the webview renders
+		// the Remove Files view once rather than rendering the default view
+		// and being torn down and rebuilt a moment later.
+		LeakLockPanel.createOrShow(context.extensionUri, panel => {
+			panel.showRemoveFilesUI(options?.directory);
+		});
 	});
 
 	// Register start scan command for sidebar integration
 	const startScanCommand = vscode.commands.registerCommand('leak-lock.startScan', function (options) {
 		// Open main panel and trigger scan with provided options
-		LeakLockPanel.createOrShow(context.extensionUri);
-		if (options) {
-			// Use a slight delay to ensure panel is fully initialized
-			setTimeout(() => {
-				if (LeakLockPanel.currentPanel) {
-					LeakLockPanel.currentPanel.startScanFromSidebar(options.directory, options.dependenciesReady);
-				}
-			}, PANEL_SCAN_INIT_DELAY_MS);
-		}
+		LeakLockPanel.createOrShow(context.extensionUri, options
+			? panel => panel.startScanFromSidebar(options.directory, options.dependenciesReady)
+			: undefined);
 	});
 
 	// Register cleanup command for manual cleanup
@@ -283,7 +271,27 @@ function activate(context) {
 		vscode.window.showInformationMessage('Use the new "Scan Repository" command from the Leak Lock sidebar instead.');
 	});
 
-	context.subscriptions.push(scanFiles);
+	// Open the project website in the user's default browser. Also invoked by
+	// the website button in the sidebar Control Panel.
+	const openWebsiteCommand = vscode.commands.registerCommand('leak-lock.openWebsite', async function () {
+		const { WEBSITE_URL } = require('./config');
+		// Uri.parse and openExternal can both throw; report the failure rather
+		// than leaving the button silently dead with an unhandled rejection.
+		try {
+			const opened = await vscode.env.openExternal(vscode.Uri.parse(WEBSITE_URL));
+			if (!opened) {
+				vscode.window.showWarningMessage(`Could not open ${WEBSITE_URL} automatically.`);
+			}
+		} catch (error) {
+			console.error('Failed to open the project website:', error);
+			// Not every rejection is an Error, and reading .message off a
+			// string or plain object would show the user "undefined".
+			const reason = error instanceof Error ? error.message : String(error);
+			vscode.window.showErrorMessage(`Failed to open ${WEBSITE_URL}: ${reason}`);
+		}
+	});
+
+	context.subscriptions.push(scanFiles, openWebsiteCommand);
 }
 
 // This method is called when your extension is deactivated
