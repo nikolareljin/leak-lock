@@ -6,7 +6,10 @@ const vscode = require('vscode');
 // run as a subset.
 async function activateExtension() {
 	const extension = vscode.extensions.getExtension('nikolareljin.leak-lock');
-	if (extension && !extension.isActive) {
+	// Fail here rather than letting a subset run collapse later with a
+	// confusing "command not found".
+	assert.ok(extension, 'the leak-lock extension must be installed to run these tests');
+	if (!extension.isActive) {
 		await extension.activate();
 	}
 }
@@ -117,21 +120,30 @@ suite('Project website link', () => {
 	});
 
 	test('a browser that fails to open is reported, not left to reject', async () => {
-		const original = vscode.env.openExternal;
+		const originalOpen = vscode.env.openExternal;
+		const originalShow = vscode.window.showErrorMessage;
+		let shown = null;
 		try {
 			Object.defineProperty(vscode.env, 'openExternal', {
 				value: async () => { throw new Error('no handler for https'); },
 				configurable: true
 			});
-			// Must resolve. An unhandled rejection here would leave the user
-			// with a silently dead button.
-			await vscode.commands.executeCommand('leak-lock.openWebsite');
-		} finally {
-			Object.defineProperty(vscode.env, 'openExternal', {
-				value: original,
+			Object.defineProperty(vscode.window, 'showErrorMessage', {
+				value: (msg) => { shown = msg; return Promise.resolve(undefined); },
 				configurable: true
 			});
+			// Must resolve: an unhandled rejection would leave the user with a
+			// silently dead button.
+			await vscode.commands.executeCommand('leak-lock.openWebsite');
+		} finally {
+			Object.defineProperty(vscode.env, 'openExternal', { value: originalOpen, configurable: true });
+			Object.defineProperty(vscode.window, 'showErrorMessage', { value: originalShow, configurable: true });
 		}
+
+		// Resolving is not enough — swallowing the error silently would also
+		// resolve. The user has to be told.
+		assert.ok(shown, 'the failure should be surfaced to the user');
+		assert.ok(shown.includes('no handler for https'), `message should carry the cause, got: ${shown}`);
 	});
 
 	test('a non-Error failure still produces a readable message', async () => {
