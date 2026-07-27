@@ -438,6 +438,36 @@ suite('Scan finding selection', () => {
 	});
 });
 
+suite("LDAP password detection", () => {
+	const LeakLockPanel = require("../leakLockPanel");
+	const cp = require("child_process");
+	const fs = require("fs");
+	const os = require("os");
+	const path = require("path");
+
+	test("finds LDAP password assignments and ignores placeholders", async () => {
+		const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-ldap-test-"));
+		try {
+			cp.execFileSync("git", ["init", "--quiet", repoDir]);
+			fs.writeFileSync(path.join(repoDir, "application.env"), [
+				"LDAP_PASSWORD=correct-horse-battery-staple",
+				"LDAP_PASSWORD=${LDAP_PASSWORD}",
+				"ldap.password: changeme"
+			].join("\n"));
+			const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
+			const findings = await panel._scanKnownCredentialAssignments(repoDir);
+			assert.strictEqual(findings.length, 1);
+			assert.strictEqual(findings[0].file, "application.env");
+			assert.strictEqual(findings[0].line, 1);
+			assert.strictEqual(findings[0].fullSecret, "correct-horse-battery-staple");
+			assert.strictEqual(findings[0].ruleName, "ldap_password");
+			assert.strictEqual(findings[0].severity, "high");
+		} finally {
+			fs.rmSync(repoDir, { recursive: true, force: true });
+		}
+	});
+});
+
 suite("Prepared cleanup scripts", () => {
 	const LeakLockPanel = require("../leakLockPanel");
 	const cp = require("child_process");
