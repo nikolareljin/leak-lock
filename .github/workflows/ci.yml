@@ -16,7 +16,7 @@ jobs:
   ci:
     uses: nikolareljin/ci-helpers/.github/workflows/node.yml@production
     with:
-      node_version: "20"
+      node_version: "22"
       lint_command: "npm ci && npm run lint"
       # vscode-test launches a real VS Code (Electron) instance, which needs a
       # virtual display on Linux. node_modules is already present from the lint
