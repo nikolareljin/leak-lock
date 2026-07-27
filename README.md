@@ -248,7 +248,7 @@ See also:
 ## 🛠️ Development
 
 ### **Prerequisites**
-- Node.js 22+
+- Node.js 22.13.0+
 - VS Code 1.96.0+
 - Docker (for testing scanning functionality)
 
