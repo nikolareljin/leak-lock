@@ -5,6 +5,8 @@
 - Updated the VS Code test toolchain, ESLint, type definitions, and GitHub
   Actions used by CI, publishing, and Pages deployment.
 - Standardized contributor, CI, and publishing environments on Node.js 22.
+- Added save/manual-run guidance for prepared BFG and Git-only scripts; saved scripts
+  are owner-executable, and in-panel runs use owner-only OS temporary files.
 - Pinned third-party GitHub Actions to immutable commit SHAs while retaining
   release tags in comments for maintainable Dependabot updates.
 - Kept the ESLint-only `globals` package development-only so it is not shipped
