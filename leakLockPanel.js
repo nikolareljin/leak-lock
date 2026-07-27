@@ -2509,7 +2509,7 @@ class LeakLockPanel {
                 }
                 permissionNote = " (permissions are managed by Windows ACLs)";
             }
-            vscode.window.showInformationMessage(`Cleanup script saved${permissionNote} to ${target.fsPath}. Run it locally with: ${target.fsPath}`);
+            vscode.window.showInformationMessage(`Cleanup script saved${permissionNote} to ${target.fsPath}. Run it locally with: bash ${gitRewrite.shellQuote(target.fsPath)}`);
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to save script: ${e.message}`);
         }
@@ -4397,6 +4397,7 @@ class LeakLockPanel {
                 "# Keep sensitive replacement data outside the repository.",
                 "umask 077",
                 'replacement_file="$(mktemp "${TMPDIR:-/tmp}/leak-lock-replacements.XXXXXX")"',
+                "trap " + gitRewrite.shellQuote('rm -f "$replacement_file"') + " EXIT",
                 'chmod 600 "$replacement_file"',
                 `printf "%s" ${gitRewrite.shellQuote(replacementLines)} > "$replacement_file"`
             ],
@@ -4421,7 +4422,11 @@ class LeakLockPanel {
             fs.writeFileSync(replacementsFile, replacementLines, { mode: 0o600, flag: "wx" });
             return await callback(replacementsFile);
         } finally {
-            fs.rmSync(tempDir, { recursive: true, force: true });
+            try {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            } catch (cleanupError) {
+                console.warn("Failed to remove secure replacement directory:", cleanupError);
+            }
         }
     }
 
