@@ -466,7 +466,13 @@ suite("Prepared cleanup scripts", () => {
 		const scriptPath = path.join(tempDir, "cleanup.sh");
 		try {
 			fs.writeFileSync(scriptPath, script, { mode: 0o700 });
-			cp.execFileSync("bash", ["-n", scriptPath]);
+			const bashCheck = cp.spawnSync("bash", ["-n", scriptPath]);
+			if (bashCheck.error && bashCheck.error.code !== "ENOENT") {
+				throw bashCheck.error;
+			}
+			if (!bashCheck.error) {
+				assert.strictEqual(bashCheck.status, 0, bashCheck.stderr.toString());
+			}
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}
