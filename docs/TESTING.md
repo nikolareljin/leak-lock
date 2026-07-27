@@ -13,7 +13,7 @@ npm test
 ### CI/CD Testing
 The GitHub Actions workflow automatically runs tests in a headless environment using:
 - Ubuntu latest
-- Node.js 22
+- Node.js 22.13.0 or newer
 - Xvfb (X Virtual Framebuffer) for headless display
 - VS Code 1.96.0
 
