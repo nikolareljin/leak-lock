@@ -2713,8 +2713,11 @@ class LeakLockPanel {
 
             // Run the actual scan
             const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
+            const credentialAssignmentResults = await this._scanKnownCredentialAssignments(scanPath);
             const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
-            const allResults = scanResults.concat(keywordHistoryResults);
+            const allResults = this._deduplicateScanResults(
+                scanResults.concat(credentialAssignmentResults, keywordHistoryResults)
+            );
 
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
@@ -2823,6 +2826,75 @@ class LeakLockPanel {
         result.commitHash = commitHash || null;
         result.commitDate = commitDate || null;
         return result;
+    }
+
+    _deduplicateScanResults(results) {
+        const seen = new Set();
+        return results.filter((result) => {
+            const key = [result.file, result.line, result.fullSecret].join("\0");
+            if (seen.has(key)) {
+                return false;
+            }
+            seen.add(key);
+            return true;
+        });
+    }
+
+    _isPlaceholderCredential(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        return !normalized ||
+            normalized.startsWith("${") ||
+            normalized.startsWith("<") ||
+            /^\*+$/.test(normalized) ||
+            /^(?:password|changeme|change_me|example|sample|dummy|redacted|null|none)$/.test(normalized);
+    }
+
+    async _scanKnownCredentialAssignments(scanPath) {
+        const util = require("util");
+        const execFileAsync = util.promisify(execFile);
+        let fileOutput;
+        try {
+            ({ stdout: fileOutput } = await execFileAsync("git", [
+                "-C", scanPath, "ls-files", "-z", "--cached", "--others", "--exclude-standard"
+            ], { maxBuffer: 32 * 1024 * 1024 }));
+        } catch (error) {
+            console.warn("LDAP credential assignment scan skipped:", error.message);
+            return [];
+        }
+
+        const findings = [];
+        const assignmentPattern = /\b(?:ldap[\w.-]*password|password[\w.-]*ldap)\b\s*[:=]\s*(?:"([^"\r\n]+)"|\x27([^\x27\r\n]+)\x27|([^\s#;,}\]\r\n]+))/ig;
+        for (const relativePath of fileOutput.split("\0").filter(Boolean)) {
+            const filePath = path.join(scanPath, relativePath);
+            try {
+                const stat = fs.lstatSync(filePath);
+                if (!stat.isFile() || stat.size > 5 * 1024 * 1024) {
+                    continue;
+                }
+                const content = fs.readFileSync(filePath);
+                if (content.includes(0)) {
+                    continue;
+                }
+                const lines = content.toString("utf8").split(/\r?\n/);
+                for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+                    assignmentPattern.lastIndex = 0;
+                    let match;
+                    while ((match = assignmentPattern.exec(lines[lineIndex])) !== null) {
+                        const value = (match[1] || match[2] || match[3] || "").trim();
+                        if (this._isPlaceholderCredential(value)) {
+                            continue;
+                        }
+                        findings.push(this._createResult(
+                            relativePath, lineIndex + 1, value,
+                            "LDAP password assignment", "ldap_password"
+                        ));
+                    }
+                }
+            } catch (error) {
+                console.warn(`LDAP credential assignment scan could not read ${relativePath}:`, error.message);
+            }
+        }
+        return findings;
     }
 
     _stableHash(input) {
