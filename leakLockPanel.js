@@ -2500,8 +2500,16 @@ class LeakLockPanel {
                 return;
             }
             fs.writeFileSync(target.fsPath, script, { mode: 0o700 });
-            fs.chmodSync(target.fsPath, 0o700);
-            vscode.window.showInformationMessage(`Cleanup script saved with owner-only execute permission to ${target.fsPath}. Run it locally with: ${target.fsPath}`);
+            let permissionNote = " with owner-only execute permission";
+            try {
+                fs.chmodSync(target.fsPath, 0o700);
+            } catch (permissionError) {
+                if (process.platform !== "win32") {
+                    throw permissionError;
+                }
+                permissionNote = " (permissions are managed by Windows ACLs)";
+            }
+            vscode.window.showInformationMessage(`Cleanup script saved${permissionNote} to ${target.fsPath}. Run it locally with: ${target.fsPath}`);
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to save script: ${e.message}`);
         }
@@ -4398,12 +4406,18 @@ class LeakLockPanel {
 
     async _withSecureReplacementsFile(replacements, callback) {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-"));
-        fs.chmodSync(tempDir, 0o700);
-        const replacementsFile = path.join(tempDir, "replacements.txt");
-        const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
-            `${secret}==>${replacement}`
-        ).join("\n");
         try {
+            try {
+                fs.chmodSync(tempDir, 0o700);
+            } catch (permissionError) {
+                if (process.platform !== "win32") {
+                    throw permissionError;
+                }
+            }
+            const replacementsFile = path.join(tempDir, "replacements.txt");
+            const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
+                `${secret}==>${replacement}`
+            ).join("\n");
             fs.writeFileSync(replacementsFile, replacementLines, { mode: 0o600, flag: "wx" });
             return await callback(replacementsFile);
         } finally {
