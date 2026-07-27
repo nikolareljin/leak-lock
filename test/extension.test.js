@@ -438,6 +438,75 @@ suite('Scan finding selection', () => {
 	});
 });
 
+suite("Prepared cleanup scripts", () => {
+	const LeakLockPanel = require("../leakLockPanel");
+	const cp = require("child_process");
+	const fs = require("fs");
+	const os = require("os");
+	const path = require("path");
+
+	function panel() {
+		return new LeakLockPanel({ fsPath: "/tmp/ext" });
+	}
+
+	test("manual scripts create and clean an owner-only temporary replacement file", () => {
+		const script = panel()._buildScanGitReplaceCommand(
+			"/repo with spaces",
+			{ "secret-value": "redacted" },
+			"git@example.com:repo.git"
+		);
+		assert.ok(script.includes('mktemp "${TMPDIR:-/tmp}/leak-lock-replacements.XXXXXX"'));
+		assert.ok(script.includes("umask 077"));
+		assert.ok(script.includes('chmod 600 "$replacement_file"'));
+		assert.ok(script.includes("secret-value==>redacted"));
+		assert.ok(/trap .*rm -f .*replacement_file.*git checkout.* EXIT/.test(script));
+		assert.ok(script.includes('--replace-text "$replacement_file"'));
+
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-script-test-"));
+		const scriptPath = path.join(tempDir, "cleanup.sh");
+		try {
+			fs.writeFileSync(scriptPath, script, { mode: 0o700 });
+			cp.execFileSync("bash", ["-n", scriptPath]);
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test("in-panel execution uses owner-only temp storage and always removes it", async () => {
+		let tempDir;
+		let tempFile;
+		await assert.rejects(
+			panel()._withSecureReplacementsFile({ secret: "redacted" }, async (file) => {
+				tempFile = file;
+				tempDir = path.dirname(file);
+				assert.strictEqual(fs.statSync(tempDir).mode & 0o777, 0o700);
+				assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+				assert.strictEqual(fs.readFileSync(file, "utf8"), "secret==>redacted");
+				throw new Error("simulated cleanup failure");
+			}),
+			/simulated cleanup failure/
+		);
+		assert.strictEqual(fs.existsSync(tempFile), false);
+		assert.strictEqual(fs.existsSync(tempDir), false);
+	});
+	test("both prepared modes show save and local-run instructions", () => {
+		const p = panel();
+		p._scanResults = [{ file: "config.env", line: 1, secret: "secret", fullSecret: "secret", severity: "high", description: "test" }];
+		p._scanPath = "/repo";
+		p._resetScanSelection();
+		for (const mode of ["bfg", "git"]) {
+			p._scanCleanup.preparedCommand = "#!/bin/bash\necho prepared";
+			p._scanCleanup.preparedMode = mode;
+			const html = p._getResultsHtml();
+			assert.ok(html.includes("Save as .sh"));
+			assert.ok(html.includes("chmod 700 leak-lock-cleanup.sh"));
+			assert.ok(html.includes("owner-only OS temporary directory"));
+			assert.ok(html.includes(`copyScanCommand(&quot;scan-prepared-command-${mode}&quot;)`));
+		}
+	});
+
+});
+
 suite('BFG target escaping', () => {
 	const LeakLockPanel = require('../leakLockPanel');
 
