@@ -1104,6 +1104,26 @@ class LeakLockPanel {
                         if (masterBox) { masterBox.addEventListener('change', function () { setAllFindings(masterBox.checked); }); }
                     })();
 
+                    function filterScanFindings() {
+                        const search = document.getElementById("finding-search");
+                        const count = document.getElementById("finding-search-count");
+                        const rows = Array.prototype.slice.call(document.querySelectorAll("#scan-findings-body tr[data-finding-index]"));
+                        if (!search) { return; }
+                        const query = search.value.trim().toLocaleLowerCase();
+                        let shown = 0;
+                        rows.forEach(function (row) {
+                            const matches = !query || row.textContent.toLocaleLowerCase().includes(query);
+                            row.hidden = !matches;
+                            if (matches) { shown += 1; }
+                        });
+                        if (count) { count.textContent = shown + " of " + rows.length + " shown"; }
+                    }
+
+                    (function wireFindingSearch() {
+                        const search = document.getElementById("finding-search");
+                        if (search) { search.addEventListener("input", filterScanFindings); }
+                    })();
+
                     let replacementDebounce = null;
 
                     function postReplacement(input) {
@@ -1310,8 +1330,21 @@ class LeakLockPanel {
                     });
 
                     // Close dialog on Escape
-                    document.addEventListener('keydown', function(event) {
-                        if (event.key === 'Escape') {
+                    document.addEventListener("keydown", function(event) {
+                        const search = document.getElementById("finding-search");
+                        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "f" && search) {
+                            event.preventDefault();
+                            search.focus();
+                            search.select();
+                            return;
+                        }
+                        if (event.key === "Escape") {
+                            if (search && document.activeElement === search && search.value) {
+                                search.value = "";
+                                filterScanFindings();
+                                event.preventDefault();
+                                return;
+                            }
                             hideDetailDialog();
                         }
                     });
@@ -2409,6 +2442,14 @@ class LeakLockPanel {
                     <div id="selection-counter" class="selection-counter" data-selected="${selectedCount}" data-total="${eligibleIndexes.length}">
                         ${selectedCount} of ${eligibleIndexes.length} cleanable finding${eligibleIndexes.length === 1 ? '' : 's'} selected
                     </div>
+                    <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <label for="finding-search"><strong>Search findings</strong></label>
+                        <input id="finding-search" type="search" placeholder="File, secret, branch, severity, description…"
+                            aria-controls="scan-findings-body" autocomplete="off"
+                            style="min-width:280px; flex:1; padding:6px 8px; color:var(--vscode-input-foreground); background:var(--vscode-input-background); border:1px solid var(--vscode-input-border);">
+                        <span id="finding-search-count" class="hint" aria-live="polite">${this._scanResults.length} shown</span>
+                    </div>
+                    <div class="hint" style="margin-top:4px;">Press Ctrl+F or Cmd+F to search these results.</div>
                     <div style="margin-top: 8px;">
                         <div>${severitySummary}</div>
                         ${dependencyWarnings.length > 0 ? `
@@ -2436,7 +2477,7 @@ class LeakLockPanel {
                             <th>Description</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="scan-findings-body">
                         ${resultsRows}
                     </tbody>
                 </table>
