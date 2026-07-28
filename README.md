@@ -6,7 +6,7 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.6.2-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.6.3-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
 [🌐 Website](https://nikolareljin.github.io/leak-lock/) • [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
@@ -107,7 +107,7 @@ Note: `leakLock.gitHistoryKeywordSearch.searchFileNames` is disabled by default 
 
 Default keyword profile (designed for attribution-policy and secret hygiene):
 - Agent/AI attribution terms: `agent`, `assistant`, `claude`, `codex`, `copilot`, `gemini`, `gpt`, `chatgpt`, `openai`, `anthropic`, `aider`, `cursor`, `windsurf`, `meldbot`, `openclaw`, `nanoclaw`
-- Sensitive terms: `password`, `token`, `api_key`, `secret`
+- Sensitive terms: `password`, `ldap`, `ldap_password`, `bind_password`, `bind_dn`, `token`, `access_token`, `auth_token`, `api_key`, `secret`, `client_secret`, `credentials`, `private_key`, `ssh_key`, `id_rsa`
 The keyword list can include arbitrary text terms and filename fragments, not only predefined security words.
 
 Example use case:
@@ -248,7 +248,7 @@ See also:
 ## 🛠️ Development
 
 ### **Prerequisites**
-- Node.js 16+ 
+- Node.js 22.13.0+
 - VS Code 1.96.0+
 - Docker (for testing scanning functionality)
 

@@ -320,6 +320,8 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
  * @param {string[]} [options.verifyLiterals] fixed strings to grep for in each ref
  * @param {boolean} [options.restoreRemote] re-add the remote after the rewrite
  * @param {string} [options.remoteUrl]
+ * @param {string[]} [options.preambleLines] setup lines run before entering the repository
+ * @param {string} [options.exitCleanupCommand] cleanup run by the script's EXIT trap
  */
 function buildRewriteScript(options) {
     const {
@@ -329,7 +331,9 @@ function buildRewriteScript(options) {
         verifyRegex = null,
         verifyLiterals = [],
         restoreRemote = false,
-        remoteUrl = null
+        remoteUrl = null,
+        preambleLines = [],
+        exitCleanupCommand = null
     } = options || {};
 
     const remoteQ = shellQuote(remote);
@@ -339,6 +343,8 @@ function buildRewriteScript(options) {
         '# Review before running. This is destructive and cannot be undone.',
         'set -euo pipefail',
         '',
+        ...preambleLines,
+        ...(preambleLines.length > 0 ? [''] : []),
         `cd ${shellQuote(repoDir)}`,
         '',
         '# 1. Refresh every ref before planning the rewrite.',
@@ -366,10 +372,9 @@ function buildRewriteScript(options) {
         '',
         '# 3. Detach HEAD: git refuses to force-update the checked-out branch.',
         `current_branch="$(git symbolic-ref --quiet --short HEAD || true)"`,
+        '# Restore the branch and remove sensitive temporary files on ANY exit.',
+        `trap ${shellQuote([exitCleanupCommand, 'if [ -n "${current_branch:-}" ]; then git checkout --quiet "$current_branch" 2>/dev/null || true; fi'].filter(Boolean).join('; '))} EXIT`,
         'if [ -n "$current_branch" ]; then',
-        '\t# Restore the branch on ANY exit (set -e aborts if e.g. a protected',
-        '\t# branch rejects the push) so the repo is never left detached.',
-        `\ttrap 'git checkout --quiet "$current_branch" 2>/dev/null || true' EXIT`,
         '\tgit checkout --detach --quiet',
         'fi',
         '',
