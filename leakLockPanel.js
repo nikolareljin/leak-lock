@@ -1109,10 +1109,10 @@ class LeakLockPanel {
                         const count = document.getElementById("finding-search-count");
                         const rows = Array.prototype.slice.call(document.querySelectorAll("#scan-findings-body tr[data-finding-index]"));
                         if (!search) { return; }
-                        const query = search.value.trim().toLocaleLowerCase();
+                        const query = search.value.trim().toLowerCase();
                         let shown = 0;
                         rows.forEach(function (row) {
-                            const matches = !query || row.textContent.toLocaleLowerCase().includes(query);
+                            const matches = !query || row.textContent.toLowerCase().includes(query);
                             row.hidden = !matches;
                             if (matches) { shown += 1; }
                         });

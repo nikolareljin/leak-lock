@@ -548,21 +548,21 @@ suite("Prepared cleanup scripts", () => {
 });
 
 suite("Scan result search", () => {
-    const LeakLockPanel = require("../leakLockPanel");
+	const LeakLockPanel = require("../leakLockPanel");
 
-    test("scan results expose a Ctrl/Cmd+F findings search", () => {
-        const p = new LeakLockPanel({ fsPath: "/tmp/ext" });
-        p._scanResults = [{ file: "ldap.env", line: 1, secret: "hidden", fullSecret: "hidden", severity: "high", description: "LDAP password" }];
-        p._scanPath = "/repo";
-        p._resetScanSelection();
-        const resultsHtml = p._getResultsHtml();
-        const webviewHtml = p._getHtmlForWebview();
-        assert.ok(resultsHtml.includes('id="finding-search"'));
-        assert.ok(resultsHtml.includes('id="scan-findings-body"'));
-        assert.ok(resultsHtml.includes("Press Ctrl+F or Cmd+F"));
-        assert.ok(webviewHtml.includes("event.ctrlKey || event.metaKey"));
-        assert.ok(webviewHtml.includes("filterScanFindings"));
-    });
+	test("scan results expose a Ctrl/Cmd+F findings search", () => {
+		const p = new LeakLockPanel({ fsPath: "/tmp/ext" });
+		p._scanResults = [{ file: "ldap.env", line: 1, secret: "hidden", fullSecret: "hidden", severity: "high", description: "LDAP password" }];
+		p._scanPath = "/repo";
+		p._resetScanSelection();
+		const resultsHtml = p._getResultsHtml();
+		const webviewHtml = p._getHtmlForWebview();
+		assert.ok(resultsHtml.includes('id="finding-search"'));
+		assert.ok(resultsHtml.includes('id="scan-findings-body"'));
+		assert.ok(resultsHtml.includes("Press Ctrl+F or Cmd+F"));
+		assert.ok(webviewHtml.includes("event.ctrlKey || event.metaKey"));
+		assert.ok(webviewHtml.includes("filterScanFindings"));
+	});
 
 });
 
