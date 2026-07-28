@@ -449,13 +449,15 @@ suite("LDAP password detection", () => {
 		const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-ldap-test-"));
 		try {
 			cp.execFileSync("git", ["init", "--quiet", repoDir]);
-			fs.writeFileSync(path.join(repoDir, "application.env"), [
+			const scanDir = path.join(repoDir, "nested", "service");
+			fs.mkdirSync(scanDir, { recursive: true });
+			fs.writeFileSync(path.join(scanDir, "application.env"), [
 				"LDAP_PASSWORD=correct-horse-battery-staple",
 				"LDAP_PASSWORD=${LDAP_PASSWORD}",
 				"ldap.password: changeme"
 			].join("\n"));
 			const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
-			const findings = await panel._scanKnownCredentialAssignments(repoDir);
+			const findings = await panel._scanLdapPasswordAssignments(scanDir);
 			assert.strictEqual(findings.length, 1);
 			assert.strictEqual(findings[0].file, "application.env");
 			assert.strictEqual(findings[0].line, 1);

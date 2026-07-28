@@ -2754,10 +2754,10 @@ class LeakLockPanel {
 
             // Run the actual scan
             const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
-            const credentialAssignmentResults = await this._scanKnownCredentialAssignments(scanPath);
+            const ldapAssignmentResults = await this._scanLdapPasswordAssignments(scanPath);
             const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
             const allResults = this._deduplicateScanResults(
-                scanResults.concat(credentialAssignmentResults, keywordHistoryResults)
+                scanResults.concat(ldapAssignmentResults, keywordHistoryResults)
             );
 
             // Update progress: Processing
@@ -2890,23 +2890,43 @@ class LeakLockPanel {
             /^(?:password|changeme|change_me|example|sample|dummy|redacted|null|none)$/.test(normalized);
     }
 
-    async _scanKnownCredentialAssignments(scanPath) {
+    async _scanLdapPasswordAssignments(scanPath) {
         const util = require("util");
         const execFileAsync = util.promisify(execFile);
+        const scanRoot = path.resolve(scanPath);
+        let repoRoot;
         let fileOutput;
         try {
-            ({ stdout: fileOutput } = await execFileAsync("git", [
-                "-C", scanPath, "ls-files", "-z", "--cached", "--others", "--exclude-standard"
-            ], { maxBuffer: 32 * 1024 * 1024 }));
+            const rootResult = await execFileAsync("git", [
+                "-C", scanRoot, "rev-parse", "--show-toplevel"
+            ]);
+            repoRoot = path.resolve(rootResult.stdout.trim());
+            const scanPathspec = path.relative(repoRoot, scanRoot);
+            if (scanPathspec.startsWith("..") || path.isAbsolute(scanPathspec)) {
+                throw new Error("scan path is outside the repository root");
+            }
+            const fileArgs = [
+                "-C", repoRoot, "ls-files", "-z", "--cached", "--others", "--exclude-standard"
+            ];
+            if (scanPathspec) {
+                fileArgs.push("--", scanPathspec);
+            }
+            ({ stdout: fileOutput } = await execFileAsync("git", fileArgs, {
+                maxBuffer: 32 * 1024 * 1024
+            }));
         } catch (error) {
-            console.warn("LDAP credential assignment scan skipped:", error.message);
+            console.warn("LDAP password assignment scan skipped:", error.message);
             return [];
         }
 
         const findings = [];
         const assignmentPattern = /\b(?:ldap[\w.-]*password|password[\w.-]*ldap)\b\s*[:=]\s*(?:"([^"\r\n]+)"|\x27([^\x27\r\n]+)\x27|([^\s#;,}\]\r\n]+))/ig;
-        for (const relativePath of fileOutput.split("\0").filter(Boolean)) {
-            const filePath = path.join(scanPath, relativePath);
+        for (const repoRelativePath of fileOutput.split("\0").filter(Boolean)) {
+            const filePath = path.resolve(repoRoot, repoRelativePath);
+            const scanRelativePath = path.relative(scanRoot, filePath);
+            if (!scanRelativePath || scanRelativePath.startsWith("..") || path.isAbsolute(scanRelativePath)) {
+                continue;
+            }
             try {
                 const stat = fs.lstatSync(filePath);
                 if (!stat.isFile() || stat.size > 5 * 1024 * 1024) {
@@ -2926,13 +2946,13 @@ class LeakLockPanel {
                             continue;
                         }
                         findings.push(this._createResult(
-                            relativePath, lineIndex + 1, value,
+                            scanRelativePath, lineIndex + 1, value,
                             "LDAP password assignment", "ldap_password"
                         ));
                     }
                 }
             } catch (error) {
-                console.warn(`LDAP credential assignment scan could not read ${relativePath}:`, error.message);
+                console.warn(`LDAP password assignment scan could not read ${scanRelativePath}:`, error.message);
             }
         }
         return findings;
