@@ -7,7 +7,7 @@
 - Standardized contributor, CI, and publishing environments on Node.js 22.
 - Added save/manual-run guidance for prepared BFG and Git-only scripts; saved scripts
   are owner-executable, and in-panel runs use owner-only OS temporary files.
-- Added high-confidence LDAP password assignment detection for tracked and non-ignored files.
+- Expanded the optional git-history keyword profile with LDAP, token, credential, and private/SSH key terms.
 - Added Ctrl/Cmd+F filtering for scan-result rows.
 - Pinned third-party GitHub Actions to immutable commit SHAs while retaining
   release tags in comments for maintainable Dependabot updates.

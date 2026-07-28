@@ -131,9 +131,20 @@
             "openclaw",
             "nanoclaw",
             "password",
+            "ldap",
+            "ldap_password",
+            "bind_password",
+            "bind_dn",
             "token",
+            "access_token",
+            "auth_token",
             "api_key",
-            "secret"
+            "secret",
+            "client_secret",
+            "credentials",
+            "private_key",
+            "ssh_key",
+            "id_rsa"
           ],
           "items": {
             "type": "string"
