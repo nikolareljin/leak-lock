@@ -517,8 +517,10 @@ suite("Prepared cleanup scripts", () => {
 			panel()._withSecureReplacementsFile({ secret: "redacted" }, async (file) => {
 				tempFile = file;
 				tempDir = path.dirname(file);
-				assert.strictEqual(fs.statSync(tempDir).mode & 0o777, 0o700);
-				assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+				if (process.platform !== "win32") {
+					assert.strictEqual(fs.statSync(tempDir).mode & 0o777, 0o700);
+					assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+				}
 				assert.strictEqual(fs.readFileSync(file, "utf8"), "secret==>redacted");
 				throw new Error("simulated cleanup failure");
 			}),
