@@ -1104,6 +1104,26 @@ class LeakLockPanel {
                         if (masterBox) { masterBox.addEventListener('change', function () { setAllFindings(masterBox.checked); }); }
                     })();
 
+                    function filterScanFindings() {
+                        const search = document.getElementById("finding-search");
+                        const count = document.getElementById("finding-search-count");
+                        const rows = Array.prototype.slice.call(document.querySelectorAll("#scan-findings-body tr[data-finding-index]"));
+                        if (!search) { return; }
+                        const query = search.value.trim().toLowerCase();
+                        let shown = 0;
+                        rows.forEach(function (row) {
+                            const matches = !query || row.textContent.toLowerCase().includes(query);
+                            row.hidden = !matches;
+                            if (matches) { shown += 1; }
+                        });
+                        if (count) { count.textContent = shown + " of " + rows.length + " shown"; }
+                    }
+
+                    (function wireFindingSearch() {
+                        const search = document.getElementById("finding-search");
+                        if (search) { search.addEventListener("input", filterScanFindings); }
+                    })();
+
                     let replacementDebounce = null;
 
                     function postReplacement(input) {
@@ -1310,8 +1330,21 @@ class LeakLockPanel {
                     });
 
                     // Close dialog on Escape
-                    document.addEventListener('keydown', function(event) {
-                        if (event.key === 'Escape') {
+                    document.addEventListener("keydown", function(event) {
+                        const search = document.getElementById("finding-search");
+                        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "f" && search) {
+                            event.preventDefault();
+                            search.focus();
+                            search.select();
+                            return;
+                        }
+                        if (event.key === "Escape") {
+                            if (search && document.activeElement === search && search.value) {
+                                search.value = "";
+                                filterScanFindings();
+                                event.preventDefault();
+                                return;
+                            }
                             hideDetailDialog();
                         }
                     });
@@ -2364,13 +2397,26 @@ class LeakLockPanel {
         const gitCommandText = prepared && this._scanCleanup.preparedMode === 'git'
             ? prepared
             : 'Git-only command will appear here after preparation.';
+        const renderPreparedActions = (id) => `
+            <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
+                <button class="scan-button" onclick="copyScanCommand(&quot;${id}&quot;)">📋 Copy command</button>
+                <button class="scan-button" onclick="saveScanScript()">💾 Save as .sh</button>
+            </div>
+            <div class="hint" style="margin-top:8px;">
+                <strong>Run manually:</strong>
+                <ol style="margin:6px 0 0 20px; padding:0;">
+                    <li>Choose <strong>Save as .sh</strong> (or copy the script into <code>leak-lock-cleanup.sh</code>).</li>
+                    <li>In a local terminal run <code>chmod 700 leak-lock-cleanup.sh</code>, then <code>./leak-lock-cleanup.sh</code>. The script changes to the selected repository itself.</li>
+                    <li>Or use the red <strong>Run cleanup</strong> button below. Leak Lock stores replacement data in an owner-only OS temporary directory, removes it on success or failure, and asks separately before force-pushing.</li>
+                </ol>
+            </div>`;
         const preparedBlockBfg = `
             <div id="scan-prepared-command-bfg" class="danger-command">${escapeHtml(bfgCommandText)}</div>
-            ${prepared && this._scanCleanup.preparedMode === 'bfg' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\'scan-prepared-command-bfg\')">📋 Copy command</button></div>' : ''}
+            ${prepared && this._scanCleanup.preparedMode === "bfg" ? renderPreparedActions("scan-prepared-command-bfg") : ""}
         `;
         const preparedBlockGit = `
             <div id="scan-prepared-command-git" class="danger-command">${escapeHtml(gitCommandText)}</div>
-            ${prepared && this._scanCleanup.preparedMode === 'git' ? '<div style="margin-top:6px;"><button class="scan-button" onclick="copyScanCommand(\'scan-prepared-command-git\')">📋 Copy command</button></div><div style="margin-top:6px;"><button class="scan-button" onclick="saveScanScript()">💾 Save as .sh</button></div>' : ''}
+            ${prepared && this._scanCleanup.preparedMode === "git" ? renderPreparedActions("scan-prepared-command-git") : ""}
         `;
         const noneSelected = selectedCount === 0;
         const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
@@ -2396,6 +2442,14 @@ class LeakLockPanel {
                     <div id="selection-counter" class="selection-counter" data-selected="${selectedCount}" data-total="${eligibleIndexes.length}">
                         ${selectedCount} of ${eligibleIndexes.length} cleanable finding${eligibleIndexes.length === 1 ? '' : 's'} selected
                     </div>
+                    <div style="margin-top:10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                        <label for="finding-search"><strong>Search findings</strong></label>
+                        <input id="finding-search" type="search" placeholder="File, secret, branch, severity, description…"
+                            aria-controls="scan-findings-body" autocomplete="off"
+                            style="min-width:280px; flex:1; padding:6px 8px; color:var(--vscode-input-foreground); background:var(--vscode-input-background); border:1px solid var(--vscode-input-border);">
+                        <span id="finding-search-count" class="hint" aria-live="polite">${this._scanResults.length} shown</span>
+                    </div>
+                    <div class="hint" style="margin-top:4px;">Press Ctrl+F or Cmd+F to search these results.</div>
                     <div style="margin-top: 8px;">
                         <div>${severitySummary}</div>
                         ${dependencyWarnings.length > 0 ? `
@@ -2423,7 +2477,7 @@ class LeakLockPanel {
                             <th>Description</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="scan-findings-body">
                         ${resultsRows}
                     </tbody>
                 </table>
@@ -2486,8 +2540,17 @@ class LeakLockPanel {
             if (!target) {
                 return;
             }
-            fs.writeFileSync(target.fsPath, script, { mode: 0o755 });
-            vscode.window.showInformationMessage(`Cleanup script saved to ${target.fsPath}`);
+            fs.writeFileSync(target.fsPath, script, { mode: 0o700 });
+            let permissionNote = " with owner-only execute permission";
+            try {
+                fs.chmodSync(target.fsPath, 0o700);
+            } catch (permissionError) {
+                if (process.platform !== "win32") {
+                    throw permissionError;
+                }
+                permissionNote = " (permissions are managed by Windows ACLs)";
+            }
+            vscode.window.showInformationMessage(`Cleanup script saved${permissionNote} to ${target.fsPath}. Run it locally with: bash ${gitRewrite.shellQuote(target.fsPath)}`);
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to save script: ${e.message}`);
         }
@@ -2692,7 +2755,9 @@ class LeakLockPanel {
             // Run the actual scan
             const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
             const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
-            const allResults = scanResults.concat(keywordHistoryResults);
+            const allResults = this._deduplicateScanResults(
+                scanResults.concat(keywordHistoryResults)
+            );
 
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
@@ -2801,6 +2866,24 @@ class LeakLockPanel {
         result.commitHash = commitHash || null;
         result.commitDate = commitDate || null;
         return result;
+    }
+
+    _deduplicateScanResults(results) {
+        const seen = new Set();
+        return results.filter((result) => {
+            const key = [
+                result.file,
+                result.line,
+                result.fullSecret,
+                result.commitHash || "",
+                result.ruleName || ""
+            ].join("\0");
+            if (seen.has(key)) {
+                return false;
+            }
+            seen.add(key);
+            return true;
+        });
     }
 
     _stableHash(input) {
@@ -4366,30 +4449,74 @@ class LeakLockPanel {
         }
     }
 
-    _buildScanBfgReplaceCommand(scanPath, replacementsFile, secrets = []) {
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+    _buildReplacementScriptSetup(replacements) {
+        const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
+            `${secret}==>${replacement}`
+        ).join("\n");
+        return {
+            preambleLines: [
+                "# Keep sensitive replacement data outside the repository.",
+                "umask 077",
+                'replacement_file="$(mktemp "${TMPDIR:-/tmp}/leak-lock-replacements.XXXXXX")"',
+                "trap " + gitRewrite.shellQuote('rm -f "$replacement_file"') + " EXIT",
+                'chmod 600 "$replacement_file"',
+                `printf "%s" ${gitRewrite.shellQuote(replacementLines)} > "$replacement_file"`
+            ],
+            exitCleanupCommand: 'rm -f "$replacement_file"'
+        };
+    }
+
+    async _withSecureReplacementsFile(replacements, callback) {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-"));
+        try {
+            try {
+                fs.chmodSync(tempDir, 0o700);
+            } catch (permissionError) {
+                if (process.platform !== "win32") {
+                    throw permissionError;
+                }
+            }
+            const replacementsFile = path.join(tempDir, "replacements.txt");
+            const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
+                `${secret}==>${replacement}`
+            ).join("\n");
+            fs.writeFileSync(replacementsFile, replacementLines, { mode: 0o600, flag: "wx" });
+            return await callback(replacementsFile);
+        } finally {
+            try {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            } catch (cleanupError) {
+                console.warn("Failed to remove secure replacement directory:", cleanupError);
+            }
+        }
+    }
+
+    _buildScanBfgReplaceCommand(scanPath, replacements) {
+        const bfgPath = path.join(this._extensionUri.fsPath, "bfg.jar");
+        const secureSetup = this._buildReplacementScriptSetup(replacements);
         return gitRewrite.buildRewriteScript({
             repoDir: scanPath,
             remote: gitRewrite.DEFAULT_REMOTE,
             rewriteLines: [
-                `java -jar ${gitRewrite.shellQuote(bfgPath)} --replace-text ${gitRewrite.shellQuote(replacementsFile)}`
+                `java -jar ${gitRewrite.shellQuote(bfgPath)} --replace-text "$replacement_file"`
             ],
-            verifyLiterals: secrets
+            verifyLiterals: Object.keys(replacements),
+            ...secureSetup
         });
     }
 
-    _buildScanGitReplaceCommand(scanPath, replacementsFile, secrets = [], remoteUrl = null) {
+    _buildScanGitReplaceCommand(scanPath, replacements, remoteUrl = null) {
+        const secureSetup = this._buildReplacementScriptSetup(replacements);
         return gitRewrite.buildRewriteScript({
             repoDir: scanPath,
             remote: gitRewrite.DEFAULT_REMOTE,
             rewriteLines: [
-                `git filter-repo --replace-text ${gitRewrite.shellQuote(replacementsFile)} --force`
+                'git filter-repo --replace-text "$replacement_file" --force'
             ],
-            verifyLiterals: secrets,
-            // filter-repo deletes the remote by design, so the push stage would
-            // fail immediately after an otherwise successful rewrite.
+            verifyLiterals: Object.keys(replacements),
             restoreRemote: true,
-            remoteUrl
+            remoteUrl,
+            ...secureSetup
         });
     }
 
@@ -4535,7 +4662,6 @@ class LeakLockPanel {
             vscode.window.showErrorMessage('No directory selected or workspace available.');
             return;
         }
-        const replacementsFile = path.join(scanPath, 'leak-lock-replacements.txt');
         this._scanCleanup.preparing = true;
         this._scanCleanup.blockedBranches = null;
         this._scanCleanup.blockedReason = null;
@@ -4554,14 +4680,13 @@ class LeakLockPanel {
             }
             this._scanCleanup.blockedReason = null;
 
-            const secrets = Object.keys(resolvedReplacements);
-            const command = mode === 'git'
-                ? this._buildScanGitReplaceCommand(scanPath, replacementsFile, secrets, preflight.remoteUrl)
-                : this._buildScanBfgReplaceCommand(scanPath, replacementsFile, secrets);
+            const command = mode === "git"
+                ? this._buildScanGitReplaceCommand(scanPath, resolvedReplacements, preflight.remoteUrl)
+                : this._buildScanBfgReplaceCommand(scanPath, resolvedReplacements);
             this._scanCleanup.preparedCommand = command;
             this._scanCleanup.preparedMode = mode;
             this._scanCleanup.replacements = resolvedReplacements;
-            this._scanCleanup.replacementsFile = replacementsFile;
+            this._scanCleanup.replacementsFile = null;
             this._scanCleanup.pushPlan = preflight.pushPlan;
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to prepare cleanup: ${e.message}`);
@@ -4671,38 +4796,24 @@ class LeakLockPanel {
                 title: "Running git-only cleanup...",
                 cancellable: false
             }, async (progress) => {
-                progress.report({ increment: 10, message: "Preparing replacement file..." });
-                const replacementsFile = path.join(scanPath, 'leak-lock-replacements.txt');
-                const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
-                    `${secret}==>${replacement}`
-                ).join('\n');
-                fs.writeFileSync(replacementsFile, replacementLines);
-
-                const util = require('util');
+                progress.report({ increment: 10, message: "Preparing secure temporary replacement file..." });
+                const util = require("util");
                 const execFileAsync = util.promisify(execFile);
 
-                // runRewrite does the full LOCAL rewrite (refresh refs, block on
-                // unpushed commits, materialise every remote branch, rewrite,
-                // repack, restore branch) but push:false stops before the remote
-                // is touched. The force-push waits for explicit confirmation.
-                report = await gitRewrite.runRewrite({
-                    repoDir: scanPath,
-                    push: false,
-                    progress: (message) => progress.report({ increment: 10, message }),
-                    rewrite: async () => {
-                        await execFileAsync(
-                            'git',
-                            ['filter-repo', '--replace-text', replacementsFile, '--force'],
-                            { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
-                        );
-                    }
-                });
-
-                try {
-                    fs.unlinkSync(replacementsFile);
-                } catch (cleanupError) {
-                    console.warn('Failed to clean up temporary file:', cleanupError);
-                }
+                report = await this._withSecureReplacementsFile(replacements, async (replacementsFile) =>
+                    gitRewrite.runRewrite({
+                        repoDir: scanPath,
+                        push: false,
+                        progress: (message) => progress.report({ increment: 10, message }),
+                        rewrite: async () => {
+                            await execFileAsync(
+                                "git",
+                                ["filter-repo", "--replace-text", replacementsFile, "--force"],
+                                { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
+                            );
+                        }
+                    })
+                );
             });
 
             this._stagePushForConfirmation('Git-only cleanup', scanPath, report, {
@@ -4922,42 +5033,26 @@ class LeakLockPanel {
                 cancellable: false
             }, async (progress) => {
 
-                progress.report({ increment: 10, message: "Preparing replacement file..." });
-
-                // Create a temporary replacements file for BFG
-                const replacementsFile = path.join(scanPath, 'leak-lock-replacements.txt');
-                const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
-                    `${secret}==>${replacement}`
-                ).join('\n');
-
-                fs.writeFileSync(replacementsFile, replacementLines);
-
-                const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-                const util = require('util');
+                progress.report({ increment: 10, message: "Preparing secure temporary replacement file..." });
+                const bfgPath = path.join(this._extensionUri.fsPath, "bfg.jar");
+                const util = require("util");
                 const execFileAsync = util.promisify(execFile);
 
-                report = await gitRewrite.runRewrite({
-                    repoDir: scanPath,
-                    push: false,
-                    progress: (message) => progress.report({ increment: 10, message }),
-                    rewrite: async () => {
-                        // A BFG failure must abort before the force-push: pushing a
-                        // rewrite that did not happen destroys remote history for nothing.
-                        const bfgResult = await execFileAsync(
-                            'java',
-                            ['-jar', bfgPath, '--replace-text', replacementsFile],
-                            { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
-                        );
-                        console.log('BFG result:', bfgResult.stdout);
-                    }
-                });
-
-                // Clean up the temporary file
-                try {
-                    fs.unlinkSync(replacementsFile);
-                } catch (cleanupError) {
-                    console.warn('Failed to clean up temporary file:', cleanupError);
-                }
+                report = await this._withSecureReplacementsFile(replacements, async (replacementsFile) =>
+                    gitRewrite.runRewrite({
+                        repoDir: scanPath,
+                        push: false,
+                        progress: (message) => progress.report({ increment: 10, message }),
+                        rewrite: async () => {
+                            const bfgResult = await execFileAsync(
+                                "java",
+                                ["-jar", bfgPath, "--replace-text", replacementsFile],
+                                { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
+                            );
+                            console.log("BFG result:", bfgResult.stdout);
+                        }
+                    })
+                );
             });
 
             this._stagePushForConfirmation('BFG cleanup', scanPath, report, {

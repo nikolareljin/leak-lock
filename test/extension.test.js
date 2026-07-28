@@ -438,6 +438,131 @@ suite('Scan finding selection', () => {
 	});
 });
 
+
+suite("Git history keyword defaults", () => {
+	const properties = require("../package.json").contributes.configuration.properties;
+
+	test("keeps sensitive keyword scanning optional and includes common credential terms", () => {
+		assert.strictEqual(properties["leakLock.gitHistoryKeywordSearch.enabled"].default, false);
+		const keywords = properties["leakLock.gitHistoryKeywordSearch.keywords"].default;
+		for (const keyword of ["ldap", "ldap_password", "bind_password", "token", "ssh_key", "private_key"]) {
+			assert.ok(keywords.includes(keyword), "missing default history keyword: " + keyword);
+		}
+	});
+});
+
+suite("Scan result deduplication", () => {
+	const LeakLockPanel = require("../leakLockPanel");
+
+	test("preserves findings from different commits and rules", () => {
+		const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
+		const base = { file: "config.env", line: 1, fullSecret: "token" };
+		const findings = panel._deduplicateScanResults([
+			{ ...base, commitHash: "commit-a", ruleName: "git_history_keyword" },
+			{ ...base, commitHash: "commit-a", ruleName: "git_history_keyword" },
+			{ ...base, commitHash: "commit-b", ruleName: "git_history_keyword" },
+			{ ...base, commitHash: "commit-a", ruleName: "another_rule" }
+		]);
+		assert.strictEqual(findings.length, 3);
+	});
+});
+
+suite("Prepared cleanup scripts", () => {
+	const LeakLockPanel = require("../leakLockPanel");
+	const cp = require("child_process");
+	const fs = require("fs");
+	const os = require("os");
+	const path = require("path");
+
+	function panel() {
+		return new LeakLockPanel({ fsPath: "/tmp/ext" });
+	}
+
+	test("manual scripts create and clean an owner-only temporary replacement file", () => {
+		const script = panel()._buildScanGitReplaceCommand(
+			"/repo with spaces",
+			{ "secret-value": "redacted" },
+			"git@example.com:repo.git"
+		);
+		assert.ok(script.includes('mktemp "${TMPDIR:-/tmp}/leak-lock-replacements.XXXXXX"'));
+		assert.ok(script.includes("umask 077"));
+		assert.ok(script.includes('chmod 600 "$replacement_file"'));
+		assert.ok(script.includes("secret-value==>redacted"));
+		assert.ok(/trap .*rm -f .*replacement_file.*git checkout.* EXIT/.test(script));
+		assert.ok(script.includes('--replace-text "$replacement_file"'));
+
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-script-test-"));
+		const scriptPath = path.join(tempDir, "cleanup.sh");
+		try {
+			fs.writeFileSync(scriptPath, script, { mode: 0o700 });
+			const bashCheck = cp.spawnSync("bash", ["-n", scriptPath]);
+			if (bashCheck.error && bashCheck.error.code !== "ENOENT") {
+				throw bashCheck.error;
+			}
+			if (!bashCheck.error) {
+				assert.strictEqual(bashCheck.status, 0, bashCheck.stderr.toString());
+			}
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test("in-panel execution uses owner-only temp storage and always removes it", async () => {
+		let tempDir;
+		let tempFile;
+		await assert.rejects(
+			panel()._withSecureReplacementsFile({ secret: "redacted" }, async (file) => {
+				tempFile = file;
+				tempDir = path.dirname(file);
+				if (process.platform !== "win32") {
+					assert.strictEqual(fs.statSync(tempDir).mode & 0o777, 0o700);
+					assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+				}
+				assert.strictEqual(fs.readFileSync(file, "utf8"), "secret==>redacted");
+				throw new Error("simulated cleanup failure");
+			}),
+			/simulated cleanup failure/
+		);
+		assert.strictEqual(fs.existsSync(tempFile), false);
+		assert.strictEqual(fs.existsSync(tempDir), false);
+	});
+	test("both prepared modes show save and local-run instructions", () => {
+		const p = panel();
+		p._scanResults = [{ file: "config.env", line: 1, secret: "secret", fullSecret: "secret", severity: "high", description: "test" }];
+		p._scanPath = "/repo";
+		p._resetScanSelection();
+		for (const mode of ["bfg", "git"]) {
+			p._scanCleanup.preparedCommand = "#!/bin/bash\necho prepared";
+			p._scanCleanup.preparedMode = mode;
+			const html = p._getResultsHtml();
+			assert.ok(html.includes("Save as .sh"));
+			assert.ok(html.includes("chmod 700 leak-lock-cleanup.sh"));
+			assert.ok(html.includes("owner-only OS temporary directory"));
+			assert.ok(html.includes(`copyScanCommand(&quot;scan-prepared-command-${mode}&quot;)`));
+		}
+	});
+
+});
+
+suite("Scan result search", () => {
+	const LeakLockPanel = require("../leakLockPanel");
+
+	test("scan results expose a Ctrl/Cmd+F findings search", () => {
+		const p = new LeakLockPanel({ fsPath: "/tmp/ext" });
+		p._scanResults = [{ file: "ldap.env", line: 1, secret: "hidden", fullSecret: "hidden", severity: "high", description: "LDAP password" }];
+		p._scanPath = "/repo";
+		p._resetScanSelection();
+		const resultsHtml = p._getResultsHtml();
+		const webviewHtml = p._getHtmlForWebview();
+		assert.ok(resultsHtml.includes('id="finding-search"'));
+		assert.ok(resultsHtml.includes('id="scan-findings-body"'));
+		assert.ok(resultsHtml.includes("Press Ctrl+F or Cmd+F"));
+		assert.ok(webviewHtml.includes("event.ctrlKey || event.metaKey"));
+		assert.ok(webviewHtml.includes("filterScanFindings"));
+	});
+
+});
+
 suite('BFG target escaping', () => {
 	const LeakLockPanel = require('../leakLockPanel');
 

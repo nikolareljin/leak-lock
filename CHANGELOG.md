@@ -1,5 +1,24 @@
 # Change Log
 
+## 0.6.3
+### Changed
+- Updated the VS Code test toolchain, ESLint, type definitions, and GitHub
+  Actions used by CI, publishing, and Pages deployment.
+- Standardized contributor, CI, and publishing environments on Node.js 22.
+- Added save/manual-run guidance for prepared BFG and Git-only scripts; saved scripts
+  are owner-executable, and in-panel runs use owner-only OS temporary files.
+- Expanded the optional git-history keyword profile with LDAP, token, credential, and private/SSH key terms.
+- Added Ctrl/Cmd+F filtering for scan-result rows.
+- Pinned third-party GitHub Actions to immutable commit SHAs while retaining
+  release tags in comments for maintainable Dependabot updates.
+- Kept the ESLint-only `globals` package development-only so it is not shipped
+  with the extension.
+
+### Security
+- Updated vulnerable transitive test dependencies, scoped the required npm
+  overrides to Mocha's dependency subtree, and restored a zero-vulnerability
+  `npm audit` result without changing extension runtime dependencies.
+
 ## 0.6.2
 ### Fixed
 - **"Could not register service worker" When Opening the Panel**: Opening Remove Files or starting a scan from the sidebar created the panel, rendered the default view, and then reassigned `webview.html` 50–100 ms later to switch views. Reassigning it destroys the webview's iframe document and builds a new one, so when VS Code's service worker registration for the first document was still in flight it rejected with `InvalidStateError: The document is in an invalid state` — surfacing as `Error loading webview: Could not register service worker`. The panel now applies the requested view and directory *before* its single initial render, so the document is built once. The two timing constants that papered over the race are gone.
