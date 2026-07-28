@@ -8,6 +8,7 @@
 - Added save/manual-run guidance for prepared BFG and Git-only scripts; saved scripts
   are owner-executable, and in-panel runs use owner-only OS temporary files.
 - Added high-confidence LDAP password assignment detection for tracked and non-ignored files.
+- Added Ctrl/Cmd+F filtering for scan-result rows.
 - Pinned third-party GitHub Actions to immutable commit SHAs while retaining
   release tags in comments for maintainable Dependabot updates.
 - Kept the ESLint-only `globals` package development-only so it is not shipped
