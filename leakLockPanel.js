@@ -2871,7 +2871,13 @@ class LeakLockPanel {
     _deduplicateScanResults(results) {
         const seen = new Set();
         return results.filter((result) => {
-            const key = [result.file, result.line, result.fullSecret].join("\0");
+            const key = [
+                result.file,
+                result.line,
+                result.fullSecret,
+                result.commitHash || "",
+                result.ruleName || ""
+            ].join("\0");
             if (seen.has(key)) {
                 return false;
             }

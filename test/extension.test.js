@@ -451,6 +451,22 @@ suite("Git history keyword defaults", () => {
 	});
 });
 
+suite("Scan result deduplication", () => {
+	const LeakLockPanel = require("../leakLockPanel");
+
+	test("preserves findings from different commits and rules", () => {
+		const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
+		const base = { file: "config.env", line: 1, fullSecret: "token" };
+		const findings = panel._deduplicateScanResults([
+			{ ...base, commitHash: "commit-a", ruleName: "git_history_keyword" },
+			{ ...base, commitHash: "commit-a", ruleName: "git_history_keyword" },
+			{ ...base, commitHash: "commit-b", ruleName: "git_history_keyword" },
+			{ ...base, commitHash: "commit-a", ruleName: "another_rule" }
+		]);
+		assert.strictEqual(findings.length, 3);
+	});
+});
+
 suite("Prepared cleanup scripts", () => {
 	const LeakLockPanel = require("../leakLockPanel");
 	const cp = require("child_process");
