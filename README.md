@@ -107,7 +107,7 @@ Note: `leakLock.gitHistoryKeywordSearch.searchFileNames` is disabled by default 
 
 Default keyword profile (designed for attribution-policy and secret hygiene):
 - Agent/AI attribution terms: `agent`, `assistant`, `claude`, `codex`, `copilot`, `gemini`, `gpt`, `chatgpt`, `openai`, `anthropic`, `aider`, `cursor`, `windsurf`, `meldbot`, `openclaw`, `nanoclaw`
-- Sensitive terms: `password`, `token`, `api_key`, `secret`
+- Sensitive terms: `password`, `ldap`, `ldap_password`, `bind_password`, `bind_dn`, `token`, `access_token`, `auth_token`, `api_key`, `secret`, `client_secret`, `credentials`, `private_key`, `ssh_key`, `id_rsa`
 The keyword list can include arbitrary text terms and filename fragments, not only predefined security words.
 
 Example use case:

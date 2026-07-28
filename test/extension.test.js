@@ -438,34 +438,15 @@ suite('Scan finding selection', () => {
 	});
 });
 
-suite("LDAP password detection", () => {
-	const LeakLockPanel = require("../leakLockPanel");
-	const cp = require("child_process");
-	const fs = require("fs");
-	const os = require("os");
-	const path = require("path");
 
-	test("finds LDAP password assignments and ignores placeholders", async () => {
-		const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-ldap-test-"));
-		try {
-			cp.execFileSync("git", ["init", "--quiet", repoDir]);
-			const scanDir = path.join(repoDir, "nested", "service");
-			fs.mkdirSync(scanDir, { recursive: true });
-			fs.writeFileSync(path.join(scanDir, "application.env"), [
-				"LDAP_PASSWORD=correct-horse-battery-staple",
-				"LDAP_PASSWORD=${LDAP_PASSWORD}",
-				"ldap.password: changeme"
-			].join("\n"));
-			const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
-			const findings = await panel._scanLdapPasswordAssignments(scanDir);
-			assert.strictEqual(findings.length, 1);
-			assert.strictEqual(findings[0].file, "application.env");
-			assert.strictEqual(findings[0].line, 1);
-			assert.strictEqual(findings[0].fullSecret, "correct-horse-battery-staple");
-			assert.strictEqual(findings[0].ruleName, "ldap_password");
-			assert.strictEqual(findings[0].severity, "high");
-		} finally {
-			fs.rmSync(repoDir, { recursive: true, force: true });
+suite("Git history keyword defaults", () => {
+	const properties = require("../package.json").contributes.configuration.properties;
+
+	test("keeps sensitive keyword scanning optional and includes common credential terms", () => {
+		assert.strictEqual(properties["leakLock.gitHistoryKeywordSearch.enabled"].default, false);
+		const keywords = properties["leakLock.gitHistoryKeywordSearch.keywords"].default;
+		for (const keyword of ["ldap", "ldap_password", "bind_password", "token", "ssh_key", "private_key"]) {
+			assert.ok(keywords.includes(keyword), "missing default history keyword: " + keyword);
 		}
 	});
 });
