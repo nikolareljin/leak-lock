@@ -2525,3 +2525,40 @@ suite('Suppressed review comments', () => {
 		assert.deepStrictEqual(result.errors, []);
 	});
 });
+
+suite('Third review pass', () => {
+	const engines = require('../scan-engines');
+	const fs = require('fs');
+	const path = require('path');
+
+	test('"not checked" is not reported as "checked and not live"', async () => {
+		// TruffleHog emits Verified:false under --no-verification too. Reporting that
+		// as false tells the user a credential was validated against its provider when
+		// nothing of the sort happened.
+		const raw = '{"DetectorName":"AWS","Verified":false,"Raw":"AKIAIOSFODNN7EXAMPLE","SourceMetadata":{"Data":{"Git":{"commit":"c1","file":"a.py","line":4}}}}';
+		const mapped = engines.mapTruffleHogFinding(JSON.parse(raw));
+		// The mapper alone cannot know; the scan decides based on the verify flag.
+		assert.strictEqual(mapped.verified, false);
+
+		const src = fs.readFileSync(path.join(__dirname, '..', 'scan-engines.js'), 'utf8');
+		assert.match(src, /finding\.verified = null;/, 'unverified runs null the verdict');
+		assert.match(src, /"not checked", not "checked and not live"/);
+	});
+
+	test('the dev scan helper does not verify unless asked', () => {
+		// It accepts an arbitrary target repository, so defaulting verification on
+		// would send credentials found in someone's real repo to their providers.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'real-scan.js'), 'utf8');
+		assert.match(src, /process\.env\.LEAKLOCK_VERIFY === '1'/);
+		assert.ok(!/'trufflehog\.verify': true/.test(src), 'must not be hard-coded on');
+	});
+
+	test('scan reports default outside the repository and are gitignored', () => {
+		// A scan report holds real secrets when produced from a real repository; a
+		// default inside the working tree is one `git add -A` from being committed.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'render-screenshots.js'), 'utf8');
+		assert.match(src, /os\.tmpdir\(\)/, 'the default lives in the OS temp directory');
+		const ignore = fs.readFileSync(path.join(__dirname, '..', '.gitignore'), 'utf8');
+		assert.match(ignore, /^scan\.json$/m, 'and the obvious filename is ignored anyway');
+	});
+});

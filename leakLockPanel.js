@@ -5060,9 +5060,15 @@ class LeakLockPanel {
                 scanOptions.verify = config.get('trufflehog.verify') === true;
             }
 
+            // Without verification this engine cannot report a verdict at all, so the
+            // field is declared unavailable rather than rendered as "not live".
+            const capabilities = (engine.id === 'trufflehog' && scanOptions.verify === false)
+                ? { ...engine.capabilities, unavailable: [...engine.capabilities.unavailable, 'verified'] }
+                : engine.capabilities;
+
             const outcome = await engine.scan(scanOptions);
             const results = (outcome.findings || []).map(finding =>
-                this._createResultFromEngineFinding(finding, engine.id, version, engine.capabilities)
+                this._createResultFromEngineFinding(finding, engine.id, version, capabilities)
             );
             return {
                 id: engine.id,

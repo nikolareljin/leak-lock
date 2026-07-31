@@ -490,6 +490,12 @@ const truffleHogEngine = {
             const finding = mapTruffleHogFinding(raw);
             if (verifiedAt) {
                 finding.verifiedAt = verifiedAt;
+            } else {
+                // With --no-verification TruffleHog still emits Verified:false, but
+                // that means "not checked", not "checked and not live". Reporting it
+                // as false would tell the user a credential was validated against its
+                // provider when nothing of the sort happened.
+                finding.verified = null;
             }
             return finding;
         });
