@@ -224,8 +224,11 @@ const gitleaksEngine = {
         try {
             const { stdout } = await runTool(options.binary || this.binary, ['version'], { timeoutMs: 15000 });
             const text = String(stdout || '').trim();
-            // Distro builds print a placeholder instead of a version.
-            return /^\d/.test(text) ? `v${text}` : (text || null);
+            // Distribution builds print a placeholder — Ubuntu's package emits
+            // "version is set by build process". Rendering that where a version
+            // belongs is worse than admitting the version is unknown.
+            const match = text.match(/\d+\.\d+\.\d+/);
+            return match ? `v${match[0]}` : null;
         } catch {
             return null;
         }

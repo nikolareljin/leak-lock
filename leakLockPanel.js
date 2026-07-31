@@ -875,6 +875,123 @@ class LeakLockPanel {
                     }
                     
                     /* Empty Results Styles */
+                    /* Scan coverage. Rendered next to the celebratory empty state,
+                       which is centred — this block is dense reference material and
+                       must stay left-aligned regardless of what encloses it. */
+                    .scan-coverage {
+                        text-align: left;
+                        margin: 16px 0;
+                        padding: 14px 16px;
+                        border: 1px solid var(--vscode-panel-border);
+                        border-radius: 6px;
+                        background: var(--vscode-editor-background);
+                        font-size: 0.9em;
+                        line-height: 1.5;
+                    }
+
+                    /* Collapsed by default: the panel is reference material, and on a
+                       busy repository the detail runs to hundreds of branch names. The
+                       summary line carries the numbers, and any warning is promoted
+                       into it so collapsing hides volume, never a caveat. */
+                    .coverage-toggle > summary {
+                        cursor: pointer;
+                        display: flex;
+                        flex-wrap: wrap;
+                        align-items: baseline;
+                        gap: 4px 10px;
+                        list-style: revert;
+                    }
+
+                    .coverage-title { font-weight: 600; }
+
+                    .coverage-summary { color: var(--vscode-descriptionForeground); }
+
+                    .coverage-badge {
+                        color: var(--vscode-editorWarning-foreground);
+                        border: 1px solid var(--vscode-editorWarning-foreground);
+                        border-radius: 10px;
+                        padding: 0 8px;
+                        font-size: 0.85em;
+                        white-space: nowrap;
+                    }
+
+                    .coverage-raw {
+                        white-space: pre-wrap;
+                        word-break: break-word;
+                        font-size: 0.9em;
+                        margin: 6px 0 0 0;
+                    }
+
+                    .coverage-intro {
+                        margin: 10px 0 12px 0;
+                        color: var(--vscode-descriptionForeground);
+                    }
+
+                    /* Label/value pairs. Collapses to a single column when the panel is
+                       narrow, so the values never get squeezed into a thin ribbon. */
+                    .coverage-grid {
+                        display: grid;
+                        grid-template-columns: minmax(90px, max-content) 1fr;
+                        gap: 8px 16px;
+                        align-items: start;
+                    }
+
+                    @media (max-width: 640px) {
+                        .coverage-grid {
+                            grid-template-columns: 1fr;
+                            gap: 2px 0;
+                        }
+                        .coverage-label {
+                            margin-top: 8px;
+                        }
+                    }
+
+                    .coverage-label {
+                        color: var(--vscode-descriptionForeground);
+                        text-transform: uppercase;
+                        font-size: 0.8em;
+                        letter-spacing: 0.04em;
+                        padding-top: 2px;
+                    }
+
+                    .coverage-value { min-width: 0; }
+
+                    .coverage-engine {
+                        display: flex;
+                        gap: 8px;
+                        align-items: baseline;
+                        flex-wrap: wrap;
+                    }
+
+                    .coverage-note {
+                        color: var(--vscode-descriptionForeground);
+                        font-size: 0.92em;
+                        margin: 2px 0 6px 0;
+                    }
+
+                    .coverage-warn { color: var(--vscode-editorWarning-foreground); }
+                    .coverage-muted { color: var(--vscode-descriptionForeground); }
+
+                    .coverage-details { margin-top: 4px; }
+                    .coverage-details summary { cursor: pointer; }
+
+                    .coverage-branchlist {
+                        margin-top: 6px;
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 4px 6px;
+                        max-height: 160px;
+                        overflow-y: auto;
+                    }
+
+                    .coverage-incomplete {
+                        background: var(--vscode-inputValidation-warningBackground);
+                        border: 1px solid var(--vscode-editorWarning-foreground);
+                        padding: 10px;
+                        border-radius: 4px;
+                        margin-bottom: 12px;
+                    }
+
                     .empty-results {
                         text-align: center;
                         padding: 40px 20px;
@@ -3162,11 +3279,17 @@ class LeakLockPanel {
         if (!remote) {
             return { attempted: false, ok: false, reason: 'no-remote' };
         }
+        const command = gitRewrite.describeFetchCommand(gitRewrite.DEFAULT_REMOTE, { prune: false });
         try {
-            await gitRewrite.fetchAllRefs(repoRoot, gitRewrite.DEFAULT_REMOTE);
-            return { attempted: true, ok: true, reason: null };
+            // Read-only: a scan refreshes refs to widen coverage, it does not prune.
+            await gitRewrite.fetchAllRefs(repoRoot, gitRewrite.DEFAULT_REMOTE, { prune: false });
+            return { attempted: true, ok: true, reason: null, remoteError: null };
         } catch (error) {
-            return { attempted: true, ok: false, reason: error.message || 'fetch-failed' };
+            // Keep the classified cause for display and the raw output for a details
+            // pane. Splicing git's entire remote message into a summary line is what
+            // made this panel unreadable.
+            const remoteError = summarizeGitRemoteError(error, command);
+            return { attempted: true, ok: false, reason: remoteError.cause, remoteError };
         }
     }
 
@@ -4284,60 +4407,148 @@ class LeakLockPanel {
             return '';
         }
 
-        const engineRows = (coverage.engines || []).map(engine => {
-            const status = engine.ok ? '✅' : '⚠️';
-            const version = engine.version ? ` <code>${escapeHtml(engine.version)}</code>` : '';
-            const findings = engine.ok ? ` — ${engine.findings} finding(s)` : '';
-            const verified = engine.verified ? ` · <strong>${engine.verified} verified live</strong>` : '';
-            const note = engine.note ? `<div style="color: var(--vscode-descriptionForeground); font-size: 0.9em; margin-left: 20px;">${escapeHtml(engine.note)}</div>` : '';
-            const warnings = (engine.warnings || []).map(w =>
-                `<div style="color: var(--vscode-editorWarning-foreground); font-size: 0.9em; margin-left: 20px;">${escapeHtml(w)}</div>`
-            ).join('');
-            return `<li>${status} <strong>${escapeHtml(engine.displayName)}</strong>${version}${findings}${verified}${note}${warnings}</li>`;
-        }).join('');
+        const fact = (label, value) => `
+            <div class="coverage-label">${escapeHtml(label)}</div>
+            <div class="coverage-value">${value}</div>`;
 
+        const engines = coverage.engines || [];
         const refs = coverage.refs || {};
         const remoteOnly = refs.remoteOnlyBranches || [];
         const refRefresh = coverage.refRefresh || {};
-        const refreshNote = refRefresh.ok
-            ? 'refs refreshed from origin before scanning'
-            : `refs NOT refreshed (${escapeHtml(refRefresh.reason || 'unknown')}) — history that exists only on the remote may not have been scanned`;
-
-        const incompleteBanner = coverage.incomplete
-            ? `<div style="background: var(--vscode-inputValidation-warningBackground); border: 1px solid var(--vscode-editorWarning-foreground); padding: 10px; border-radius: 4px; margin-bottom: 10px;">
-                    <strong>⚠️ Scan incomplete — these results are not exhaustive.</strong>
-                    <div style="margin-top: 4px;">${escapeHtml(coverage.incompleteReason || '')}</div>
-               </div>`
-            : '';
-
         const strategy = coverage.strategy;
-        const strategyHtml = strategy
-            ? `<li>Execution: <strong>${escapeHtml(strategy.mode)}</strong>${strategy.mode === 'parallel' ? ` (${strategy.concurrency} at a time)` : ''} — ${escapeHtml(strategy.reason)}</li>`
+
+        // --- Warnings ---------------------------------------------------------
+        // Collected first, because these are never hidden behind the toggle. The
+        // point of collapsing is to hide volume, not to hide the reasons a result
+        // might be incomplete.
+        const warnings = [];
+        if (refRefresh.attempted && !refRefresh.ok) {
+            warnings.push('refs not refreshed');
+        }
+        if (strategy && strategy.dropped && strategy.dropped.length) {
+            warnings.push(`${strategy.dropped.length} engine${strategy.dropped.length === 1 ? '' : 's'} skipped`);
+        }
+        if (engines.some(engine => !engine.ok)) {
+            warnings.push(`${engines.filter(e => !e.ok).length} engine did not run`);
+        }
+        if (coverage.imagePulled === false) {
+            warnings.push('cached scanner image');
+        }
+
+        const engineNames = engines.filter(e => e.ok).map(e => e.displayName);
+        const totalFindings = engines.reduce((sum, e) => sum + (e.ok ? (e.findings || 0) : 0), 0);
+        const refTotal = (refs.localBranches || 0) + (refs.remoteBranches || 0) + (refs.tags || 0);
+
+        const summaryBits = [
+            engineNames.length ? engineNames.join(' + ') : 'no engine ran',
+            `${totalFindings} finding${totalFindings === 1 ? '' : 's'}`,
+            `${refTotal} ref${refTotal === 1 ? '' : 's'} scanned`
+        ];
+        if (strategy) {
+            summaryBits.push(strategy.mode);
+        }
+
+        const warningBadge = warnings.length
+            ? `<span class="coverage-badge">⚠️ ${escapeHtml(warnings.join(' · '))}</span>`
             : '';
-        const droppedHtml = strategy && strategy.dropped && strategy.dropped.length
-            ? `<li style="color: var(--vscode-editorWarning-foreground);">⚠️ Engines skipped for host capacity: <code>${escapeHtml(strategy.dropped.join(', '))}</code>. Fewer engines means fewer findings — set <code>leakLock.scan.executionMode</code> to override.</li>`
+
+        // --- Detail -----------------------------------------------------------
+        const engineRows = engines.map(engine => {
+            const status = engine.ok ? '✅' : '⚠️';
+            // A missing version is stated, not faked: some distribution builds print
+            // a placeholder where a version belongs.
+            const version = engine.version
+                ? `<code>${escapeHtml(engine.version)}</code>`
+                : '<span class="coverage-muted">version unknown</span>';
+            const findings = engine.ok
+                ? `${engine.findings} finding${engine.findings === 1 ? '' : 's'}`
+                : 'did not run';
+            const verified = engine.verified
+                ? ` · <strong>${engine.verified} verified live</strong>`
+                : '';
+            const note = engine.note ? `<div class="coverage-note">${escapeHtml(engine.note)}</div>` : '';
+            const engineWarnings = (engine.warnings || []).map(w =>
+                `<div class="coverage-note coverage-warn">${escapeHtml(w)}</div>`
+            ).join('');
+            return `
+                <div class="coverage-engine">
+                    <span>${status}</span>
+                    <span><strong>${escapeHtml(engine.displayName)}</strong> ${version}</span>
+                    <span class="coverage-muted">${escapeHtml(findings)}${verified}</span>
+                </div>
+                ${note}${engineWarnings}`;
+        }).join('');
+
+        const refsSummary = [
+            `${refs.localBranches || 0} local branch${refs.localBranches === 1 ? '' : 'es'}`,
+            `${refs.remoteBranches || 0} remote`,
+            `${refs.tags || 0} tag${refs.tags === 1 ? '' : 's'}`,
+            `${refs.stashes || 0} stash entr${refs.stashes === 1 ? 'y' : 'ies'}`
+        ].join(' · ');
+
+        const refreshNote = refRefresh.ok
+            ? '<div class="coverage-note">Refs were refreshed from origin before scanning.</div>'
+            : `<div class="coverage-note coverage-warn">
+                    Refs were <strong>not</strong> refreshed${refRefresh.reason ? ` — ${escapeHtml(refRefresh.reason)}` : ''}
+                    History that exists only on the remote may not have been scanned.
+                    ${refRefresh.remoteError ? `<details class="coverage-details"><summary>What git reported</summary><pre class="coverage-raw">${escapeHtml(refRefresh.remoteError.detail)}</pre></details>` : ''}
+               </div>`;
+
+        // A long branch list is the bulk of this panel on a busy repository and is
+        // rarely what the reader came for. Show the count; keep the names one click away.
+        const remoteOnlyBlock = remoteOnly.length
+            ? `<details class="coverage-details">
+                    <summary>${remoteOnly.length} branch${remoteOnly.length === 1 ? '' : 'es'} exist only on the remote</summary>
+                    <div class="coverage-branchlist">${remoteOnly.map(b => `<code>${escapeHtml(b)}</code>`).join(' ')}</div>
+               </details>`
+            : '';
+
+        const strategyValue = strategy
+            ? `<strong>${escapeHtml(strategy.mode)}</strong>${strategy.mode === 'parallel' ? ` (${strategy.concurrency} at a time)` : ''}
+               <div class="coverage-note">${escapeHtml(strategy.reason)}</div>`
+            : '<span class="coverage-muted">not recorded</span>';
+
+        const droppedBlock = strategy && strategy.dropped && strategy.dropped.length
+            ? `<div class="coverage-note coverage-warn">⚠️ Skipped for host capacity: <code>${escapeHtml(strategy.dropped.join(', '))}</code>. Fewer engines means fewer findings — set <code>leakLock.scan.executionMode</code> to override.</div>`
             : '';
 
         const pullNote = coverage.imagePulled === false
-            ? `<li>⚠️ Could not pull <code>${escapeHtml(coverage.image)}</code>; a cached image was used${coverage.imagePullError ? ` (${escapeHtml(coverage.imagePullError)})` : ''}</li>`
+            ? `<div class="coverage-note coverage-warn">⚠️ Could not pull <code>${escapeHtml(coverage.image)}</code>; a cached image was used${coverage.imagePullError ? ` (${escapeHtml(coverage.imagePullError)})` : ''}.</div>`
+            : '';
+
+        const settings = [
+            `ruleset <code>${escapeHtml(coverage.rulesetMode || 'default')}</code>`,
+            `file-size limit ${coverage.maxFileSizeMb ? `${coverage.maxFileSizeMb} MB` : 'none'}`,
+            `timeout ${coverage.timeoutSeconds}s`,
+            `dependencies <code>${escapeHtml(coverage.dependencyHandling)}</code>`
+        ].join(' · ');
+
+        // An incomplete scan is a finding in its own right, so it sits outside the
+        // toggle and is always visible.
+        const incompleteBanner = coverage.incomplete
+            ? `<div class="coverage-incomplete">
+                    <strong>⚠️ Scan incomplete — these results are not exhaustive.</strong>
+                    <div>${escapeHtml(coverage.incompleteReason || '')}</div>
+               </div>`
             : '';
 
         return `
-            <div class="scan-coverage" style="margin: 12px 0; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px;">
+            <div class="scan-coverage">
                 ${incompleteBanner}
-                <h3 style="margin: 0 0 8px 0; font-size: 1em;">📋 Scan coverage</h3>
-                <p style="margin: 0 0 8px 0; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
-                    A result is only as good as what was examined. This is what this scan looked at.
-                </p>
-                <ul style="margin: 0; padding-left: 18px; font-size: 0.9em; line-height: 1.6;">
-                    ${engineRows}
-                    ${strategyHtml}
-                    ${droppedHtml}
-                    ${pullNote}
-                    <li>Refs: ${refs.localBranches || 0} local branch(es), ${refs.remoteBranches || 0} remote branch(es), ${refs.tags || 0} tag(s), ${refs.stashes || 0} stash entr(ies) — ${refreshNote}</li>
-                    ${remoteOnly.length ? `<li>Branches present only on the remote: <code>${escapeHtml(remoteOnly.join(', '))}</code></li>` : ''}
-                    <li>Ruleset: <code>${escapeHtml(coverage.rulesetMode || 'default')}</code> · file-size limit: ${coverage.maxFileSizeMb ? `${coverage.maxFileSizeMb} MB` : 'none'} · timeout: ${coverage.timeoutSeconds}s · dependencies: <code>${escapeHtml(coverage.dependencyHandling)}</code></li>
-                </ul>
+                <details class="coverage-toggle">
+                    <summary>
+                        <span class="coverage-title">📋 Scan coverage</span>
+                        <span class="coverage-summary">${escapeHtml(summaryBits.join(' · '))}</span>
+                        ${warningBadge}
+                    </summary>
+                    <p class="coverage-intro">A result is only as good as what was examined. This is what this scan looked at.</p>
+                    <div class="coverage-grid">
+                        ${fact('Engines', `${engineRows}${pullNote}`)}
+                        ${fact('Execution', `${strategyValue}${droppedBlock}`)}
+                        ${fact('Refs scanned', `${escapeHtml(refsSummary)}${refreshNote}${remoteOnlyBlock}`)}
+                        ${fact('Settings', settings)}
+                    </div>
+                </details>
             </div>
         `;
     }
@@ -4372,8 +4583,6 @@ class LeakLockPanel {
                         <h2>No Security Issues Found!</h2>
                         <p>Great news! Your repository scan completed successfully with no secrets or credentials detected.</p>
 
-                        ${this._renderScanCoverage()}
-                        ${this._renderCustomRules()}
 
                         <div class="scan-summary">
                             <div class="summary-item">
@@ -4414,6 +4623,8 @@ class LeakLockPanel {
                         </div>
                     </div>
                 </div>
+                ${this._renderScanCoverage()}
+                ${this._renderCustomRules()}
             `;
         }
 
@@ -4519,8 +4730,11 @@ class LeakLockPanel {
                 scanEngineConfig.buildNoseyParkerVersionArgs({ settings: cfg }),
                 { timeout: 30000 }
             );
-            const firstLine = String(stdout || '').split('\n').map(l => l.trim()).filter(Boolean)[0];
-            return firstLine || scanEngineConfig.NOSEYPARKER_PINNED_VERSION;
+            // `noseyparker --version` prints "noseyparker 0.24.0"; the tool name is
+            // already the column header, so keep only the version.
+            const firstLine = String(stdout || '').split('\n').map(l => l.trim()).filter(Boolean)[0] || '';
+            const match = firstLine.match(/\d+\.\d+\.\d+/);
+            return match ? `v${match[0]}` : (scanEngineConfig.NOSEYPARKER_PINNED_VERSION || null);
         } catch (error) {
             console.warn('Could not resolve Nosey Parker version:', error.message);
             return null;
