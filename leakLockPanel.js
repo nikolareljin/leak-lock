@@ -10,6 +10,7 @@ const gitRewrite = require('./git-rewrite');
 const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
 const redactionRules = require('./redaction-rules');
+const hostCapacity = require('./host-capacity');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -2854,7 +2855,16 @@ class LeakLockPanel {
             // Docker is only required by the Nosey Parker engine. Demanding it when
             // the user runs Gitleaks alone — a single binary with no runtime — would
             // block a scan that has no need of it.
-            const engineIds = this._getEnabledEngineIds();
+            // Decide how hard to push this machine before committing to a plan.
+            // Three scanners over a large history is real work; on a constrained host
+            // it is better to run one lightweight engine well than three badly. Any
+            // downgrade is reported, never silent — fewer engines means fewer findings.
+            const strategy = this._chooseScanStrategy();
+            const engineIds = strategy.engines;
+            if (strategy.dropped.length > 0) {
+                vscode.window.showWarningMessage(strategy.reason);
+            }
+
             if (engineIds.includes('noseyparker')) {
                 this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
                 this._updateWebviewContent();
@@ -2894,49 +2904,8 @@ class LeakLockPanel {
             const useNoseyParker = engineIds.includes('noseyparker')
                 && !this._scanCleanup.noseyParkerUnavailable;
 
-            let pullResult = null;
-            let engineVersion = null;
             let scanRun = { results: [], incomplete: false, incompleteReason: null };
             const engineReports = [];
-
-            if (useNoseyParker) {
-                pullResult = await this._pullNoseyParkerImage(engineSettings);
-                engineVersion = await this._resolveNoseyParkerVersion(engineSettings);
-
-                this._scanProgress = { stage: 'init', message: 'Initializing datastore...' };
-                this._updateWebviewContent();
-
-                // Datastore lives in the OS temp directory, never inside the tree being
-                // scanned — otherwise the scanner enumerates its own SQLite database and
-                // Leak Lock writes into the repository it is auditing.
-                const datastoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-datastore-'));
-                const tempDatastore = validateDockerPath(path.join(datastoreRoot, 'noseyparker.np'), [datastoreRoot]);
-                await this._initializeDatastore(tempDatastore);
-
-                this._scanProgress = { stage: 'scan', message: 'Scanning with Nosey Parker...' };
-                this._updateWebviewContent();
-
-                scanRun = await this._runNoseyParkerScan(scanPath, tempDatastore, engineSettings);
-                scanRun.results = (scanRun.results || []).map(
-                    result => this._stampEngine(result, engineVersion, 'noseyparker')
-                );
-
-                await this._cleanupTempFiles(tempDatastore);
-                try {
-                    fs.rmSync(datastoreRoot, { recursive: true, force: true });
-                } catch {
-                    // Best effort; the directory lives in the OS temp directory.
-                }
-
-                engineReports.push({
-                    id: 'noseyparker',
-                    displayName: 'Nosey Parker',
-                    version: engineVersion,
-                    ok: !scanRun.incomplete,
-                    findings: scanRun.results.length,
-                    note: scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE
-                });
-            }
 
             if (engineIds.includes('noseyparker') && this._scanCleanup.noseyParkerUnavailable) {
                 engineReports.push({
@@ -2949,14 +2918,56 @@ class LeakLockPanel {
                 });
             }
 
-            // Maintained engines. Each is optional and degrades independently: a missing
-            // binary disables that engine, never the scan.
-            const external = await this._runExternalEngines(scanPath, engineSettings);
-            engineReports.push(...external.reports);
+            // Each engine is an independent task. The strategy decides how many run at
+            // once; a failing engine still cannot take the others down with it.
+            const engineTasks = [];
+            if (useNoseyParker) {
+                engineTasks.push(() => this._runNoseyParkerEngine(scanPath, engineSettings));
+            }
+            for (const engineId of engineIds) {
+                if (engineId === 'noseyparker') {
+                    continue;
+                }
+                engineTasks.push(() => this._runExternalEngine(engineId, scanPath, engineSettings));
+            }
+
+            this._scanProgress = {
+                stage: 'scan',
+                message: strategy.mode === 'parallel'
+                    ? `Scanning with ${engineIds.length} engines in parallel...`
+                    : 'Scanning for secrets...'
+            };
+            this._updateWebviewContent();
+
+            const outcomes = await hostCapacity.runWithConcurrency(
+                engineTasks,
+                strategy.mode === 'parallel' ? strategy.concurrency : 1
+            );
+
+            let pullResult = null;
+            let engineVersion = null;
+            const engineResults = [];
+            for (const outcome of outcomes) {
+                if (!outcome || outcome.error) {
+                    console.warn('Engine task failed:', outcome && outcome.error && outcome.error.message);
+                    continue;
+                }
+                if (outcome.report) {
+                    engineReports.push(outcome.report);
+                }
+                if (outcome.results) {
+                    engineResults.push(...outcome.results);
+                }
+                if (outcome.id === 'noseyparker') {
+                    pullResult = outcome.pullResult;
+                    engineVersion = outcome.version;
+                    scanRun = outcome.scanRun || scanRun;
+                }
+            }
 
             const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
             const allResults = this._deduplicateScanResults(
-                scanRun.results.concat(external.results, keywordHistoryResults)
+                engineResults.concat(keywordHistoryResults)
             );
 
             // Update progress: Processing
@@ -2973,6 +2984,7 @@ class LeakLockPanel {
                 settings: engineSettings,
                 engineVersion,
                 engines: engineReports,
+                strategy,
                 pullResult,
                 refRefresh,
                 incomplete: scanRun.incomplete,
@@ -3088,7 +3100,7 @@ class LeakLockPanel {
      * rather than console output — the scan-side counterpart to the ref-by-ref push
      * plan that gates the rewrite.
      */
-    async _buildScanCoverage({ scanPath, settings, engineVersion, engines, pullResult, refRefresh, incomplete, incompleteReason }) {
+    async _buildScanCoverage({ scanPath, settings, engineVersion, engines, strategy, pullResult, refRefresh, incomplete, incompleteReason }) {
         const cfg = settings || this._getScanEngineSettings();
         const coverage = {
             scanPath,
@@ -3103,6 +3115,21 @@ class LeakLockPanel {
                     ok: true,
                     note: scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE
                 }],
+            strategy: strategy
+                ? {
+                    mode: strategy.mode,
+                    tier: strategy.tier,
+                    concurrency: strategy.concurrency,
+                    dropped: strategy.dropped,
+                    reason: strategy.reason,
+                    host: {
+                        cpus: strategy.host.cpus,
+                        totalMemGb: Number(strategy.host.totalMemGb.toFixed(1)),
+                        memorySource: strategy.host.memorySource,
+                        loadPerCore: strategy.host.loadPerCore
+                    }
+                }
+                : null,
             image: cfg.image,
             imagePulled: pullResult ? pullResult.pulled : null,
             imagePullError: pullResult ? pullResult.error : null,
@@ -4190,6 +4217,14 @@ class LeakLockPanel {
                </div>`
             : '';
 
+        const strategy = coverage.strategy;
+        const strategyHtml = strategy
+            ? `<li>Execution: <strong>${escapeHtml(strategy.mode)}</strong>${strategy.mode === 'parallel' ? ` (${strategy.concurrency} at a time)` : ''} — ${escapeHtml(strategy.reason)}</li>`
+            : '';
+        const droppedHtml = strategy && strategy.dropped && strategy.dropped.length
+            ? `<li style="color: var(--vscode-editorWarning-foreground);">⚠️ Engines skipped for host capacity: <code>${escapeHtml(strategy.dropped.join(', '))}</code>. Fewer engines means fewer findings — set <code>leakLock.scan.executionMode</code> to override.</li>`
+            : '';
+
         const pullNote = coverage.imagePulled === false
             ? `<li>⚠️ Could not pull <code>${escapeHtml(coverage.image)}</code>; a cached image was used${coverage.imagePullError ? ` (${escapeHtml(coverage.imagePullError)})` : ''}</li>`
             : '';
@@ -4203,6 +4238,8 @@ class LeakLockPanel {
                 </p>
                 <ul style="margin: 0; padding-left: 18px; font-size: 0.9em; line-height: 1.6;">
                     ${engineRows}
+                    ${strategyHtml}
+                    ${droppedHtml}
                     ${pullNote}
                     <li>Refs: ${refs.localBranches || 0} local branch(es), ${refs.remoteBranches || 0} remote branch(es), ${refs.tags || 0} tag(s), ${refs.stashes || 0} stash entr(ies) — ${refreshNote}</li>
                     ${remoteOnly.length ? `<li>Branches present only on the remote: <code>${escapeHtml(remoteOnly.join(', '))}</code></li>` : ''}
@@ -4464,101 +4501,152 @@ class LeakLockPanel {
     }
 
     /**
-     * Run every enabled external engine and map their findings through the shared
-     * post-processing in _createResultFromEngineFinding.
+     * How hard to push this machine.
      *
-     * A missing or failing engine disables that engine, never the scan. The report
-     * returned here is what the coverage panel renders, so an engine that did not run
-     * is stated rather than silently absent.
+     * `auto` sizes the plan to the host; an explicit mode is honoured, because the user
+     * knows their machine better than a heuristic does.
      */
-    async _runExternalEngines(scanPath, settings) {
+    _chooseScanStrategy() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        return hostCapacity.chooseScanStrategy({
+            engines: this._getEnabledEngineIds(),
+            mode: config.get('scan.executionMode') || 'auto'
+        });
+    }
+
+    /**
+     * Nosey Parker as a self-contained engine task, so it can be scheduled alongside
+     * the others rather than always running first.
+     */
+    async _runNoseyParkerEngine(scanPath, settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        const pullResult = await this._pullNoseyParkerImage(cfg);
+        const version = await this._resolveNoseyParkerVersion(cfg);
+
+        // Datastore lives in the OS temp directory, never inside the tree being
+        // scanned — otherwise the scanner enumerates its own SQLite database and
+        // Leak Lock writes into the repository it is auditing.
+        const datastoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-datastore-'));
+        const tempDatastore = validateDockerPath(path.join(datastoreRoot, 'noseyparker.np'), [datastoreRoot]);
+
+        try {
+            await this._initializeDatastore(tempDatastore);
+            const scanRun = await this._runNoseyParkerScan(scanPath, tempDatastore, cfg);
+            const results = (scanRun.results || []).map(
+                result => this._stampEngine(result, version, 'noseyparker')
+            );
+            scanRun.results = results;
+            return {
+                id: 'noseyparker',
+                results,
+                scanRun,
+                pullResult,
+                version,
+                report: {
+                    id: 'noseyparker',
+                    displayName: 'Nosey Parker',
+                    version,
+                    ok: !scanRun.incomplete,
+                    findings: results.length,
+                    note: scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE
+                }
+            };
+        } finally {
+            await this._cleanupTempFiles(tempDatastore);
+            try {
+                fs.rmSync(datastoreRoot, { recursive: true, force: true });
+            } catch {
+                // Best effort; the directory lives in the OS temp directory.
+            }
+        }
+    }
+
+    /**
+     * Run one external engine and map its findings through the shared post-processing.
+     *
+     * Never throws: a missing or failing engine disables that engine, never the scan,
+     * and says so in the report the coverage panel renders.
+     */
+    async _runExternalEngine(engineId, scanPath, settings) {
         const cfg = settings || this._getScanEngineSettings();
         const config = vscode.workspace.getConfiguration('leakLock');
-        const enabled = this._getEnabledEngineIds();
-        const results = [];
-        const reports = [];
+        const engine = scanEngines.getEngine(engineId);
+        if (!engine) {
+            return { id: engineId, results: [], report: null };
+        }
 
-        for (const engineId of enabled) {
-            if (engineId === 'noseyparker') {
-                continue; // handled by the datastore-based path
-            }
-            const engine = scanEngines.getEngine(engineId);
-            if (!engine) {
-                continue;
-            }
-
-            const binary = config.get(`${engineId}.binaryPath`) || undefined;
-            let available = false;
-            try {
-                available = await engine.isAvailable({ binary });
-            } catch {
-                available = false;
-            }
-            if (!available) {
-                reports.push({
+        const binary = config.get(`${engineId}.binaryPath`) || undefined;
+        let available = false;
+        try {
+            available = await engine.isAvailable({ binary });
+        } catch {
+            available = false;
+        }
+        if (!available) {
+            return {
+                id: engine.id,
+                results: [],
+                report: {
                     id: engine.id,
                     displayName: engine.displayName,
                     version: null,
                     ok: false,
                     findings: 0,
                     note: `Not installed or not on PATH. Install: ${engine.installHint}`
-                });
-                continue;
+                }
+            };
+        }
+
+        const version = await engine.version({ binary });
+
+        try {
+            const scanOptions = { repoDir: scanPath, binary, timeoutMs: cfg.timeoutMs };
+            if (engine.id === 'gitleaks') {
+                scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
+                scanOptions.configPath = config.get('gitleaks.configPath') || undefined;
+                scanOptions.baselinePath = config.get('gitleaks.baselinePath') || undefined;
+            }
+            if (engine.id === 'trufflehog') {
+                // Verification makes read-only calls to third-party providers using
+                // the discovered credential. Off unless the user asked for it.
+                scanOptions.verify = config.get('trufflehog.verify') === true;
             }
 
-            const version = await engine.version({ binary });
-            this._scanProgress = { stage: 'scan', message: `Scanning with ${engine.displayName}...` };
-            this._updateWebviewContent();
-
-            try {
-                const scanOptions = {
-                    repoDir: scanPath,
-                    binary,
-                    timeoutMs: cfg.timeoutMs
-                };
-                if (engine.id === 'gitleaks') {
-                    scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
-                    scanOptions.configPath = config.get('gitleaks.configPath') || undefined;
-                    scanOptions.baselinePath = config.get('gitleaks.baselinePath') || undefined;
-                }
-                if (engine.id === 'trufflehog') {
-                    // Verification makes read-only calls to third-party providers using
-                    // the discovered credential. Off unless the user asked for it.
-                    scanOptions.verify = config.get('trufflehog.verify') === true;
-                }
-
-                const outcome = await engine.scan(scanOptions);
-                for (const finding of outcome.findings || []) {
-                    results.push(this._createResultFromEngineFinding(
-                        finding, engine.id, version, engine.capabilities
-                    ));
-                }
-                reports.push({
+            const outcome = await engine.scan(scanOptions);
+            const results = (outcome.findings || []).map(finding =>
+                this._createResultFromEngineFinding(finding, engine.id, version, engine.capabilities)
+            );
+            return {
+                id: engine.id,
+                results,
+                report: {
                     id: engine.id,
                     displayName: engine.displayName,
                     version,
                     ok: true,
-                    findings: (outcome.findings || []).length,
+                    findings: results.length,
                     verified: outcome.verified || 0,
                     warnings: outcome.warnings || [],
                     note: engine.capabilities.verification && scanOptions.verify === false
                         ? 'Credential verification disabled; findings are unverified.'
                         : null
-                });
-            } catch (error) {
-                console.warn(`${engine.displayName} scan failed:`, error.message);
-                reports.push({
+                }
+            };
+        } catch (error) {
+            console.warn(`${engine.displayName} scan failed:`, error.message);
+            return {
+                id: engine.id,
+                results: [],
+                report: {
                     id: engine.id,
                     displayName: engine.displayName,
                     version,
                     ok: false,
                     findings: 0,
                     note: `Scan failed: ${error.message}`
-                });
-            }
+                }
+            };
         }
-
-        return { results, reports };
     }
 
     /**
@@ -6170,6 +6258,7 @@ class LeakLockPanel {
                     })),
                     refs: this._scanCoverage.refs,
                     refsRefreshed: Boolean(this._scanCoverage.refRefresh?.ok),
+                    strategy: this._scanCoverage.strategy || null,
                     rulesetMode: this._scanCoverage.rulesetMode,
                     maxFileSizeMb: this._scanCoverage.maxFileSizeMb,
                     timeoutSeconds: this._scanCoverage.timeoutSeconds,
