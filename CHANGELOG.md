@@ -44,6 +44,9 @@
 
 ### Fixed — Verification That Checked Nothing Reported Clean
 
+- **The generated cleanup script had the identical bug in shell.** `leftover=0` with a loop that iterates zero times printed **"Verified clean on every remote ref."** and exited 0, having examined nothing. Confirmed against a real ref-less remote, before and after: the pre-fix script claimed clean and exited 0; it now reports `NOT VERIFIED` and exits 1. The script counts refs actually examined, and the clean message sits behind that guard.
+- **`verifiedAt` is now part of the normalised finding shape.** Only TruffleHog set it, so on findings from the other engines the key was absent rather than null — and `JSON.stringify` drops absent keys, so the exported schema varied per finding depending on which engine found it. A verification status is also uninterpretable later without the moment it was taken, so the two fields now travel together.
+
 - **`verifyRemoteRefs` returned an empty array — which every caller reads as "clean" — in two cases where it had examined nothing at all.** With empty criteria (reachable: the push confirmation passes `pending.verify || {}`) it ran no searches; with a remote holding no refs it ran no comparisons. Both produced the message *"rewritten history force-pushed and verified clean on every remote ref"*, after which the findings were discarded. This is the same defect as the false all-clear below, on the screen where it matters most: the user is deciding their secret is gone from the remote. Verification now returns an explicit **not verified** marker, carried on the offenders channel so every caller inherits the "do not report clean" behaviour. The panel and both notification paths word it as its own outcome — not clean, and not the different claim that the secret is still present.
 
 ### Fixed — A False All-Clear

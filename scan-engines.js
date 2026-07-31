@@ -42,7 +42,12 @@ const NORMALISED_FIELDS = Object.freeze([
     'commitHash', 'commitDate', 'isGitHistory',
     'endLine', 'startColumn', 'endColumn',
     'entropy', 'fingerprint', 'author', 'authorEmail', 'commitMessage',
-    'verified'
+    // `verified` and `verifiedAt` travel together: a verification status is
+    // uninterpretable later without the moment it was taken. Only TruffleHog sets
+    // verifiedAt, so without a null default the key is simply absent on findings from
+    // the other engines — and JSON.stringify drops absent keys entirely, so the
+    // exported schema would vary per finding depending on which engine found it.
+    'verified', 'verifiedAt'
 ]);
 
 function makeFinding(fields) {

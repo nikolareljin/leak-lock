@@ -2630,6 +2630,44 @@ suite('Fourth review pass', () => {
 			assert.match(offenders[0].reason, /no refs were found/);
 		});
 
+		test('verifiedAt is present on every finding, so the export schema does not vary by engine', () => {
+			// Only TruffleHog sets verifiedAt. Without a null default the key is absent
+			// on findings from the other engines, and JSON.stringify drops absent keys
+			// entirely — so a consumer of the export sees a different shape per finding.
+			const engines = require('../scan-engines');
+			assert.ok(engines.NORMALISED_FIELDS.includes('verifiedAt'),
+				'verifiedAt is part of the normalised shape');
+			const finding = engines.mapGitleaksFinding({
+				RuleID: 'aws-access-token', Secret: 'AKIAIOSFODNN7EXAMPLE', File: 'a.txt', StartLine: 3
+			});
+			assert.ok(Object.prototype.hasOwnProperty.call(finding, 'verifiedAt'),
+				'an engine that never verifies still carries the key');
+			assert.strictEqual(finding.verifiedAt, null, 'as an explicit null, not undefined');
+			assert.ok(
+				Object.prototype.hasOwnProperty.call(JSON.parse(JSON.stringify(finding)), 'verifiedAt'),
+				'and it survives the JSON round-trip the export performs'
+			);
+		});
+
+		test('the generated script refuses to claim clean when it examined no refs', () => {
+			// Identical defect in shell: `leftover=0` with a zero-iteration loop printed
+			// "Verified clean on every remote ref" and exited 0. Verified against a real
+			// ref-less remote before the fix.
+			const script = gitRewrite.buildRewriteScript({
+				repoDir: '.', remote: 'origin', rewriteLines: ['true'], verifyLiterals: ['sekret']
+			});
+			assert.match(script, /checked=0/, 'counts refs actually examined');
+			assert.match(script, /checked=\$\(\(checked \+ 1\)\)/, 'and increments per examined ref');
+			assert.match(script, /if \[ "\$checked" -eq 0 \]; then/,
+				'the zero-examined case is tested before the clean claim');
+			assert.match(script, /NOT VERIFIED/, 'and reported as not verified');
+			// The clean claim must be reachable only after the zero check.
+			const zeroAt = script.indexOf('"$checked" -eq 0');
+			const cleanAt = script.indexOf('Verified clean on every remote ref');
+			assert.ok(zeroAt > -1 && cleanAt > zeroAt,
+				'the clean message must sit behind the examined-nothing guard');
+		});
+
 		test('the panel renders not-verified as its own outcome, not as clean or as still-present', () => {
 			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
 			const marker = [{
