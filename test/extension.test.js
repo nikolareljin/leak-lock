@@ -1645,13 +1645,28 @@ suite('Engine selection and graceful degradation', () => {
 		assert.ok(ids.every(id => ['gitleaks', 'trufflehog', 'noseyparker'].includes(id)));
 	});
 
-	test('the default engine set leads with the maintained engine', () => {
+	test('every engine is enabled by default, led by the maintained one', () => {
 		const pkg = require('../package.json');
 		const setting = pkg.contributes.configuration.properties['leakLock.scan.engines'];
-		assert.deepStrictEqual(setting.default, ['gitleaks', 'noseyparker']);
+		// All three ship on. An engine whose binary is absent is reported and skipped,
+		// so the cost of enabling it is a line in the coverage panel — and the benefit
+		// is that the capability is discoverable instead of hidden in settings.
+		assert.deepStrictEqual(setting.default, ['gitleaks', 'trufflehog', 'noseyparker']);
 		// Nosey Parker is archived upstream, so it must not be the engine a new user
 		// relies on by default.
 		assert.strictEqual(setting.default[0], 'gitleaks');
+	});
+
+	test('the code fallback matches the manifest default', () => {
+		// These drifting apart is how a user ends up with fewer engines than the
+		// documentation shows.
+		const pkg = require('../package.json');
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const ids = panel._getEnabledEngineIds();
+		assert.deepStrictEqual(
+			ids.slice().sort(),
+			pkg.contributes.configuration.properties['leakLock.scan.engines'].default.slice().sort()
+		);
 	});
 
 	test('credential verification is off by default', () => {
@@ -2156,5 +2171,48 @@ suite('Cross-engine merging tolerates different captures of one secret', () => {
 			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'generic-api-key', engine: 'gitleaks', engines: ['gitleaks'] }
 		]);
 		assert.strictEqual(merged.length, 2);
+	});
+});
+
+suite('Engine binaries are found outside the shell PATH', () => {
+	const engines = require('../scan-engines');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	test('an explicit binaryPath always wins', () => {
+		assert.strictEqual(engines.resolveBinary('trufflehog', '/opt/custom/trufflehog'), '/opt/custom/trufflehog');
+	});
+
+	test('common install locations are searched before giving up', () => {
+		// A GUI-launched VS Code does not inherit the shell PATH on macOS and often
+		// misses ~/.local/bin on Linux, so an engine the user definitely installed
+		// gets reported "not installed" and silently skipped.
+		const dirs = engines.COMMON_BIN_DIRS;
+		assert.ok(dirs.includes(path.join(os.homedir(), '.local', 'bin')));
+		assert.ok(dirs.includes('/opt/homebrew/bin'), 'Apple silicon Homebrew');
+		assert.ok(dirs.includes('/usr/local/bin'));
+	});
+
+	test('an executable in a common location is resolved to its absolute path', () => {
+		const dir = path.join(os.homedir(), '.local', 'bin');
+		const name = `leaklock-probe-${process.pid}`;
+		const file = path.join(dir, name);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+		try {
+			engines.resetBinaryCache();
+			assert.strictEqual(engines.resolveBinary(name), file);
+		} finally {
+			fs.rmSync(file, { force: true });
+			engines.resetBinaryCache();
+		}
+	});
+
+	test('an unknown binary falls through to PATH resolution unchanged', () => {
+		engines.resetBinaryCache();
+		const name = `leaklock-absent-${process.pid}`;
+		assert.strictEqual(engines.resolveBinary(name), name,
+			'the OS still gets its chance to resolve it');
 	});
 });

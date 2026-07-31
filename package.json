@@ -66,6 +66,7 @@
           "type": "array",
           "default": [
             "gitleaks",
+            "trufflehog",
             "noseyparker"
           ],
           "items": {
@@ -81,7 +82,7 @@
               "Nosey Parker \u2014 archived upstream on 2026-04-24; ruleset frozen at v0.24.0 (requires Docker)"
             ]
           },
-          "markdownDescription": "Detection engines to run, in order. Findings from every enabled engine are merged and attributed, so a secret found by one engine and missed by another is visible as such. A missing engine binary disables that engine, never the whole scan."
+          "markdownDescription": "Detection engines to run, in order. Findings from every enabled engine are merged and attributed, so a secret found by one engine and missed by another is visible as such. An engine whose binary is not installed is reported in the scan coverage panel and skipped \u2014 it never fails the scan. Only `trufflehog` can make network calls, and only when `leakLock.trufflehog.verify` is also enabled."
         },
         "leakLock.scan.executionMode": {
           "type": "string",

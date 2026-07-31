@@ -26,7 +26,11 @@ if (!TARGET) {
 
 const settings = {
     'dependencyHandling': 'warning',
-    'scan.engines': ['gitleaks', 'trufflehog', 'noseyparker'],
+    // Read the shipped default rather than hard-coding one. Hard-coding here is
+    // exactly how the screenshots came to show three engines while the extension
+    // shipped with two.
+    'scan.engines': require(path.join(REPO, 'package.json'))
+        .contributes.configuration.properties['leakLock.scan.engines'].default,
     'scan.executionMode': 'auto',
     'scan.timeoutSeconds': 900,
     'scan.refreshRefsBeforeScan': true,

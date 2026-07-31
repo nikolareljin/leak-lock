@@ -453,7 +453,7 @@ codium  --install-extension nikolareljin.leak-lock</code></pre>
     <div class="steps">
       <div class="step">
         <h3>Install dependencies</h3>
-        <p>First run only. <strong>Gitleaks</strong> is the default engine and is a single binary — no Docker, no JVM. Add <strong>TruffleHog</strong> if you want live credential verification. Docker is needed only if you also enable the legacy Nosey Parker engine, and Java only for BFG-based cleanup. A missing engine disables that engine, never the whole scan.</p>
+        <p>First run only. All three engines are enabled out of the box. <strong>Gitleaks</strong> and <strong>TruffleHog</strong> are single binaries — no Docker, no JVM; Docker is needed only for the legacy Nosey Parker engine, and Java only for BFG-based cleanup. An engine you have not installed is <em>reported in the coverage panel and skipped</em> — it never fails the scan, and you can see at a glance what you are missing.</p>
       </div>
       <div class="step">
         <h3>Scan for issues</h3>
