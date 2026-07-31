@@ -2568,6 +2568,74 @@ suite('Fourth review pass', () => {
 	const fs = require('fs');
 	const path = require('path');
 
+	// A verification that examines nothing must never look like a clean bill of health.
+	// The panel turns an empty offenders array into "verified clean on every remote ref"
+	// and then discards the findings, so an empty array is a load-bearing claim.
+	suite('verification that checked nothing is not clean', () => {
+		const gitRewrite = require('../git-rewrite');
+		const LeakLockPanel = require('../leakLockPanel');
+		const os = require('os');
+		const cp = require('child_process');
+		let work;
+
+		suiteSetup(() => {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), 'll-verify-'));
+			const origin = path.join(root, 'origin.git');
+			work = path.join(root, 'work');
+			const run = (cwd, args) => cp.execFileSync('git', args, { cwd, stdio: 'pipe' });
+			cp.execFileSync('git', ['init', '--quiet', '--bare', origin], { stdio: 'pipe' });
+			cp.execFileSync('git', ['clone', '--quiet', origin, work], { stdio: 'pipe' });
+			fs.writeFileSync(path.join(work, 'app.conf'), 'password = SUPERSECRETVALUE123\n');
+			run(work, ['add', '-A']);
+			run(work, ['commit', '--quiet', '-m', 'seed']);
+			run(work, ['push', '--quiet', 'origin', 'HEAD:refs/heads/main']);
+			// A second remote that exists but holds no refs at all.
+			cp.execFileSync('git', ['init', '--quiet', '--bare', path.join(root, 'empty.git')], { stdio: 'pipe' });
+			run(work, ['remote', 'add', 'empty', path.join(root, 'empty.git')]);
+		});
+
+		test('real criteria still catch a secret that is genuinely present', async () => {
+			const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', {
+				literals: ['SUPERSECRETVALUE123']
+			});
+			assert.strictEqual(offenders.length, 1);
+			assert.strictEqual(offenders[0].reason, 'secret still present');
+			assert.ok(!offenders[0].notVerified, 'a genuine hit is not a not-verified marker');
+		});
+
+		test('empty criteria report not-verified rather than clean', async () => {
+			// _confirmScanPush passes `pending.verify || {}`, so this is reachable.
+			const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', {});
+			assert.strictEqual(offenders.length, 1, 'must not return an empty (= clean) array');
+			assert.strictEqual(offenders[0].notVerified, true);
+			assert.match(offenders[0].reason, /no search criteria/);
+		});
+
+		test('a remote with no refs reports not-verified rather than clean', async () => {
+			const offenders = await gitRewrite.verifyRemoteRefs(work, 'empty', {
+				literals: ['SUPERSECRETVALUE123']
+			});
+			assert.strictEqual(offenders.length, 1, 'zero refs examined is not a clean result');
+			assert.strictEqual(offenders[0].notVerified, true);
+			assert.match(offenders[0].reason, /no refs were found/);
+		});
+
+		test('the panel renders not-verified as its own outcome, not as clean or as still-present', () => {
+			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+			const marker = [{
+				ref: 'refs/remotes/origin/*',
+				reason: 'not verified: no search criteria were supplied, so nothing was checked',
+				match: '',
+				notVerified: true
+			}];
+			const html = panel._renderVerifyResult(marker);
+			assert.match(html, /Not verified/, 'says it was not verified');
+			assert.ok(!/Verified clean/.test(html), 'never claims clean');
+			assert.ok(!/Still present after the rewrite/.test(html),
+				'and does not claim the secret is still there — that is a different, unsupported claim');
+		});
+	});
+
 	test('the scanned repository is mounted read-only', () => {
 		// Scanning never needs to write to the audited tree, and the datastore has its
 		// own writable mount. Without :ro the container can write into the user's
