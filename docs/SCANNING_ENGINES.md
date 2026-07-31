@@ -55,7 +55,9 @@ the engines.
   that unfetched remote refs create.
 - **Working tree** — a separate pass that also covers untracked and `.gitignore`d files.
   A local `.env` is the single most likely place to find a live credential on a
-  developer machine, and it is not in history at all.
+  developer machine, and it is not in history at all. There is no opt-out, deliberately:
+  every engine here reads ignored files, and a scanner that skipped the one file most
+  likely to hold a live key would be worse than useless.
 
 A failing pass does not discard the other's results.
 
@@ -352,5 +354,4 @@ caveat.
 | `leakLock.scan.executionMode` | `auto` | `auto`, `parallel`, `sequential` or `single` — see [How many engines run at once](#how-many-engines-run-at-once) |
 | `leakLock.scan.timeoutSeconds` | `300` | Per-engine timeout. On expiry, partial findings are reported and marked incomplete |
 | `leakLock.scan.refreshRefsBeforeScan` | `true` | `git fetch --prune --tags` first, so remote-only branches are not invisible |
-| `leakLock.scan.includeIgnoredFiles` | `false` | Also scan working-tree files excluded by `.gitignore` |
 | `leakLock.dependencyHandling` | `warning` | `exclude` skips only unambiguously third-party directories — `lib/`, `bin/`, `dist/` and `build/` are still scanned, because skipping them would hide real secrets |

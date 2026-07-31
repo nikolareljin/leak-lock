@@ -22,6 +22,7 @@
  */
 
 const { execFile } = require('child_process');
+const { pathToFileURL } = require('url');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -340,7 +341,10 @@ const gitleaksEngine = {
  * credential, so it is opt-in and must never be enabled silently.
  */
 function buildTruffleHogArgs({ repoDir, verify, results }) {
-    const args = ['git', `file://${repoDir}`, '--json', '--no-update'];
+    // `file://` + a raw path is not a URL on Windows: drive letters and backslashes
+    // produce something TruffleHog cannot open, so scanning failed outright there.
+    const repoUrl = pathToFileURL(repoDir).href;
+    const args = ['git', repoUrl, '--json', '--no-update'];
     if (verify === false) {
         args.push('--no-verification');
     } else {

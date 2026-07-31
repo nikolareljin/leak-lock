@@ -62,7 +62,6 @@ function normalizeScanSettings(raw = {}) {
             : 'default',
         suppressRedundant: raw.suppressRedundant !== false,
         maxFileSizeMb,
-        includeIgnoredFiles: raw.includeIgnoredFiles === true,
         refreshRefsBeforeScan: raw.refreshRefsBeforeScan !== false,
         timeoutMs: timeoutSeconds * 1000
     };
@@ -117,6 +116,26 @@ function buildDependencyIgnoreFile(dirs = EXCLUDABLE_DEPENDENCY_DIRS) {
         ''
     ];
     return header.concat(dirs.map(dir => `${dir}/`)).join('\n') + '\n';
+}
+
+/**
+ * Is this path inside a directory the user asked to exclude?
+ *
+ * Only Nosey Parker takes an ignore file, so applying `dependencyHandling: "exclude"`
+ * to its command alone made the setting mean different things per engine — Gitleaks and
+ * TruffleHog kept reporting `node_modules`. This predicate applies the same rule to
+ * every engine's output, so the setting behaves identically whichever engines are on.
+ */
+function isInExcludedDependencyDir(filePath, dirs = EXCLUDABLE_DEPENDENCY_DIRS) {
+    if (typeof filePath !== 'string' || !filePath) {
+        return false;
+    }
+    const normalised = filePath.replace(/\\/g, '/');
+    return dirs.some(dir =>
+        normalised === dir
+        || normalised.startsWith(`${dir}/`)
+        || normalised.includes(`/${dir}/`)
+    );
 }
 
 /**
@@ -219,6 +238,7 @@ module.exports = {
     RULESET_MODES,
     EXCLUDABLE_DEPENDENCY_DIRS,
     buildDependencyIgnoreFile,
+    isInExcludedDependencyDir,
     resolveRulesetIds,
     normalizeScanSettings,
     buildNoseyParkerScanArgs,
