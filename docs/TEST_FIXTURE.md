@@ -127,17 +127,30 @@ the flag exists.
 
 ### Expected scan result
 
-Roughly 30 findings from ~57 raw detections across the three engines:
+**Treat these as a shape, not a target.** Per-engine counts depend on the engine version
+and its ruleset, so your run will differ — Gitleaks in particular reports noticeably more
+on a current release than on an older distro build. A measured run on a freshly seeded
+fixture, history only, no verification:
+
+| Engine | Version measured | Raw detections |
+|---|---|---|
+| Nosey Parker | v0.24.0 (final) | 17 findings / 23 matches |
+| Gitleaks | Debian build, pre-8.19 CLI | 16 |
+| TruffleHog | 3.96.0 | 8 |
+
+Those merge down to roughly 30 findings in Leak Lock, because the same secret is reported
+repeatedly: across commits, across an engine's history and working-tree passes, across
+rules, and across engines. Rough shape of the merged set:
 
 ```
-Nosey Parker ~23  ·  Gitleaks ~24  ·  TruffleHog ~10   →  ~30 merged findings
   untracked "(not committed)"  4        matched by >1 rule    17
   in >1 commit                 6        found by >1 engine    17
   also in working tree         7        dependency             1
 ```
 
-The gap between 57 and 30 is the merging: the same secret across commits, across an
-engine's history and working-tree passes, across rules, and across engines.
+The merging is the point. If your run shows one row per raw detection instead, the
+occurrence aggregation is not working — that is the regression this fixture exists to
+catch.
 
 ---
 
