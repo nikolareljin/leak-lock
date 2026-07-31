@@ -557,7 +557,11 @@ class LeakLockSidebarProvider {
                 <h3>🔧 Dependencies Setup</h3>
                 
                 <div style="margin-bottom: 15px; font-size: 11px; color: var(--vscode-descriptionForeground);">
-                    <strong>Required for scanning:</strong>
+                    <!-- Docker is not required to scan any more: Gitleaks and TruffleHog are
+                         native binaries. It is needed only by the optional Nosey Parker
+                         engine, whose upstream is archived. Labelling it "required" told
+                         users to install a container runtime they may not need at all. -->
+                    <strong>Optional — only for the Nosey Parker engine:</strong>
                 </div>
                 
                 <div class="status-item">

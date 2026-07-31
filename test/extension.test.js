@@ -3333,3 +3333,74 @@ suite('Protected branch refuses the force-push', () => {
 		assert.ok(!/Settings.*Branches/.test(html), 'without inventing a GitHub UI path');
 	});
 });
+
+suite('A diverged tag is not an unreachable remote', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	// Verbatim from a real scan of damn-vulnerable-repo after re-seeding, where the
+	// local tag had moved but the remote tag had not.
+	const tagClobber = {
+		message: 'Command failed: git fetch --tags origin',
+		stderr: [
+			'From github.com:nikolareljin/damn-vulnerable-repo',
+			' ! [rejected]        leaklock-fixture-v0.1.0 -> leaklock-fixture-v0.1.0  (would clobber existing tag)'
+		].join('\n')
+	};
+
+	test('a clobbering tag is reported as a tag conflict, not a network failure', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const result = panel._classifyRemoteError(tagClobber, 'git fetch --tags origin');
+		assert.strictEqual(result.kind, 'tag-conflict');
+		assert.ok(!/could not be contacted|network/i.test(result.cause),
+			'the remote WAS contacted — saying otherwise sends the user to debug their network');
+		assert.match(result.cause, /tag/i, 'names the real cause');
+		assert.match(result.fix, /--force|delete the local tag/, 'and gives a usable fix');
+	});
+
+	test('genuine connectivity failures are still reported as such', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		assert.strictEqual(
+			panel._classifyRemoteError({ message: 'ssh: Could not resolve host: github.com' }, 'git fetch').kind,
+			'network'
+		);
+		assert.strictEqual(
+			panel._classifyRemoteError({ message: 'fatal: Authentication failed' }, 'git fetch').kind,
+			'auth'
+		);
+	});
+});
+
+suite('The scan records the fetch it performed', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const fs = require('fs');
+	const path = require('path');
+
+	test('a successful scan refresh is recorded, so the panel does not say "never"', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const repo = '/tmp/repos/demo';
+		assert.strictEqual(panel._getLastFetchAt(repo), null, 'nothing recorded yet');
+		panel._recordFetchAt(repo, '2026-07-31T20:00:00.000Z');
+		assert.strictEqual(panel._getLastFetchAt(repo), '2026-07-31T20:00:00.000Z');
+	});
+
+	test('the scan header renders the scan repo timestamp, not the Remove Files one', () => {
+		// These are different repositories in general. Rendering _removalState.lastFetchAt
+		// on the scan view meant the line read "Last fetched never (stale)" immediately
+		// after a scan had refreshed the refs, contradicting the coverage panel below it
+		// and prompting the user to fetch again for no reason.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const header = src.slice(src.indexOf('<h2>🔍 Scan Results</h2>'));
+		const line = header.slice(0, header.indexOf('Refetch now'));
+		assert.match(line, /lastFetchISO \?/, 'the scan view uses its own computed value');
+		assert.ok(!/_removalState\.lastFetchAt \?/.test(line),
+			'and not the Remove Files timestamp');
+	});
+
+	test('_refreshRefsForScan records the fetch on success', () => {
+		const src = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const fn = src.slice(src.indexOf('async _refreshRefsForScan('));
+		const body = fn.slice(0, fn.indexOf('\n    }'));
+		assert.match(body, /_recordFetchAt\(repoRoot/,
+			'a scan that fetched must record that it fetched');
+	});
+});

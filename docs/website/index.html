@@ -135,6 +135,8 @@ code{font-family:var(--mono);font-size:.875em}
    aspect ratio and are capped by height, because the panels vary from a tall
    422px sidebar to a wide results table. */
 .shots{margin-top:2.25rem;display:grid;gap:1.25rem}
+/* h3 is margin:0 globally, so a subhead between two galleries needs its own spacing. */
+.shots-subhead{margin:3.5rem 0 .5rem;font-size:1.5rem}
 .shots-3{margin-top:1.25rem}
 @media (min-width:52rem){.shots-3{grid-template-columns:repeat(3,1fr)}}
 figure.shot{margin:0;display:flex;flex-direction:column;background:var(--paper-raised);border:1px solid var(--rule);border-radius:3px;overflow:hidden}
@@ -286,17 +288,18 @@ footer .credit{margin-left:auto}
     <div class="shots">
       <figure class="shot lead">
         <a class="frame" href="img/scan-results-table.png">
-          <img src="img/scan-results-table.png" width="1322" height="1815" loading="lazy" decoding="async"
-               alt="The Leak Lock scanner showing six findings from a real three-engine scan. Each row lists the file, line number, the matched secret, a replacement value, which engines found it and which missed it, the branch, commit hash and date, and a severity label. The first row was found by both Nosey Parker and Gitleaks, the second by both Nosey Parker and TruffleHog. Above the table are the scan coverage summary and the manual redaction rules editor; below it are buttons to prepare and run a BFG-based or git-only cleanup.">
+          <img src="img/scan-results-table.png" width="1224" height="830" loading="lazy" decoding="async"
+               alt="The Leak Lock scanner showing six findings from a real three-engine scan. Each row lists the file, line number, the matched secret, a replacement value, which engines found it and which missed it, the branch, commit hash and date, and a severity label. The first two rows were each found by both Nosey Parker and Gitleaks and missed by TruffleHog; one row was found by Gitleaks alone, another by TruffleHog alone inside a large blob that the other two missed. One row is marked as living in a third-party dependency and cannot be selected for cleanup. Above the table are the scan coverage summary and the manual redaction rules editor; below it are buttons to prepare and run a BFG-based or git-only cleanup.">
         </a>
         <figcaption>
           <b>Review every finding, then generate the cleanup</b>
           One row per secret, with the file and line, the commit and branch it lives in, a severity
           label — and <b>which engines found it, and which missed it</b>. The top two rows were
-          corroborated by two engines each; the rest were found by one and missed by the others,
-          which is the whole reason for running more than one. Tick what you want cleaned, set the
-          replacement, then prepare a BFG or git-only script — nothing is rewritten until you have
-          read it.
+          corroborated by two engines each; below them, one was found by Gitleaks alone and one by
+          TruffleHog alone — which is the whole reason for running more than one. The first row is
+          a single secret across <b>3 commits and the working tree</b>, merged into one row rather
+          than four. Tick what you want cleaned, set the replacement, then prepare a BFG or git-only
+          script — nothing is rewritten until you have read it.
         </figcaption>
       </figure>
     </div>
@@ -304,7 +307,7 @@ footer .credit{margin-left:auto}
     <div class="shots shots-3">
       <figure class="shot">
         <a class="frame" href="img/scan-coverage.png">
-          <img src="img/scan-coverage.png" width="1172" height="362" loading="lazy" decoding="async"
+          <img src="img/scan-coverage.png" width="1172" height="406" loading="lazy" decoding="async"
                alt="The Scan coverage panel expanded, listing each engine with its version and finding count, the execution mode and the host it was chosen for, the number of local branches, remote branches, tags and stash entries scanned, whether refs were refreshed, a collapsed list of branches that exist only on the remote, and the ruleset, file-size limit, timeout and dependency handling in effect.">
         </a>
         <figcaption>
@@ -317,7 +320,7 @@ footer .credit{margin-left:auto}
 
       <figure class="shot">
         <a class="frame" href="img/manual-redaction.png">
-          <img src="img/manual-redaction.png" width="1300" height="388" loading="lazy" decoding="async"
+          <img src="img/manual-redaction.png" width="1173" height="385" loading="lazy" decoding="async"
                alt="The Manual redaction rules editor, with fields for source text, a literal or regex match mode and a replacement value, and a table of two rules: a hostname matched literally, with a dry-run result underneath reporting the five commits and two files it touches and the branches they are on, and a customer identifier matched by regular expression.">
         </a>
         <figcaption>
@@ -330,7 +333,7 @@ footer .credit{margin-left:auto}
 
       <figure class="shot">
         <a class="frame" href="img/no-findings.png">
-          <img src="img/no-findings.png" width="1200" height="1488" loading="lazy" decoding="async"
+          <img src="img/no-findings.png" width="1134" height="1142" loading="lazy" decoding="async"
                alt="The no-findings view: a shield icon, the heading No Security Issues Found, four green confirmations that no API keys, passwords, private keys or database credentials were detected, and below them the scan coverage panel listing the three engines that ran and the refs they covered.">
         </a>
         <figcaption>
@@ -344,7 +347,7 @@ footer .credit{margin-left:auto}
     <div class="shots shots-3">
       <figure class="shot">
         <a class="frame" href="img/control-panel.png">
-          <img src="img/control-panel.png" width="422" height="1009" loading="lazy" decoding="async"
+          <img src="img/control-panel.png" width="435" height="1010" loading="lazy" decoding="async"
                alt="The Control Panel sidebar, with a Dependencies Setup section showing Docker Engine, Nosey Parker image, Java runtime and BFG all installed, a Target Directory section with a detected git repository, and a Start Scan button.">
         </a>
         <figcaption>
@@ -356,7 +359,7 @@ footer .credit{margin-left:auto}
 
       <figure class="shot">
         <a class="frame" href="img/keyword-history-search.png">
-          <img src="img/keyword-history-search.png" width="299" height="373" loading="lazy" decoding="async"
+          <img src="img/keyword-history-search.png" width="435" height="1195" loading="lazy" decoding="async"
                alt="The Git History Search panel, with toggles for enabling git history scanning, searching commit messages and searching file history, a maximum matches per keyword field, and a list of twenty keywords each with a remove button.">
         </a>
         <figcaption>
@@ -368,13 +371,72 @@ footer .credit{margin-left:auto}
 
       <figure class="shot">
         <a class="frame" href="img/remove-files.png">
-          <img src="img/remove-files.png" width="942" height="1307" loading="lazy" decoding="async"
+          <img src="img/remove-files.png" width="1084" height="1081" loading="lazy" decoding="async"
                alt="The Remove Unwanted Files view, with the selected repository, a file and directory picker, options to prepare a single combined BFG command or one per item, a path-based git alternative with a preview-matches button, and red confirmation panels for the final history rewrite.">
         </a>
         <figcaption>
           <b>Guided file removal</b>
           Pick paths to delete, preview the exact branches, remotes and tags they match, then confirm
           the rewrite behind a clearly marked final step.
+        </figcaption>
+      </figure>
+    </div>
+
+    <h3 class="shots-subhead">And then the part that actually changes your history</h3>
+    <p class="intro">
+      Every destructive step sits behind something you have to read first. This is the whole
+      sequence, captured from a real cleanup of the
+      <a href="https://github.com/nikolareljin/damn-vulnerable-repo">damn-vulnerable-repo</a> fixture.
+    </p>
+
+    <div class="shots">
+      <figure class="shot">
+        <a class="frame" href="img/prepared-command.png">
+          <img src="img/prepared-command.png" width="1224" height="797" loading="lazy" decoding="async"
+               alt="The prepared git-only cleanup script shown in full before anything runs. It begins with a bash shebang and portability notes, sets strict error handling, changes into the repository, then fetches and prunes refs, checks for unpushed commits, and materialises every remote branch locally.">
+        </a>
+        <figcaption>
+          <b>1. Read the script before it runs</b>
+          Prepare generates the exact commands and shows them. Nothing has run yet — you can copy
+          the script and run it yourself instead, and it performs the same safety checks either way.
+        </figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a class="frame" href="img/push-confirmation.png">
+          <img src="img/push-confirmation.png" width="1172" height="247" loading="lazy" decoding="async"
+               alt="A confirmation panel stating that local history has been rewritten and the secret removed, but nothing has been pushed yet and the remote is unchanged. It explains that confirming will force-push every branch and tag in a single atomic push, and offers a red confirm button beside a cancel button that keeps the remote unchanged.">
+        </a>
+        <figcaption>
+          <b>2. The remote is still untouched</b>
+          The local rewrite and the force-push are separate steps. This gate stays on screen until
+          you decide — and it names how many refs the push will overwrite.
+        </figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a class="frame" href="img/protected-branch.png">
+          <img src="img/protected-branch.png" width="1172" height="344" loading="lazy" decoding="async"
+               alt="An explanation shown when the remote refuses the push because the main branch is protected. It states that nothing was pushed, the remote is unchanged and the secret is still on it, that the other rejected refs are not separate problems because the push is atomic, and lists numbered steps to allow force pushes temporarily and then restore the protection.">
+        </a>
+        <figcaption>
+          <b>If your main branch is protected — and it should be</b>
+          The push is atomic, so one protected branch rejects every ref and git reports nine
+          failures for one cause. Leak Lock names the branch actually blocking it, says plainly
+          that nothing was pushed and the secret is still on the remote, and gives the steps to
+          finish — including turning the protection back on.
+        </figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a class="frame" href="img/verified-clean.png">
+          <img src="img/verified-clean.png" width="320" height="63" loading="lazy" decoding="async"
+               alt="A green confirmation reading: Verified clean on every remote ref.">
+        </a>
+        <figcaption>
+          <b>3. Verified, not assumed</b>
+          After the push, every remote branch and tag is re-fetched and re-checked. If nothing could
+          be examined, it says so rather than reporting a clean result it never tested.
         </figcaption>
       </figure>
     </div>

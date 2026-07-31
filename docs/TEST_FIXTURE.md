@@ -134,11 +134,15 @@ fixture, history only, no verification:
 
 | Engine | Version measured | Raw detections |
 |---|---|---|
-| Nosey Parker | v0.24.0 (final) | 17 findings / 23 matches |
-| Gitleaks | Debian build, pre-8.19 CLI | 16 |
-| TruffleHog | 3.96.0 | 8 |
+| Nosey Parker | v0.24.0 (final) | 23 |
+| Gitleaks | Debian build, pre-8.19 CLI | 27 |
+| TruffleHog | 3.96.0 | 12 |
 
-Those merge down to roughly 30 findings in Leak Lock, because the same secret is reported
+Measured through the extension's own scan path (`tools/real-scan.js`), which runs each
+engine over history *and* the working tree — a single manual `gitleaks detect` reports
+fewer, because it covers one pass.
+
+Those 62 raw detections merge down to **31 findings**, because the same secret is reported
 repeatedly: across commits, across an engine's history and working-tree passes, across
 rules, and across engines. Rough shape of the merged set:
 
