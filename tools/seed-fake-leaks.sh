@@ -115,15 +115,17 @@ STRIPE_B="sk_test_""51AbCdEfGhIjKlMnOpQrStUvWxYz9876"
 GOOGLE_KEY="AIza""SyD-0123456789abcdefghijklmnopqrstuv"
 SENDGRID="SG.""abcdefghijklmnopqrstuv.abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHI"
 TWILIO_SID="AC""0123456789abcdef0123456789abcdef"
-TWILIO_TOKEN="0123456789abcdef""0123456789abcdef"
+TWILIO_TOKEN="0123456789""abcdef01""23456789""abcdef"
 NPM_TOKEN="npm_""abcdefghijklmnopqrstuvwxyz0123456789"
 PYPI_TOKEN="pypi-""AgEIcHlwaS5vcmcCJDAxMjM0NTY3LTg5YWItY2RlZi0wMTIzLTQ1Njc4OWFiY2RlZgAC"
 JWT_TOK="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.""eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkZha2UifQ.7uZ9Kx0mQKcQ2Wm8kQm3Xn4vB1cD2eF3gH4iJ5kL6mN"
-AZURE_CS="DefaultEndpointsProtocol=https;AccountName=fakestorage;AccountKey=""YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5QUJDREVGR0g9PQ==;EndpointSuffix=core.windows.net"
+AZURE_KEY="$(printf 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH' | base64 | tr -d '\n')"
+AZURE_CS="DefaultEndpointsProtocol=https;AccountName=fakestorage;AccountKey=${AZURE_KEY};EndpointSuffix=core.windows.net"
 PG_URL="postgres://reporting_svc:""Pa55w0rd-NotReal@db.internal-corp-7.example:5432/reporting"
 MYSQL_URL="mysql://root:""r00tpass-NotReal@mysql.internal-corp-7.example:3306/legacy"
 MONGO_URL="mongodb://svc_user:""M0ngoPass-NotReal@db.internal-corp-7.example:27017/reports"
 DOCKER_AUTH="$(printf 'builduser:BuildPass-NotReal' | base64 2>/dev/null | tr -d '\n')"
+SA_KEY_ID="0123456789""abcdef0123""456789abcd""ef01234567"
 HTPASSWD_HASH='$apr1$abcdefgh$0123456789abcdefghijkl'
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
@@ -131,7 +133,12 @@ if command -v ssh-keygen >/dev/null 2>&1; then
   ssh-keygen -q -t rsa -b 2048 -N '' -C 'fixture@example.invalid' -f "$WORK/id_rsa"
   ssh-keygen -q -t ed25519 -N '' -C 'fixture@example.invalid' -f "$WORK/id_ed25519"
 else
-  printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACBGAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAA\n-----END OPENSSH PRIVATE KEY-----\n' > "$WORK/id_ed25519"
+  # Assembled rather than written whole, for the same reason as the tokens above.
+  PEM_HEAD="-----BEGIN ""OPENSSH PRIVATE KEY-----"
+  PEM_TAIL="-----END ""OPENSSH PRIVATE KEY-----"
+  PEM_BODY="b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW"
+  printf -- '%s\n%s\nQyNTUxOQAAACBGAKEfakeFAKEfakeFAKEfakeFAKEfakeFAKEfakeFAA\n%s\n' \
+    "$PEM_HEAD" "$PEM_BODY" "$PEM_TAIL" > "$WORK/id_ed25519"
   cp "$WORK/id_ed25519" "$WORK/id_rsa"
 fi
 
@@ -295,7 +302,7 @@ cat > "$D/secrets/service-account.json" <<EOF
 {
   "type": "service_account",
   "project_id": "fixture-project",
-  "private_key_id": "0123456789abcdef0123456789abcdef01234567",
+  "private_key_id": "${SA_KEY_ID}",
   "private_key": "$(sed ':a;N;$!ba;s/\n/\\n/g' "$WORK/id_rsa")",
   "client_email": "svc@fixture-project.iam.gserviceaccount.com"
 }
