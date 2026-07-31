@@ -170,6 +170,16 @@ else
   cp "$WORK/id_ed25519" "$WORK/id_rsa"
 fi
 
+# `sed -i` and `sed ':a;N;...'` are GNU-only: on BSD/macOS `-i` reads the next
+# argument as a backup suffix, and BSD sed rejects labels separated by ';'. These do
+# the same jobs with tools that behave identically everywhere.
+drop_blank_lines() {
+  awk 'NF' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
+escape_newlines() {
+  awk '{ printf "%s\\n", $0 }' "$1"
+}
+
 DREL="leaklock-fixture"                # pathspec, relative to the repo root
 D="$TARGET/$DREL"                      # absolute, for writing files
 # `git rm` can empty the fixture directory entirely, at which point the pathspec
@@ -217,7 +227,7 @@ GITHUB_TOKEN="$GH_PAT"
 $SLACK_HOOK_LINE
 curl -H "Authorization: token \$GITHUB_TOKEN" https://api.github.com/user
 EOF
-sed -i '/^$/d' "$D/ci/deploy.sh"
+drop_blank_lines "$D/ci/deploy.sh"
 cat > "$D/ci/netrc" <<EOF
 machine artifacts.internal-corp-7.example
   login builduser
@@ -288,7 +298,7 @@ SENDGRID_API_KEY="$SENDGRID"
 GOOGLE_API_KEY="$GOOGLE_KEY"
 $TWILIO_LINES
 EOF
-sed -i '/^$/d' "$D/config/cloud.env"
+drop_blank_lines "$D/config/cloud.env"
 commit "fixture: release 1.0 cloud configuration"
 
 start_branch "$PREFIX/legacy-import"
@@ -308,7 +318,7 @@ GITHUB_FINE_GRAINED = "$GH_FINE"
 $SLACK_BOT_LINE
 JWT = "$JWT_TOK"
 EOF
-sed -i '/^$/d' "$D/scripts/notify.py"
+drop_blank_lines "$D/scripts/notify.py"
 commit "fixture: add notification helper"
 
 start_branch "$PREFIX/experimental"
@@ -334,7 +344,7 @@ cat > "$D/secrets/service-account.json" <<EOF
   "type": "service_account",
   "project_id": "fixture-project",
   "private_key_id": "${SA_KEY_ID}",
-  "private_key": "$(sed ':a;N;$!ba;s/\n/\\n/g' "$WORK/id_rsa")",
+  "private_key": "$(escape_newlines "$WORK/id_rsa")",
   "client_email": "svc@fixture-project.iam.gserviceaccount.com"
 }
 EOF
@@ -371,7 +381,7 @@ AWS_ACCESS_KEY_ID="$AWS_ID"
 OPS_DB_URL="$MONGO_URL"
 $OPS_SLACK_LINE
 EOF
-    sed -i '/^$/d' leaklock-fixture/ops/keys.env
+    drop_blank_lines leaklock-fixture/ops/keys.env
     cp "$WORK/id_ed25519" leaklock-fixture/ops/id_ed25519
     git -c user.name="Leak Lock Fixture" -c user.email="fixture@example.invalid" add -A
     git -c user.name="Leak Lock Fixture" -c user.email="fixture@example.invalid" commit -qm "fixture: ops-only credentials"
