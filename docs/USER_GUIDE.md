@@ -178,6 +178,35 @@ Use this guided flow to remove files or directories from your repository history
 - Click the appropriate button for BFG or Git to execute and cleanup
 - After completion, review changes and force-push if needed
 
+### If the push is refused: a protected branch
+
+The most common way a real cleanup stops. GitHub, GitLab and Bitbucket all block
+force-pushes to a protected branch — and a history rewrite *is* a force-push, which is
+exactly what the rule exists to prevent by accident.
+
+**Keep the protection.** It is doing its job. This is a deliberate, temporary exception.
+
+What you will see is misleading if you read it literally: the push is `--atomic`, so one
+protected branch rejects **every** ref. Nine `[remote rejected]` lines usually mean *one*
+problem, and the other eight say `(atomic transaction failed)` — those refs were fine and
+were rolled back with the transaction. Leak Lock separates the cause from the collateral
+and tells you which branch is actually blocking.
+
+Nothing is pushed when this happens: **the remote is unchanged, so the secret is still on
+it.** Your local history is already rewritten — only the push is outstanding.
+
+To finish, on GitHub:
+
+1. **Settings → Branches** (or **Rules → Rulesets** if you use rulesets)
+2. Edit the rule protecting the branch and tick **Allow force pushes**. If *Do not allow
+   bypassing the above settings* is on, turn it off or add yourself to the bypass list.
+3. Back in Leak Lock, press **Confirm force-push** again.
+4. **Turn the protection back on immediately.**
+
+On GitLab: *Settings → Repository → Protected branches* → allow force push. On Bitbucket:
+*Repository settings → Branch restrictions*. On any other host, ask whoever administers it
+to lift the restriction briefly.
+
 ### After the force-push: what "verified" means
 
 Leak Lock re-fetches and re-greps **every** remote branch and tag after pushing, rather

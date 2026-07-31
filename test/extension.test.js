@@ -3227,3 +3227,109 @@ suite('The not-scanned guard must not overreach', () => {
 		assert.match(html, /coverage-intro|Scan coverage/, 'and the coverage detail survives');
 	});
 });
+
+suite('Protected branch refuses the force-push', () => {
+	const gitRewrite = require('../git-rewrite');
+	const LeakLockPanel = require('../leakLockPanel');
+
+	// Verbatim from a real run against github.com/nikolareljin/damn-vulnerable-repo,
+	// where main is protected. One ref is the cause; the other eight are the atomic
+	// rollback, which is what makes the raw output so misleading.
+	const realGithubFailure = {
+		message: [
+			'Command failed: git push --force --atomic origin refs/heads/*:refs/heads/* refs/tags/*:refs/tags/*',
+			'remote: error: GH006: Protected branch update failed for refs/heads/main.        ',
+			'remote: ',
+			'remote: - Cannot force-push to this branch        ',
+			'To github.com:nikolareljin/damn-vulnerable-repo.git',
+			' ! [remote rejected] leaklock-fixture/dev-alice -> leaklock-fixture/dev-alice (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/experimental -> leaklock-fixture/experimental (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/hotfix-db-creds -> leaklock-fixture/hotfix-db-creds (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/legacy-import -> leaklock-fixture/legacy-import (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/main-leaks -> leaklock-fixture/main-leaks (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/ops-remote-only -> leaklock-fixture/ops-remote-only (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/release-1.0 -> leaklock-fixture/release-1.0 (atomic transaction failed)',
+			' ! [remote rejected] main -> main (protected branch hook declined)',
+			' ! [remote rejected] leaklock-fixture-v0.1.0 -> leaklock-fixture-v0.1.0 (atomic transaction failed)',
+			"error: failed to push some refs to 'github.com:nikolareljin/damn-vulnerable-repo.git'"
+		].join('\n')
+	};
+
+	test('the one real cause is separated from the atomic collateral', () => {
+		const result = gitRewrite.parseProtectedRefRejection(realGithubFailure);
+		assert.ok(result, 'recognised as a protection failure');
+		assert.deepStrictEqual(result.protectedRefs, ['main'], 'exactly one ref is the cause');
+		assert.strictEqual(result.collateralRefs.length, 8,
+			'the other eight were rolled back, not independently rejected');
+		assert.ok(!result.collateralRefs.includes('main'));
+		assert.strictEqual(result.provider, 'github');
+	});
+
+	test('a generic pre-receive hook still resolves to the named ref', () => {
+		// Some servers reject every ref with identical wording. The GH006 line names the
+		// real one; without preferring it, all three would look separately protected.
+		const result = gitRewrite.parseProtectedRefRejection({
+			message: [
+				'remote: error: GH006: Protected branch update failed for refs/heads/main.',
+				' ! [remote rejected] feature/x -> feature/x (pre-receive hook declined)',
+				' ! [remote rejected] main -> main (pre-receive hook declined)',
+				' ! [remote rejected] v1.0 -> v1.0 (pre-receive hook declined)'
+			].join('\n')
+		});
+		assert.deepStrictEqual(result.protectedRefs, ['main']);
+		assert.strictEqual(result.collateralRefs.length, 2);
+	});
+
+	test('unrelated push failures are not misreported as protection', () => {
+		assert.strictEqual(
+			gitRewrite.parseProtectedRefRejection({
+				message: 'remote: Permission to x/y.git denied\nfatal: Authentication failed'
+			}),
+			null
+		);
+		assert.strictEqual(gitRewrite.parseProtectedRefRejection({ message: '' }), null);
+	});
+
+	test('the panel explains the cause, the state of the remote, and the fix', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const html = panel._renderProtectionBlock({
+			...gitRewrite.parseProtectedRefRejection(realGithubFailure),
+			remote: 'origin',
+			label: 'Git-only cleanup'
+		});
+		assert.match(html, /is protected/, 'names the cause');
+		assert.match(html, /Nothing was pushed/, 'states the remote is unchanged');
+		assert.match(html, /secret is still on it/,
+			'and does not let the user think the leak is closed');
+		assert.match(html, /not.*separate problems|not<\/em> separate problems/,
+			'explains the eight collateral rejections');
+		assert.match(html, /Settings/, 'gives the concrete GitHub steps');
+		assert.match(html, /Allow force pushes/);
+		assert.match(html, /Turn the protection back on|Restore the protection/,
+			'and tells the user to restore protection afterwards');
+	});
+
+	test('the generated script explains it too, instead of dying on raw git output', () => {
+		// The script runs the same atomic push, so it hits the same wall. Without this
+		// the user gets nine "[remote rejected]" lines and `set -e` aborts.
+		const script = gitRewrite.buildRewriteScript({
+			repoDir: '/repo', remote: 'origin', rewriteLines: ['true'], verifyLiterals: ['x']
+		});
+		assert.match(script, /GH006\|\[Pp\]rotected branch/, 'detects the protection failure');
+		assert.match(script, /NOTHING WAS PUSHED/, 'states the remote is unchanged');
+		assert.match(script, /secret is STILL on it/, 'and that the leak is not closed');
+		assert.match(script, /NOT separate/, 'explains the atomic collateral');
+		assert.match(script, /Settings > Branches/, 'gives the concrete step');
+		// It must still fail loudly: a protected-branch block is not a success.
+		assert.match(script, /exit "\$push_rc"/, 'and still exits non-zero');
+	});
+
+	test('a non-GitHub remote still gets actionable steps', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const html = panel._renderProtectionBlock({
+			protectedRefs: ['main'], collateralRefs: [], provider: null, remote: 'origin', label: 'x'
+		});
+		assert.match(html, /administers this remote/, 'falls back to provider-neutral advice');
+		assert.ok(!/Settings.*Branches/.test(html), 'without inventing a GitHub UI path');
+	});
+});

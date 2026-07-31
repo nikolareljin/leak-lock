@@ -279,6 +279,95 @@ async function pushRewritten(repoDir, remote = DEFAULT_REMOTE) {
 }
 
 /**
+ * Was this push refused because a ref is protected on the server?
+ *
+ * This is the single most likely way a real cleanup fails, and the raw git output is
+ * actively misleading about it: `--atomic` means one protected ref rejects *every*
+ * ref, so the user sees eight or nine "[remote rejected]" lines and reasonably
+ * concludes the whole rewrite is broken. Only one line is the actual cause; the rest
+ * say "atomic transaction failed", which is git reporting the transaction it rolled
+ * back, not nine separate problems.
+ *
+ * Separating cause from collateral is the whole point: the fix is a one-line change to
+ * one branch's protection rule, and nothing about the raw output suggests that.
+ *
+ * @returns {null|{protectedRefs: string[], collateralRefs: string[], provider: string|null}}
+ */
+function parseProtectedRefRejection(error) {
+    const raw = [
+        error && error.message ? error.message : '',
+        error && error.stderr ? error.stderr : ''
+    ].filter(Boolean).join('\n');
+
+    // GH006 is GitHub's code; the hook wordings cover GitHub rulesets, GitLab,
+    // Bitbucket and self-hosted setups that enforce protection in a pre-receive hook.
+    const looksProtected =
+        /GH006|protected branch|Cannot force-push|force push|pre-receive hook declined|protected branch hook declined/i
+            .test(raw);
+    if (!looksProtected) {
+        return null;
+    }
+
+    const protectedRefs = [];
+    const collateralRefs = [];
+    // ! [remote rejected] <src> -> <dst> (<reason>)
+    const rejectionLine = /^\s*!\s*\[remote rejected\]\s+(\S+)\s+->\s+(\S+)\s+\((.+)\)\s*$/;
+    for (const line of raw.split('\n')) {
+        const match = line.match(rejectionLine);
+        if (!match) {
+            continue;
+        }
+        const [, , dst, reason] = match;
+        // "atomic transaction failed" means this ref was fine — it was rolled back
+        // because a different ref was refused. Listing it as a problem sends the user
+        // looking for protection rules that do not exist.
+        if (/atomic transaction failed/i.test(reason)) {
+            collateralRefs.push(dst);
+        } else {
+            protectedRefs.push(dst);
+        }
+    }
+
+    // GitHub names the offending ref explicitly. When it does, that is authoritative:
+    // a server-side hook can reject every ref with identical generic wording, which
+    // would otherwise make all of them look like separate protected branches and send
+    // the user hunting for rules that do not exist.
+    const named = [];
+    for (const m of raw.matchAll(/Protected branch update failed for refs\/heads\/(\S+?)\.?\s*$/gim)) {
+        if (!named.includes(m[1])) {
+            named.push(m[1]);
+        }
+    }
+    if (named.length > 0) {
+        const collateral = [...new Set([
+            ...collateralRefs,
+            ...protectedRefs.filter(r => !named.includes(r))
+        ])];
+        return { protectedRefs: named, collateralRefs: collateral, provider: detectRemoteProvider(raw) };
+    }
+
+    return {
+        protectedRefs: protectedRefs.filter(r => !collateralRefs.includes(r)),
+        collateralRefs,
+        provider: detectRemoteProvider(raw)
+    };
+}
+
+/** Best-effort host identification, so the remediation steps can name the real UI. */
+function detectRemoteProvider(text) {
+    if (/GH006|github\.com/i.test(text)) {
+        return 'github';
+    }
+    if (/gitlab/i.test(text)) {
+        return 'gitlab';
+    }
+    if (/bitbucket/i.test(text)) {
+        return 'bitbucket';
+    }
+    return null;
+}
+
+/**
  * Re-fetch and confirm the leak is gone from every remote ref, not just the
  * one that happened to be checked out.
  * @param {object} criteria { pathPattern?: RegExp source string, literals?: string[], patterns?: string[] }
@@ -517,7 +606,34 @@ function buildRewriteScript(options) {
         '# 7. --atomic over branches AND tags in ONE push: the server rejects the',
         '#    WHOLE push if any single ref fails (a protected branch or tag), so',
         '#    the remote is never left with rewritten branches but stale tags.',
-        `git push --force --atomic ${remoteQ} ${shellQuote('refs/heads/*:refs/heads/*')} ${shellQuote('refs/tags/*:refs/tags/*')}`,
+        '#    The flip side is that one protected branch rejects every ref, which',
+        '#    reads as though the whole rewrite failed. Explain that if it happens.',
+        'push_log="$(mktemp "${TMPDIR:-/tmp}/leaklock-push.XXXXXX")"',
+        'trap \'rm -f "$push_log"\' EXIT',
+        'push_rc=0',
+        `git push --force --atomic ${remoteQ} ${shellQuote('refs/heads/*:refs/heads/*')} ${shellQuote('refs/tags/*:refs/tags/*')} >"$push_log" 2>&1 || push_rc=$?`,
+        'cat "$push_log"',
+        'if [ "$push_rc" -ne 0 ]; then',
+        `\tif grep -qE 'GH006|[Pp]rotected branch|Cannot force-push|pre-receive hook declined' "$push_log"; then`,
+        '\t\techo ""',
+        '\t\techo "=============================================================="',
+        '\t\techo "The remote refused the push because a branch is PROTECTED."',
+        '\t\techo ""',
+        '\t\techo "NOTHING WAS PUSHED. The remote is unchanged, which also means"',
+        '\t\techo "the secret is STILL on it. Local history is already rewritten;"',
+        '\t\techo "only the push is left."',
+        '\t\techo ""',
+        '\t\techo "Refs listed as (atomic transaction failed) are NOT separate"',
+        '\t\techo "problems - the push is all-or-nothing, so one protected branch"',
+        '\t\techo "rolls back every ref. Fix that one and they all go through."',
+        '\t\techo ""',
+        '\t\techo "To finish: allow force-pushes on the protected branch"',
+        '\t\techo "(GitHub: Settings > Branches, or Rules > Rulesets), re-run this"',
+        '\t\techo "script, then turn the protection back on immediately."',
+        '\t\techo "=============================================================="',
+        '\tfi',
+        '\texit "$push_rc"',
+        'fi',
         '',
         '# 8. Restore the branch that was checked out before the rewrite.',
         'if [ -n "$current_branch" ]; then',
@@ -751,6 +867,8 @@ module.exports = {
     expireReflogAndGc,
     pushRewritten,
     verifyRemoteRefs,
+    parseProtectedRefRejection,
+    detectRemoteProvider,
     buildRewriteScript,
     runRewrite
 };
