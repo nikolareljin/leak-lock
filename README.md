@@ -6,7 +6,7 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.6.3-blue.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.96.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
 [🌐 Website](https://nikolareljin.github.io/leak-lock/) • [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
@@ -18,18 +18,25 @@
 Leak Lock is a powerful VS Code extension that helps developers secure their repositories by:
 
 - 🔍 **Scanning** git repositories for secrets, API keys, and sensitive data
-- 🛡️ **Detecting** over 100+ types of credentials using Nosey Parker
-- 🔧 **Removing** secrets from git history using BFG tool
+- 🛡️ **Detecting** credentials with **multiple engines** — Gitleaks, TruffleHog and Nosey Parker — merged into one attributed result set
+- ✅ **Verifying** whether a discovered credential is still live (TruffleHog)
+- ✏️ **Removing** both detected secrets and **arbitrary text you specify** from git history
+- 📋 **Reporting** exactly what was scanned, so "no findings" is a claim you can check
 - ⚡ **Automating** the complete security remediation workflow
-- 📊 **Displaying** results in an intuitive main area interface
 
 ## ✨ Key Features
 
-### 🎯 **Smart Detection**
-- **100+ Secret Types**: API keys, passwords, tokens, certificates
-- **Low False Positives**: Advanced pattern matching and validation
-- **Git History Scanning**: Deep analysis of entire repository history
-- **Multiple Formats**: JSON, database connections, configuration files
+### 🎯 **Multi-Engine Detection**
+- **Several engines, one result set**: Gitleaks (default), TruffleHog and Nosey Parker run together; findings are merged and every finding names the engines that found it — and the ones that missed it
+- **Live credential verification**: TruffleHog can confirm whether a key still works. A live credential outranks everything else, because rewriting history does not revoke it
+- **Full history, every ref**: refs are refreshed before scanning, so a branch that exists only on the remote is not silently skipped
+- **Working tree too**: untracked and ignored files (a local `.env`) are found and flagged as not-committed, since those are fixed by deleting the file, not by rewriting history
+- **No silent truncation**: results are never capped without saying so
+
+### ✏️ **Manual Redaction**
+- **Source text → Replace with**: remove content no scanner flags — an internal hostname, a private repository or team name, a customer identifier
+- **Literal or regex** matching, validated before it can be used
+- **Dry run first**: see which commits, files and branches a rule touches before anything is rewritten
 
 ### 🖥️ **Modern Interface**
 - **Main Area Display**: Wide layout perfect for scan results
@@ -145,6 +152,90 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 ---
 
 ## 📸 Screenshots
+
+> Captured from a **real scan of [damn-vulnerable-repo](https://github.com/nikolareljin/damn-vulnerable-repo)**,
+> the public test fixture — cloned fresh, seeded, and scanned with Gitleaks, TruffleHog
+> and Nosey Parker together, then rendered from the extension's own webview.
+>
+> The run found **31 findings merged from 62 raw detections** (Nosey Parker 23 · Gitleaks
+> 27 · TruffleHog 12); the table shows six of them, sampled to span the three engines.
+> **Every credential in that repository is fake by construction** — AWS's own published
+> `AKIAIOSFODNN7EXAMPLE`, Stripe `sk_test_` keys, hostnames under the reserved `.example`
+> TLD that can never resolve, and tokens whose "random" part is the alphabet in order.
+> Nothing carries a `VERIFIED LIVE` badge because there is nothing live to verify.
+> See [docs/TEST_FIXTURE.md](docs/TEST_FIXTURE.md).
+>
+> Regenerate with `tools/real-scan.js` and `tools/render-screenshots.js`. Scan a clone
+> under `/tmp/repos` rather than your home directory — the paths are visible in the
+> images.
+
+### Scan results — multi-engine, with attribution
+
+![Scan results](docs/website/img/scan-results-table.png)
+
+One row per finding, with the file and line, the commit and branches it lives in, and a
+severity label — plus **which engines found it and which missed it**. The top two rows are
+real corroboration: Nosey Parker and Gitleaks both found the AWS key and the Azure
+connection string, each merged into a single row. Below them, Gitleaks found a Stripe key
+the other two missed, and TruffleHog found a credential inside a large blob that Nosey
+Parker and Gitleaks both missed — which is the whole reason for running more than one.
+
+The first row also shows aggregation working: one secret, **in 3 commits and still in the
+working tree**, as a single row rather than four. The `node_modules` row is marked
+*Dependency · not your code* and cannot be selected for a history rewrite.
+
+### Scan coverage — what was actually examined
+
+![Scan coverage](docs/website/img/scan-coverage.png)
+
+Collapsed to one line by default. Expanded, it reports the engines and versions that ran,
+the execution mode and the host it was sized for, the refs covered, and the settings in
+effect. Warnings are promoted into the collapsed summary, so collapsing hides volume and
+never a caveat.
+
+### Manual redaction rules
+
+![Manual redaction rules](docs/website/img/manual-redaction.png)
+
+Remove text no scanner flagged. Literal or regex, and a dry run reports the commits, files
+and branches a rule touches before anything is rewritten.
+
+### A clean result you can check
+
+![No findings](docs/website/img/no-findings.png)
+
+"No findings" means nothing without its scope, so the coverage panel sits directly beneath
+it.
+
+### The cleanup, step by step
+
+Every destructive step sits behind something you have to read first.
+
+![Prepared cleanup script](docs/website/img/prepared-command.png)
+
+**1. The script, before it runs.** Prepare generates the exact commands and shows them.
+Nothing has run yet — you can copy the script and run it yourself instead, and it performs
+the same safety checks either way.
+
+![Force-push confirmation](docs/website/img/push-confirmation.png)
+
+**2. The remote is still untouched.** The local rewrite and the force-push are separate
+steps, and this gate stays on screen until you decide. It names how many refs the push
+will overwrite.
+
+![Protected branch explanation](docs/website/img/protected-branch.png)
+
+**If your `main` branch is protected — and it should be.** The push is atomic, so one
+protected branch rejects every ref and git reports nine failures for a single cause. Leak
+Lock names the branch actually blocking it, says plainly that nothing was pushed and the
+secret is still on the remote, and gives the steps to finish — including turning the
+protection back on afterwards.
+
+![Verified clean](docs/website/img/verified-clean.png)
+
+**3. Verified, not assumed.** After the push, every remote branch and tag is re-fetched and
+re-checked. If nothing could be examined, it says so rather than reporting a clean result
+it never tested.
 
 ### Activity Bar Integration
 The extension adds a shield icon to the activity bar for easy access.
@@ -281,12 +372,64 @@ npm test
 
 ## 🛡️ Security Tools
 
-### **Nosey Parker**
-- **Purpose**: Secret detection and scanning
-- **Project**: Nosey Parker by Praetorian — https://github.com/praetorian-inc/noseyparker
-- **Image**: `ghcr.io/praetorian-inc/noseyparker:latest`
-- **Why it’s good**: High-precision detection with 100+ well‑maintained rules, fast scanning, low false positives, and active community support.
-- **Integration**: Containerized execution for portability and consistency across platforms
+Leak Lock runs more than one detection engine and merges the results. They disagree
+more than you would expect, so the results table names which engine found each finding
+and which enabled engines did not.
+
+### **Gitleaks** — default engine
+- **Project**: https://github.com/gitleaks/gitleaks · MIT · actively maintained
+- **Install**: `brew install gitleaks`, `apt install gitleaks`, or a release binary. **No Docker, no JVM.**
+- **Purpose**: secret detection across full git history and the working tree
+- **Why it's the default**: maintained, fast, and its ruleset still receives new detectors. It scans every ref (`--log-opts=--all`) and, in a separate pass, the working tree — including untracked and ignored files.
+- **Extra detail it provides**: end line, column range, entropy, commit author and email, and a stable fingerprint (which is what makes baselines work)
+- **Settings**: `leakLock.gitleaks.binaryPath`, `leakLock.gitleaks.configPath` (custom TOML rules and allowlists), `leakLock.gitleaks.baselinePath`
+
+### **TruffleHog** — optional, credential verification
+- **Project**: https://github.com/trufflesecurity/trufflehog · AGPL-3.0 · actively maintained
+- **Install**: `brew install trufflehog` or a release binary. Leak Lock invokes it as an external process only — no bundling, no linking — so the extension remains MIT.
+- **Purpose**: the one thing no other engine here does — **checking whether a discovered credential is still live**, against 700+ providers
+- **Why it matters**: a verified AWS key in a five-year-old commit is an active incident needing rotation *and* a history rewrite. An unverified high-entropy string is probably noise. Leak Lock ranks a verified finding above every rule-name heuristic and badges it `VERIFIED LIVE`.
+- **Privacy**: verification makes read-only network calls to third-party providers **using the discovered credential**. It is therefore **off by default** — enable `leakLock.trufflehog.verify` deliberately.
+- **Limits**: reports no column range, entropy or fingerprint. Those are shown as *not provided by this engine* rather than left blank.
+
+### **Nosey Parker** — optional, legacy
+- **Project**: https://github.com/praetorian-inc/noseyparker · Apache-2.0
+- **Image**: `ghcr.io/praetorian-inc/noseyparker:v0.24.0` (pinned; requires Docker)
+- **Status**: ⚠️ **archived read-only upstream on 2026-04-24.** `v0.24.0` (May 2025) is its final release, so its ruleset can no longer receive detectors. On a test fixture it reported 2 findings where Gitleaks reported 7, missing an AWS key and a GitHub PAT in plain committed source.
+- **Why it is still here**: an excellent history walker and the best deduplication model of the three — it groups matches sharing a rule and capture groups into a single finding, which keeps large result sets reviewable.
+- **Settings**: `leakLock.noseyParker.ruleset` (`default`, `default+assets`, `all`), `leakLock.noseyParker.suppressRedundant`, `leakLock.noseyParker.maxFileSizeMb`, `leakLock.noseyParker.image`
+
+### How many run at once
+`leakLock.scan.executionMode` defaults to `auto`, which sizes the plan to your machine —
+core count, available memory (respecting container limits, since `os.totalmem()` reports
+the *host's* memory inside a container), and current load:
+
+- **Capable host** (≥ 6 cores, ≥ 8 GB, not saturated) — all engines **in parallel**,
+  capped at `cores − 2` so the editor still has room
+- **Modest host** — all engines, **one at a time**. Slower, but nothing is skipped
+- **Constrained host** (≤ 2 cores or < 4 GB) — **Gitleaks only**: a single static binary
+  with no container runtime or JVM, and the only engine with a maintained ruleset
+
+If host capacity causes an engine to be skipped, **the coverage panel says so and names
+it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
+`executionMode` to `parallel`, `sequential` or `single` to decide for yourself.
+
+### Choosing engines
+`leakLock.scan.engines` sets which run, and in what order. **All three are enabled by
+default** — `["gitleaks", "trufflehog", "noseyparker"]`. A missing engine binary disables
+that engine, never the whole scan, and the coverage panel says which engines ran and which
+did not, so an engine you have not installed is visible rather than silently absent.
+
+Enabling TruffleHog does not by itself make any network call; verification is the separate
+`leakLock.trufflehog.verify` setting, off by default.
+
+Running more than one is the point: they have genuinely different rulesets, and the
+attribution line tells you when one of them is falling behind.
+
+If an engine you have installed is reported as missing, it is almost always `PATH` — a
+GUI-launched VS Code does not inherit your shell's. Leak Lock searches the usual install
+locations (`~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, …); for anything else,
+set `leakLock.trufflehog.binaryPath` or `leakLock.gitleaks.binaryPath`.
 
 ### **BFG Repo Cleaner**
 - **Purpose**: Git history rewriting and cleanup
@@ -298,10 +441,10 @@ npm test
 - **Note**: Deletion matches by filename/folder name across history (not full path)
 
 ### Why Leak Lock
-- Seamless integration: Combines Nosey Parker (detection) and BFG/git (removal) into a single VS Code experience.
+- Seamless integration: combines multi-engine detection with BFG/git removal in a single VS Code experience.
 - Safer defaults: Previews, path‑based alternative, and confirmation steps reduce risk.
 - Productivity: One panel to scan, review, prepare commands, and execute — no shell juggling.
-- Cross‑platform: Dockerized scanning and built‑in helpers make it reliable on Windows, macOS, and Linux.
+- Cross‑platform: Gitleaks and TruffleHog run as native binaries with no container runtime; Docker is needed only for the optional Nosey Parker engine. Built‑in helpers keep it reliable on Windows, macOS, and Linux.
 
 ### **Git (filter-branch)**
 - **Purpose**: Exact path-based history rewriting across branches
@@ -321,9 +464,14 @@ npm test
 - `leak-lock.cleanup` - Clean up all dependencies
 
 ### **Dependencies**
-- **Docker**: Container runtime for Nosey Parker
-- **Java**: Runtime for BFG tool (auto-detected)
-- **Git**: Version control operations
+- **Git**: required
+- **Gitleaks**: default detection engine — a single binary, no runtime
+- **TruffleHog**: optional, for live credential verification
+- **Docker**: only needed if the Nosey Parker engine is enabled
+- **Java**: runtime for the BFG cleanup tool (auto-detected)
+- **git-filter-repo**: only needed for the Git-only cleanup mode
+
+A missing engine disables that engine, not the scan.
 
 ---
 

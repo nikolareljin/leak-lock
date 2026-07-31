@@ -84,9 +84,34 @@ async function ensureRemote(repoDir, remote, url) {
     return true;
 }
 
-/** Refresh every ref. Unlike a best-effort fetch, failures reject. */
-async function fetchAllRefs(repoDir, remote = DEFAULT_REMOTE) {
-    await git(repoDir, ['fetch', '--prune', '--tags', remote]);
+/**
+ * Refresh every ref. Unlike a best-effort fetch, failures reject.
+ *
+ * `prune` deletes local remote-tracking refs that no longer exist on the remote. That
+ * is wanted immediately before a rewrite, so the plan matches the server. It is not
+ * wanted during a read-only planning check, where deleting refs is a side effect the
+ * user did not ask for — pass `{ prune: false }` there.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.prune=true]
+ * @returns {Promise<{args: string[], command: string}>} the exact command that ran,
+ *   so callers can name it in an error rather than describing it vaguely.
+ */
+async function fetchAllRefs(repoDir, remote = DEFAULT_REMOTE, options = {}) {
+    const prune = options.prune !== false;
+    const args = prune
+        ? ['fetch', '--prune', '--tags', remote]
+        : ['fetch', '--tags', remote];
+    await git(repoDir, args);
+    return { args, command: `git ${args.join(' ')}` };
+}
+
+/** The command fetchAllRefs would run, without running it. */
+function describeFetchCommand(remote = DEFAULT_REMOTE, options = {}) {
+    const prune = options.prune !== false;
+    return prune
+        ? `git fetch --prune --tags ${remote}`
+        : `git fetch --tags ${remote}`;
 }
 
 /** Current branch name, or null when HEAD is detached. */
@@ -254,12 +279,123 @@ async function pushRewritten(repoDir, remote = DEFAULT_REMOTE) {
 }
 
 /**
+ * Was this push refused because a ref is protected on the server?
+ *
+ * This is the single most likely way a real cleanup fails, and the raw git output is
+ * actively misleading about it: `--atomic` means one protected ref rejects *every*
+ * ref, so the user sees eight or nine "[remote rejected]" lines and reasonably
+ * concludes the whole rewrite is broken. Only one line is the actual cause; the rest
+ * say "atomic transaction failed", which is git reporting the transaction it rolled
+ * back, not nine separate problems.
+ *
+ * Separating cause from collateral is the whole point: the fix is a one-line change to
+ * one branch's protection rule, and nothing about the raw output suggests that.
+ *
+ * @returns {null|{protectedRefs: string[], collateralRefs: string[], provider: string|null}}
+ */
+function parseProtectedRefRejection(error) {
+    const raw = [
+        error && error.message ? error.message : '',
+        error && error.stderr ? error.stderr : ''
+    ].filter(Boolean).join('\n');
+
+    // GH006 is GitHub's code; the hook wordings cover GitHub rulesets, GitLab,
+    // Bitbucket and self-hosted setups that enforce protection in a pre-receive hook.
+    const looksProtected =
+        /GH006|protected branch|Cannot force-push|force push|pre-receive hook declined|protected branch hook declined/i
+            .test(raw);
+    if (!looksProtected) {
+        return null;
+    }
+
+    const protectedRefs = [];
+    const collateralRefs = [];
+    // ! [remote rejected] <src> -> <dst> (<reason>)
+    const rejectionLine = /^\s*!\s*\[remote rejected\]\s+(\S+)\s+->\s+(\S+)\s+\((.+)\)\s*$/;
+    for (const line of raw.split('\n')) {
+        const match = line.match(rejectionLine);
+        if (!match) {
+            continue;
+        }
+        const [, , dst, reason] = match;
+        // "atomic transaction failed" means this ref was fine — it was rolled back
+        // because a different ref was refused. Listing it as a problem sends the user
+        // looking for protection rules that do not exist.
+        if (/atomic transaction failed/i.test(reason)) {
+            collateralRefs.push(dst);
+        } else {
+            protectedRefs.push(dst);
+        }
+    }
+
+    // GitHub names the offending ref explicitly. When it does, that is authoritative:
+    // a server-side hook can reject every ref with identical generic wording, which
+    // would otherwise make all of them look like separate protected branches and send
+    // the user hunting for rules that do not exist.
+    const named = [];
+    for (const m of raw.matchAll(/Protected branch update failed for refs\/heads\/(\S+?)\.?\s*$/gim)) {
+        if (!named.includes(m[1])) {
+            named.push(m[1]);
+        }
+    }
+    if (named.length > 0) {
+        const collateral = [...new Set([
+            ...collateralRefs,
+            ...protectedRefs.filter(r => !named.includes(r))
+        ])];
+        return { protectedRefs: named, collateralRefs: collateral, provider: detectRemoteProvider(raw) };
+    }
+
+    return {
+        protectedRefs: protectedRefs.filter(r => !collateralRefs.includes(r)),
+        collateralRefs,
+        provider: detectRemoteProvider(raw)
+    };
+}
+
+/** Best-effort host identification, so the remediation steps can name the real UI. */
+function detectRemoteProvider(text) {
+    if (/GH006|github\.com/i.test(text)) {
+        return 'github';
+    }
+    if (/gitlab/i.test(text)) {
+        return 'gitlab';
+    }
+    if (/bitbucket/i.test(text)) {
+        return 'bitbucket';
+    }
+    return null;
+}
+
+/**
  * Re-fetch and confirm the leak is gone from every remote ref, not just the
  * one that happened to be checked out.
- * @param {object} criteria { pathPattern?: RegExp source string, literals?: string[] }
- * @returns {Promise<Array<{ref: string, reason: string, match: string}>>} offending refs
+ * @param {object} criteria { pathPattern?: RegExp source string, literals?: string[], patterns?: string[] }
+ * @returns {Promise<Array<{ref: string, reason: string, match: string, notVerified?: boolean}>>}
+ *          offending refs; a single `notVerified` entry when nothing could be checked
  */
 async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {}) {
+    const pathRegex = criteria.pathPattern ? new RegExp(criteria.pathPattern) : null;
+    const literals = Array.isArray(criteria.literals) ? criteria.literals : [];
+    // Regex redaction rules cannot be verified with --fixed-strings: the rewrite would
+    // succeed and verification would then report clean for the wrong reason, because
+    // the literal pattern text was never in the history to begin with.
+    const patterns = Array.isArray(criteria.patterns) ? criteria.patterns : [];
+
+    const searches = [
+        ...literals.map(value => ({ value, args: ['--fixed-strings'] })),
+        ...patterns.map(value => ({ value, args: ['--extended-regexp'] }))
+    ];
+
+    // An empty result means "clean" to every caller, and the panel turns that into
+    // "verified clean on every remote ref" and then discards the findings. So a
+    // verification that examined *nothing* must never return an empty array — that
+    // is a false all-clear on the one screen where the user decides the leak is gone.
+    // `_confirmScanPush` passes `pending.verify || {}`, so empty criteria is reachable.
+    if (!pathRegex && searches.length === 0) {
+        return [notVerified(remote, 'no search criteria were supplied, so nothing was checked')];
+    }
+
     await fetchAllRefs(repoDir, remote);
     const refs = await gitLines(repoDir, [
         'for-each-ref',
@@ -268,13 +404,13 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
         'refs/tags'
     ]);
     const offenders = [];
-    const pathRegex = criteria.pathPattern ? new RegExp(criteria.pathPattern) : null;
-    const literals = Array.isArray(criteria.literals) ? criteria.literals : [];
+    let examined = 0;
 
     for (const ref of refs) {
         if (ref.endsWith('/HEAD')) {
             continue;
         }
+        examined++;
         if (pathRegex) {
             const files = await gitLines(repoDir, ['ls-tree', '-r', '--name-only', ref]);
             const hit = files.find(file => pathRegex.test(file));
@@ -283,10 +419,10 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
                 continue;
             }
         }
-        for (const literal of literals) {
+        for (const search of searches) {
             try {
-                await git(repoDir, ['grep', '--quiet', '--fixed-strings', '-e', literal, ref]);
-                offenders.push({ ref, reason: 'secret still present', match: literal });
+                await git(repoDir, ['grep', '--quiet', ...search.args, '-e', search.value, ref]);
+                offenders.push({ ref, reason: 'secret still present', match: search.value });
                 break;
             } catch (e) {
                 // git grep exits 1 for "not found" (the clean case). Any other
@@ -296,16 +432,40 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
                     offenders.push({
                         ref,
                         reason: `verification failed (git grep exit ${e && e.code !== undefined ? e.code : 'unknown'})`,
-                        match: literal
+                        match: search.value
                     });
                     break;
                 }
-                // exit 1: literal not present in this ref - keep checking.
+                // exit 1: value not present in this ref - keep checking.
             }
         }
     }
 
+    // Zero refs examined is not a clean bill of health either — it means the fetch
+    // produced nothing under refs/remotes/<remote>, so no ref was ever looked at.
+    if (examined === 0) {
+        return [notVerified(remote, `no refs were found under refs/remotes/${remote}, so no ref was checked`)];
+    }
+
     return offenders;
+}
+
+/**
+ * The marker returned when verification could not examine anything.
+ *
+ * It rides the offenders channel deliberately: every caller already treats a non-empty
+ * result as "do not tell the user this is clean", so an unverifiable outcome inherits
+ * that safety automatically rather than depending on each call site to remember it.
+ * `notVerified` lets callers word the message accurately — "could not verify" is not
+ * the same claim as "the secret is still there".
+ */
+function notVerified(remote, reason) {
+    return {
+        ref: `refs/remotes/${remote}/*`,
+        reason: `not verified: ${reason}`,
+        match: '',
+        notVerified: true
+    };
 }
 
 /**
@@ -318,6 +478,17 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
  * @param {string[]} options.rewriteLines shell lines performing the actual rewrite
  * @param {string} [options.verifyRegex] grep -E pattern for the verification loop
  * @param {string[]} [options.verifyLiterals] fixed strings to grep for in each ref
+ * @param {string[]} [options.verifyPatterns] regex sources to grep for in each ref.
+ *   A regex redaction rule cannot be verified with --fixed-strings: the pattern text
+ *   was never in the history, so a literal grep would report clean regardless of
+ *   whether the rewrite worked.
+ * @param {string} [options.verifyRulesFile] shell expression for the --replace-text rule
+ *   file (e.g. '"$replacement_file"'). When given, verification re-reads that file
+ *   instead of repeating every secret inline once per rule: one list, one place, and
+ *   the sensitive values never appear in the script body.
+ * @param {string[]} [options.requiredCommands] commands checked with `command -v`
+ *   before anything destructive runs, so a missing tool fails immediately with a clear
+ *   message instead of halfway through a rewrite.
  * @param {boolean} [options.restoreRemote] re-add the remote after the rewrite
  * @param {string} [options.remoteUrl]
  * @param {string[]} [options.preambleLines] setup lines run before entering the repository
@@ -330,6 +501,9 @@ function buildRewriteScript(options) {
         rewriteLines = [],
         verifyRegex = null,
         verifyLiterals = [],
+        verifyPatterns = [],
+        verifyRulesFile = null,
+        requiredCommands = [],
         restoreRemote = false,
         remoteUrl = null,
         preambleLines = [],
@@ -338,11 +512,31 @@ function buildRewriteScript(options) {
 
     const remoteQ = shellQuote(remote);
     const lines = [
-        '#!/bin/bash',
+        '#!/usr/bin/env bash',
         '# Generated by Leak Lock - rewrites git history across ALL refs.',
         '# Review before running. This is destructive and cannot be undone.',
+        '#',
+        '# Portability: bash 3.2+ (macOS ships 3.2, so no associative arrays, no',
+        '# mapfile, no ${var,,}). On Windows run it from Git Bash or WSL - it needs a',
+        '# POSIX shell, and cmd.exe/PowerShell will not do.',
+        '# /usr/bin/env locates bash on macOS Homebrew and Git Bash, where it is not',
+        '# necessarily at /bin/bash.',
         'set -euo pipefail',
+        // Byte-wise matching, so verification does not depend on the user's locale.
+        'export LC_ALL=C',
         '',
+        ...(requiredCommands.length > 0
+            ? [
+                '# Fail immediately with a clear message rather than midway through a rewrite.',
+                `for cmd in ${requiredCommands.map(shellQuote).join(' ')}; do`,
+                '\tif ! command -v "$cmd" >/dev/null 2>&1; then',
+                '\t\techo "Required command not found on PATH: $cmd" >&2',
+                '\t\texit 1',
+                '\tfi',
+                'done',
+                ''
+            ]
+            : []),
         ...preambleLines,
         ...(preambleLines.length > 0 ? [''] : []),
         `cd ${shellQuote(repoDir)}`,
@@ -412,7 +606,34 @@ function buildRewriteScript(options) {
         '# 7. --atomic over branches AND tags in ONE push: the server rejects the',
         '#    WHOLE push if any single ref fails (a protected branch or tag), so',
         '#    the remote is never left with rewritten branches but stale tags.',
-        `git push --force --atomic ${remoteQ} ${shellQuote('refs/heads/*:refs/heads/*')} ${shellQuote('refs/tags/*:refs/tags/*')}`,
+        '#    The flip side is that one protected branch rejects every ref, which',
+        '#    reads as though the whole rewrite failed. Explain that if it happens.',
+        'push_log="$(mktemp "${TMPDIR:-/tmp}/leaklock-push.XXXXXX")"',
+        'trap \'rm -f "$push_log"\' EXIT',
+        'push_rc=0',
+        `git push --force --atomic ${remoteQ} ${shellQuote('refs/heads/*:refs/heads/*')} ${shellQuote('refs/tags/*:refs/tags/*')} >"$push_log" 2>&1 || push_rc=$?`,
+        'cat "$push_log"',
+        'if [ "$push_rc" -ne 0 ]; then',
+        `\tif grep -qE 'GH006|[Pp]rotected branch|Cannot force-push|pre-receive hook declined' "$push_log"; then`,
+        '\t\techo ""',
+        '\t\techo "=============================================================="',
+        '\t\techo "The remote refused the push because a branch is PROTECTED."',
+        '\t\techo ""',
+        '\t\techo "NOTHING WAS PUSHED. The remote is unchanged, which also means"',
+        '\t\techo "the secret is STILL on it. Local history is already rewritten;"',
+        '\t\techo "only the push is left."',
+        '\t\techo ""',
+        '\t\techo "Refs listed as (atomic transaction failed) are NOT separate"',
+        '\t\techo "problems - the push is all-or-nothing, so one protected branch"',
+        '\t\techo "rolls back every ref. Fix that one and they all go through."',
+        '\t\techo ""',
+        '\t\techo "To finish: allow force-pushes on the protected branch"',
+        '\t\techo "(GitHub: Settings > Branches, or Rules > Rulesets), re-run this"',
+        '\t\techo "script, then turn the protection back on immediately."',
+        '\t\techo "=============================================================="',
+        '\tfi',
+        '\texit "$push_rc"',
+        'fi',
         '',
         '# 8. Restore the branch that was checked out before the rewrite.',
         'if [ -n "$current_branch" ]; then',
@@ -420,14 +641,21 @@ function buildRewriteScript(options) {
         'fi'
     );
 
-    if (verifyRegex || verifyLiterals.length > 0) {
+    if (verifyRegex || verifyLiterals.length > 0 || verifyPatterns.length > 0 || verifyRulesFile) {
         lines.push(
             '',
             '# 9. Verify the remote is actually clean on EVERY ref.',
             `git fetch --prune --tags ${remoteQ}`,
             'leftover=0',
+            // Count refs actually examined. A zero-iteration loop leaves leftover=0,
+            // which would print "Verified clean on every remote ref" having checked
+            // nothing at all -- the same false all-clear the in-extension
+            // verifyRemoteRefs guards against. The script must not be able to make a
+            // claim the loop never tested.
+            'checked=0',
             'while IFS= read -r ref; do',
-            '\tcase "$ref" in */HEAD) continue;; esac'
+            '\tcase "$ref" in */HEAD) continue;; esac',
+            '\tchecked=$((checked + 1))'
         );
         if (verifyRegex) {
             lines.push(
@@ -445,13 +673,54 @@ function buildRewriteScript(options) {
                 '\tfi'
             );
         }
-        for (const literal of verifyLiterals) {
+        if (verifyRulesFile) {
+            // Verification reads the same rule file the rewrite consumed, rather than
+            // repeating every secret inline once per rule. One list, one place: the
+            // script cannot drift from what was actually rewritten, and the sensitive
+            // values appear exactly once — in an owner-only temporary file that the
+            // EXIT trap removes — instead of being pasted through the script body.
             lines.push(
+                `\twhile IFS= read -r rule_line || [ -n "$rule_line" ]; do`,
+                '\t\t[ -n "$rule_line" ] || continue',
+                '\t\tcase "$rule_line" in',
+                '\t\t\tregex:*)',
+                '\t\t\t\tgrep_flag="--extended-regexp"',
+                '\t\t\t\tneedle="${rule_line#regex:}"',
+                '\t\t\t\t;;',
+                '\t\t\t*)',
+                '\t\t\t\tgrep_flag="--fixed-strings"',
+                '\t\t\t\tneedle="$rule_line"',
+                '\t\t\t\t;;',
+                '\t\tesac',
+                '\t\t# Everything before the first "==>" is what was searched for.',
+                '\t\tneedle="${needle%%==>*}"',
+                '\t\t[ -n "$needle" ] || continue',
                 // git grep exits 1 for "not found" (clean); any other exit (e.g.
                 // 128 for a bad ref) is a real failure and must be surfaced, not
                 // swallowed as clean.
+                '\t\tgrep_rc=0',
+                '\t\tgit grep --quiet "$grep_flag" -e "$needle" "$ref" 2>/dev/null || grep_rc=$?',
+                '\t\tif [ "$grep_rc" -eq 0 ]; then',
+                '\t\t\techo "STILL PRESENT (secret): $ref"',
+                '\t\t\tleftover=1',
+                '\t\t\tbreak',
+                '\t\telif [ "$grep_rc" -ne 1 ]; then',
+                '\t\t\techo "VERIFY FAILED (git grep exit $grep_rc): $ref"',
+                '\t\t\tleftover=1',
+                '\t\t\tbreak',
+                '\t\tfi',
+                `\tdone < ${verifyRulesFile}`
+            );
+        }
+
+        const verifySearches = [
+            ...verifyLiterals.map(value => ({ value, flag: '--fixed-strings' })),
+            ...verifyPatterns.map(value => ({ value, flag: '--extended-regexp' }))
+        ];
+        for (const search of verifySearches) {
+            lines.push(
                 '\tgrep_rc=0',
-                `\tgit grep --quiet --fixed-strings -e ${shellQuote(literal)} "$ref" 2>/dev/null || grep_rc=$?`,
+                `\tgit grep --quiet ${search.flag} -e ${shellQuote(search.value)} "$ref" 2>/dev/null || grep_rc=$?`,
                 '\tif [ "$grep_rc" -eq 0 ]; then',
                 '\t\techo "STILL PRESENT (secret): $ref"',
                 '\t\tleftover=1',
@@ -463,8 +732,12 @@ function buildRewriteScript(options) {
         }
         lines.push(
             `done < <(git for-each-ref --format='%(refname)' refs/remotes/${remote} refs/tags)`,
-            'if [ "$leftover" -eq 0 ]; then',
-            '\techo "Verified clean on every remote ref."',
+            'if [ "$checked" -eq 0 ]; then',
+            `\techo "NOT VERIFIED: no refs were found under refs/remotes/${remote}, so nothing was checked."`,
+            '\techo "This is NOT a clean result -- check the remote yourself."',
+            '\texit 1',
+            'elif [ "$leftover" -eq 0 ]; then',
+            '\techo "Verified clean on every remote ref ($checked checked)."',
             'else',
             // Exit non-zero so the failure is visible to automation / command
             // chaining, not just printed. The EXIT trap still restores the branch.
@@ -581,6 +854,7 @@ module.exports = {
     getRemoteUrl,
     ensureRemote,
     fetchAllRefs,
+    describeFetchCommand,
     getCurrentBranch,
     listLocalBranches,
     listRemoteBranches,
@@ -593,6 +867,8 @@ module.exports = {
     expireReflogAndGc,
     pushRewritten,
     verifyRemoteRefs,
+    parseProtectedRefRejection,
+    detectRemoteProvider,
     buildRewriteScript,
     runRewrite
 };

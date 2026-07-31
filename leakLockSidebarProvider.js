@@ -3,6 +3,9 @@ const vscode = require('vscode');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+// The pinned Nosey Parker image. Checking or pulling `:latest` here while the scanner
+// runs the pinned tag meant these two disagreed about which image mattered.
+const scanEngineConfig = require('./scan-engine-config');
 
 class LeakLockSidebarProvider {
     constructor(extensionUri) {
@@ -554,7 +557,11 @@ class LeakLockSidebarProvider {
                 <h3>🔧 Dependencies Setup</h3>
                 
                 <div style="margin-bottom: 15px; font-size: 11px; color: var(--vscode-descriptionForeground);">
-                    <strong>Required for scanning:</strong>
+                    <!-- Docker is not required to scan any more: Gitleaks and TruffleHog are
+                         native binaries. It is needed only by the optional Nosey Parker
+                         engine, whose upstream is archived. Labelling it "required" told
+                         users to install a container runtime they may not need at all. -->
+                    <strong>Optional — only for the Nosey Parker engine:</strong>
                 </div>
                 
                 <div class="status-item">
@@ -914,7 +921,7 @@ class LeakLockSidebarProvider {
         
         // Check Nosey Parker image
         try {
-            await execAsync('docker images ghcr.io/praetorian-inc/noseyparker:latest --format "table {{.Repository}}"');
+            await execAsync(`docker images ${scanEngineConfig.NOSEYPARKER_IMAGE} --format "table {{.Repository}}"`);
             this._dependencyStatus.noseyparker.installed = true;
         } catch (error) {
             this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not available';
@@ -1019,7 +1026,7 @@ class LeakLockSidebarProvider {
                 progress.report({ increment: 30, message: "Pulling Nosey Parker image..." });
                 
                 // Pull the Nosey Parker Docker image
-                await execAsync('docker pull ghcr.io/praetorian-inc/noseyparker:latest', { timeout: 300000 });
+                await execAsync(`docker pull ${scanEngineConfig.NOSEYPARKER_IMAGE}`, { timeout: 300000 });
                 
                 progress.report({ increment: 30, message: "Downloading BFG tool..." });
                 
