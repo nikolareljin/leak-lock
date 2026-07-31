@@ -2098,3 +2098,63 @@ suite('A cleanup only ever runs where it was planned', () => {
 		assert.strictEqual(panel._scanCleanup.preparedRepo, null, 'nothing is planned yet');
 	});
 });
+
+suite('Cross-engine merging tolerates different captures of one secret', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		return p;
+	}
+
+	test('engines that capture different spans of the same credential merge', () => {
+		// Observed on a real scan of this repository: Nosey Parker and TruffleHog both
+		// reported the same MongoDB credential at the same file, line and commit, but
+		// captured different spans of it. Requiring byte-identical secrets meant
+		// corroboration almost never registered in practice.
+		const merged = panel()._deduplicateScanResults([
+			{
+				file: 'test-secrets.js', line: 12, commitHash: '9bdf369',
+				fullSecret: 'mongodb://admin:password@localhost:27017/',
+				ruleName: 'Credentials in MongoDB Connection String',
+				engine: 'noseyparker', engines: ['noseyparker']
+			},
+			{
+				file: 'test-secrets.js', line: 12, commitHash: '9bdf369',
+				fullSecret: 'mongodb://admin:password@localhost:27017/mydb',
+				ruleName: 'MongoDB', engine: 'trufflehog', engines: ['trufflehog']
+			}
+		]);
+		assert.strictEqual(merged.length, 1, 'one credential, one row');
+		assert.deepStrictEqual(merged[0].engines.sort(), ['noseyparker', 'trufflehog']);
+		// The longer capture survives: a rewrite replaces what it is given, so keeping
+		// the shorter span would leave "/mydb" behind in history.
+		assert.strictEqual(merged[0].fullSecret, 'mongodb://admin:password@localhost:27017/mydb');
+	});
+
+	test('unrelated secrets on one line are not merged', () => {
+		const merged = panel()._deduplicateScanResults([
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'ghp_totallyunrelatedvalue00', engine: 'trufflehog', engines: ['trufflehog'] }
+		]);
+		assert.strictEqual(merged.length, 2, 'two different credentials stay two rows');
+	});
+
+	test('a short fragment cannot swallow a longer unrelated finding', () => {
+		// Without a length floor, "abc" contained in any longer secret would merge them.
+		const merged = panel()._deduplicateScanResults([
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'admin', engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'mongodb://admin:pw@host/db', engine: 'trufflehog', engines: ['trufflehog'] }
+		]);
+		assert.strictEqual(merged.length, 2, 'a 5-character fragment is below the containment floor');
+	});
+
+	test('same engine, same line, different rules still stay separate', () => {
+		const merged = panel()._deduplicateScanResults([
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'aws-access-token', engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'generic-api-key', engine: 'gitleaks', engines: ['gitleaks'] }
+		]);
+		assert.strictEqual(merged.length, 2);
+	});
+});
