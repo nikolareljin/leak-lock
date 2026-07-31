@@ -374,5 +374,5 @@ caveat.
 | `leakLock.scan.engines` | `["gitleaks","trufflehog","noseyparker"]` | Which engines run, in order |
 | `leakLock.scan.executionMode` | `auto` | `auto`, `parallel`, `sequential` or `single` — see [How many engines run at once](#how-many-engines-run-at-once) |
 | `leakLock.scan.timeoutSeconds` | `300` | Per-engine timeout. On expiry, partial findings are reported and marked incomplete |
-| `leakLock.scan.refreshRefsBeforeScan` | `true` | `git fetch --prune --tags` first, so remote-only branches are not invisible |
+| `leakLock.scan.refreshRefsBeforeScan` | `true` | `git fetch --tags` first, so remote-only branches are not invisible. Read-only: the scan never prunes — only the refresh immediately before a rewrite does, where the plan must match the server exactly |
 | `leakLock.dependencyHandling` | `warning` | `exclude` skips only unambiguously third-party directories — `lib/`, `bin/`, `dist/` and `build/` are still scanned, because skipping them would hide real secrets |

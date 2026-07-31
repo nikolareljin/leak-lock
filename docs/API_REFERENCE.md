@@ -178,7 +178,8 @@ Executes repository scanning workflow.
 
 **Workflow:**
 1. Validate the scan directory
-2. Refresh every ref (`git fetch --prune --tags`) so remote-only history is not skipped
+2. Refresh every ref (`git fetch --tags`, read-only — the scan never prunes) so
+   remote-only history is not skipped
 3. Run each enabled engine; a missing engine disables that engine, not the scan
 4. Map every engine's output through the same post-processing
 5. Merge and attribute results, then record what was covered
@@ -204,8 +205,11 @@ gitleaks dir --report-format json --report-path "${report}" \
 #   gitleaks detect --source "${scanPath}" --no-git ...
 
 # --- TruffleHog (optional; verification is opt-in) -----------------------------
-trufflehog git "file://${scanPath}" --json --no-update --results=verified,unknown
-trufflehog git "file://${scanPath}" --json --no-update --no-verification
+# <repoUrl> is built with url.pathToFileURL(scanPath).href, not string interpolation:
+# "file://" + a raw path is not a valid URL once a Windows drive letter, a backslash
+# or a space is involved.
+trufflehog git <repoUrl> --json --no-update --results=verified,unknown
+trufflehog git <repoUrl> --json --no-update --no-verification
 
 # --- Nosey Parker (optional, legacy; image pinned, archived upstream) ----------
 # The datastore lives in the OS temp directory, never inside the scanned tree.
