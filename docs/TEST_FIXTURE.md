@@ -74,20 +74,26 @@ never mixes with your own work.
 |---|---|
 | `leaklock-fixture/main-leaks` | The bulk of the history |
 | `leaklock-fixture/hotfix-db-creds` | MySQL and MongoDB URLs with passwords |
-| `leaklock-fixture/release-1.0` | Azure, SendGrid and Twilio credentials |
+| `leaklock-fixture/release-1.0` | Azure, SendGrid and Google credentials |
 | `leaklock-fixture/legacy-import` | `htpasswd` and a Docker auth blob, added then deleted |
-| `leaklock-fixture/dev-alice` | Fine-grained GitHub token, Slack bot token, JWT |
+| `leaklock-fixture/dev-alice` | Fine-grained GitHub token, JWT |
 | `leaklock-fixture/experimental` | A Stripe test key, unreachable from the others |
 | `leaklock-fixture/ops-remote-only` | **Exists only on the remote** (with `--push`) |
 | `leaklock-fixture-v0.1.0` | A tag, so the push plan covers tag refs |
 
 ### Credential types
 
-AWS key and secret · GitHub PAT (classic and fine-grained) · Slack bot token and webhook ·
-Stripe test keys · Google API key · SendGrid · Twilio SID and token · npm and PyPI registry
-tokens · JWT · Azure storage connection string · Postgres, MySQL and MongoDB URLs with
-passwords · `.netrc` and `.htpasswd` entries · Docker auth blob · GCP service-account
-JSON · RSA and ed25519 private keys.
+AWS key and secret · GitHub PAT (classic and fine-grained) · Stripe test keys · Google API
+key · SendGrid · npm and PyPI registry tokens · JWT · Azure storage connection string ·
+Postgres, MySQL and MongoDB URLs with passwords · `.netrc` and `.htpasswd` entries · Docker
+auth blob · GCP service-account JSON · RSA and ed25519 private keys.
+
+### Why no Slack or Twilio
+
+GitHub's account-level push protection rejects Slack webhooks, Slack bot tokens and Twilio
+SIDs — and there is no way around it, because any shape a scanner detects GitHub detects
+too, using the same patterns. They were dropped so the public fixture repository can be
+re-seeded indefinitely without manual unblocking. Everything else pushes cleanly.
 
 ---
 
@@ -107,16 +113,16 @@ JSON · RSA and ed25519 private keys.
 
 ### Expected scan result
 
-Roughly 34 findings from ~63 raw detections across the three engines:
+Roughly 30 findings from ~57 raw detections across the three engines:
 
 ```
-Nosey Parker 25  ·  Gitleaks 26  ·  TruffleHog 12   →  34 merged findings
+Nosey Parker ~23  ·  Gitleaks ~24  ·  TruffleHog ~10   →  ~30 merged findings
   untracked "(not committed)"  4        matched by >1 rule    17
   in >1 commit                 6        found by >1 engine    17
   also in working tree         7        dependency             1
 ```
 
-The gap between 63 and 34 is the merging: the same secret across commits, across an
+The gap between 57 and 30 is the merging: the same secret across commits, across an
 engine's history and working-tree passes, across rules, and across engines.
 
 ---
@@ -150,6 +156,18 @@ reused afterwards — without it, a second run would stack a fixture on top of a
 produce no diff, and abort.
 
 ---
+
+## Not yet covered: insecure code
+
+The fixture plants **credentials** only. Scanning for unsafe *code* — injection, unsafe
+deserialization, weak or quantum-vulnerable cryptography, memory and resource leaks,
+vulnerable dependencies — is tracked in
+[leak-lock#94](https://github.com/nikolareljin/leak-lock/issues/94) and depends on the
+FoxGuard adapter ([#47](https://github.com/nikolareljin/leak-lock/issues/47)) landing
+first. When it does, this generator should gain a `leaklock-fixture/bad-code` branch.
+
+Unlike the credential side, that content has no push-protection problem: unsafe code is
+not a secret, so nothing blocks publishing it.
 
 ## Regenerating documentation screenshots
 
