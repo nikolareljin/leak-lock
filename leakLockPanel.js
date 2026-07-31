@@ -177,6 +177,27 @@ function summarizeGitRemoteError(error, command = 'git fetch') {
     return { kind, command, cause, fix, detail };
 }
 
+/**
+ * Parse `git branch --no-color -a --contains <sha>` into real branch names.
+ *
+ * The output is not a plain list: it marks the current branch with `*`, includes the
+ * symbolic `remotes/origin/HEAD -> origin/main` line, and can emit
+ * `(HEAD detached at …)`. A `\bHEAD$` filter alone misses the symbolic line, which
+ * then shows up in the UI as though it were a branch called
+ * "remotes/origin/HEAD -> origin/main".
+ */
+function parseContainingBranches(stdout) {
+    return String(stdout || '')
+        .split('\n')
+        .map(line => line.replace(/^[*+]?\s*/, '').trim())
+        .filter(Boolean)
+        .filter(name =>
+            !name.includes('->') &&
+            !name.includes('HEAD detached') &&
+            !REMOTE_HEAD_FILTER_PATTERN.test(name)
+        );
+}
+
 // HTML escaping function to prevent XSS
 function escapeHtml(unsafe) {
     if (typeof unsafe !== 'string') {
@@ -4263,14 +4284,7 @@ class LeakLockPanel {
                         '-C', repoDir,
                         'branch', '--no-color', '-a', '--contains', hash
                     ], { timeout: 10000 });
-                    branches = branchOut.split('\n')
-                        .map(b => b.trim().replace(/^\*\s*/, ''))
-                        .filter(Boolean)
-                        .filter(b =>
-                            !b.includes('HEAD detached') &&
-                            !b.includes('->') &&
-                            !REMOTE_HEAD_FILTER_PATTERN.test(b)
-                        );
+                    branches = parseContainingBranches(branchOut);
                 } catch {
                     // branch --contains can fail for orphaned commits
                 }
@@ -6165,11 +6179,8 @@ class LeakLockPanel {
                     'git', ['-C', repoDir, 'branch', '--no-color', '-a', '--contains', hash],
                     { timeout: 10000 }
                 );
-                for (const line of stdout.split('\n')) {
-                    const name = line.replace(/^[*+]?\s*/, '').trim();
-                    if (name && !REMOTE_HEAD_FILTER_PATTERN.test(name)) {
-                        branches.add(name);
-                    }
+                for (const name of parseContainingBranches(stdout)) {
+                    branches.add(name);
                 }
             } catch {
                 // A branch listing failure degrades the preview; it must not stop it.
@@ -7038,3 +7049,6 @@ class LeakLockPanel {
 LeakLockPanel._currentPanel = null;
 
 module.exports = LeakLockPanel;
+// Exported for tests: parsing `git branch --contains` output is easy to get subtly
+// wrong and both call sites depend on it.
+module.exports.__parseContainingBranches = parseContainingBranches;

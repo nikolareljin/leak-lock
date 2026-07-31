@@ -124,13 +124,31 @@ if (VIEW === 'empty') {
 }
 panel._resetScanSelection();
 
-if (VIEW !== 'empty') {
-    // Two manual rules, to show the editor. These are authored by definition — the
-    // feature exists precisely for text no scanner reports.
-    panel._addCustomRule('internal-build.example.invalid', 'literal', 'redacted.invalid');
+// Manual rules, to show the editor. These are authored by definition — the feature
+// exists precisely for text no scanner reports. The first is a literal that genuinely
+// occurs in the scanned repository, so the dry run below reports real numbers.
+async function seedManualRules() {
+    if (VIEW === 'empty') {
+        return;
+    }
+    const literal = panel._addCustomRule('example.invalid', 'literal', 'redacted.invalid');
     panel._addCustomRule('ACME-CUSTOMER-[0-9]{6}', 'regex', '*****');
+
+    const target = scan.coverage && scan.coverage.scanPath;
+    if (target && literal.ok) {
+        // A real preview against the real repository: commits, files and branches
+        // come from git, not from a fixture.
+        panel._scanPath = target;
+        panel._selectedDirectory = target;
+        await panel._previewCustomRule(literal.rule.id);
+    }
 }
 
+void seedManualRules().then(() => {
+    writeRenderedPage();
+});
+
+function writeRenderedPage() {
 let html = panel._getHtmlForWebview();
 
 // ---- make it renderable outside the editor ---------------------------------
@@ -165,3 +183,4 @@ if (!html.includes('</head>')) { html = theme + html; }
 
 fs.writeFileSync(OUT, html);
 console.log('wrote', OUT, html.length, 'bytes; view =', VIEW);
+}
