@@ -2945,3 +2945,67 @@ suite('Second review round', () => {
 		assert.match(code, /escape_newlines/);
 	});
 });
+
+suite('Zero findings must not mean "clean" when nothing ran', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel(engines) {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		p._scanResults = [];
+		p._scanCoverage = {
+			incomplete: false, incompleteReason: null, engines,
+			refs: { localBranches: 1, remoteBranches: 0, tags: 0, stashes: 0, remoteOnlyBranches: [] },
+			refRefresh: { attempted: false, ok: false, reason: 'no-remote' },
+			rulesetMode: 'default', maxFileSizeMb: 100, timeoutSeconds: 300, dependencyHandling: 'warning'
+		};
+		return p;
+	}
+
+	const failed = (id, name, note) => ({ id, displayName: name, version: null, ok: false, findings: 0, note });
+	const ok = (id, name) => ({ id, displayName: name, version: 'v1', ok: true, findings: 0 });
+
+	test('every engine failing is reported as "nothing was scanned", not as clean', () => {
+		// Zero findings means nothing at all if nothing ran. A celebratory all-clear
+		// here is the worst output this product can produce.
+		const html = panel([
+			failed('gitleaks', 'Gitleaks', 'Not installed or not on PATH.'),
+			failed('noseyparker', 'Nosey Parker', 'Skipped — Docker not available'),
+			failed('trufflehog', 'TruffleHog', 'Not installed or not on PATH.')
+		])._getScanResultsSection();
+
+		assert.match(html, /Nothing was scanned/);
+		assert.match(html, /not<\/strong> a clean result/);
+		assert.ok(!/No Security Issues Found/.test(html), 'must not claim the repository is clean');
+		assert.ok(!/No API keys found/.test(html), 'must not show green confirmations');
+		// And it must say why, per engine.
+		assert.match(html, /Not installed or not on PATH/);
+		assert.match(html, /Docker not available/);
+	});
+
+	test('a genuinely clean scan still reads as clean', () => {
+		const html = panel([ok('gitleaks', 'Gitleaks'), ok('noseyparker', 'Nosey Parker')])._getScanResultsSection();
+		assert.match(html, /No Security Issues Found/);
+		assert.ok(!/Nothing was scanned/.test(html));
+		assert.ok(!/did not run, so this result is narrower/.test(html));
+	});
+
+	test('a partial failure caveats the clean result rather than hiding it', () => {
+		const html = panel([
+			ok('gitleaks', 'Gitleaks'),
+			failed('trufflehog', 'TruffleHog', 'Not installed or not on PATH.')
+		])._getScanResultsSection();
+		assert.match(html, /No Security Issues Found/, 'one engine did run, so this is a real result');
+		assert.match(html, /1 of 2 engines did not run/);
+		assert.match(html, /narrower than it looks/);
+	});
+
+	test('with no coverage recorded at all the old empty state still renders', () => {
+		// Older state, or a scan that never reached the coverage stage.
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		p._scanResults = [];
+		p._scanCoverage = null;
+		assert.match(p._getScanResultsSection(), /No Security Issues Found/);
+	});
+});

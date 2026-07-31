@@ -1010,6 +1010,23 @@ class LeakLockPanel {
                         margin-bottom: 12px;
                     }
 
+                    .scan-not-run { border-color: var(--vscode-editorWarning-foreground); }
+
+                    .scan-not-run h2 { color: var(--vscode-editorWarning-foreground); }
+
+                    .not-run-reasons {
+                        display: inline-block;
+                        text-align: left;
+                        margin: 12px auto;
+                        padding-left: 18px;
+                        color: var(--vscode-descriptionForeground);
+                    }
+
+                    .partial-warning {
+                        color: var(--vscode-editorWarning-foreground);
+                        font-weight: 600;
+                    }
+
                     .empty-results {
                         text-align: center;
                         padding: 40px 20px;
@@ -4734,12 +4751,50 @@ class LeakLockPanel {
 
         // Show results or empty state
         if (!this._scanResults || this._scanResults.length === 0) {
+            // Zero findings means nothing at all if nothing ran. Reporting "no issues"
+            // when every engine failed is a false all-clear — the single worst output
+            // this product can produce, and the failure the coverage panel exists to
+            // prevent. Say what happened instead.
+            const engines = this._scanCoverage?.engines || [];
+            const ranSuccessfully = engines.filter(engine => engine.ok);
+            if (engines.length > 0 && ranSuccessfully.length === 0) {
+                return `
+                <div class="scan-section">
+                    <div class="empty-results scan-not-run">
+                        <div class="empty-icon">🚫</div>
+                        <h2>Nothing was scanned</h2>
+                        <p>
+                            No detection engine ran, so this is <strong>not</strong> a clean result —
+                            your repository has not been checked at all.
+                        </p>
+                        <ul class="not-run-reasons">
+                            ${engines.map(engine => `
+                                <li><strong>${escapeHtml(engine.displayName)}</strong> — ${escapeHtml(engine.note || 'did not run')}</li>
+                            `).join('')}
+                        </ul>
+                        <p class="hint">
+                            Install at least one engine, or check <code>leakLock.scan.engines</code>,
+                            then scan again.
+                        </p>
+                        <div class="action-buttons">
+                            <button class="scan-button" onclick="requestNewScan()">🔄 Scan Again</button>
+                        </div>
+                    </div>
+                </div>
+                ${this._renderScanCoverage()}
+                ${this._renderCustomRules()}
+            `;
+            }
+
             return `
                 <div class="scan-section">
                     <div class="empty-results">
                         <div class="empty-icon">🛡️</div>
                         <h2>No Security Issues Found!</h2>
                         <p>Great news! Your repository scan completed successfully with no secrets or credentials detected.</p>
+                        ${engines.some(engine => !engine.ok)
+                            ? `<p class="partial-warning">⚠️ ${engines.filter(e => !e.ok).length} of ${engines.length} engines did not run, so this result is narrower than it looks. See the coverage below.</p>`
+                            : ''}
 
 
                         <div class="scan-summary">
