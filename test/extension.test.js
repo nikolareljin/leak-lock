@@ -2411,3 +2411,60 @@ suite('PR review fixes', () => {
 		assert.match(preceding, /if \(useNoseyParker\) \{/, 'the pull stage is gated on the engine running');
 	});
 });
+
+suite('Manifest integrity', () => {
+	const pkg = require('../package.json');
+	const fs = require('fs');
+	const path = require('path');
+
+	function sourceOf(...files) {
+		return files.map(f => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')).join('\n');
+	}
+
+	test('every contributed command is actually registered', () => {
+		// A command in package.json that nothing registers still appears in the
+		// Command Palette and fails when invoked. leak-lock.fileScan did exactly that:
+		// it was registered only inside file-scan.js, which nothing requires.
+		const src = sourceOf('extension.js', 'project-scan.js', 'leakLockPanel.js', 'leakLockSidebarProvider.js');
+		const registered = new Set(
+			Array.from(src.matchAll(/registerCommand\(\s*['"]([^'"]+)['"]/g)).map(m => m[1])
+		);
+		const missing = pkg.contributes.commands
+			.map(c => c.command)
+			.filter(c => !registered.has(c));
+		assert.deepStrictEqual(missing, [], `contributed but never registered: ${missing.join(', ')}`);
+	});
+
+	test('enum settings have one description per value', () => {
+		// A mismatch here renders a blank or shifted label in the settings UI.
+		const problems = [];
+		for (const [key, value] of Object.entries(pkg.contributes.configuration.properties)) {
+			for (const holder of [value, value.items || {}]) {
+				if (holder.enum && holder.enumDescriptions
+					&& holder.enum.length !== holder.enumDescriptions.length) {
+					problems.push(key);
+				}
+			}
+		}
+		assert.deepStrictEqual(problems, []);
+	});
+
+	test('every default is a legal value for its setting', () => {
+		const problems = [];
+		for (const [key, value] of Object.entries(pkg.contributes.configuration.properties)) {
+			if (value.enum && 'default' in value && !value.enum.includes(value.default)) {
+				problems.push(key);
+			}
+			if (value.type === 'array' && value.items && value.items.enum) {
+				for (const entry of value.default || []) {
+					if (!value.items.enum.includes(entry)) { problems.push(`${key}:${entry}`); }
+				}
+			}
+			if (typeof value.default === 'number') {
+				if ('minimum' in value && value.default < value.minimum) { problems.push(`${key}:min`); }
+				if ('maximum' in value && value.default > value.maximum) { problems.push(`${key}:max`); }
+			}
+		}
+		assert.deepStrictEqual(problems, []);
+	});
+});
