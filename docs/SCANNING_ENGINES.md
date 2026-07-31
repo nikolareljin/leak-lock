@@ -319,6 +319,27 @@ silently lose columns depending on which engine ran.
 
 ---
 
+## Regex redaction rules and portability
+
+A regex rule is compiled by JavaScript when you type it, which catches typos — but that
+is not the engine that will run it. The same pattern is then executed by:
+
+| Stage | Tool | Flavour |
+|---|---|---|
+| Dry-run preview | `git log -G<pattern>` | POSIX ERE |
+| Post-push verification | `git grep -E <pattern>` | POSIX ERE |
+| Rewrite (BFG) | `--replace-text regex:` | Java |
+| Rewrite (filter-repo) | `--replace-text regex:` | Python `re` |
+
+So a pattern can pass validation here and still fail — or, worse, match *differently* —
+downstream. Leak Lock warns about the constructs that most often diverge (lookahead and
+lookbehind, named groups, backreferences, and shorthand classes like `\d` and `\w`,
+none of which are POSIX) and suggests POSIX equivalents such as `[0-9]`.
+
+These are warnings, not refusals: the pattern may be exactly right for the tool you use.
+**The dry run is the authority.** Preview every regex rule before running a cleanup — it
+executes the pattern through git and reports git's own error if the pattern is rejected.
+
 ## Scan coverage
 
 Every scan records what it examined, and it is shown with the results — including when

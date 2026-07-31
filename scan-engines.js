@@ -378,6 +378,19 @@ function parseTruffleHogJsonl(stdout) {
     return findings;
 }
 
+/**
+ * Coerce a line number without letting `|| null` swallow a legitimate 0.
+ * Line numbers are 1-based in practice, but a coercion that silently discards a
+ * valid value is wrong regardless of whether the value shows up today.
+ */
+function toLineNumber(value) {
+    if (Number.isFinite(value)) {
+        return value;
+    }
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
 function mapTruffleHogFinding(raw) {
     // The Git metadata moved under SourceMetadata.Data.Git in v3; older builds put it
     // directly under SourceMetadata.Git. Accept both rather than silently losing the
@@ -386,7 +399,7 @@ function mapTruffleHogFinding(raw) {
     const timestamp = git.timestamp || null;
     return makeFinding({
         file: git.file || null,
-        line: Number.isFinite(git.line) ? git.line : (Number.parseInt(git.line, 10) || null),
+        line: toLineNumber(git.line),
         secret: raw.Raw || raw.RawV2 || null,
         matchText: raw.RawV2 || raw.Raw || null,
         description: describeTruffleHogDetector(raw.DetectorName),
@@ -468,10 +481,14 @@ const truffleHogEngine = {
 
         // "Verified live" is a claim about a moment in time — a credential valid last
         // week may have been rotated since. Stamp when the check actually ran.
+        // Stamped on every finding a verifying run produced, not only the live ones.
+        // "Checked, not live" is equally a claim about a moment in time — the key may
+        // have been rotated back since — and a status with no timestamp cannot be
+        // interpreted later.
         const verifiedAt = verify === false ? null : new Date().toISOString();
         const findings = parseTruffleHogJsonl(stdout).map(raw => {
             const finding = mapTruffleHogFinding(raw);
-            if (finding.verified === true) {
+            if (verifiedAt) {
                 finding.verifiedAt = verifiedAt;
             }
             return finding;
@@ -492,6 +509,7 @@ function getEngine(id) {
 module.exports = {
     NORMALISED_FIELDS,
     makeFinding,
+    toLineNumber,
     COMMON_BIN_DIRS,
     resolveBinary,
     resetBinaryCache,
