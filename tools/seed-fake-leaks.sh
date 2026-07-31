@@ -420,9 +420,21 @@ fine-grained, Stripe test keys, Google API key, SendGrid, npm and PyPI registry
 tokens, a JWT, an Azure storage connection string, Postgres/MySQL/MongoDB URLs
 with passwords, netrc and htpasswd entries, a Docker auth blob, a GCP
 service-account JSON, and RSA and ed25519 private keys.
+$(if [ "$GITHUB_SAFE" = 1 ]; then
+cat <<'SAFE'
 
-Slack and Twilio values are deliberately omitted: GitHub push protection rejects
-them, and any shape a scanner detects GitHub detects too.
+--github-safe: the Slack webhook, Slack bot token and Twilio SID were NOT planted.
+GitHub's account-level push protection rejects them, and any shape a scanner
+detects GitHub detects too. Drop the flag to plant all eighteen types locally.
+SAFE
+else
+cat <<'FULL'
+
+Also planted: Slack webhook and bot token, and Twilio SID and token. GitHub's
+account-level push protection rejects those three, so pushing this fixture to a
+public GitHub repo needs --github-safe (which omits them) or a manual unblock.
+FULL
+fi)
 
 What to look for in Leak Lock:
   config/settings.py     one secret across 2 commits and still on disk
