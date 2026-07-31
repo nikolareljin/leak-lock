@@ -1231,18 +1231,87 @@ suite('Scan coverage and export parity', () => {
 		assert.match(html, /Scan coverage/);
 		assert.match(html, /Gitleaks/);
 		assert.match(html, /Nosey Parker/);
-		assert.match(html, /refs refreshed from origin/);
-		assert.match(html, /only on the remote/);
+		assert.match(html, /Refs were refreshed from origin/);
+		assert.match(html, /exist only on the remote/);
 		assert.match(html, /side/);
+	});
+
+	test('the panel is collapsed by default and summarises what is inside', () => {
+		// On a busy repository the detail runs to hundreds of branch names. The
+		// summary carries the numbers so the panel is scannable at a glance.
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		const html = panel._renderScanCoverage();
+		assert.match(html, /<details class="coverage-toggle">/);
+		assert.ok(!/<details class="coverage-toggle" open/.test(html), 'starts collapsed');
+		assert.match(html, /coverage-summary/);
+		assert.match(html, /Gitleaks \+ Nosey Parker/, 'the summary names the engines that ran');
+		assert.match(html, /2 findings/, 'the summary totals the findings');
+		assert.match(html, /5 refs scanned/, 'the summary totals the refs');
+	});
+
+	test('a long remote-only branch list is collapsed behind a count', () => {
+		const many = Array.from({ length: 150 }, (_, i) => `feat/branch-${i}`);
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage,
+			refs: { ...coverage.refs, remoteBranches: 150, remoteOnlyBranches: many }
+		});
+		const html = panel._renderScanCoverage();
+		assert.match(html, /150 branches exist only on the remote/);
+		assert.match(html, /coverage-branchlist/);
+	});
+
+	test('warnings are promoted into the summary, never hidden by collapsing', () => {
+		// Collapsing must hide volume, not caveats. A reader who never expands the
+		// panel still has to see that coverage was reduced.
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage,
+			refRefresh: { attempted: true, ok: false, reason: 'The remote host could not be reached.' },
+			strategy: { mode: 'sequential', tier: 'constrained', concurrency: 1, dropped: ['trufflehog'], reason: 'constrained host', host: { cpus: 2, totalMemGb: 3, memorySource: 'os', loadPerCore: 0.1 } }
+		});
+		const html = panel._renderScanCoverage();
+		const summary = html.slice(0, html.indexOf('coverage-intro'));
+		assert.match(summary, /coverage-badge/);
+		assert.match(summary, /refs not refreshed/);
+		assert.match(summary, /1 engine skipped/);
 	});
 
 	test('an unrefreshed ref set is called out rather than passed over', () => {
 		const panel = panelWithResults([gitleaksFinding], {
-			...coverage, refRefresh: { attempted: true, ok: false, reason: 'network unreachable' }
+			...coverage, refRefresh: { attempted: true, ok: false, reason: 'The remote host could not be reached.' }
 		});
 		const html = panel._renderScanCoverage();
-		assert.match(html, /refs NOT refreshed/);
+		assert.match(html, /Refs were <strong>not<\/strong> refreshed/);
 		assert.match(html, /may not have been scanned/);
+	});
+
+	test('a raw git failure is folded away, not spliced into the summary', () => {
+		// The reported version put git's entire SAML/SSO remote message inline in
+		// the refs line, which made the panel unreadable.
+		const raw = 'ERROR: The organization has enabled or enforced SAML SSO. Visit https://docs.github.com/... fatal: Could not read from remote repository.';
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage,
+			refRefresh: {
+				attempted: true, ok: false,
+				reason: 'The organisation that owns this remote enforces SAML single sign-on, and your credential is not authorised for it.',
+				remoteError: { kind: 'sso', command: 'git fetch --tags origin', cause: 'x', fix: 'y', detail: raw }
+			}
+		});
+		const html = panel._renderScanCoverage();
+		const summary = html.slice(0, html.indexOf('coverage-intro'));
+		assert.ok(!summary.includes('docs.github.com'), 'raw git output never reaches the summary line');
+		assert.match(html, /What git reported/);
+		assert.match(html, /coverage-raw/);
+	});
+
+	test('an engine with no usable version says so instead of printing a placeholder', () => {
+		// Ubuntu's gitleaks package prints "version is set by build process".
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage,
+			engines: [{ id: 'gitleaks', displayName: 'Gitleaks', version: null, ok: true, findings: 0 }]
+		});
+		const html = panel._renderScanCoverage();
+		assert.match(html, /version unknown/);
+		assert.ok(!/version is set by build process/.test(html));
 	});
 
 	test('an incomplete scan renders an unmissable banner, not a dismissible toast', () => {
@@ -1250,6 +1319,9 @@ suite('Scan coverage and export parity', () => {
 		const html = panel._renderScanCoverage();
 		assert.match(html, /Scan incomplete/);
 		assert.match(html, /not exhaustive/);
+		// It sits outside the toggle: an incomplete scan is a finding in its own
+		// right and must not require a click to discover.
+		assert.ok(html.indexOf('Scan incomplete') < html.indexOf('<details class="coverage-toggle">'));
 	});
 
 	test('attribution names the engines that found a finding and those that missed it', () => {
