@@ -277,7 +277,34 @@ suite('Ref-complete rewrite script', () => {
 		// real line breaks so a copy of it is runnable.
 		const out = script();
 		assert.ok(out.split('\n').length > 20, 'script spans many lines');
-		assert.ok(out.startsWith('#!/bin/bash\n'), 'shebang is on its own line');
+		// `env bash` rather than /bin/bash: on macOS /bin/bash is 3.2, Homebrew's
+		// newer bash lives elsewhere, and Git Bash on Windows is elsewhere again.
+		assert.ok(out.startsWith('#!/usr/bin/env bash\n'), 'shebang is on its own line');
+	});
+
+	test('runs byte-wise and checks its tools before doing anything destructive', () => {
+		const out = script({ requiredCommands: ['git', 'java'] });
+		// Locale-dependent matching would make "verified clean" mean different
+		// things on different machines.
+		assert.ok(out.includes('export LC_ALL=C'), 'matching is locale-independent');
+		assert.ok(out.includes('command -v "$cmd"'), 'required tools are checked up front');
+		assert.ok(out.includes('Required command not found on PATH'));
+		// The check must precede the rewrite, not follow it.
+		assert.ok(out.indexOf('command -v "$cmd"') < out.indexOf('# 1. Refresh every ref'));
+	});
+
+	test('verification reads the rule file instead of repeating every secret inline', () => {
+		const out = script({
+			verifyRulesFile: '"$replacement_file"',
+			preambleLines: ['replacement_file="/tmp/x"']
+		});
+		// One list, one place. Previously each secret appeared twice: once in the
+		// generated rule file and again in its own `git grep --fixed-strings` line,
+		// which both bloated the script and pasted sensitive values through it.
+		assert.ok(out.includes('done < "$replacement_file"'), 'the verify loop re-reads the rule file');
+		assert.ok(out.includes('needle="${needle%%==>*}"'), 'the match side of each rule is extracted');
+		assert.ok(out.includes('grep_flag="--extended-regexp"'), 'regex rules verify as regexes');
+		assert.ok(out.includes('grep_flag="--fixed-strings"'), 'literal rules verify as literals');
 	});
 
 	test('iterates refs with read -r, not word-splitting for-loops', () => {
@@ -1246,5 +1273,288 @@ suite('Scan coverage and export parity', () => {
 		const html = panel._getResultsHtml();
 		assert.match(html, /<th[^>]*>Engine<\/th>/);
 		assert.match(html, /Scan coverage/);
+	});
+});
+
+suite('Manual redaction rules', () => {
+	const rules = require('../redaction-rules');
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		return p;
+	}
+
+	test('a source containing the rule separator is rejected', () => {
+		// "==>" separates the match from the replacement in the rule file. A source
+		// containing it produces a malformed line, and the rewrite tool's parse of
+		// that line — not the UI — decides what actually gets removed.
+		const result = rules.validateRule({ source: 'host==>evil', mode: 'literal', replaceWith: 'x' });
+		assert.strictEqual(result.valid, false);
+		assert.ok(result.errors.some(e => e.includes('==>')));
+	});
+
+	test('empty, whitespace-only and multi-line sources are rejected', () => {
+		assert.strictEqual(rules.validateRule({ source: '' }).valid, false);
+		assert.strictEqual(rules.validateRule({ source: '   ' }).valid, false);
+		assert.strictEqual(rules.validateRule({ source: 'a\nb' }).valid, false);
+	});
+
+	test('an invalid regex is rejected at entry, not at rewrite time', () => {
+		const bad = rules.validateRule({ source: '([unclosed', mode: 'regex' });
+		assert.strictEqual(bad.valid, false);
+		assert.ok(bad.errors.some(e => /valid regular expression/i.test(e)));
+		assert.strictEqual(rules.validateRule({ source: 'AKIA[0-9A-Z]{16}', mode: 'regex' }).valid, true);
+	});
+
+	test('a pattern matching the empty string is refused', () => {
+		// It would rewrite every blob in history.
+		const result = rules.validateRule({ source: 'x*', mode: 'regex' });
+		assert.strictEqual(result.valid, false);
+		assert.ok(result.errors.some(e => /empty string/.test(e)));
+	});
+
+	test('a very short literal is warned about but still allowed', () => {
+		const result = rules.validateRule({ source: 'abc', mode: 'literal' });
+		assert.strictEqual(result.valid, true, 'short internal codenames are legitimate');
+		assert.ok(result.warnings.length > 0, 'but the blast radius has to be previewed');
+	});
+
+	test('rule lines carry the mode through to the rewrite file', () => {
+		assert.strictEqual(
+			rules.formatRuleLine({ source: 'internal.example.com', mode: 'literal', replaceWith: 'redacted' }),
+			'internal.example.com==>redacted'
+		);
+		// Both BFG and git filter-repo need the regex: prefix; without it the pattern
+		// would be rewritten as a literal and match nothing.
+		assert.strictEqual(
+			rules.formatRuleLine({ source: 'AKIA[0-9A-Z]{16}', mode: 'regex', replaceWith: '*****' }),
+			'regex:AKIA[0-9A-Z]{16}==>*****'
+		);
+		assert.strictEqual(
+			rules.formatRuleLine({ source: 'x', mode: 'literal', replaceWith: '' }),
+			'x==>*****',
+			'an empty replacement falls back to the single default'
+		);
+	});
+
+	test('verification channels are split by mode', () => {
+		// verifyRemoteRefs greps literals with --fixed-strings. A regex rule verified
+		// that way would rewrite correctly and then fail its own verification.
+		const split = rules.partitionForVerification([
+			{ source: 'host', mode: 'literal' },
+			{ source: 'AKIA[0-9A-Z]{16}', mode: 'regex' }
+		]);
+		assert.deepStrictEqual(split.literals, ['host']);
+		assert.deepStrictEqual(split.patterns, ['AKIA[0-9A-Z]{16}']);
+	});
+
+	test('the preview uses a pickaxe over all refs', () => {
+		const literal = rules.buildPreviewArgs({ source: 'host', mode: 'literal' });
+		const regex = rules.buildPreviewArgs({ source: 'h.st', mode: 'regex' });
+		// -S/-G search diffs, so they find content added and later removed — the
+		// normal case for a leaked value, and what a working-tree grep would miss.
+		assert.ok(literal.includes('-Shost'));
+		assert.ok(regex.includes('-Gh.st'));
+		// The preview must cover the same refs the rewrite will, or it understates.
+		assert.ok(literal.includes('--all'));
+	});
+
+	test('the panel stores, deduplicates and removes rules', () => {
+		const p = panel();
+		assert.strictEqual(p._addCustomRule('internal.example.com', 'literal', 'redacted').ok, true);
+		assert.strictEqual(p._getCustomRules().length, 1);
+		// Re-adding the same source edits it rather than shadowing it with a second rule.
+		p._addCustomRule('internal.example.com', 'literal', 'changed');
+		assert.strictEqual(p._getCustomRules().length, 1);
+		assert.strictEqual(p._getCustomRules()[0].replaceWith, 'changed');
+		p._addCustomRule('internal.example.com', 'regex', 'other');
+		assert.strictEqual(p._getCustomRules().length, 2, 'a different mode is a different rule');
+		p._removeCustomRule(p._getCustomRules()[0].id);
+		assert.strictEqual(p._getCustomRules().length, 1);
+	});
+
+	test('an invalid rule is not stored', () => {
+		const p = panel();
+		assert.strictEqual(p._addCustomRule('bad==>rule', 'literal', 'x').ok, false);
+		assert.strictEqual(p._getCustomRules().length, 0);
+	});
+
+	test('manual rules survive a re-scan, unlike index-based selection', () => {
+		const p = panel();
+		p._addCustomRule('internal.example.com', 'literal', 'redacted');
+		p._scanResults = [{ file: 'a', line: 1, fullSecret: 's', isDependency: false }];
+		p._resetScanSelection();
+		// Selection is tied to _scanResults indices and must reset; rules are not.
+		assert.strictEqual(p._getCustomRules().length, 1);
+	});
+
+	test('a rules-only cleanup resolves to rules and is not refused', () => {
+		const p = panel();
+		p._scanResults = [];
+		p._resetScanSelection();
+		p._addCustomRule('internal.example.com', 'literal', 'redacted');
+		const resolved = p._resolveCleanupRules({});
+		assert.strictEqual(resolved.length, 1);
+		assert.deepStrictEqual(resolved[0], {
+			source: 'internal.example.com', mode: 'literal', replaceWith: 'redacted'
+		});
+	});
+
+	test('findings and manual rules combine without duplicate lines', () => {
+		const p = panel();
+		p._scanResults = [{
+			file: 'a.py', line: 1, secret: 'tok', fullSecret: 'tok',
+			isDependency: false, includeInCleanup: true
+		}];
+		p._resetScanSelection();
+		p._setScanSelection(0, true);
+		// The same string added manually must not produce a second identical rule.
+		p._addCustomRule('tok', 'literal', 'zzz');
+		p._addCustomRule('other.example.com', 'literal', 'redacted');
+		const resolved = p._resolveCleanupRules({});
+		assert.strictEqual(resolved.length, 2);
+		assert.deepStrictEqual(resolved.map(r => r.source).sort(), ['other.example.com', 'tok']);
+	});
+
+	test('a regex rule reaches the prepared script and its verification', () => {
+		const p = panel();
+		p._addCustomRule('AKIA[0-9A-Z]{16}', 'regex', 'REDACTED');
+		const script = p._buildScanBfgReplaceCommand('/repo', p._resolveCleanupRules({}));
+		assert.ok(script.includes('regex:AKIA[0-9A-Z]{16}==>REDACTED'), 'the regex: prefix reaches the rule file');
+		// One list, one place: the secret is not repeated in a per-rule grep line.
+		assert.ok(script.includes('done < "$replacement_file"'));
+		assert.ok(script.includes('grep_flag="--extended-regexp"'));
+	});
+
+	test('the rules editor renders even when the scan found nothing', () => {
+		// A clean scan is exactly when a user reaches for manual redaction.
+		const html = panel()._renderCustomRules();
+		assert.match(html, /Manual redaction rules/);
+		assert.match(html, /custom-rule-source/);
+		assert.match(html, /custom-rule-mode/);
+	});
+
+	test('a rule that matches nothing is called out as probably a typo', () => {
+		const p = panel();
+		const outcome = p._addCustomRule('internal.example.com', 'literal', 'redacted');
+		p._scanCleanup.customRulePreviews[outcome.rule.id] = {
+			commitCount: 0, commits: [], files: [], branches: [], truncated: false, maxCount: 200
+		};
+		const html = p._renderCustomRules();
+		assert.match(html, /Matches nothing in history/);
+		assert.match(html, /typo/);
+	});
+
+	test('a bounded preview says it is bounded', () => {
+		const p = panel();
+		const outcome = p._addCustomRule('internal.example.com', 'literal', 'redacted');
+		p._scanCleanup.customRulePreviews[outcome.rule.id] = {
+			commitCount: 200, commits: [], files: ['a.py'], branches: ['main'], truncated: true, maxCount: 200
+		};
+		const html = p._renderCustomRules();
+		assert.match(html, /the real total is higher/);
+	});
+});
+
+suite('Manual regex redaction end to end', () => {
+	const gitRewrite = require('../git-rewrite');
+	const LeakLockPanel = require('../leakLockPanel');
+	const redactionRules = require('../redaction-rules');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	// git filter-repo is not one of the extension's installed dependencies, so this
+	// suite reports itself skipped rather than failing on a machine without it.
+	function hasFilterRepo() {
+		try {
+			cp.execFileSync('git', ['filter-repo', '--version'], { env, stdio: 'ignore' });
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	let base, origin, work, available;
+
+	suiteSetup(() => {
+		available = hasFilterRepo();
+		if (!available) { return; }
+		base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-regex-'));
+		origin = path.join(base, 'origin.git');
+		work = path.join(base, 'work');
+		cp.execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin], { env });
+		cp.execFileSync('git', ['clone', '-q', origin, work], { env });
+		// Three variants of one internal hostname: enumerating them by hand is
+		// exactly what regex mode exists to avoid.
+		fs.writeFileSync(path.join(work, 'README.md'), '# app\n');
+		fs.writeFileSync(path.join(work, 'conf.yml'), [
+			'a: api.internal-corp-7.example',
+			'b: db.internal-corp-42.example',
+			'c: mq.internal-corp-999.example'
+		].join('\n') + '\n');
+		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
+		g(['add', '-A']); g(['commit', '-qm', 'add config']); g(['push', '-q', 'origin', 'main']);
+	});
+
+	suiteTeardown(() => {
+		if (base) { try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function originMatches(pattern) {
+		return cp.execFileSync('git', ['--git-dir=' + origin, 'log', '--all', '-G', pattern, '--oneline'], { env })
+			.toString().trim().length > 0;
+	}
+
+	test('a regex rule removes every variant and verifies clean on the remote', async function () {
+		if (!available) { this.skip(); return; }
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._addCustomRule('internal-corp-[0-9]+\\.example', 'regex', 'redacted.invalid');
+		const rules = panel._resolveCleanupRules({});
+
+		assert.strictEqual(originMatches('internal-corp-[0-9]+\\.example'), true, 'the remote starts dirty');
+
+		await panel._withSecureReplacementsFile(rules, async (replacementsFile) => {
+			// The rule file is what both the rewrite and the verification read.
+			const contents = fs.readFileSync(replacementsFile, 'utf8');
+			assert.ok(contents.startsWith('regex:'), 'the regex: prefix reaches the rewrite tool');
+			return gitRewrite.runRewrite({
+				repoDir: work,
+				push: false,
+				rewrite: async () => {
+					cp.execFileSync('git', ['filter-repo', '--replace-text', replacementsFile, '--force'],
+						{ cwd: work, env, maxBuffer: 64 * 1024 * 1024 });
+				}
+			});
+		});
+
+		await gitRewrite.ensureRemote(work, 'origin', origin);
+		await gitRewrite.pushRewritten(work, 'origin');
+
+		const verify = redactionRules.partitionForVerification(rules);
+		assert.deepStrictEqual(verify.literals, [], 'a regex rule must not be verified as a literal');
+		const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', verify);
+		assert.deepStrictEqual(offenders, [], 'regex-aware verification reports the remote clean');
+		assert.strictEqual(originMatches('internal-corp-[0-9]+\\.example'), false, 'every variant is gone from the remote');
+	});
+
+	test('verification can still fail — it is not vacuously clean', async function () {
+		if (!available) { this.skip(); return; }
+		// A verification step that cannot report dirty is not a verification step.
+		// 'app' is still present in README.md, so this must be reported.
+		const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', { patterns: ['a[p]p'] });
+		assert.ok(offenders.length > 0, 'a pattern that is still present is reported as an offender');
+		assert.ok(offenders.every(o => o.reason === 'secret still present'));
 	});
 });
