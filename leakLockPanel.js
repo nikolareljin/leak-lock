@@ -2761,13 +2761,13 @@ class LeakLockPanel {
                                     ${eligibleIndexes.length === 0 ? 'disabled' : ''}
                                     ${selectedCount > 0 && selectedCount === eligibleIndexes.length ? 'checked' : ''}>
                             </th>
-                            <th style="width: 20%;">File</th>
-                            <th style="width: 50px;">Line</th>
-                            <th style="width: 20%;">Secret</th>
-                            <th style="width: 12%;">Replace With</th>
-                            <th style="width: 10%;" title="Which engine reported this finding. A secret found by one engine and missed by another is visible here.">Engine</th>
-                            <th style="width: 15%;">Git Info</th>
-                            <th>Description</th>
+                            <th style="width: 17%;">File</th>
+                            <th style="width: 44px;">Line</th>
+                            <th style="width: 16%;">Secret</th>
+                            <th style="width: 10%;">Replace With</th>
+                            <th style="width: 11%;" title="Which engine reported this finding. A secret found by one engine and missed by another is visible here.">Engine</th>
+                            <th style="width: 13%;">Git Info</th>
+                            <th style="width: 22%;">Description</th>
                         </tr>
                     </thead>
                     <tbody id="scan-findings-body">
@@ -4292,7 +4292,7 @@ class LeakLockPanel {
                     <td style="font-family: monospace; word-break: break-all;">${escapeHtml(rule.source)}</td>
                     <td><span style="background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; font-size: 0.8em;">${escapeHtml(rule.mode)}</span></td>
                     <td style="font-family: monospace;">${escapeHtml(rule.replaceWith)}</td>
-                    <td style="white-space: nowrap;">
+                    <td style="white-space: nowrap; overflow: visible;">
                         <button class="scan-button" data-rule-preview="${escapeHtml(rule.id)}" title="Show which commits, files and branches this rule touches — without changing anything.">🔍 Preview</button>
                         <button class="scan-button" data-rule-remove="${escapeHtml(rule.id)}">✕ Remove</button>
                     </td>
@@ -4333,7 +4333,7 @@ class LeakLockPanel {
                 ${rules.length === 0
                     ? '<p style="font-size: 0.85em; color: var(--vscode-descriptionForeground);">No manual rules yet. Rules persist across re-scans, because they are not tied to a scan result.</p>'
                     : `<table class="results-table">
-                        <thead><tr><th>Source text</th><th style="width: 80px;">Match</th><th style="width: 20%;">Replace with</th><th style="width: 200px;">Actions</th></tr></thead>
+                        <thead><tr><th>Source text</th><th style="width: 80px;">Match</th><th style="width: 20%;">Replace with</th><th style="width: 250px; white-space: nowrap;">Actions</th></tr></thead>
                         <tbody>${ruleRows}</tbody>
                        </table>
                        <p style="font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 6px;">
@@ -4436,7 +4436,11 @@ class LeakLockPanel {
         }
 
         const engineNames = engines.filter(e => e.ok).map(e => e.displayName);
-        const totalFindings = engines.reduce((sum, e) => sum + (e.ok ? (e.findings || 0) : 0), 0);
+        // The merged count, matching the table. Per-engine counts sum higher because a
+        // secret found by two engines is one row; those live in the detail.
+        const totalFindings = Array.isArray(this._scanResults)
+            ? this._scanResults.length
+            : engines.reduce((sum, e) => sum + (e.ok ? (e.findings || 0) : 0), 0);
         const refTotal = (refs.localBranches || 0) + (refs.remoteBranches || 0) + (refs.tags || 0);
 
         const summaryBits = [

@@ -30,6 +30,10 @@
 - **Export Detail**: Findings carry identical keys regardless of engine (a field the engine did not supply is `null`, never absent), plus engine attribution, verification status, entropy, fingerprint, column ranges and author metadata. Redacted exports now also drop author name, email and commit message.
 - **Validation at Entry**: A redaction source containing `==>` is rejected — that separator decides what the rewrite tool actually removes, and a malformed line would redact something other than what the UI displayed. Empty, whitespace-only and multi-line sources are rejected, invalid regexes and patterns matching the empty string are rejected, and short literals warn.
 
+### Fixed — Results Table Layout
+- **The Engine column squeezed Description into an unreadable sliver.** Column widths summed past the available space once the new column was added, so the description wrapped one or two characters per line. Rebalanced, and the manual-rule Actions column no longer clips its Remove button. Both were found by rendering the real webview for the documentation screenshots.
+- **The coverage summary counted findings differently from the table beside it.** It summed per-engine counts, which run higher than the merged rows because a secret found by two engines is one row — so it read "6 findings" next to "Found 5 findings". The summary now uses the merged count; per-engine counts stay in the detail.
+
 ### Changed — Scan Coverage Panel
 - **Collapsed by default, with a one-line summary**: *Gitleaks + Nosey Parker · 162 findings · 186 refs scanned · parallel*. The panel is reference material and on a busy repository its detail ran to hundreds of branch names. Collapsing hides **volume, never caveats** — any warning (refs not refreshed, engines skipped for host capacity, a cached scanner image) is promoted into the summary line as a badge, and an incomplete scan keeps its banner outside the toggle entirely.
 - **Left-aligned.** In the no-findings view the panel sat inside the centred "No Security Issues Found!" block and inherited its centring, which read oddly for a dense list. It is now a sibling of that block with explicit alignment, so it renders the same way in both states.
@@ -38,6 +42,7 @@
 - **An engine with no usable version says "version unknown"** instead of printing a placeholder. Ubuntu's gitleaks package reports `version is set by build process`, which was being rendered where a version belongs; `noseyparker 0.24.0` also repeated the engine name next to it. Both are now parsed to a bare version.
 
 ### Documentation
+- **Refreshed screenshots**, captured from Leak Lock scanning its own repository. New shots cover the multi-engine results table with the Engine column and the `VERIFIED LIVE` badge, the scan coverage panel, the manual redaction editor, and the no-findings view. The secrets shown are the synthetic fixtures in `test/test-secrets.js` — AWS's published `AKIAIOSFODNN7EXAMPLE`, `sk_test_…`, `ghp_1234…` — never real credentials. `tools/render-screenshots.js` regenerates them from the extension's own `_getHtmlForWebview()`, so they can be kept current instead of drifting.
 - Added [docs/SCANNING_ENGINES.md](docs/SCANNING_ENGINES.md): what each engine is good at, what it cannot do, licensing, privacy, install, settings, how results are merged, and the measured comparison behind the multi-engine decision.
 - `docs/ARCHITECTURE.md` no longer documents a scan command without `--git-history full`, and records the current engine invocations.
 - README and the project website describe multi-engine scanning, verification and manual redaction.

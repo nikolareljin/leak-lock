@@ -1245,7 +1245,10 @@ suite('Scan coverage and export parity', () => {
 		assert.ok(!/<details class="coverage-toggle" open/.test(html), 'starts collapsed');
 		assert.match(html, /coverage-summary/);
 		assert.match(html, /Gitleaks \+ Nosey Parker/, 'the summary names the engines that ran');
-		assert.match(html, /2 findings/, 'the summary totals the findings');
+		// The merged count, matching the results table. Per-engine counts sum to 2
+		// here because both engines reported the same secret; showing that unmerged
+		// total beside a one-row table would just look like a miscount.
+		assert.match(html, /1 finding\b/, 'the summary uses the merged finding count');
 		assert.match(html, /5 refs scanned/, 'the summary totals the refs');
 	});
 

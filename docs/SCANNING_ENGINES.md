@@ -23,6 +23,14 @@ This is why the results table shows, for every finding, **which engines found it
 which enabled engines did not**. A gap against another tool becomes a fact you can check
 instead of a mystery.
 
+![Scan results with engine attribution](website/img/scan-results-table.png)
+
+Above: Leak Lock scanning its own repository. Note the **Engine** column — one finding was
+reported by Gitleaks and Nosey Parker but *missed by TruffleHog*, another only by Nosey
+Parker, and the Stripe key carries a `VERIFIED LIVE` badge because TruffleHog confirmed it
+still works. The secrets shown are the synthetic fixtures in `test/test-secrets.js`, not
+real credentials.
+
 ---
 
 ## Gitleaks — the default engine
@@ -287,6 +295,14 @@ there are none, because "no findings" is meaningless without its scope:
 
 The same record goes into the JSON export, so an exported report can be audited later and
 an incomplete scan cannot be mistaken for a completed one.
+
+![Scan coverage panel](website/img/scan-coverage.png)
+
+The panel is collapsed to a single summary line by default — *engines · findings · refs
+scanned · execution mode*. Any warning (refs not refreshed, engines skipped for host
+capacity, a cached scanner image) is promoted into that summary line, and an incomplete
+scan keeps its banner outside the toggle entirely: collapsing hides volume, never a
+caveat.
 
 ---
 
