@@ -167,10 +167,25 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 >
 > Regenerate the webview images with `tools/real-scan.js` and
 > `tools/render-screenshots.js` (views: `results`, `empty`, `keywords`, `removeFiles`,
-> `prepared`, `pushPlan`, `protected`, `verified`). The Control Panel shot below is taken
-> from a live VS Code window, since the activity bar is editor chrome the renderer cannot
-> produce. Either way, scan a clone under `/tmp/repos` rather than your home directory —
-> the paths are visible in the images.
+> `prepared`, `pushPlan`, `protected`, `verified`). The two full-editor shots are taken
+> from a live VS Code window, since the sidebar and activity bar are editor chrome the
+> renderer cannot produce — and they come from a separate run against the same fixture,
+> which is why the finding count differs from the figures above. Either way, scan a clone
+> under `/tmp/repos` rather than your home directory — the paths are visible in the images.
+
+### The whole thing, in one window
+
+![The full Leak Lock interface](docs/website/img/full-interface.png)
+
+Two surfaces: the **Control Panel** in the sidebar is where setup and scanning live, and
+the **scanner** in the main editor area is where findings are reviewed and cleaned up. The
+sidebar starts things; nothing there rewrites history on its own.
+
+Visible here: the findings count broken down by severity, select-all and per-row
+checkboxes, `Export JSON` and `Print / Save as PDF`, a search box over the results, the
+refs-status line — `Last fetched never (stale)`, with `Refetch now` beside it, because a
+scan is only as complete as the refs it covered — and the banner that marks a finding as
+living in a third-party dependency and therefore not selectable for cleanup.
 
 ### Scan results — multi-engine, with attribution
 
