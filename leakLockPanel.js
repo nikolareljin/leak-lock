@@ -4845,7 +4845,7 @@ class LeakLockPanel {
         const configured = config.get('scan.engines');
         const ids = Array.isArray(configured) && configured.length
             ? configured
-            : ['gitleaks', 'noseyparker'];
+            : ['gitleaks', 'trufflehog', 'noseyparker'];
         const known = new Set(['gitleaks', 'trufflehog', 'noseyparker']);
         return ids.filter(id => known.has(id));
     }

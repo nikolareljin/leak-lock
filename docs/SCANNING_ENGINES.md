@@ -33,7 +33,7 @@ more than one engine.
 
 Nothing carries a `VERIFIED LIVE` badge because verification was enabled and TruffleHog
 correctly verified none of these — they are synthetic fixtures from `test-secrets.js`, not
-live credentials. The full run returned 45 findings; the image shows six, chosen to span
+live credentials. The full run returned 59 findings; the image shows six, chosen to span
 the engines.
 
 ---
@@ -191,18 +191,34 @@ no-limit values. If a cap is ever reintroduced, the results must say so.
 
 ## Choosing engines
 
-`leakLock.scan.engines` is an ordered list. The default:
+`leakLock.scan.engines` is an ordered list. **All three are enabled by default:**
 
 ```jsonc
-"leakLock.scan.engines": ["gitleaks", "noseyparker"]
+"leakLock.scan.engines": ["gitleaks", "trufflehog", "noseyparker"]
 ```
 
-Add `"trufflehog"` to include verification.
-
 - A missing engine binary **disables that engine, never the scan**. The coverage panel
-  states which engines ran, at which versions, and which did not and why.
-- Running two engines is the point. Their rulesets genuinely differ, and the attribution
+  states which engines ran, at which versions, and which did not and why — so an engine
+  you have not installed is visible rather than silently absent.
+- Running all three is the point. Their rulesets genuinely differ, and the attribution
   line tells you when one is falling behind.
+- Enabling TruffleHog does **not** on its own make any network call. Verification is a
+  separate setting (`leakLock.trufflehog.verify`, off by default).
+
+### If an engine you installed is reported "not installed"
+
+A GUI-launched VS Code does not inherit your shell's `PATH` — on macOS it never does, and
+on Linux it frequently misses `~/.local/bin`. Leak Lock therefore also looks in the
+places these tools are actually installed: `~/.local/bin`, `~/bin`, `~/go/bin`,
+`/usr/local/bin`, `/usr/bin`, `/opt/homebrew/bin`, `/home/linuxbrew/.linuxbrew/bin`, and
+the common Windows locations.
+
+If your binary lives somewhere else, point at it directly:
+
+```jsonc
+"leakLock.trufflehog.binaryPath": "/opt/tools/trufflehog",
+"leakLock.gitleaks.binaryPath": "/opt/tools/gitleaks"
+```
 
 ---
 
@@ -325,7 +341,7 @@ caveat.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `leakLock.scan.engines` | `["gitleaks","noseyparker"]` | Which engines run, in order |
+| `leakLock.scan.engines` | `["gitleaks","trufflehog","noseyparker"]` | Which engines run, in order |
 | `leakLock.scan.executionMode` | `auto` | `auto`, `parallel`, `sequential` or `single` — see [How many engines run at once](#how-many-engines-run-at-once) |
 | `leakLock.scan.timeoutSeconds` | `300` | Per-engine timeout. On expiry, partial findings are reported and marked incomplete |
 | `leakLock.scan.refreshRefsBeforeScan` | `true` | `git fetch --prune --tags` first, so remote-only branches are not invisible |

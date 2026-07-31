@@ -52,6 +52,56 @@ function makeFinding(fields) {
     return finding;
 }
 
+/**
+ * Locate an engine binary.
+ *
+ * A GUI-launched VS Code does not inherit the shell's PATH on macOS, and on Linux it
+ * frequently misses ~/.local/bin — so an engine the user has definitely installed is
+ * reported "not installed" and silently skipped. Fall back to the places these tools
+ * actually get installed before giving up.
+ */
+const COMMON_BIN_DIRS = [
+    path.join(os.homedir(), '.local', 'bin'),
+    path.join(os.homedir(), 'bin'),
+    path.join(os.homedir(), 'go', 'bin'),
+    '/usr/local/bin',
+    '/usr/bin',
+    '/opt/homebrew/bin',      // Apple silicon Homebrew
+    '/home/linuxbrew/.linuxbrew/bin',
+    'C:\\Program Files\\gitleaks',
+    'C:\\ProgramData\\chocolatey\\bin'
+];
+
+const resolvedBinaries = new Map();
+
+function resolveBinary(name, explicit) {
+    if (explicit) {
+        return explicit;
+    }
+    if (resolvedBinaries.has(name)) {
+        return resolvedBinaries.get(name);
+    }
+    for (const dir of COMMON_BIN_DIRS) {
+        for (const candidate of [path.join(dir, name), path.join(dir, `${name}.exe`)]) {
+            try {
+                fs.accessSync(candidate, fs.constants.X_OK);
+                resolvedBinaries.set(name, candidate);
+                return candidate;
+            } catch {
+                // Keep looking.
+            }
+        }
+    }
+    // Fall through to PATH resolution by the OS.
+    resolvedBinaries.set(name, name);
+    return name;
+}
+
+/** Test seam: forget cached binary locations. */
+function resetBinaryCache() {
+    resolvedBinaries.clear();
+}
+
 async function runTool(command, args, options = {}) {
     return execFileAsync(command, args, {
         timeout: options.timeoutMs || DEFAULT_TIMEOUT_MS,
@@ -213,7 +263,7 @@ const gitleaksEngine = {
 
     async isAvailable(options = {}) {
         try {
-            const { stdout } = await runTool(options.binary || this.binary, ['--help'], { timeoutMs: 15000 });
+            const { stdout } = await runTool(resolveBinary(this.binary, options.binary), ['--help'], { timeoutMs: 15000 });
             return detectGitleaksDialect(stdout) !== null;
         } catch {
             return false;
@@ -222,7 +272,7 @@ const gitleaksEngine = {
 
     async version(options = {}) {
         try {
-            const { stdout } = await runTool(options.binary || this.binary, ['version'], { timeoutMs: 15000 });
+            const { stdout } = await runTool(resolveBinary(this.binary, options.binary), ['version'], { timeoutMs: 15000 });
             const text = String(stdout || '').trim();
             // Distribution builds print a placeholder — Ubuntu's package emits
             // "version is set by build process". Rendering that where a version
@@ -238,7 +288,7 @@ const gitleaksEngine = {
      * @returns {Promise<{findings: Array, surfaces: object, warnings: string[]}>}
      */
     async scan({ repoDir, binary, timeoutMs, configPath, baselinePath, maxTargetMegabytes, includeWorkingTree = true } = {}) {
-        const bin = binary || this.binary;
+        const bin = resolveBinary(this.binary, binary);
         const { stdout: helpText } = await runTool(bin, ['--help'], { timeoutMs: 15000 });
         const dialect = detectGitleaksDialect(helpText);
         if (!dialect) {
@@ -374,7 +424,7 @@ const truffleHogEngine = {
 
     async isAvailable(options = {}) {
         try {
-            await runTool(options.binary || this.binary, ['--version'], { timeoutMs: 15000 });
+            await runTool(resolveBinary(this.binary, options.binary), ['--version'], { timeoutMs: 15000 });
             return true;
         } catch {
             return false;
@@ -384,7 +434,7 @@ const truffleHogEngine = {
     async version(options = {}) {
         try {
             // TruffleHog prints its version banner on stderr.
-            const { stdout, stderr } = await runTool(options.binary || this.binary, ['--version'], { timeoutMs: 15000 });
+            const { stdout, stderr } = await runTool(resolveBinary(this.binary, options.binary), ['--version'], { timeoutMs: 15000 });
             const text = `${stdout || ''}${stderr || ''}`.trim();
             const match = text.match(/\d+\.\d+\.\d+/);
             return match ? `v${match[0]}` : (text.split('\n')[0] || null);
@@ -394,7 +444,7 @@ const truffleHogEngine = {
     },
 
     async scan({ repoDir, binary, timeoutMs, verify = true, results = 'verified,unknown' } = {}) {
-        const bin = binary || this.binary;
+        const bin = resolveBinary(this.binary, binary);
         const args = buildTruffleHogArgs({ repoDir, verify, results });
         const warnings = [];
         let stdout = '';
@@ -438,6 +488,9 @@ function getEngine(id) {
 module.exports = {
     NORMALISED_FIELDS,
     makeFinding,
+    COMMON_BIN_DIRS,
+    resolveBinary,
+    resetBinaryCache,
     detectGitleaksDialect,
     buildGitleaksArgs,
     mapGitleaksFinding,

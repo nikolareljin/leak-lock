@@ -155,7 +155,7 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 
 > Captured from a **real scan of this repository** — a fresh clone, scanned with
 > Gitleaks, TruffleHog and Nosey Parker together, rendered from the extension's own
-> webview. The full run found 45 findings; the table shows six of them, chosen to span
+> webview. The full run found 59 findings; the table shows six of them, chosen to span
 > the three engines. Every secret shown is a synthetic fixture from `test-secrets.js`
 > (AWS's published `AKIAIOSFODNN7EXAMPLE`, `mongodb://admin:password@localhost`), not a
 > real credential — which is also why nothing carries a `VERIFIED LIVE` badge: TruffleHog
@@ -374,12 +374,21 @@ it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
 `executionMode` to `parallel`, `sequential` or `single` to decide for yourself.
 
 ### Choosing engines
-`leakLock.scan.engines` sets which run, and in what order. The default is
-`["gitleaks", "noseyparker"]`. A missing engine binary disables that engine — never the
-whole scan — and the coverage panel says which engines ran and which did not.
+`leakLock.scan.engines` sets which run, and in what order. **All three are enabled by
+default** — `["gitleaks", "trufflehog", "noseyparker"]`. A missing engine binary disables
+that engine, never the whole scan, and the coverage panel says which engines ran and which
+did not, so an engine you have not installed is visible rather than silently absent.
+
+Enabling TruffleHog does not by itself make any network call; verification is the separate
+`leakLock.trufflehog.verify` setting, off by default.
 
 Running more than one is the point: they have genuinely different rulesets, and the
 attribution line tells you when one of them is falling behind.
+
+If an engine you have installed is reported as missing, it is almost always `PATH` — a
+GUI-launched VS Code does not inherit your shell's. Leak Lock searches the usual install
+locations (`~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, …); for anything else,
+set `leakLock.trufflehog.binaryPath` or `leakLock.gitleaks.binaryPath`.
 
 ### **BFG Repo Cleaner**
 - **Purpose**: Git history rewriting and cleanup
