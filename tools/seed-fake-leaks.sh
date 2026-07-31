@@ -104,18 +104,18 @@ export GIT_AUTHOR_NAME="Leak Lock Fixture" GIT_AUTHOR_EMAIL="fixture@example.inv
 export GIT_COMMITTER_NAME="Leak Lock Fixture" GIT_COMMITTER_EMAIL="fixture@example.invalid"
 
 # ---- fake credential material, assembled at runtime ---------------------------
+# Slack webhook/bot tokens and the Twilio SID are deliberately absent: GitHub's
+# account-level push protection rejects them, and any shape our engines detect
+# GitHub detects too, so they cannot live in a public fixture. Every other
+# provider below pushes fine.
 AWS_ID="AKIA""IOSFODNN7EXAMPLE"
 AWS_SECRET="wJalrXUtnFEMI/K7MDENG/bPxRfiCY""EXAMPLEKEY"
 GH_PAT="ghp_""wJalrXUtnFEMIKBDENGbPxRfiCYEXAMPLE01"
 GH_FINE="github_pat_""11ABCDEFG0aBcDeFgHiJkL_mNoPqRsTuVwXyZ0123456789AbCdEfGhIjKlMnOpQrSt"
-SLACK_BOT="xoxb-""1111111111-2222222222-abcdefghijklmnopqrstuvwx"
-SLACK_HOOK="https://hooks.slack.com/services/""T00000000/B00000000/abcdefghijklmnopqrstuvwx"
 STRIPE_A="sk_test_""51H8xkKLmNoPqRsTuVwXyZ0123456789"
 STRIPE_B="sk_test_""51AbCdEfGhIjKlMnOpQrStUvWxYz9876"
 GOOGLE_KEY="AIza""SyD-0123456789abcdefghijklmnopqrstuv"
 SENDGRID="SG.""abcdefghijklmnopqrstuv.abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHI"
-TWILIO_SID="AC""0123456789abcdef0123456789abcdef"
-TWILIO_TOKEN="0123456789""abcdef01""23456789""abcdef"
 NPM_TOKEN="npm_""abcdefghijklmnopqrstuvwxyz0123456789"
 PYPI_TOKEN="pypi-""AgEIcHlwaS5vcmcCJDAxMjM0NTY3LTg5YWItY2RlZi0wMTIzLTQ1Njc4OWFiY2RlZgAC"
 JWT_TOK="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.""eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkZha2UifQ.7uZ9Kx0mQKcQ2Wm8kQm3Xn4vB1cD2eF3gH4iJ5kL6mN"
@@ -186,7 +186,6 @@ commit "fixture: remove deployment keys"
 cat > "$D/ci/deploy.sh" <<EOF
 #!/usr/bin/env bash
 GITHUB_TOKEN="$GH_PAT"
-SLACK_WEBHOOK="$SLACK_HOOK"
 curl -H "Authorization: token \$GITHUB_TOKEN" https://api.github.com/user
 EOF
 cat > "$D/ci/netrc" <<EOF
@@ -256,8 +255,7 @@ mkdir -p "$D/config"
 cat > "$D/config/cloud.env" <<EOF
 AZURE_STORAGE_CONNECTION_STRING="$AZURE_CS"
 SENDGRID_API_KEY="$SENDGRID"
-TWILIO_ACCOUNT_SID="$TWILIO_SID"
-TWILIO_AUTH_TOKEN="$TWILIO_TOKEN"
+GOOGLE_API_KEY="$GOOGLE_KEY"
 EOF
 commit "fixture: release 1.0 cloud configuration"
 
@@ -275,7 +273,6 @@ start_branch "$PREFIX/dev-alice"
 mkdir -p "$D/scripts"
 cat > "$D/scripts/notify.py" <<EOF
 GITHUB_FINE_GRAINED = "$GH_FINE"
-SLACK_BOT_TOKEN = "$SLACK_BOT"
 JWT = "$JWT_TOK"
 EOF
 commit "fixture: add notification helper"
@@ -337,7 +334,7 @@ if [ "$DO_PUSH" = 1 ]; then
     mkdir -p leaklock-fixture/ops
     cat > leaklock-fixture/ops/keys.env <<EOF
 AWS_ACCESS_KEY_ID="$AWS_ID"
-OPS_SLACK_TOKEN="$SLACK_BOT"
+OPS_DB_URL="$MONGO_URL"
 EOF
     cp "$WORK/id_ed25519" leaklock-fixture/ops/id_ed25519
     git -c user.name="Leak Lock Fixture" -c user.email="fixture@example.invalid" add -A
@@ -368,18 +365,20 @@ To undo entirely:
 Branches created (all prefixed $PREFIX/):
   main-leaks         the bulk of the history
   hotfix-db-creds    MySQL and MongoDB URLs with passwords
-  release-1.0        Azure, SendGrid, Twilio credentials
+  release-1.0        Azure, SendGrid and Google credentials
   legacy-import      htpasswd and docker auth, added then deleted
-  dev-alice          fine-grained GitHub token, Slack bot token, JWT
+  dev-alice          fine-grained GitHub token, JWT
   experimental       a Stripe test key, unreachable from the others
 $([ "$DO_PUSH" = 1 ] && echo "  ops-remote-only    exists ONLY on the remote")
 
 Credential types planted (all fake): AWS key and secret, GitHub PAT classic and
-fine-grained, Slack bot token and webhook, Stripe test keys, Google API key,
-SendGrid, Twilio SID and token, npm and PyPI registry tokens, a JWT, an Azure
-storage connection string, Postgres/MySQL/MongoDB URLs with passwords, netrc and
-htpasswd entries, a Docker auth blob, a GCP service-account JSON, and RSA and
-ed25519 private keys.
+fine-grained, Stripe test keys, Google API key, SendGrid, npm and PyPI registry
+tokens, a JWT, an Azure storage connection string, Postgres/MySQL/MongoDB URLs
+with passwords, netrc and htpasswd entries, a Docker auth blob, a GCP
+service-account JSON, and RSA and ed25519 private keys.
+
+Slack and Twilio values are deliberately omitted: GitHub push protection rejects
+them, and any shape a scanner detects GitHub detects too.
 
 What to look for in Leak Lock:
   config/settings.py     one secret across 2 commits and still on disk
