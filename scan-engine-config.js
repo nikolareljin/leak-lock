@@ -151,7 +151,11 @@ function buildNoseyParkerScanArgs({ scanMount, datastoreMount, ignoreFileMount, 
     const cfg = settings || normalizeScanSettings();
     const args = [
         'run', '--rm',
-        '-v', `${scanMount}:/scan`,
+        // Read-only: scanning never needs to write to the audited tree, and the
+        // datastore has its own writable mount. Without :ro the container could write
+        // into the user's repository, which is exactly what moving the datastore out
+        // of the scan root was meant to stop.
+        '-v', `${scanMount}:/scan:ro`,
         '-v', `${datastoreMount}:/datastore`
     ];
 

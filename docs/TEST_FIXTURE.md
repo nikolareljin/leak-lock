@@ -69,9 +69,12 @@ gitleaks detect --source tools --no-git --no-banner -v
 Everything lands under `leaklock-fixture/` on branches prefixed `leaklock-fixture/`, so it
 never mixes with your own work.
 
-### Branches
+### Refs
 
-| Branch | Contents |
+Seven branches and one tag — the tag is listed here too because the push plan has to
+cover tag refs, and a fixture that only produced branches would never exercise that.
+
+| Ref | Contents |
 |---|---|
 | `leaklock-fixture/main-leaks` | The bulk of the history |
 | `leaklock-fixture/hotfix-db-creds` | MySQL and MongoDB URLs with passwords |
@@ -80,7 +83,7 @@ never mixes with your own work.
 | `leaklock-fixture/dev-alice` | Fine-grained GitHub token, Slack bot token, JWT |
 | `leaklock-fixture/experimental` | A Stripe test key, unreachable from the others |
 | `leaklock-fixture/ops-remote-only` | **Exists only on the remote** (with `--push`) |
-| `leaklock-fixture-v0.1.0` | A tag, so the push plan covers tag refs |
+| `leaklock-fixture-v0.1.0` *(tag)* | Points at the seeded history, so the push plan covers tag refs |
 
 ### Credential types
 
