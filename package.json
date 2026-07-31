@@ -107,7 +107,7 @@
         "leakLock.scan.refreshRefsBeforeScan": {
           "type": "boolean",
           "default": true,
-          "description": "Run 'git fetch --prune --tags' before scanning. Without this, a branch that exists only as an unfetched remote ref is never scanned and the repository can be reported clean while the secret is still on the server."
+          "description": "Run 'git fetch --tags' before scanning, so a branch that exists only as an unfetched remote ref is not missed and the repository cannot be reported clean while the secret is still on the server. The scan's fetch is read-only: it does not pass --prune, so scanning never deletes remote-tracking refs. (The refresh immediately before a history rewrite does prune, because there the plan must match the server exactly.)"
         },
         "leakLock.noseyParker.image": {
           "type": "string",

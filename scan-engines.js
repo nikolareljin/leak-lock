@@ -321,8 +321,27 @@ const gitleaksEngine = {
                 } catch (error) {
                     // One failing pass must not discard the other's results — the same
                     // isolation the git-history keyword passes already use.
-                    surfaces[surface] = null;
-                    warnings.push(`Gitleaks ${surface} pass failed: ${error.message}`);
+                    //
+                    // A pass that timed out or exited non-zero has often already
+                    // written part of its report. Throwing that away loses real
+                    // findings for no reason, which is the same mistake the scan
+                    // timeout used to make.
+                    let recovered = 0;
+                    try {
+                        for (const item of readJsonReport(reportPath)) {
+                            findings.push(mapGitleaksFinding(item, surface, repoDir));
+                            recovered += 1;
+                        }
+                    } catch {
+                        // No usable partial report; the warning below still stands.
+                    }
+                    surfaces[surface] = recovered > 0 ? recovered : null;
+                    warnings.push(
+                        `Gitleaks ${surface} pass did not complete: ${error.message}` +
+                        (recovered > 0
+                            ? ` — ${recovered} finding(s) recovered from the partial report, so these results are not exhaustive.`
+                            : '')
+                    );
                 }
             }
         });

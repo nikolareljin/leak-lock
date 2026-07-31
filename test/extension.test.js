@@ -2562,3 +2562,52 @@ suite('Third review pass', () => {
 		assert.match(ignore, /^scan\.json$/m, 'and the obvious filename is ignored anyway');
 	});
 });
+
+suite('Fourth review pass', () => {
+	const rules = require('../redaction-rules');
+	const engines = require('../scan-engines');
+	const fs = require('fs');
+	const path = require('path');
+
+	test('a literal source cannot start with a rewrite-tool mode prefix', () => {
+		// `regex:` (and glob:/literal: for filter-repo) is a mode prefix in the rule
+		// file. A literal rule beginning with one would be applied as a different kind
+		// of match than the UI displayed — the same failure the `==>` guard prevents.
+		for (const prefix of rules.RULE_MODE_PREFIXES) {
+			const result = rules.validateRule({ source: `${prefix}foo`, mode: 'literal', replaceWith: 'x' });
+			assert.strictEqual(result.valid, false, `${prefix} must be rejected in literal mode`);
+			assert.match(result.errors.join(' '), /mode prefix/);
+			assert.match(result.errors.join(' '), /Switch to regex mode/);
+		}
+	});
+
+	test('the same text is allowed in regex mode, where the prefix is intended', () => {
+		const result = rules.validateRule({ source: 'regex:foo', mode: 'regex', replaceWith: 'x' });
+		assert.strictEqual(result.valid, true);
+	});
+
+	test('a prefix in the middle of a literal is fine', () => {
+		const result = rules.validateRule({ source: 'host/regex:thing', mode: 'literal', replaceWith: 'x' });
+		assert.strictEqual(result.valid, true, 'only a leading prefix is parsed as a mode');
+	});
+
+	test('the refresh setting describes the command the scan actually runs', () => {
+		// The scan fetch is read-only; only the pre-rewrite refresh prunes.
+		const pkg = require('../package.json');
+		const description = pkg.contributes.configuration.properties['leakLock.scan.refreshRefsBeforeScan'].description;
+		assert.ok(!description.includes('--prune --tags'), 'must not promise a prune the scan does not do');
+		assert.match(description, /read-only/);
+		assert.match(description, /does not pass --prune/);
+	});
+
+	test('a failed Gitleaks pass keeps whatever it managed to write', () => {
+		// A timed-out pass has often already written part of its report. Discarding it
+		// loses real findings, which is the mistake the scan timeout used to make.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'scan-engines.js'), 'utf8');
+		const catchBlock = src.slice(src.indexOf('Gitleaks ${surface} pass did not complete') - 1200,
+			src.indexOf('Gitleaks ${surface} pass did not complete') + 300);
+		assert.match(catchBlock, /readJsonReport\(reportPath\)/, 'the partial report is parsed');
+		assert.match(catchBlock, /recovered/);
+		assert.match(catchBlock, /not exhaustive/, 'and the result is marked incomplete');
+	});
+});
