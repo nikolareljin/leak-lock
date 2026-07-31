@@ -40,6 +40,7 @@
 - **A typo in `leakLock.scan.engines` no longer produces a silent all-clear.** Unknown ids were filtered out without comment, so a misspelling could leave no engines at all and a scan that reported zero findings — indistinguishable from a clean repository. Unknown ids are named, and an empty engine list is an error.
 
 ### Fixed — Sixth Review Pass
+- **Website image dimensions matched the files again.** Both `width` and `height` are declared so the browser can reserve space before an image loads, but they drift every time a screenshot is recaptured at a slightly different height — and a stale pair makes the browser stretch the image, which is worse than declaring nothing. Corrected, and a test now compares every declared pair against the PNG header.
 - **A symbolic ref was displayed as a branch.** `git branch -a --contains` emits `remotes/origin/HEAD -> origin/main` alongside real branches, and the manual-rule preview listed that whole string as though it were a branch name. The results table already filtered it; the preview added later did not. Both now share one parser, which also handles the `*` current-branch marker and `(HEAD detached at …)`.
 
 ### Fixed — Fifth Review Pass
