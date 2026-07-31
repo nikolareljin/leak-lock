@@ -42,6 +42,10 @@
 ### Fixed — Untracked Findings Were Never Flagged
 - **A secret present on disk but never committed was reported as though it were in history.** The check resolved the *display* path against the scan root, and that path already carries the scanned directory's name as a prefix — so it looked for `<scan>/<scanName>/<path>`, which never exists, and every finding fell through as "tracked". The consequence was the wrong remediation: an uncommitted `.env` was presented as needing a history rewrite when deleting the file is the fix. Engine paths are now resolved first. Found by building the test fixture below.
 
+### Fixed — The Image Pin Was Only Half Applied
+
+- **The scanner ran the pinned image while everything else installed, checked and removed `:latest`.** `scan-engine-config.js` pins `noseyparker:v0.24.0`, but `extension.js`, `leakLockSidebarProvider.js`, `config.js` and `file-scan.js` still referenced `:latest` in eight places. So "Install Dependencies" pulled one image and the scan then pulled and ran a different one; the dependency check reported an image the scanner never uses; and uninstall removed `:latest`, leaving the real image orphaned on disk. All four now resolve to the one exported constant, with a test asserting no module can drift back.
+
 ### Fixed — Verification That Checked Nothing Reported Clean
 
 - **The generated cleanup script had the identical bug in shell.** `leftover=0` with a loop that iterates zero times printed **"Verified clean on every remote ref."** and exited 0, having examined nothing. Confirmed against a real ref-less remote, before and after: the pre-fix script claimed clean and exited 0; it now reports `NOT VERIFIED` and exits 1. The script counts refs actually examined, and the clean message sits behind that guard.

@@ -5,7 +5,7 @@
 // The decoration should be removed when the file is closed.
 const vscode = require('vscode');
 
-const dockerImage = 'ghcr.io/praetorian-inc/noseyparker:latest';
+const dockerImage = require('./scan-engine-config').NOSEYPARKER_IMAGE;
 
 /**
  * Perform Security Scan on the currently edited file.
