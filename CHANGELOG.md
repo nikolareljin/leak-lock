@@ -42,6 +42,13 @@
 ### Fixed — Untracked Findings Were Never Flagged
 - **A secret present on disk but never committed was reported as though it were in history.** The check resolved the *display* path against the scan root, and that path already carries the scanned directory's name as a prefix — so it looked for `<scan>/<scanName>/<path>`, which never exists, and every finding fell through as "tracked". The consequence was the wrong remediation: an uncommitted `.env` was presented as needing a history rewrite when deleting the file is the fix. Engine paths are now resolved first. Found by building the test fixture below.
 
+### Fixed — A Protected Branch Now Explains Itself
+
+- **The most likely real-world failure produced the least useful message.** Force-pushing to a repository whose default branch is protected — which is most repositories — failed with `Force-push failed: Command failed: git push --force --atomic …` followed by nine `[remote rejected]` lines. Because the push is atomic, **one** protected ref rejects **every** ref, so the output reads as though the entire rewrite is broken when in fact a single branch rule is blocking it and the other eight refs were simply rolled back with the transaction.
+- Leak Lock now separates the cause from the collateral, and says what actually happened: nothing was pushed, the remote is unchanged, **the secret is still on it**, and the local rewrite is already done so only the push is outstanding. It then gives the concrete steps for the detected host (GitHub Settings → Branches / Rulesets, GitLab protected branches, Bitbucket branch restrictions), including turning the protection back on afterwards. Retrying is a single button — the staged push survives the failure.
+- **The generated cleanup script does the same** rather than aborting on raw git output, and still exits non-zero.
+- Parsing was built against the verbatim output of a real failed run and verified end to end against a fixture whose remote rejects `main`: blocked with the explanation, protection lifted, re-run, pushed, and verified clean on every remote ref.
+
 ### Fixed — The Image Pin Was Only Half Applied
 
 - **The scanner ran the pinned image while everything else installed, checked and removed `:latest`.** `scan-engine-config.js` pins `noseyparker:v0.24.0`, but `extension.js`, `leakLockSidebarProvider.js`, `config.js` and `file-scan.js` still referenced `:latest` in eight places. So "Install Dependencies" pulled one image and the scan then pulled and ran a different one; the dependency check reported an image the scanner never uses; and uninstall removed `:latest`, leaving the real image orphaned on disk. All four now resolve to the one exported constant, with a test asserting no module can drift back.

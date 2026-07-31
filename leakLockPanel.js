@@ -409,6 +409,10 @@ class LeakLockPanel {
             // force-push. The panel shows a persistent confirmation and the push
             // only happens once the user confirms it here. null = nothing staged.
             pendingPush: null, // { repoDir, remote, verify, label, refCount }
+            // Set when the remote refused the push because a ref is protected. Kept in
+            // state, not just a toast, because the fix happens outside the editor and the
+            // user needs the steps still on screen when they come back.
+            pushBlockedByProtection: null,
             // Repository the prepared plan targets. The executors use this rather than
             // re-deriving a path, so a cleanup can only ever run where it was planned.
             preparedRepo: null,
@@ -2765,7 +2769,9 @@ class LeakLockPanel {
         const refreshBlock = this._renderRemoteError(this._scanCleanup.remoteError);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
         const verifyBlock = this._renderVerifyResult(this._scanCleanup.verifyResult);
-        const pendingPushBlock = this._renderPendingPush(this._scanCleanup.pendingPush);
+        const pendingPushBlock =
+            this._renderProtectionBlock(this._scanCleanup.pushBlockedByProtection) +
+            this._renderPendingPush(this._scanCleanup.pendingPush);
 
         return `
             <div class="scan-section">
@@ -6666,6 +6672,7 @@ class LeakLockPanel {
      */
     _stagePushForConfirmation(label, repoDir, report, verify) {
         this._scanCleanup.verifyResult = null;
+        this._scanCleanup.pushBlockedByProtection = null;
         this._scanCleanup.pendingPush = {
             repoDir,
             remote: gitRewrite.DEFAULT_REMOTE,
@@ -6693,6 +6700,9 @@ class LeakLockPanel {
             vscode.window.showWarningMessage('Nothing staged to push. Run a cleanup first.');
             return;
         }
+        // A retry starts clean: leaving the previous protection block on screen while a
+        // new push runs would tell the user the attempt already failed.
+        this._scanCleanup.pushBlockedByProtection = null;
         let offenders = null;
         try {
             await vscode.window.withProgress({
@@ -6735,9 +6745,99 @@ class LeakLockPanel {
                 this._updateWebviewContent();
             }
         } catch (error) {
-            vscode.window.showErrorMessage(`Force-push failed: ${error.message}`);
+            // A protected branch is the most likely way this fails on a real repository,
+            // and the raw git output actively misleads: --atomic makes one protected ref
+            // reject every ref, so the user sees nine failures and concludes the rewrite
+            // is broken. Name the one cause and what to do about it.
+            const protection = gitRewrite.parseProtectedRefRejection(error);
+            if (protection) {
+                this._scanCleanup.pushBlockedByProtection = {
+                    ...protection,
+                    remote: pending.remote,
+                    label: pending.label
+                };
+                const names = protection.protectedRefs.join(', ') || 'a protected branch';
+                vscode.window.showWarningMessage(
+                    `${pending.label}: the remote refused the push because ${names} is protected. ` +
+                    'Nothing was pushed — your remote is unchanged and the secret is still on it. ' +
+                    'The panel explains how to finish the cleanup.'
+                );
+            } else {
+                this._scanCleanup.pushBlockedByProtection = null;
+                vscode.window.showErrorMessage(`Force-push failed: ${error.message}`);
+            }
             this._updateWebviewContent();
         }
+    }
+
+    /**
+     * Explain a protected-branch rejection and what to do about it.
+     *
+     * The local rewrite is already done and `pendingPush` survives the failure, so this
+     * is genuinely a "lift the rule, press the button again" situation — but nothing in
+     * git's output says so, and the atomic rollback makes it look far worse than it is.
+     */
+    _renderProtectionBlock(blocked) {
+        if (!blocked) {
+            return '';
+        }
+        const refs = blocked.protectedRefs.length > 0 ? blocked.protectedRefs : ['(the remote did not say which)'];
+        const refList = refs.map(r => `<code>${escapeHtml(r)}</code>`).join(', ');
+        const collateral = blocked.collateralRefs.length;
+
+        // Name the actual UI the user has to open. Generic advice ("adjust your branch
+        // protection") is the part people get stuck on.
+        const steps = {
+            github: [
+                'Open the repository on GitHub → <strong>Settings</strong> → <strong>Branches</strong> (or <strong>Rules → Rulesets</strong> if you use rulesets).',
+                `Edit the rule protecting ${refList}.`,
+                'Tick <strong>Allow force pushes</strong>. If <em>Do not allow bypassing the above settings</em> is on, turn it off too, or add yourself to the bypass list.',
+                'Come back here and press <strong>Confirm force-push</strong> again — the rewrite is already done, only the push is left.',
+                '<strong>Turn the protection back on</strong> as soon as the push succeeds.'
+            ],
+            gitlab: [
+                'Open the project on GitLab → <strong>Settings</strong> → <strong>Repository</strong> → <strong>Protected branches</strong>.',
+                `Set <strong>Allowed to force push</strong> for ${refList}, or unprotect it temporarily.`,
+                'Come back here and press <strong>Confirm force-push</strong> again.',
+                '<strong>Restore the protection</strong> once the push succeeds.'
+            ],
+            bitbucket: [
+                'Open the repository on Bitbucket → <strong>Repository settings</strong> → <strong>Branch restrictions</strong>.',
+                `Allow rewriting history for ${refList}, or remove the restriction temporarily.`,
+                'Come back here and press <strong>Confirm force-push</strong> again.',
+                '<strong>Restore the restriction</strong> once the push succeeds.'
+            ]
+        }[blocked.provider] || [
+            `Ask whoever administers this remote to allow a force-push to ${refList}, or to lift the protection temporarily.`,
+            'Come back here and press <strong>Confirm force-push</strong> again — the rewrite is already done, only the push is left.',
+            '<strong>Restore the protection</strong> once the push succeeds.'
+        ];
+
+        return `
+            <div class="rewrite-blocked">
+                <strong>⛔ The remote refused the push — ${refList} is protected</strong>
+                <p style="margin:8px 0;">
+                    <strong>Nothing was pushed.</strong> Your remote is unchanged, which also means
+                    <strong>the secret is still on it</strong>. Your local history is already rewritten;
+                    only the push is outstanding.
+                </p>
+                ${collateral > 0 ? `
+                <p style="margin:8px 0;">
+                    Git listed ${collateral} other ref${collateral === 1 ? '' : 's'} as rejected. Those are
+                    <em>not</em> separate problems: the push is atomic, so one protected ref rolls back the
+                    whole transaction. Fix ${refList} and they all go through together.
+                </p>` : ''}
+                <p style="margin:8px 0;"><strong>To finish the cleanup:</strong></p>
+                <ol style="margin:6px 0 6px 18px;">
+                    ${steps.map(step => `<li style="margin:4px 0;">${step}</li>`).join('')}
+                </ol>
+                <p class="hint" style="margin:8px 0;">
+                    Keeping ${refList} protected is the right default — this is a deliberate,
+                    temporary exception for a history rewrite, which is exactly the operation the rule
+                    is there to prevent by accident.
+                </p>
+            </div>
+        `;
     }
 
     /** The user declined the force-push. The local rewrite stays; the remote is untouched. */
@@ -6746,6 +6846,7 @@ class LeakLockPanel {
             return;
         }
         this._scanCleanup.pendingPush = null;
+        this._scanCleanup.pushBlockedByProtection = null;
         this._updateWebviewContent();
         vscode.window.showWarningMessage(
             'Force-push cancelled. Your LOCAL history was rewritten, but the remote was NOT changed. ' +
