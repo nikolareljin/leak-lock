@@ -62,6 +62,100 @@
     "configuration": {
       "title": "Leak Lock",
       "properties": {
+        "leakLock.scan.engines": {
+          "type": "array",
+          "default": [
+            "gitleaks",
+            "noseyparker"
+          ],
+          "items": {
+            "type": "string",
+            "enum": [
+              "gitleaks",
+              "trufflehog",
+              "noseyparker"
+            ],
+            "enumDescriptions": [
+              "Gitleaks — maintained, MIT, scans full git history, no Docker required",
+              "TruffleHog — verifies whether a discovered credential is still live (requires the trufflehog binary)",
+              "Nosey Parker — archived upstream on 2026-04-24; ruleset frozen at v0.24.0 (requires Docker)"
+            ]
+          },
+          "markdownDescription": "Detection engines to run, in order. Findings from every enabled engine are merged and attributed, so a secret found by one engine and missed by another is visible as such. A missing engine binary disables that engine, never the whole scan."
+        },
+        "leakLock.scan.timeoutSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 30,
+          "maximum": 7200,
+          "description": "Maximum time for a single engine's scan. On expiry, findings gathered so far are reported and the results are marked incomplete rather than discarded."
+        },
+        "leakLock.scan.refreshRefsBeforeScan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run 'git fetch --prune --tags' before scanning. Without this, a branch that exists only as an unfetched remote ref is never scanned and the repository can be reported clean while the secret is still on the server."
+        },
+        "leakLock.scan.includeIgnoredFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also scan working-tree files excluded by .gitignore (a local .env or *.pem, for example). These are not in history, so they are remediated by deleting the file rather than by rewriting history."
+        },
+        "leakLock.noseyParker.image": {
+          "type": "string",
+          "default": "",
+          "description": "Override the Nosey Parker container image. Empty uses the pinned ghcr.io/praetorian-inc/noseyparker:v0.24.0 — the final release before the project was archived."
+        },
+        "leakLock.noseyParker.ruleset": {
+          "type": "string",
+          "default": "default",
+          "enum": [
+            "default",
+            "default+assets",
+            "all"
+          ],
+          "enumDescriptions": [
+            "Secret-detection rules only (Nosey Parker's own default)",
+            "Secret-detection rules plus the cloud asset and identifier rules",
+            "Every loaded rule — higher recall, more false positives"
+          ],
+          "description": "Which Nosey Parker rulesets to enable."
+        },
+        "leakLock.noseyParker.suppressRedundant": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suppress matches that significantly overlap a more specific match in the same blob. Turn off when reconciling Leak Lock's results against another scanner."
+        },
+        "leakLock.noseyParker.maxFileSizeMb": {
+          "type": "number",
+          "default": 100,
+          "minimum": 0,
+          "description": "Skip files larger than this many megabytes. 0 means no limit."
+        },
+        "leakLock.gitleaks.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the gitleaks binary. Empty resolves 'gitleaks' from PATH."
+        },
+        "leakLock.gitleaks.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a gitleaks TOML config with custom rules or allowlists."
+        },
+        "leakLock.gitleaks.baselinePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a gitleaks baseline report. Findings present in the baseline are not reported again."
+        },
+        "leakLock.trufflehog.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the trufflehog binary. Empty resolves 'trufflehog' from PATH."
+        },
+        "leakLock.truffleHog.verify": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Let TruffleHog check whether a discovered credential is still live. **This makes read-only network calls to third-party providers using the discovered credential.** Off by default; a verified finding is treated as the highest severity in the results."
+        },
         "leakLock.dependencyHandling": {
           "type": "string",
           "default": "warning",
@@ -72,10 +166,10 @@
           ],
           "enumDescriptions": [
             "Show dependency findings as warnings (recommended)",
-            "Completely exclude dependency directories from scanning",
+            "Skip unambiguously third-party directories (node_modules, vendor, site-packages, …) during the scan",
             "Treat dependency findings the same as regular findings"
           ],
-          "description": "How to handle secrets found in dependency directories (node_modules, vendor, etc.)"
+          "markdownDescription": "How to handle secrets found in dependency directories. `exclude` only skips directories that cannot hold first-party source — `lib/`, `bin/`, `dist/` and `build/` are still scanned, because skipping them would hide real secrets."
         },
         "leakLock.gitHistoryKeywordSearch.enabled": {
           "type": "boolean",

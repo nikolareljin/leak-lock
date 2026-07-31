@@ -7,12 +7,16 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const gitRewrite = require('./git-rewrite');
+const scanEngineConfig = require('./scan-engine-config');
+const scanEngines = require('./scan-engines');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
 const MAX_VOLUME_NAME_LENGTH = 255; // Maximum Docker volume name length
 const DOCKER_PULL_TIMEOUT = 120000; // Docker pull timeout in milliseconds (2 minutes)
-const SCAN_TIMEOUT = 300000; // Scan timeout in milliseconds (5 minutes)
+// Fallback only; the effective value comes from leakLock.scan.timeoutSeconds so a large
+// repository is not forced to fail. See _getScanEngineSettings().
+const SCAN_TIMEOUT = scanEngineConfig.DEFAULT_SCAN_TIMEOUT_MS;
 const SECRET_TRUNCATE_LENGTH = 50; // Length to truncate secrets for display
 const GIT_MAX_BUFFER = 64 * 1024 * 1024; // History rewrites emit a lot of stdout
 const REMOTE_HEAD_FILTER_PATTERN = /\bHEAD$/; // Pattern to filter out remote HEAD refs
@@ -62,15 +66,40 @@ function escapeShellArg(arg) {
 }
 
 // Helper function to safely construct Docker commands using spawn instead of exec
+//
+// `timeout` terminates the container rather than only abandoning the promise. The
+// previous Promise.race wrapper left the scan container running after a timeout, so a
+// repository that timed out kept consuming CPU with nothing reading its output.
 function runDockerCommand(args, options = {}) {
+    const { timeout, ...spawnOptions } = options;
     return new Promise((resolve, reject) => {
         const dockerProcess = spawn('docker', args, {
             stdio: ['ignore', 'pipe', 'pipe'],
-            ...options
+            ...spawnOptions
         });
 
         let stdout = '';
         let stderr = '';
+        let timedOut = false;
+        let timer = null;
+
+        if (Number.isFinite(timeout) && timeout > 0) {
+            timer = setTimeout(() => {
+                timedOut = true;
+                try {
+                    dockerProcess.kill('SIGTERM');
+                } catch {
+                    // Process may already have exited; the close handler still fires.
+                }
+            }, timeout);
+        }
+
+        const clearTimer = () => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        };
 
         dockerProcess.stdout?.on('data', (data) => {
             stdout += data.toString();
@@ -81,6 +110,15 @@ function runDockerCommand(args, options = {}) {
         });
 
         dockerProcess.on('close', (code) => {
+            clearTimer();
+            if (timedOut) {
+                const error = new Error(`Docker command timed out after ${Math.round(timeout / 1000)}s`);
+                error.timedOut = true;
+                error.stdout = stdout;
+                error.stderr = stderr;
+                reject(error);
+                return;
+            }
             if (code === 0) {
                 resolve({ stdout, stderr, code });
             } else {
@@ -93,6 +131,7 @@ function runDockerCommand(args, options = {}) {
         });
 
         dockerProcess.on('error', (error) => {
+            clearTimer();
             reject(error);
         });
     });
@@ -305,6 +344,9 @@ class LeakLockPanel {
             // only happens once the user confirms it here. null = nothing staged.
             pendingPush: null // { repoDir, remote, verify, label, refCount }
         };
+        // What the last scan actually covered. "No findings" is only meaningful
+        // alongside this, so it is rendered with the results rather than logged.
+        this._scanCoverage = null; // see _buildScanCoverage()
         this._dependenciesInstalled = false;
         this._panel = null;
 
@@ -2718,7 +2760,10 @@ class LeakLockPanel {
             }
 
             this._scanPath = scanPath;
+            this._scanCoverage = null;
             await this._primeGitTracking(scanPath);
+
+            const engineSettings = this._getScanEngineSettings();
 
             // Update progress: Checking Docker
             this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
@@ -2733,44 +2778,93 @@ class LeakLockPanel {
                 return;
             }
 
+            // Refresh refs before scanning. A branch that exists only as an unfetched
+            // remote ref is history the scan would never see, and reporting a
+            // repository clean on that basis is the failure this guards against.
+            this._scanProgress = { stage: 'refs', message: 'Refreshing git refs...' };
+            this._updateWebviewContent();
+            const refRefresh = await this._refreshRefsForScan(engineSettings);
+
             // Update progress: Pulling image
-            this._scanProgress = { stage: 'pull', message: 'Pulling Nosey Parker image...' };
+            this._scanProgress = { stage: 'pull', message: `Pulling ${engineSettings.image}...` };
             this._updateWebviewContent();
 
-            // Pull the latest Nosey Parker image
-            await this._pullNoseyParkerImage();
+            const enabledEngines = this._getEnabledEngineIds();
+            const useNoseyParker = enabledEngines.includes('noseyparker');
 
-            // Update progress: Initializing
-            this._scanProgress = { stage: 'init', message: 'Initializing datastore...' };
-            this._updateWebviewContent();
+            let pullResult = null;
+            let engineVersion = null;
+            let scanRun = { results: [], incomplete: false, incompleteReason: null };
+            const engineReports = [];
 
-            // Create and validate temporary datastore path
-            const tempDatastore = validateDockerPath(path.join(scanPath, '.noseyparker-temp'), [scanPath]);
-            await this._initializeDatastore(tempDatastore);
+            if (useNoseyParker) {
+                pullResult = await this._pullNoseyParkerImage(engineSettings);
+                engineVersion = await this._resolveNoseyParkerVersion(engineSettings);
 
-            // Update progress: Scanning
-            this._scanProgress = { stage: 'scan', message: 'Scanning for secrets...' };
-            this._updateWebviewContent();
+                this._scanProgress = { stage: 'init', message: 'Initializing datastore...' };
+                this._updateWebviewContent();
 
-            // Run the actual scan
-            const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
+                // Datastore lives in the OS temp directory, never inside the tree being
+                // scanned — otherwise the scanner enumerates its own SQLite database and
+                // Leak Lock writes into the repository it is auditing.
+                const datastoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-datastore-'));
+                const tempDatastore = validateDockerPath(path.join(datastoreRoot, 'noseyparker.np'), [datastoreRoot]);
+                await this._initializeDatastore(tempDatastore);
+
+                this._scanProgress = { stage: 'scan', message: 'Scanning with Nosey Parker...' };
+                this._updateWebviewContent();
+
+                scanRun = await this._runNoseyParkerScan(scanPath, tempDatastore, engineSettings);
+                scanRun.results = (scanRun.results || []).map(
+                    result => this._stampEngine(result, engineVersion, 'noseyparker')
+                );
+
+                await this._cleanupTempFiles(tempDatastore);
+                try {
+                    fs.rmSync(datastoreRoot, { recursive: true, force: true });
+                } catch {
+                    // Best effort; the directory lives in the OS temp directory.
+                }
+
+                engineReports.push({
+                    id: 'noseyparker',
+                    displayName: 'Nosey Parker',
+                    version: engineVersion,
+                    ok: !scanRun.incomplete,
+                    findings: scanRun.results.length,
+                    note: scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE
+                });
+            }
+
+            // Maintained engines. Each is optional and degrades independently: a missing
+            // binary disables that engine, never the scan.
+            const external = await this._runExternalEngines(scanPath, engineSettings);
+            engineReports.push(...external.reports);
+
             const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
             const allResults = this._deduplicateScanResults(
-                scanResults.concat(keywordHistoryResults)
+                scanRun.results.concat(external.results, keywordHistoryResults)
             );
 
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
             this._updateWebviewContent();
 
-            // Clean up temporary datastore
-            await this._cleanupTempFiles(tempDatastore);
-
             // Enrich results with git branch names and commit dates
             await this._enrichResultsWithGitInfo(allResults, scanPath);
 
             // Update results
             this._scanResults = allResults;
+            this._scanCoverage = await this._buildScanCoverage({
+                scanPath,
+                settings: engineSettings,
+                engineVersion,
+                engines: engineReports,
+                pullResult,
+                refRefresh,
+                incomplete: scanRun.incomplete,
+                incompleteReason: scanRun.incompleteReason
+            });
             this._resetScanSelection();
             this._isScanning = false;
             this._scanProgress = null;
@@ -2778,8 +2872,13 @@ class LeakLockPanel {
             // Update the webview
             this._updateWebviewContent();
 
-            // Show completion message
-            if (allResults.length > 0) {
+            // Show completion message. An incomplete scan never reports "no findings"
+            // as if the repository had been fully examined.
+            if (scanRun.incomplete) {
+                vscode.window.showWarningMessage(
+                    `Scan incomplete — ${allResults.length} finding(s) so far. ${scanRun.incompleteReason || ''}`.trim()
+                );
+            } else if (allResults.length > 0) {
                 vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} findings (potential secrets or policy references). Review them in the main panel.`);
             } else {
                 vscode.window.showInformationMessage('🎉 Scan complete! No findings (potential secrets or policy references) were found in your repository.');
@@ -2814,6 +2913,126 @@ class LeakLockPanel {
         } catch (e) {
             this._scanRepoRoot = null;
             this._trackedFiles = null;
+        }
+    }
+
+    /**
+     * Refresh every ref before scanning.
+     *
+     * The rewrite path has required this since 0.6.0 (a rewrite planned against stale
+     * refs is unsafe). The scan path never did, which is the more dangerous omission:
+     * an unfetched remote-only branch is history the scanner never sees, and the user
+     * is told the repository is clean.
+     *
+     * Never throws — a fetch failure downgrades coverage, it does not cancel the scan.
+     */
+    async _refreshRefsForScan(settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        const repoRoot = this._scanRepoRoot;
+        if (!repoRoot) {
+            return { attempted: false, ok: false, reason: 'not-a-git-repository' };
+        }
+        if (!cfg.refreshRefsBeforeScan) {
+            return { attempted: false, ok: false, reason: 'disabled-by-setting' };
+        }
+        let remote;
+        try {
+            remote = await gitRewrite.hasRemote(repoRoot, gitRewrite.DEFAULT_REMOTE);
+        } catch {
+            remote = false;
+        }
+        if (!remote) {
+            return { attempted: false, ok: false, reason: 'no-remote' };
+        }
+        try {
+            await gitRewrite.fetchAllRefs(repoRoot, gitRewrite.DEFAULT_REMOTE);
+            return { attempted: true, ok: true, reason: null };
+        } catch (error) {
+            return { attempted: true, ok: false, reason: error.message || 'fetch-failed' };
+        }
+    }
+
+    /**
+     * Record which engine produced a finding, so a result set can be reproduced and a
+     * cross-engine discrepancy can be attributed rather than guessed at.
+     */
+    _stampEngine(result, engineVersion, engineId = 'noseyparker') {
+        if (!result || typeof result !== 'object') {
+            return result;
+        }
+        result.engine = result.engine || engineId;
+        result.engineVersion = result.engineVersion || engineVersion || null;
+        result.engines = Array.isArray(result.engines) && result.engines.length
+            ? result.engines
+            : [result.engine];
+        return result;
+    }
+
+    /**
+     * Describe what the scan actually covered.
+     *
+     * "No findings" only means something alongside this, so it is part of the result
+     * rather than console output — the scan-side counterpart to the ref-by-ref push
+     * plan that gates the rewrite.
+     */
+    async _buildScanCoverage({ scanPath, settings, engineVersion, engines, pullResult, refRefresh, incomplete, incompleteReason }) {
+        const cfg = settings || this._getScanEngineSettings();
+        const coverage = {
+            scanPath,
+            incomplete: Boolean(incomplete),
+            incompleteReason: incompleteReason || null,
+            engines: Array.isArray(engines) && engines.length
+                ? engines
+                : [{
+                    id: 'noseyparker',
+                    displayName: 'Nosey Parker',
+                    version: engineVersion || null,
+                    ok: true,
+                    note: scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE
+                }],
+            image: cfg.image,
+            imagePulled: pullResult ? pullResult.pulled : null,
+            imagePullError: pullResult ? pullResult.error : null,
+            rulesetMode: cfg.rulesetMode,
+            maxFileSizeMb: cfg.maxFileSizeMb,
+            timeoutSeconds: Math.round(cfg.timeoutMs / 1000),
+            dependencyHandling: vscode.workspace.getConfiguration('leakLock').get('dependencyHandling') || 'warning',
+            refRefresh: refRefresh || { attempted: false, ok: false, reason: 'unknown' },
+            refs: { localBranches: 0, remoteBranches: 0, remoteOnlyBranches: [], tags: 0, stashes: 0 }
+        };
+
+        const repoRoot = this._scanRepoRoot;
+        if (!repoRoot) {
+            return coverage;
+        }
+
+        try {
+            const [locals, remotes, tags] = await Promise.all([
+                gitRewrite.listLocalBranches(repoRoot).catch(() => []),
+                gitRewrite.listRemoteBranches(repoRoot, gitRewrite.DEFAULT_REMOTE).catch(() => []),
+                gitRewrite.listTags(repoRoot).catch(() => [])
+            ]);
+            const localSet = new Set(locals);
+            coverage.refs.localBranches = locals.length;
+            coverage.refs.remoteBranches = remotes.length;
+            coverage.refs.remoteOnlyBranches = remotes.filter(name => !localSet.has(name));
+            coverage.refs.tags = tags.length;
+            coverage.refs.stashes = await this._countStashEntries(repoRoot);
+        } catch (error) {
+            console.warn('Could not build ref coverage summary:', error.message);
+        }
+
+        return coverage;
+    }
+
+    async _countStashEntries(repoRoot) {
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        try {
+            const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'stash', 'list'], { timeout: 10000 });
+            return stdout.split('\n').filter(line => line.trim()).length;
+        } catch {
+            return 0;
         }
     }
 
@@ -2868,22 +3087,101 @@ class LeakLockPanel {
         return result;
     }
 
+    /**
+     * Collapse duplicates without losing information.
+     *
+     * Two passes with different intent:
+     *
+     *  - An exact repeat (same engine, rule, location and secret) is a duplicate and is
+     *    dropped.
+     *  - The same secret at the same location reported by a *different* engine is not a
+     *    duplicate finding, it is corroboration. Those merge into one row whose
+     *    `engines` list names every engine that found it — and, by omission, every
+     *    enabled engine that did not. That attribution is the diagnostic that turns an
+     *    unexplained gap against another tool into a checkable fact.
+     *
+     * Two rules from the same engine at one location stay separate, as before: they are
+     * genuinely different detections.
+     */
     _deduplicateScanResults(results) {
         const seen = new Set();
-        return results.filter((result) => {
-            const key = [
+        const byLocation = new Map();
+        const merged = [];
+
+        for (const result of results) {
+            const engine = result.engine || '';
+            const exactKey = [
                 result.file,
                 result.line,
                 result.fullSecret,
                 result.commitHash || "",
-                result.ruleName || ""
+                result.ruleName || "",
+                engine
             ].join("\0");
-            if (seen.has(key)) {
-                return false;
+            if (seen.has(exactKey)) {
+                continue;
             }
-            seen.add(key);
-            return true;
-        });
+            seen.add(exactKey);
+
+            const locationKey = [
+                result.file,
+                result.line,
+                result.fullSecret,
+                result.commitHash || ""
+            ].join("\0");
+            const existing = byLocation.get(locationKey);
+
+            if (existing && engine && existing.engine && engine !== existing.engine) {
+                this._mergeCrossEngineResult(existing, result);
+                continue;
+            }
+
+            merged.push(result);
+            if (!existing) {
+                byLocation.set(locationKey, result);
+            }
+        }
+
+        return merged;
+    }
+
+    /**
+     * Fold a second engine's view of the same secret into the surviving row.
+     * Fields are only filled in, never overwritten — the merged record is the union of
+     * what the engines supplied, so corroboration can never subtract detail.
+     */
+    _mergeCrossEngineResult(target, incoming) {
+        const engines = new Set(target.engines || (target.engine ? [target.engine] : []));
+        for (const id of incoming.engines || (incoming.engine ? [incoming.engine] : [])) {
+            engines.add(id);
+        }
+        target.engines = Array.from(engines);
+
+        for (const [key, value] of Object.entries(incoming)) {
+            if (value === null || value === undefined || value === '') {
+                continue;
+            }
+            if (key === 'engines' || key === 'engine' || key === 'unavailableFields') {
+                continue;
+            }
+            if (target[key] === null || target[key] === undefined || target[key] === '') {
+                target[key] = value;
+            }
+        }
+
+        // A live-credential confirmation from any engine wins.
+        if (incoming.verified === true) {
+            target.verified = true;
+            target.severity = target.isDependency || target.isUntracked ? target.severity : 'high';
+        }
+
+        // A field is only unavailable if it was unavailable from every engine that
+        // reported this finding.
+        const targetUnavailable = new Set(target.unavailableFields || []);
+        const incomingUnavailable = new Set(incoming.unavailableFields || []);
+        target.unavailableFields = Array.from(targetUnavailable).filter(f => incomingUnavailable.has(f));
+
+        return target;
     }
 
     _stableHash(input) {
@@ -3710,18 +4008,69 @@ class LeakLockPanel {
         });
     }
 
-    async _pullNoseyParkerImage() {
-        return new Promise((resolve, reject) => {
-            const pullCommand = 'docker pull ghcr.io/praetorian-inc/noseyparker:latest';
-            exec(pullCommand, { timeout: DOCKER_PULL_TIMEOUT }, (error, stdout, stderr) => {
-                if (error) {
-                    console.warn('Failed to pull latest image, using existing:', error.message);
-                    resolve(); // Continue with existing image
-                } else {
-                    resolve();
+    /**
+     * Read the scan engine settings from VS Code and normalise them.
+     * All clamping lives in scan-engine-config so the values cannot drift from what
+     * the engine will accept.
+     */
+    _getScanEngineSettings() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        return scanEngineConfig.normalizeScanSettings({
+            image: config.get('noseyParker.image'),
+            rulesetMode: config.get('noseyParker.ruleset'),
+            suppressRedundant: config.get('noseyParker.suppressRedundant'),
+            maxFileSizeMb: config.get('noseyParker.maxFileSizeMb'),
+            includeIgnoredFiles: config.get('scan.includeIgnoredFiles'),
+            refreshRefsBeforeScan: config.get('scan.refreshRefsBeforeScan'),
+            timeoutSeconds: config.get('scan.timeoutSeconds')
+        });
+    }
+
+    /**
+     * Pull the pinned scanner image.
+     *
+     * A failed pull no longer resolves silently. Continuing with a cached image is
+     * acceptable — doing it without telling anyone is how two machines running the same
+     * extension version produced different findings on the same repository.
+     *
+     * @returns {Promise<{pulled: boolean, error: string|null}>}
+     */
+    async _pullNoseyParkerImage(settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        return new Promise((resolve) => {
+            execFile('docker', ['pull', cfg.image], { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
+                if (!error) {
+                    resolve({ pulled: true, error: null });
+                    return;
                 }
+                const message = error.message || String(error);
+                console.warn(`Failed to pull ${cfg.image}, using cached image if present:`, message);
+                vscode.window.showWarningMessage(
+                    `Leak Lock could not pull ${cfg.image}. Scanning will continue with the locally cached image, ` +
+                    'which may be a different version than expected.'
+                );
+                resolve({ pulled: false, error: message });
             });
         });
+    }
+
+    /**
+     * Resolve the engine version actually in use, so it can be recorded on findings and
+     * in exports. Never throws: an unknown version must not stop a scan.
+     */
+    async _resolveNoseyParkerVersion(settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        try {
+            const { stdout } = await runDockerCommand(
+                scanEngineConfig.buildNoseyParkerVersionArgs({ settings: cfg }),
+                { timeout: 30000 }
+            );
+            const firstLine = String(stdout || '').split('\n').map(l => l.trim()).filter(Boolean)[0];
+            return firstLine || scanEngineConfig.NOSEYPARKER_PINNED_VERSION;
+        } catch (error) {
+            console.warn('Could not resolve Nosey Parker version:', error.message);
+            return null;
+        }
     }
 
     async _initializeDatastore(datastorePath) {
@@ -3746,13 +4095,11 @@ class LeakLockPanel {
                     const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
                     const datastoreName = sanitizeDockerVolumeName(path.basename(validatedDatastorePath));
 
-                    const dockerArgs = [
-                        'run', '--rm',
-                        '-v', `${parentDir}:/workspace`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'datastore', 'init',
-                        '--datastore', `/workspace/${datastoreName}`
-                    ];
+                    const dockerArgs = scanEngineConfig.buildNoseyParkerDatastoreInitArgs({
+                        parentMount: parentDir,
+                        datastoreName,
+                        settings: this._getScanEngineSettings()
+                    });
 
                     runDockerCommand(dockerArgs).then(() => {
                         resolve();
@@ -3777,102 +4124,240 @@ class LeakLockPanel {
         }
     }
 
-    async _runNoseyParkerScan(scanPath, datastorePath) {
-        return new Promise((resolve, reject) => {
+    /**
+     * Which engines the user has enabled, in run order.
+     * Gitleaks leads because it is the only maintained engine with a ruleset that can
+     * still receive new detectors.
+     */
+    _getEnabledEngineIds() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        const configured = config.get('scan.engines');
+        const ids = Array.isArray(configured) && configured.length
+            ? configured
+            : ['gitleaks', 'noseyparker'];
+        const known = new Set(['gitleaks', 'trufflehog', 'noseyparker']);
+        return ids.filter(id => known.has(id));
+    }
+
+    /**
+     * Run every enabled external engine and map their findings through the shared
+     * post-processing in _createResultFromEngineFinding.
+     *
+     * A missing or failing engine disables that engine, never the scan. The report
+     * returned here is what the coverage panel renders, so an engine that did not run
+     * is stated rather than silently absent.
+     */
+    async _runExternalEngines(scanPath, settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        const config = vscode.workspace.getConfiguration('leakLock');
+        const enabled = this._getEnabledEngineIds();
+        const results = [];
+        const reports = [];
+
+        for (const engineId of enabled) {
+            if (engineId === 'noseyparker') {
+                continue; // handled by the datastore-based path
+            }
+            const engine = scanEngines.getEngine(engineId);
+            if (!engine) {
+                continue;
+            }
+
+            const binary = config.get(`${engineId}.binaryPath`) || undefined;
+            let available = false;
             try {
-                // Validate paths before using them
-                const validatedScanPath = validateDockerPath(scanPath);
-                const validatedDatastorePath = validateDockerPath(datastorePath);
+                available = await engine.isAvailable({ binary });
+            } catch {
+                available = false;
+            }
+            if (!available) {
+                reports.push({
+                    id: engine.id,
+                    displayName: engine.displayName,
+                    version: null,
+                    ok: false,
+                    findings: 0,
+                    note: `Not installed or not on PATH. Install: ${engine.installHint}`
+                });
+                continue;
+            }
 
-                // Get dependency handling configuration
-                const config = vscode.workspace.getConfiguration('leakLock');
-                const dependencyHandling = config.get('dependencyHandling') || 'warning';
+            const version = await engine.version({ binary });
+            this._scanProgress = { stage: 'scan', message: `Scanning with ${engine.displayName}...` };
+            this._updateWebviewContent();
 
-                // Create ignore file for proper exclusion if needed
-                if (dependencyHandling === 'exclude') {
-                    // For now, let's skip file-based exclusions to avoid issues
-                    // We'll handle dependency filtering in the results processing instead
-                    console.log('Dependency exclusion will be handled in post-processing');
+            try {
+                const scanOptions = {
+                    repoDir: scanPath,
+                    binary,
+                    timeoutMs: cfg.timeoutMs
+                };
+                if (engine.id === 'gitleaks') {
+                    scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
+                    scanOptions.configPath = config.get('gitleaks.configPath') || undefined;
+                    scanOptions.baselinePath = config.get('gitleaks.baselinePath') || undefined;
+                }
+                if (engine.id === 'trufflehog') {
+                    // Verification makes read-only calls to third-party providers using
+                    // the discovered credential. Off unless the user asked for it.
+                    scanOptions.verify = config.get('truffleHog.verify') === true;
                 }
 
-                // Ensure git history scanning is explicitly enabled (built into args below)
-
-                // First scan the repository with full git history using safe Docker command
-                const scanArgs = [
-                    'run', '--rm',
-                    '-v', `${validatedScanPath}:/scan`,
-                    '-v', `${validatedDatastorePath}:/datastore`,
-                    'ghcr.io/praetorian-inc/noseyparker:latest',
-                    'scan',
-                    '--datastore', '/datastore',
-                    '--git-history', 'full',
-                    '/scan'
-                ];
-
-                // Use a timeout wrapper for the Docker command
-                const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error(`Scan timeout after ${SCAN_TIMEOUT / 1000 / 60} minutes`)), SCAN_TIMEOUT);
+                const outcome = await engine.scan(scanOptions);
+                for (const finding of outcome.findings || []) {
+                    results.push(this._createResultFromEngineFinding(
+                        finding, engine.id, version, engine.capabilities
+                    ));
+                }
+                reports.push({
+                    id: engine.id,
+                    displayName: engine.displayName,
+                    version,
+                    ok: true,
+                    findings: (outcome.findings || []).length,
+                    verified: outcome.verified || 0,
+                    warnings: outcome.warnings || [],
+                    note: engine.capabilities.verification && scanOptions.verify === false
+                        ? 'Credential verification disabled; findings are unverified.'
+                        : null
                 });
-
-                Promise.race([runDockerCommand(scanArgs), timeoutPromise]).then(({ stdout: scanStdout, stderr: scanStderr }) => {
-                    // Continue to report generation - Nosey Parker may return non-zero exit codes even on successful scans
-
-                    // Now report the findings in structured format using safe Docker command
-                    const reportArgs = [
-                        'run', '--rm',
-                        '-v', `${validatedDatastorePath}:/datastore`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'report',
-                        '--datastore', '/datastore',
-                        '--format', 'json'
-                    ];
-
-                    runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
-                        try {
-                            const results = this._parseNoseyParkerResults(reportStdout);
-                            resolve(results);
-                        } catch (parseError) {
-                            console.warn('Failed to parse JSON results, using fallback:', parseError.message);
-                            resolve(this._createFallbackResults(reportStdout + scanStdout));
-                        }
-                    }).catch(reportError => {
-                        console.warn('Report command failed, trying alternative approach:', reportError.message);
-                        resolve(this._createFallbackResults(scanStdout + scanStderr));
-                    });
-                }).catch(scanError => {
-                    // Handle scan errors, but allow exit code 2 which is common for Nosey Parker
-                    if (scanError.code !== 2) {
-                        console.error('Scan error details:', { error: scanError, stdout: scanError.stdout, stderr: scanError.stderr });
-                        reject(new Error(`Scan failed: ${scanError.message}\nStderr: ${scanError.stderr || ''}`));
-                        return;
-                    }
-                    // If exit code 2, try to continue with report generation
-                    const reportArgs = [
-                        'run', '--rm',
-                        '-v', `${validatedDatastorePath}:/datastore`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'report',
-                        '--datastore', '/datastore',
-                        '--format', 'json'
-                    ];
-
-                    runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
-                        try {
-                            const results = this._parseNoseyParkerResults(reportStdout);
-                            resolve(results);
-                        } catch (parseError) {
-                            console.warn('Failed to parse JSON results, using fallback:', parseError.message);
-                            resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
-                        }
-                    }).catch(reportError => {
-                        console.warn('Report command also failed:', reportError.message);
-                        resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
-                    });
+            } catch (error) {
+                console.warn(`${engine.displayName} scan failed:`, error.message);
+                reports.push({
+                    id: engine.id,
+                    displayName: engine.displayName,
+                    version,
+                    ok: false,
+                    findings: 0,
+                    note: `Scan failed: ${error.message}`
                 });
-            } catch (validationError) {
-                reject(new Error(`Path validation failed: ${validationError.message}`));
             }
+        }
+
+        return { results, reports };
+    }
+
+    /**
+     * True when the user asked for dependency directories to be excluded from scanning
+     * rather than merely flagged.
+     */
+    _shouldExcludeDependencies() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        return (config.get('dependencyHandling') || 'warning') === 'exclude';
+    }
+
+    /**
+     * Materialise the gitignore-syntax exclude file that backs
+     * `dependencyHandling: "exclude"`. Written outside the scanned tree.
+     *
+     * @returns {{dir: string, file: string}|null}
+     */
+    _writeDependencyIgnoreFile() {
+        try {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-ignore-'));
+            const file = path.join(dir, 'leaklock-ignore');
+            fs.writeFileSync(file, scanEngineConfig.buildDependencyIgnoreFile(), { mode: 0o600 });
+            return { dir, file };
+        } catch (error) {
+            console.warn('Could not write dependency ignore file:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Run the scan and produce the report.
+     *
+     * Returns `{ results, incomplete, incompleteReason }` rather than a bare array: a
+     * timed-out scan now reports whatever the datastore already holds instead of
+     * throwing everything away, and the caller has to know the difference between
+     * "found nothing" and "stopped looking".
+     */
+    async _runNoseyParkerScan(scanPath, datastorePath, settings) {
+        const cfg = settings || this._getScanEngineSettings();
+
+        let validatedScanPath;
+        let validatedDatastorePath;
+        try {
+            validatedScanPath = validateDockerPath(scanPath);
+            validatedDatastorePath = validateDockerPath(datastorePath);
+        } catch (validationError) {
+            throw new Error(`Path validation failed: ${validationError.message}`);
+        }
+
+        const ignoreFile = this._shouldExcludeDependencies() ? this._writeDependencyIgnoreFile() : null;
+
+        const scanArgs = scanEngineConfig.buildNoseyParkerScanArgs({
+            scanMount: validatedScanPath,
+            datastoreMount: validatedDatastorePath,
+            ignoreFileMount: ignoreFile ? ignoreFile.file : null,
+            settings: cfg
         });
+
+        let scanStdout = '';
+        let scanStderr = '';
+        let incomplete = false;
+        let incompleteReason = null;
+
+        try {
+            const result = await runDockerCommand(scanArgs, { timeout: cfg.timeoutMs });
+            scanStdout = result.stdout;
+            scanStderr = result.stderr;
+        } catch (scanError) {
+            scanStdout = scanError.stdout || '';
+            scanStderr = scanError.stderr || '';
+            if (scanError.timedOut) {
+                // The datastore is written incrementally, so the report below still has
+                // real findings in it. Surfacing those beats reporting zero.
+                incomplete = true;
+                incompleteReason =
+                    `The scan was stopped after ${Math.round(cfg.timeoutMs / 1000)}s. ` +
+                    'These results cover only the part of the repository that was scanned. ' +
+                    'Raise leakLock.scan.timeoutSeconds and rescan for complete coverage.';
+            } else if (scanError.code !== 2) {
+                // Exit code 2 is routine for Nosey Parker and does not indicate failure.
+                console.error('Scan error details:', {
+                    message: scanError.message,
+                    stdout: scanError.stdout,
+                    stderr: scanError.stderr
+                });
+                throw new Error(`Scan failed: ${scanError.message}\nStderr: ${scanError.stderr || ''}`);
+            }
+        } finally {
+            if (ignoreFile) {
+                try {
+                    fs.rmSync(ignoreFile.dir, { recursive: true, force: true });
+                } catch {
+                    // Best effort; the file lives in the OS temp directory.
+                }
+            }
+        }
+
+        const reportArgs = scanEngineConfig.buildNoseyParkerReportArgs({
+            datastoreMount: validatedDatastorePath,
+            settings: cfg
+        });
+
+        let results;
+        try {
+            const { stdout: reportStdout } = await runDockerCommand(reportArgs, { timeout: cfg.timeoutMs });
+            try {
+                results = this._parseNoseyParkerResults(reportStdout);
+            } catch (parseError) {
+                console.warn('Failed to parse JSON results, using fallback:', parseError.message);
+                results = this._createFallbackResults(reportStdout + scanStdout);
+                incomplete = true;
+                incompleteReason = incompleteReason ||
+                    'The scanner output could not be parsed as JSON, so findings were recovered from text and carry no secret values.';
+            }
+        } catch (reportError) {
+            console.warn('Report command failed, falling back to text parsing:', reportError.message);
+            results = this._createFallbackResults(scanStdout + scanStderr);
+            incomplete = true;
+            incompleteReason = incompleteReason ||
+                `The report step failed (${reportError.message}), so findings were recovered from text and are not exhaustive.`;
+        }
+
+        return { results: results || [], incomplete, incompleteReason };
     }
 
     /**
@@ -4364,6 +4849,17 @@ class LeakLockPanel {
             }
         }
 
+        // Engines other than Nosey Parker carry provenance in their own JSON rather
+        // than in an NP `match` object, so they supply it here. Everything below this
+        // point is engine-agnostic: one severity rule, one dependency rule, one
+        // truncation rule, for every engine.
+        if (typeof normalizedOptions.commitHash === 'string' && normalizedOptions.commitHash) {
+            commitHash = normalizedOptions.commitHash;
+        }
+        if (normalizedOptions.commitDate) {
+            commitDate = normalizedOptions.commitDate;
+        }
+
         const fullSecret = typeof secret === 'string' ? secret : String(secret);
         const displaySecret = this._truncateSecret(fullSecret);
         const includeInCleanup = normalizedOptions.includeInCleanup !== false;
@@ -4386,7 +4882,67 @@ class LeakLockPanel {
             commitDate: commitDate
         };
 
+        // Additive detail from engines that supply more than Nosey Parker does
+        // (columns, entropy, author, fingerprint, live-credential verification).
+        // Never overwrites a field above: parity is a floor, not a ceiling.
+        if (normalizedOptions.extraFields && typeof normalizedOptions.extraFields === 'object') {
+            for (const [key, value] of Object.entries(normalizedOptions.extraFields)) {
+                if (value === null || value === undefined) {
+                    continue;
+                }
+                if (!Object.prototype.hasOwnProperty.call(result, key)) {
+                    result[key] = value;
+                }
+            }
+        }
+
+        // A credential confirmed live by TruffleHog outranks any rule-name heuristic.
+        // Nothing in this repository matters more than a key that still works.
+        if (result.verified === true && !isInDependency && !isUntracked) {
+            result.severity = 'high';
+            result.description = `${result.description} — VERIFIED LIVE credential`;
+        }
+
         return result;
+    }
+
+    /**
+     * Map one normalised engine finding onto the shared result shape.
+     *
+     * Deliberately routes through _createResult so a Gitleaks or TruffleHog finding is
+     * classified, scored and truncated by exactly the same rules as a Nosey Parker one.
+     */
+    _createResultFromEngineFinding(finding, engineId, engineVersion, capabilities) {
+        const filePath = finding.file || 'unknown';
+        const secret = finding.secret || finding.matchText || '';
+        const result = this._createResult(
+            filePath,
+            Number.isFinite(finding.line) ? finding.line : 1,
+            secret,
+            finding.description || finding.ruleId || 'Potential secret',
+            finding.ruleId || '',
+            null,
+            {
+                forceGitHistory: finding.isGitHistory === true,
+                commitHash: finding.commitHash || null,
+                commitDate: finding.commitDate || null,
+                extraFields: {
+                    endLine: finding.endLine,
+                    startColumn: finding.startColumn,
+                    endColumn: finding.endColumn,
+                    entropy: finding.entropy,
+                    fingerprint: finding.fingerprint,
+                    author: finding.author,
+                    authorEmail: finding.authorEmail,
+                    commitMessage: finding.commitMessage,
+                    verified: finding.verified
+                }
+            }
+        );
+        // Fields this engine cannot supply are marked, not left blank — a blank cell
+        // meaning "nothing here" must not be confused with one meaning "unknown".
+        result.unavailableFields = (capabilities && capabilities.unavailable) || [];
+        return this._stampEngine(result, engineVersion, engineId);
     }
 
     _isInDependencyDirectory(filePath) {
