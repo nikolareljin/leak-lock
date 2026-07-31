@@ -109,10 +109,6 @@ export GIT_AUTHOR_NAME="Leak Lock Fixture" GIT_AUTHOR_EMAIL="fixture@example.inv
 export GIT_COMMITTER_NAME="Leak Lock Fixture" GIT_COMMITTER_EMAIL="fixture@example.invalid"
 
 # ---- fake credential material, assembled at runtime ---------------------------
-# Slack webhook/bot tokens and the Twilio SID are deliberately absent: GitHub's
-# account-level push protection rejects them, and any shape our engines detect
-# GitHub detects too, so they cannot live in a public fixture. Every other
-# provider below pushes fine.
 # Slack and Twilio are planted by default — they are exactly what you want when
 # testing locally. GitHub's account-level push protection rejects them and no shape
 # satisfies both sides, since a scanner and GitHub match on the same patterns, so
@@ -156,7 +152,9 @@ if [ -n "$TWILIO_SID" ]; then
 TWILIO_AUTH_TOKEN=\"$TWILIO_TOKEN\""
 fi
 
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+# An explicit template: BSD/macOS mktemp requires one as a positional argument,
+# so the bare `mktemp -d` that works on GNU fails outright on a Mac.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/leaklock-fixture.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
 if command -v ssh-keygen >/dev/null 2>&1; then
   ssh-keygen -q -t rsa -b 2048 -N '' -C 'fixture@example.invalid' -f "$WORK/id_rsa"
   ssh-keygen -q -t ed25519 -N '' -C 'fixture@example.invalid' -f "$WORK/id_ed25519"
@@ -370,7 +368,7 @@ if [ "$DO_PUSH" = 1 ]; then
   g push -q -f origin "$TAG"
   # A branch that exists ONLY on the remote: the headline case, invisible without a
   # ref refresh before scanning.
-  RTMP="$(mktemp -d)"
+  RTMP="$(mktemp -d "${TMPDIR:-/tmp}/leaklock-fixture-remote.XXXXXX")"
   git clone -q "$(g remote get-url origin)" "$RTMP/x"
   (
     cd "$RTMP/x"
