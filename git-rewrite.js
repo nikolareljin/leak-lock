@@ -84,9 +84,34 @@ async function ensureRemote(repoDir, remote, url) {
     return true;
 }
 
-/** Refresh every ref. Unlike a best-effort fetch, failures reject. */
-async function fetchAllRefs(repoDir, remote = DEFAULT_REMOTE) {
-    await git(repoDir, ['fetch', '--prune', '--tags', remote]);
+/**
+ * Refresh every ref. Unlike a best-effort fetch, failures reject.
+ *
+ * `prune` deletes local remote-tracking refs that no longer exist on the remote. That
+ * is wanted immediately before a rewrite, so the plan matches the server. It is not
+ * wanted during a read-only planning check, where deleting refs is a side effect the
+ * user did not ask for — pass `{ prune: false }` there.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.prune=true]
+ * @returns {Promise<{args: string[], command: string}>} the exact command that ran,
+ *   so callers can name it in an error rather than describing it vaguely.
+ */
+async function fetchAllRefs(repoDir, remote = DEFAULT_REMOTE, options = {}) {
+    const prune = options.prune !== false;
+    const args = prune
+        ? ['fetch', '--prune', '--tags', remote]
+        : ['fetch', '--tags', remote];
+    await git(repoDir, args);
+    return { args, command: `git ${args.join(' ')}` };
+}
+
+/** The command fetchAllRefs would run, without running it. */
+function describeFetchCommand(remote = DEFAULT_REMOTE, options = {}) {
+    const prune = options.prune !== false;
+    return prune
+        ? `git fetch --prune --tags ${remote}`
+        : `git fetch --tags ${remote}`;
 }
 
 /** Current branch name, or null when HEAD is detached. */
@@ -665,6 +690,7 @@ module.exports = {
     getRemoteUrl,
     ensureRemote,
     fetchAllRefs,
+    describeFetchCommand,
     getCurrentBranch,
     listLocalBranches,
     listRemoteBranches,

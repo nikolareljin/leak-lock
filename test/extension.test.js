@@ -1856,7 +1856,7 @@ suite('Preparing a command must never modify the repository', () => {
 	});
 });
 
-suite('Preparing survives an unreachable remote', () => {
+suite('An unreachable remote stops preparation with a clear message', () => {
 	const LeakLockPanel = require('../leakLockPanel');
 	const cp = require('child_process');
 	const fs = require('fs');
@@ -1906,64 +1906,79 @@ suite('Preparing survives an unreachable remote', () => {
 		return panel;
 	}
 
-	test('a failed ref refresh still produces the script', async () => {
-		// The reported failure: pressing Prepare ran `git fetch --prune --tags origin`,
-		// the remote refused it, and the whole prepare aborted — leaving the user with
-		// nothing, in exactly the situation where a script to run by hand matters most.
+	test('preparation stops and produces nothing at all', async () => {
 		const panel = preparedPanel();
 		await panel._prepareScanGitCommand({});
 
-		assert.ok(panel._scanCleanup.preparedCommand, 'the script is generated despite the fetch failing');
-		assert.strictEqual(panel._scanCleanup.preparedMode, 'git');
-		assert.ok(panel._scanCleanup.refreshError, 'the failure is recorded rather than thrown away');
-		assert.ok(panel._scanCleanup.preparedCommand.includes('git fetch --prune --tags'),
-			'the script refreshes refs itself, which is why running it by hand is still safe');
+		// Half-states are what caused the confusion: a plan built from a comparison
+		// that could not be made is worse than no plan.
+		assert.strictEqual(panel._scanCleanup.preparedCommand, null, 'no script is generated');
+		assert.strictEqual(panel._scanCleanup.preparedMode, null);
+		assert.strictEqual(panel._scanCleanup.preparedRepo, null);
+		assert.strictEqual(panel._scanCleanup.blockedReason, 'remote-unreachable');
+		assert.ok(panel._scanCleanup.remoteError, 'the reason is kept for the panel');
 	});
 
-	test('the in-panel run is refused while the plan is unverified', async () => {
+	test('the plan check is read-only — it does not prune refs', async () => {
 		const panel = preparedPanel();
 		await panel._prepareScanGitCommand({});
-		assert.ok(panel._scanCleanup.refreshError);
-
-		const headBefore = cp.execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { env }).toString().trim();
-		await panel._runPreparedScanCleanup('git');
-		// LL-001 guards the rewrite: an unverified plan must not be executed from the
-		// panel. It must also not silently do nothing — the user is told to save the
-		// script instead.
-		assert.strictEqual(
-			cp.execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { env }).toString().trim(),
-			headBefore,
-			'no rewrite runs while refs are unverified'
-		);
+		// --prune deletes local remote-tracking refs. Wanted immediately before a
+		// rewrite; not wanted during a planning check the user did not ask to mutate
+		// anything.
+		assert.ok(!panel._scanCleanup.remoteError.command.includes('--prune'),
+			'planning must not prune');
+		assert.strictEqual(panel._scanCleanup.remoteError.command, 'git fetch --tags origin');
 	});
 
-	test('the panel explains the failure instead of dumping raw git output', async () => {
+	test('nothing in the repository is touched', async () => {
+		const head = () => cp.execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { env }).toString().trim();
+		const before = head();
 		const panel = preparedPanel();
 		await panel._prepareScanGitCommand({});
-		const html = panel._renderRefreshError(panel._scanCleanup.refreshError);
-		assert.match(html, /Could not refresh refs/);
-		assert.match(html, /Save as \.sh/);
-		assert.match(html, /refreshes refs and re-checks for unpushed commits itself/);
-		// The raw output is available, but folded away rather than shown as the message.
+		assert.strictEqual(head(), before);
+		assert.ok(fs.existsSync(path.join(work, 'conf.env')), 'the secret file is still there');
+	});
+
+	test('the message leads with "nothing changed" and names the command', async () => {
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+		const html = panel._renderRemoteError(panel._scanCleanup.remoteError);
+
+		// The original wording — "Failed to prepare cleanup: Command failed: git
+		// fetch ..." — was read as "the cleanup ran". Lead with the opposite.
+		assert.match(html, /nothing in your repository was changed/i);
+		assert.match(html, /No history was rewritten/);
+		assert.match(html, /read-only/);
+		assert.match(html, /git fetch --tags origin/);
+		assert.match(html, /To fix it:/);
+		// Raw git output is available but folded away; it is not the headline.
 		assert.match(html, /<details/);
+		assert.ok(!/Failed to prepare cleanup/.test(html));
 	});
 
-	test('remote errors are classified into actionable guidance', () => {
-		const LeakLock = require('../leakLockPanel');
-		void LeakLock;
+	test('no wording implies a cleanup was attempted', async () => {
 		const panel = preparedPanel();
-		// Exercised through the public surface: prepare stores the classified error.
+		await panel._prepareScanGitCommand({});
+		const html = panel._renderRemoteError(panel._scanCleanup.remoteError);
+		for (const misleading of [/cleanup failed/i, /removal failed/i, /rewrite failed/i]) {
+			assert.ok(!misleading.test(html), `panel must not say ${misleading}`);
+		}
+	});
+
+	test('remote failures are classified into a cause and a fix', () => {
+		const panel = preparedPanel();
 		const cases = [
-			['SAML SSO', /SAML SSO/, 'sso'],
-			['Authentication failed for https://example.invalid', /Authentication/, 'auth'],
-			['Could not resolve host: example.invalid', /unreachable/, 'network']
+			['ERROR: The organization has enabled or enforced SAML SSO.', 'sso', /single sign-on/i],
+			['Authentication failed for https://example.invalid', 'auth', /refused access/i],
+			['ssh: Could not resolve hostname example.invalid', 'network', /could not be reached/i],
+			['Repository not found.', 'missing', /does not point at a repository/i]
 		];
-		for (const [raw, expected, kind] of cases) {
-			const summarized = panel._classifyRemoteError(new Error(raw));
+		for (const [raw, kind, expectedCause] of cases) {
+			const summarized = panel._classifyRemoteError(new Error(raw), 'git fetch --tags origin');
 			assert.strictEqual(summarized.kind, kind, `${raw} should classify as ${kind}`);
-			assert.match(summarized.message, expected);
-			// The raw text is preserved for the details pane, on one line.
-			assert.ok(summarized.detail.includes(raw.split(':')[0]));
+			assert.match(summarized.cause, expectedCause);
+			assert.ok(summarized.fix.length > 0, 'every cause carries a fix');
+			assert.strictEqual(summarized.command, 'git fetch --tags origin');
 		}
 	});
 });
