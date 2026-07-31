@@ -25,11 +25,12 @@ instead of a mystery.
 
 ![Scan results with engine attribution](website/img/scan-results-table.png)
 
-Above: a real scan of this repository with all three engines. Note the **Engine** column.
-The AWS key was found by Nosey Parker *and* Gitleaks but missed by TruffleHog; the MongoDB
-credential by Nosey Parker *and* TruffleHog but missed by Gitleaks; the rest by one engine
-only. That disagreement, on a repository of a few dozen files, is the argument for running
-more than one engine.
+Above: a real scan of the [damn-vulnerable-repo](https://github.com/nikolareljin/damn-vulnerable-repo)
+fixture with all three engines. Note the **Engine** column. The AWS key and the Azure
+connection string were found by Nosey Parker *and* Gitleaks but missed by TruffleHog; the
+Stripe key by Gitleaks alone; a credential buried in a large blob by TruffleHog alone,
+missed by both others. That disagreement, on a repository of a few dozen files, is the
+argument for running more than one engine.
 
 Nothing carries a `VERIFIED LIVE` badge because verification was enabled and TruffleHog
 correctly verified none of these — they are synthetic fixtures from `test-secrets.js`, not
@@ -299,10 +300,11 @@ that differs is aggregated onto the surviving row rather than duplicated into ex
 - **Different secrets at the same line stay separate.**
 - A field is marked *unavailable* only if **no** reporting engine supplied it.
 
-On a real scan of this repository the three engines produced 78 raw detections, which
-collapse to 54 distinct findings — the difference is entirely repeats of the same secret
-across commits, passes, rules and engines. Every sighting is still recorded in
-`occurrences` and in the JSON export.
+On a real scan of the `damn-vulnerable-repo` fixture the three engines produced 62 raw
+detections (Nosey Parker 23, Gitleaks 27, TruffleHog 12), which collapse to 31 distinct
+findings — the difference is entirely repeats of the same secret across commits, passes,
+rules and engines. Every sighting is still recorded in `occurrences` and in the JSON
+export.
 
 ## Field parity
 

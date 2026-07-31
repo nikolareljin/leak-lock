@@ -42,6 +42,19 @@
 ### Fixed — Untracked Findings Were Never Flagged
 - **A secret present on disk but never committed was reported as though it were in history.** The check resolved the *display* path against the scan root, and that path already carries the scanned directory's name as a prefix — so it looked for `<scan>/<scanName>/<path>`, which never exists, and every finding fell through as "tracked". The consequence was the wrong remediation: an uncommitted `.env` was presented as needing a history rewrite when deleting the file is the fix. Engine paths are now resolved first. Found by building the test fixture below.
 
+### Documentation — Screenshots Now Show the Public Fixture
+
+- **Every screenshot is regenerated from a real scan of `damn-vulnerable-repo`**, the public test fixture, instead of Leak Lock's own repository. The fixture carries the cases a screenshot needs to actually demonstrate anything: the same secret across several commits *and* the working tree, findings each engine finds and the others miss, a third-party dependency path, and content no scanner flags. The run behind the images found **31 findings merged from 62 raw detections** (Nosey Parker 23 · Gitleaks 27 · TruffleHog 12).
+- **The old `control-panel` and `remove-files` images showed an unrelated repository** (`ai-runner`) **and the operator's home-directory layout.** The fixture is now cloned to `/tmp/repos` and scanned there, so the paths in the images are real and carry no identity — nothing has to be redacted after the fact.
+- **Four new images cover the destructive path**, which was previously undocumented: the prepared script before it runs, the force-push confirmation gate, the protected-branch explanation, and post-push verification.
+- `tools/render-screenshots.js` gained the `sidebar`, `removeFiles`, `keywords`, `prepared`, `pushPlan`, `verified` and `protected` views, so these no longer have to be captured by hand from a live editor — which is how the stale ones drifted. `LEAKLOCK_SHOT_LIMIT=0` renders the full result set for captures where a sampled count would contradict the coverage panel beside it.
+
+### Fixed — Two Places The UI Contradicted Itself
+
+- **A diverged tag was reported as an unreachable remote.** `git fetch --tags` exits non-zero when a tag points somewhere different on the remote — routine right after a history rewrite, which is exactly when this tool runs. Leak Lock reported it as *"The remote could not be contacted"*, sending the user to debug a network problem that did not exist. It is now identified as a tag conflict, with the `--force` fix named.
+- **The scan never recorded the fetch it performed.** After a scan that refreshed refs, the header still read *"Last fetched never (stale)"* — directly above a coverage panel saying the refs had just been refreshed — and prompted the user to fetch again. The scan now records its fetch, and the header renders the scan repository's timestamp rather than the Remove Files view's.
+- **The sidebar listed Docker and Nosey Parker as "Required for scanning".** Since this release they are optional; Gitleaks and TruffleHog are native binaries. The label told users to install a container runtime they may not need.
+
 ### Fixed — A Protected Branch Now Explains Itself
 
 - **The most likely real-world failure produced the least useful message.** Force-pushing to a repository whose default branch is protected — which is most repositories — failed with `Force-push failed: Command failed: git push --force --atomic …` followed by nine `[remote rejected]` lines. Because the push is atomic, **one** protected ref rejects **every** ref, so the output reads as though the entire rewrite is broken when in fact a single branch rule is blocking it and the other eight refs were simply rolled back with the transaction.

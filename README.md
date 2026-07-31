@@ -153,25 +153,36 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 
 ## 📸 Screenshots
 
-> Captured from a **real scan of this repository** — a fresh clone, scanned with
-> Gitleaks, TruffleHog and Nosey Parker together, rendered from the extension's own
-> webview. The full run found 59 findings; the table shows six of them, chosen to span
-> the three engines. Every secret shown is a synthetic fixture from `test-secrets.js`
-> (AWS's published `AKIAIOSFODNN7EXAMPLE`, `mongodb://user:REDACTED@localhost`), not a
-> real credential — which is also why nothing carries a `VERIFIED LIVE` badge: TruffleHog
-> ran with verification enabled and, correctly, verified none of them.
-> Regenerate with `tools/real-scan.js` and `tools/render-screenshots.js`.
+> Captured from a **real scan of [damn-vulnerable-repo](https://github.com/nikolareljin/damn-vulnerable-repo)**,
+> the public test fixture — cloned fresh, seeded, and scanned with Gitleaks, TruffleHog
+> and Nosey Parker together, then rendered from the extension's own webview.
+>
+> The run found **31 findings merged from 62 raw detections** (Nosey Parker 23 · Gitleaks
+> 27 · TruffleHog 12); the table shows six of them, sampled to span the three engines.
+> **Every credential in that repository is fake by construction** — AWS's own published
+> `AKIAIOSFODNN7EXAMPLE`, Stripe `sk_test_` keys, hostnames under the reserved `.example`
+> TLD that can never resolve, and tokens whose "random" part is the alphabet in order.
+> Nothing carries a `VERIFIED LIVE` badge because there is nothing live to verify.
+> See [docs/TEST_FIXTURE.md](docs/TEST_FIXTURE.md).
+>
+> Regenerate with `tools/real-scan.js` and `tools/render-screenshots.js`. Scan a clone
+> under `/tmp/repos` rather than your home directory — the paths are visible in the
+> images.
 
 ### Scan results — multi-engine, with attribution
 
 ![Scan results](docs/website/img/scan-results-table.png)
 
 One row per finding, with the file and line, the commit and branches it lives in, and a
-severity label — plus **which engines found it and which missed it**. The top two rows
-are real corroboration: Nosey Parker and Gitleaks both found the AWS key, and Nosey
-Parker and TruffleHog both found the MongoDB credential, each merged into a single row.
-The rest were found by one engine and missed by the others — which is the whole reason
-for running more than one.
+severity label — plus **which engines found it and which missed it**. The top two rows are
+real corroboration: Nosey Parker and Gitleaks both found the AWS key and the Azure
+connection string, each merged into a single row. Below them, Gitleaks found a Stripe key
+the other two missed, and TruffleHog found a credential inside a large blob that Nosey
+Parker and Gitleaks both missed — which is the whole reason for running more than one.
+
+The first row also shows aggregation working: one secret, **in 3 commits and still in the
+working tree**, as a single row rather than four. The `node_modules` row is marked
+*Dependency · not your code* and cannot be selected for a history rewrite.
 
 ### Scan coverage — what was actually examined
 
@@ -195,6 +206,36 @@ and branches a rule touches before anything is rewritten.
 
 "No findings" means nothing without its scope, so the coverage panel sits directly beneath
 it.
+
+### The cleanup, step by step
+
+Every destructive step sits behind something you have to read first.
+
+![Prepared cleanup script](docs/website/img/prepared-command.png)
+
+**1. The script, before it runs.** Prepare generates the exact commands and shows them.
+Nothing has run yet — you can copy the script and run it yourself instead, and it performs
+the same safety checks either way.
+
+![Force-push confirmation](docs/website/img/push-confirmation.png)
+
+**2. The remote is still untouched.** The local rewrite and the force-push are separate
+steps, and this gate stays on screen until you decide. It names how many refs the push
+will overwrite.
+
+![Protected branch explanation](docs/website/img/protected-branch.png)
+
+**If your `main` branch is protected — and it should be.** The push is atomic, so one
+protected branch rejects every ref and git reports nine failures for a single cause. Leak
+Lock names the branch actually blocking it, says plainly that nothing was pushed and the
+secret is still on the remote, and gives the steps to finish — including turning the
+protection back on afterwards.
+
+![Verified clean](docs/website/img/verified-clean.png)
+
+**3. Verified, not assumed.** After the push, every remote branch and tag is re-fetched and
+re-checked. If nothing could be examined, it says so rather than reporting a clean result
+it never tested.
 
 ### Activity Bar Integration
 The extension adds a shield icon to the activity bar for easy access.

@@ -145,6 +145,8 @@ function runDockerCommand(args, options = {}) {
  *
  * @returns {{kind: string, message: string, detail: string}}
  */
+const DEFAULT_REMOTE_NAME = 'origin';
+
 function summarizeGitRemoteError(error, command = 'git fetch') {
     const raw = [
         error && error.message ? error.message : '',
@@ -168,6 +170,15 @@ function summarizeGitRemoteError(error, command = 'git fetch') {
         kind = 'network';
         cause = 'The remote host could not be reached.';
         fix = 'Check your network or VPN connection, then press Prepare again.';
+    } else if (/would clobber existing tag|\[rejected\].*tag/i.test(raw)) {
+        // `git fetch --tags` exits non-zero when a tag points somewhere different on the
+        // remote. The remote was reached and read perfectly well — reporting this as
+        // "could not be contacted" sends the user to check their network and VPN for a
+        // problem that is a diverged tag, and it is routine after a history rewrite,
+        // which is exactly when this tool runs.
+        kind = 'tag-conflict';
+        cause = 'The remote was reached, but a tag points at a different commit locally than on the remote, so git refused to overwrite it.';
+        fix = 'Run `git fetch --tags --force ' + DEFAULT_REMOTE_NAME + '` to take the remote\'s version, or delete the local tag, then try again.';
     } else if (/does not appear to be a git repository|Repository not found|not found/i.test(raw)) {
         kind = 'missing';
         cause = 'The configured remote does not point at a repository git can read.';
@@ -2777,7 +2788,11 @@ class LeakLockPanel {
             <div class="scan-section">
                 <h2>🔍 Scan Results</h2>
                 <div style="margin:6px 0 10px 0; font-size:0.9em; color:${fetchColor}; display:flex; align-items:center; gap:8px;">
-                    <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${this._removalState.lastFetchAt ? escapeHtml(new Date(this._removalState.lastFetchAt).toLocaleString()) : 'never'}${fetchNote}</span>
+                    <!-- lastFetchISO, not _removalState.lastFetchAt: the latter belongs to the
+                         Remove Files view and is unset during a scan, so this line claimed
+                         "never" while the colour and staleness beside it were computed from
+                         the correct value. -->
+                    <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${lastFetchISO ? escapeHtml(new Date(lastFetchISO).toLocaleString()) : 'never'}${fetchNote}</span>
                     <button style="padding:4px 8px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; cursor:pointer;" onclick="refetchNow()">⟳ Refetch now</button>
                 </div>
                 <div style="margin-bottom: 15px;">
@@ -3399,7 +3414,15 @@ class LeakLockPanel {
         try {
             // Read-only: a scan refreshes refs to widen coverage, it does not prune.
             await gitRewrite.fetchAllRefs(repoRoot, gitRewrite.DEFAULT_REMOTE, { prune: false });
-            return { attempted: true, ok: true, reason: null, remoteError: null };
+            // Record it. Without this the panel reports "Last fetched never (stale)" and
+            // asks the user to fetch immediately after the scan just fetched — while the
+            // coverage panel directly below says the refs were refreshed.
+            const fetchedAt = new Date().toISOString();
+            this._recordFetchAt(repoRoot, fetchedAt);
+            if (repoRoot === this._removalState.repoDir) {
+                this._removalState.lastFetchAt = fetchedAt;
+            }
+            return { attempted: true, ok: true, reason: null, remoteError: null, at: fetchedAt };
         } catch (error) {
             // Keep the classified cause for display and the raw output for a details
             // pane. Splicing git's entire remote message into a summary line is what
