@@ -1558,3 +1558,51 @@ suite('Manual regex redaction end to end', () => {
 		assert.ok(offenders.every(o => o.reason === 'secret still present'));
 	});
 });
+
+suite('Engine selection and graceful degradation', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	test('unknown engine ids are dropped rather than passed through', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const ids = panel._getEnabledEngineIds();
+		// Whatever the workspace config holds, only engines this build knows about
+		// may reach the scan loop.
+		assert.ok(ids.every(id => ['gitleaks', 'trufflehog', 'noseyparker'].includes(id)));
+	});
+
+	test('the default engine set leads with the maintained engine', () => {
+		const pkg = require('../package.json');
+		const setting = pkg.contributes.configuration.properties['leakLock.scan.engines'];
+		assert.deepStrictEqual(setting.default, ['gitleaks', 'noseyparker']);
+		// Nosey Parker is archived upstream, so it must not be the engine a new user
+		// relies on by default.
+		assert.strictEqual(setting.default[0], 'gitleaks');
+	});
+
+	test('credential verification is off by default', () => {
+		const pkg = require('../package.json');
+		const setting = pkg.contributes.configuration.properties['leakLock.trufflehog.verify'];
+		assert.strictEqual(setting.default, false,
+			'verification sends the discovered credential to a third party; it must be opt-in');
+	});
+
+	test('coverage names an engine that was skipped, rather than omitting it', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanCoverage = {
+			incomplete: false, incompleteReason: null,
+			engines: [
+				{ id: 'gitleaks', displayName: 'Gitleaks', version: 'v8.30.1', ok: true, findings: 3 },
+				{ id: 'noseyparker', displayName: 'Nosey Parker', version: null, ok: false, findings: 0, note: 'Skipped — Docker not available: daemon not running' }
+			],
+			refs: { localBranches: 1, remoteBranches: 1, remoteOnlyBranches: [], tags: 0, stashes: 0 },
+			refRefresh: { attempted: true, ok: true, reason: null },
+			rulesetMode: 'default', maxFileSizeMb: 100, timeoutSeconds: 300, dependencyHandling: 'warning'
+		};
+		const html = panel._renderScanCoverage();
+		// An engine that did not run must be stated, not silently absent — otherwise
+		// a partial scan reads as a full one.
+		assert.match(html, /Nosey Parker/);
+		assert.match(html, /Docker not available/);
+	});
+});

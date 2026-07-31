@@ -409,7 +409,16 @@ const truffleHogEngine = {
             warnings.push(`TruffleHog exited non-zero; parsed partial output: ${error.message}`);
         }
 
-        const findings = parseTruffleHogJsonl(stdout).map(mapTruffleHogFinding);
+        // "Verified live" is a claim about a moment in time — a credential valid last
+        // week may have been rotated since. Stamp when the check actually ran.
+        const verifiedAt = verify === false ? null : new Date().toISOString();
+        const findings = parseTruffleHogJsonl(stdout).map(raw => {
+            const finding = mapTruffleHogFinding(raw);
+            if (finding.verified === true) {
+                finding.verifiedAt = verifiedAt;
+            }
+            return finding;
+        });
         return { findings, warnings, verified: findings.filter(f => f.verified === true).length };
     }
 };

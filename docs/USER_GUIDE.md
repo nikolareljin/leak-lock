@@ -42,7 +42,7 @@ On first launch, you'll see the welcome view:
 2. Wait for the installation process to complete
 3. Dependencies include:
    - Docker (must be pre-installed)
-   - Nosey Parker Docker image
+   - Detection engines (Gitleaks binary; optionally TruffleHog, or the Nosey Parker Docker image)
    - BFG Repo Cleaner tool
 
 ---
@@ -380,10 +380,32 @@ Use this guided flow to remove files or directories from your repository history
 
 ### External Tools
 
-**Nosey Parker**
-- [Project page](https://github.com/praetorian-inc/noseyparker)
-- Advanced secret detection engine with 100+ curated rules
-- Fast and precise; maintained by Praetorian with active community
+**Gitleaks** — default detection engine
+- [Project page](https://github.com/gitleaks/gitleaks) · MIT · actively maintained
+- Install: `brew install gitleaks`, `apt install gitleaks`, or a release binary. No Docker or JVM needed.
+- Scans full git history across every ref, plus a separate working-tree pass that also
+  covers untracked and `.gitignore`d files
+- Supplies detail the other engines do not: column ranges, entropy, commit author, and a
+  stable fingerprint used for baselines
+
+**TruffleHog** — optional, credential verification
+- [Project page](https://github.com/trufflesecurity/trufflehog) · AGPL-3.0 · actively maintained
+- Install: `brew install trufflehog` or a release binary. Leak Lock runs it as an external
+  process only, so the extension stays MIT-licensed.
+- Answers the question no other engine here can: **is this credential still live?**
+- Verification makes read-only network calls to third-party providers *using the
+  discovered credential*, so it is **off by default**. Enable `leakLock.trufflehog.verify`
+  deliberately.
+- A verified credential is ranked above everything else and badged `VERIFIED LIVE` —
+  rewriting history does not revoke a working key, so it needs rotating first.
+
+**Nosey Parker** — optional, legacy
+- [Project page](https://github.com/praetorian-inc/noseyparker) · Apache-2.0
+- ⚠️ **Archived read-only upstream on 2026-04-24**; `v0.24.0` (May 2025) is the final
+  release and its ruleset can no longer gain detectors. Leak Lock pins that version.
+- Requires Docker. Kept because its history walker and finding-level deduplication are
+  excellent — it groups matches sharing a rule and capture groups into a single finding,
+  which keeps large result sets reviewable.
 
 **BFG Repo Cleaner**
 - [Project page](https://rtyley.github.io/bfg-repo-cleaner/)
@@ -391,7 +413,7 @@ Use this guided flow to remove files or directories from your repository history
 - Ideal for removing large files or secrets across history
 
 ### Why Leak Lock
-- Seamlessly integrates Nosey Parker and BFG/git workflows inside VS Code
+- Seamlessly integrates multi-engine scanning and BFG/git workflows inside VS Code
 - Offers both name‑based (BFG) and path‑exact (git) removal with previews
 - Adds safe defaults, warnings, and copyable commands for clear, auditable changes
 

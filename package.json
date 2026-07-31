@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -151,7 +151,7 @@
           "default": "",
           "description": "Path to the trufflehog binary. Empty resolves 'trufflehog' from PATH."
         },
-        "leakLock.truffleHog.verify": {
+        "leakLock.trufflehog.verify": {
           "type": "boolean",
           "default": false,
           "markdownDescription": "Let TruffleHog check whether a discovered credential is still live. **This makes read-only network calls to third-party providers using the discovered credential.** Off by default; a verified finding is treated as the highest severity in the results."
