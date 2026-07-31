@@ -2565,9 +2565,25 @@ suite('Third review pass', () => {
 
 suite('Fourth review pass', () => {
 	const rules = require('../redaction-rules');
-	const engines = require('../scan-engines');
 	const fs = require('fs');
 	const path = require('path');
+
+	test('the scanned repository is mounted read-only', () => {
+		// Scanning never needs to write to the audited tree, and the datastore has its
+		// own writable mount. Without :ro the container can write into the user's
+		// repository — which is exactly what moving the datastore out of the scan root
+		// was meant to stop, so leaving the mount writable would undo that fix.
+		const config = require('../scan-engine-config');
+		const args = config.buildNoseyParkerScanArgs({
+			scanMount: '/repo', datastoreMount: '/ds', settings: {}
+		});
+		const scanMount = args.find(a => a.startsWith('/repo:'));
+		assert.strictEqual(scanMount, '/repo:/scan:ro', 'the scan path is mounted read-only');
+		assert.ok(
+			args.includes('/ds:/datastore'),
+			'while the datastore keeps its writable mount'
+		);
+	});
 
 	test('a literal source cannot start with a rewrite-tool mode prefix', () => {
 		// `regex:` (and glob:/literal: for filter-repo) is a mode prefix in the rule

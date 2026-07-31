@@ -403,7 +403,7 @@ set `leakLock.trufflehog.binaryPath` or `leakLock.gitleaks.binaryPath`.
 - Seamless integration: combines multi-engine detection with BFG/git removal in a single VS Code experience.
 - Safer defaults: Previews, path‑based alternative, and confirmation steps reduce risk.
 - Productivity: One panel to scan, review, prepare commands, and execute — no shell juggling.
-- Cross‑platform: Dockerized scanning and built‑in helpers make it reliable on Windows, macOS, and Linux.
+- Cross‑platform: Gitleaks and TruffleHog run as native binaries with no container runtime; Docker is needed only for the optional Nosey Parker engine. Built‑in helpers keep it reliable on Windows, macOS, and Linux.
 
 ### **Git (filter-branch)**
 - **Purpose**: Exact path-based history rewriting across branches
