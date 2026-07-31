@@ -25,10 +25,6 @@
         "title": "Hello World"
       },
       {
-        "command": "leak-lock.fileScan",
-        "title": "File Scan"
-      },
-      {
         "command": "leak-lock.projectScan",
         "title": "Project Scan"
       },
