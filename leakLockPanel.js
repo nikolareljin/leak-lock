@@ -4779,7 +4779,12 @@ class LeakLockPanel {
             // three failing engines did, and must not read differently.
             const engines = this._scanCoverage?.engines || [];
             const ranSuccessfully = engines.filter(engine => engine.ok);
-            if (this._scanCoverage && ranSuccessfully.length === 0) {
+            // `ok` is false for an engine that ran but did not finish — a timeout sets
+            // it via `ok: !scanRun.incomplete`. That engine *did* examine part of the
+            // repository, so claiming "no detection engine ran" would be wrong, and
+            // would contradict the incomplete banner rendered just below. The
+            // incomplete state has its own accurate message; leave it to it.
+            if (this._scanCoverage && !this._scanCoverage.incomplete && ranSuccessfully.length === 0) {
                 return `
                 <div class="scan-section">
                     <div class="empty-results scan-not-run">

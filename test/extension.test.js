@@ -3187,3 +3187,25 @@ suite('Zero findings must not mean "clean" when nothing ran', () => {
 		assert.match(p._getScanResultsSection(), /No Security Issues Found/);
 	});
 });
+
+suite('The not-scanned guard must not overreach', () => {
+	const LLPanel = require('../leakLockPanel');
+	test('an engine that ran but timed out is not reported as "nothing was scanned"', () => {
+		const panel = new LLPanel({ fsPath: '/tmp/ext' });
+		panel._scanResults = [];
+		panel._scanCoverage = {
+			engines: [{ id: 'noseyparker', displayName: 'Nosey Parker', ok: false,
+				findings: 0, note: 'Scan stopped after 300s' }],
+			incomplete: true,
+			incompleteReason: 'The scan was stopped after 300s.'
+		};
+		const html = panel._getScanResultsSection();
+		// `ok: !scanRun.incomplete` makes a timed-out engine look like it never ran.
+		// It did run — it examined part of the repository — so the accurate message is
+		// the incomplete banner, not "your repository has not been checked at all".
+		assert.ok(!/Nothing was scanned/.test(html),
+			'a partial scan is not the same as no scan');
+		assert.match(html, /Scan incomplete/, 'the incomplete banner is the right message here');
+		assert.match(html, /coverage-intro|Scan coverage/, 'and the coverage detail survives');
+	});
+});
