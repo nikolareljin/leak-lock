@@ -59,18 +59,44 @@ if [ "$DO_LIST" = 1 ]; then
   exit 0
 fi
 
+# The commit everything is seeded on top of. Recorded on the first run, because a
+# second run starts with a fixture branch checked out — taking HEAD then would
+# stack a fixture on a fixture, produce no diff, and abort with "nothing to commit".
+BASE="$(g config --get leaklock.fixtureBase 2>/dev/null || echo '')"
+if [ -n "$BASE" ] && ! g rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
+  BASE=""   # recorded commit has since been rewritten away
+fi
+
+CURRENT="$(g symbolic-ref --quiet --short HEAD || echo '')"
+if [ -z "$BASE" ]; then
+  case "$CURRENT" in
+    "$PREFIX"/*)
+      echo "a fixture branch is checked out but no base commit was recorded;" >&2
+      echo "check out your own branch first, then re-run" >&2
+      exit 2 ;;
+  esac
+  BASE="$(g rev-parse HEAD 2>/dev/null || echo '')"
+  [ -n "$BASE" ] || { echo "the target repository has no commits; make one first" >&2; exit 2; }
+  g config leaklock.fixtureBase "$BASE"
+fi
+
+ORIGINAL_BRANCH="$CURRENT"
+case "$ORIGINAL_BRANCH" in "$PREFIX"/*) ORIGINAL_BRANCH="" ;; esac
+
+# Step off any fixture branch before deleting them.
+case "$CURRENT" in
+  "$PREFIX"/*) g checkout -q --detach "$BASE" ;;
+esac
+
 if [ "$DO_RESET" = 1 ]; then
   for b in $BRANCHES; do g branch -D "$b" >/dev/null 2>&1 || true; done
   g tag -d "$TAG" >/dev/null 2>&1 || true
   echo "removed any previously seeded branches and tags"
 fi
 
-ORIGINAL_BRANCH="$(g symbolic-ref --quiet --short HEAD || echo '')"
-BASE="$(g rev-parse HEAD 2>/dev/null || echo '')"
-[ -n "$BASE" ] || { echo "the target repository has no commits; make one first" >&2; exit 2; }
-
-if ! g diff --quiet || ! g diff --cached --quiet; then
-  echo "the target repository has uncommitted changes; commit or stash them first" >&2
+if ! g diff --quiet -- ":(exclude)$PREFIX" || ! g diff --cached --quiet -- ":(exclude)$PREFIX"; then
+  echo "the target repository has uncommitted changes outside $PREFIX/;" >&2
+  echo "commit or stash them first" >&2
   exit 2
 fi
 
@@ -115,7 +141,14 @@ D="$TARGET/$DREL"                      # absolute, for writing files
 # matches nothing and `add` fails — but the removal is already staged, so the
 # commit itself is still valid.
 commit() { g add -A -- "$DREL" >/dev/null 2>&1 || true; g commit -q -m "$1"; }
-start_branch() { g checkout -q -B "$1" "$BASE"; mkdir -p "$D"; }
+start_branch() {
+  # Clear anything a previous run left behind, so each branch is built from the
+  # recorded base rather than from the last run's leftovers.
+  rm -rf "$D"
+  g checkout -q -B "$1" "$BASE"
+  rm -rf "$D"
+  mkdir -p "$D"
+}
 
 # =============================================================================
 # main-leaks — credentials that arrive, move around, and are "removed"
@@ -322,6 +355,7 @@ Everything planted is fake. Files live under leaklock-fixture/ so they are easy 
 
 To undo entirely:
   git checkout ${ORIGINAL_BRANCH:-$BASE}
+  git config --unset leaklock.fixtureBase
   bash tools/seed-fake-leaks.sh "$TARGET" --reset --list
 
 Branches created (all prefixed $PREFIX/):
