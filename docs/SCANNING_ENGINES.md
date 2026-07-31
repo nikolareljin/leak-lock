@@ -25,11 +25,16 @@ instead of a mystery.
 
 ![Scan results with engine attribution](website/img/scan-results-table.png)
 
-Above: Leak Lock scanning its own repository. Note the **Engine** column — one finding was
-reported by Gitleaks and Nosey Parker but *missed by TruffleHog*, another only by Nosey
-Parker, and the Stripe key carries a `VERIFIED LIVE` badge because TruffleHog confirmed it
-still works. The secrets shown are the synthetic fixtures in `test/test-secrets.js`, not
-real credentials.
+Above: a real scan of this repository with all three engines. Note the **Engine** column.
+The AWS key was found by Nosey Parker *and* Gitleaks but missed by TruffleHog; the MongoDB
+credential by Nosey Parker *and* TruffleHog but missed by Gitleaks; the rest by one engine
+only. That disagreement, on a repository of a few dozen files, is the argument for running
+more than one engine.
+
+Nothing carries a `VERIFIED LIVE` badge because verification was enabled and TruffleHog
+correctly verified none of these — they are synthetic fixtures from `test-secrets.js`, not
+live credentials. The full run returned 45 findings; the image shows six, chosen to span
+the engines.
 
 ---
 
@@ -157,6 +162,16 @@ whatever was cached.
 | `leakLock.noseyParker.suppressRedundant` | `true` | Suppress matches overlapping a more specific match. Turn off when reconciling against another scanner |
 | `leakLock.noseyParker.maxFileSizeMb` | `100` | Skip larger files; `0` means no limit |
 | `leakLock.noseyParker.image` | *(pinned)* | Override the container image |
+
+### Cross-engine merging, in practice
+
+Engines rarely capture byte-identical spans of the same credential. On the scan above,
+Nosey Parker reported `mongodb://admin:password@localhost:27017/` where TruffleHog
+reported the same secret with `/mydb` on the end — same file, same line, same commit.
+Merging therefore keys on position and treats one secret containing the other as the same
+finding, keeping the longer capture (a rewrite replaces what it is given, so redacting the
+shorter span would leave the remainder in history). A short fragment cannot swallow a
+longer neighbour: containment requires at least 8 characters.
 
 ### A truncation bug worth knowing about
 

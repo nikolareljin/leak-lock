@@ -153,18 +153,25 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 
 ## 📸 Screenshots
 
-> Captured from Leak Lock scanning **its own repository** — the secrets shown are the
-> synthetic fixtures in `test/test-secrets.js` (AWS's published `AKIAIOSFODNN7EXAMPLE`,
-> `sk_test_…`, `ghp_1234…`), not real credentials.
+> Captured from a **real scan of this repository** — a fresh clone, scanned with
+> Gitleaks, TruffleHog and Nosey Parker together, rendered from the extension's own
+> webview. The full run found 45 findings; the table shows six of them, chosen to span
+> the three engines. Every secret shown is a synthetic fixture from `test-secrets.js`
+> (AWS's published `AKIAIOSFODNN7EXAMPLE`, `mongodb://admin:password@localhost`), not a
+> real credential — which is also why nothing carries a `VERIFIED LIVE` badge: TruffleHog
+> ran with verification enabled and, correctly, verified none of them.
+> Regenerate with `tools/real-scan.js` and `tools/render-screenshots.js`.
 
 ### Scan results — multi-engine, with attribution
 
 ![Scan results](docs/website/img/scan-results-table.png)
 
 One row per finding, with the file and line, the commit and branches it lives in, and a
-severity label — plus **which engines found it and which missed it**. A credential
-TruffleHog confirmed still works is badged `VERIFIED LIVE`; findings inside third-party
-dependencies are badged and excluded from cleanup.
+severity label — plus **which engines found it and which missed it**. The top two rows
+are real corroboration: Nosey Parker and Gitleaks both found the AWS key, and Nosey
+Parker and TruffleHog both found the MongoDB credential, each merged into a single row.
+The rest were found by one engine and missed by the others — which is the whole reason
+for running more than one.
 
 ### Scan coverage — what was actually examined
 

@@ -64,91 +64,58 @@ const panel = new LeakLockPanel({ fsPath: REPO });
 panel._scanPath = REPO;
 panel._selectedDirectory = REPO;
 
-const mk = (o) => panel._createResult(
-    o.file, o.line, o.secret, o.description, o.rule, null,
-    { forceGitHistory: o.history, commitHash: o.commit, commitDate: o.date, extraFields: o.extra }
-);
-
-const results = [
-    Object.assign(mk({
-        file: 'test/test-secrets.js', line: 15, secret: 'AKIAIOSFODNN7EXAMPLE',
-        description: 'AWS Access Token', rule: 'aws-access-token', history: true,
-        commit: '9bdf3691c4a2', date: '2026-07-14T09:12:00Z',
-        extra: { endLine: 15, startColumn: 18, endColumn: 38, entropy: 3.68, fingerprint: '9bdf369:test/test-secrets.js:aws-access-token:15', author: 'Nik Reljin', authorEmail: 'nik@example.invalid', commitMessage: 'add scanner fixtures' }
-    }), { engine: 'gitleaks', engines: ['gitleaks', 'noseyparker'], engineVersion: 'v8.30.1', unavailableFields: [] }),
-
-    Object.assign(mk({
-        file: 'test/test-secrets.js', line: 4, secret: 'ghp_1234567890abcdefghijklmnopqrstuvwx',
-        description: 'GitHub Personal Access Token', rule: 'github-pat', history: true,
-        commit: '9bdf3691c4a2', date: '2026-07-14T09:12:00Z',
-        extra: { endLine: 4, startColumn: 11, endColumn: 51, entropy: 4.21, fingerprint: '9bdf369:test/test-secrets.js:github-pat:4', author: 'Nik Reljin', authorEmail: 'nik@example.invalid' }
-    }), { engine: 'gitleaks', engines: ['gitleaks'], engineVersion: 'v8.30.1', unavailableFields: ['verified'] }),
-
-    Object.assign(mk({
-        file: 'test/test-secrets.js', line: 2, secret: 'sk_test_1234567890abcdef',
-        description: 'Stripe API Key', rule: 'stripe-access-token', history: true,
-        commit: '3c69337ab810', date: '2026-06-02T17:40:00Z',
-        extra: { endLine: 2, startColumn: 15, endColumn: 39, entropy: 3.94, verified: true, verifiedAt: '2026-07-31T09:55:00Z' }
-    }), { engine: 'trufflehog', engines: ['trufflehog', 'gitleaks'], engineVersion: 'v3.96.0', unavailableFields: [] }),
-
-    Object.assign(mk({
-        file: 'sidebarProvider.js', line: 313, secret: 'sk_test_123456789abcdef',
-        description: 'Stripe API Key', rule: 'stripe-access-token', history: true,
-        commit: 'c7e3b99f0d41', date: '2026-05-21T11:02:00Z',
-        extra: { endLine: 313, startColumn: 24, endColumn: 47, entropy: 3.81 }
-    }), { engine: 'noseyparker', engines: ['noseyparker'], engineVersion: 'v0.24.0', unavailableFields: ['entropy', 'endLine', 'verified'] }),
-
-    Object.assign(mk({
-        file: 'node_modules/@sample/sdk/dist/client.js', line: 88, secret: 'AKIAIOSFODNN7EXAMPLE',
-        description: 'AWS Access Token', rule: 'aws-access-token', history: false,
-        commit: null, date: null, extra: { entropy: 3.68 }
-    }), { engine: 'gitleaks', engines: ['gitleaks'], engineVersion: 'v8.30.1', unavailableFields: ['verified'] })
-];
-
-results[0].commitBranches = ['main', 'release/0.7.0', 'feat/multi-engine'];
-results[1].commitBranches = ['main', 'release/0.7.0', 'feat/multi-engine'];
-results[2].commitBranches = ['main'];
-results[3].commitBranches = ['main', 'v0.6.3'];
-
-const coverage = {
-    incomplete: false, incompleteReason: null,
-    engines: [
-        { id: 'gitleaks', displayName: 'Gitleaks', version: 'v8.30.1', ok: true, findings: 4 },
-        { id: 'trufflehog', displayName: 'TruffleHog', version: 'v3.96.0', ok: true, findings: 1, verified: 1 },
-        { id: 'noseyparker', displayName: 'Nosey Parker', version: 'v0.24.0', ok: true, findings: 1,
-          note: 'Nosey Parker upstream was archived on 2026-04-24; its ruleset is frozen at v0.24.0.' }
-    ],
-    image: 'ghcr.io/praetorian-inc/noseyparker:v0.24.0', imagePulled: true, imagePullError: null,
-    rulesetMode: 'default', maxFileSizeMb: 100, timeoutSeconds: 300, dependencyHandling: 'warning',
-    refRefresh: { attempted: true, ok: true, reason: null, remoteError: null },
-    refs: {
-        localBranches: 2, remoteBranches: 6, tags: 9, stashes: 0,
-        remoteOnlyBranches: ['feat/multi-engine', 'fix/prepare-preflight', 'release/0.6.3', 'docs/website']
-    },
-    strategy: {
-        mode: 'parallel', tier: 'capable', concurrency: 3, dropped: [],
-        reason: 'Engines ran in parallel (host: 8 core(s), 19.2 GB, load 0.21/core).',
-        host: { cpus: 8, totalMemGb: 19.2, memorySource: 'os', loadPerCore: 0.21 }
-    }
-};
-
-if (VIEW === 'empty') {
-    panel._scanResults = [];
-    coverage.engines = coverage.engines.map(e => ({ ...e, findings: 0, verified: 0 }));
-} else {
-    panel._scanResults = results;
+// Real scan output, produced by tools/real-scan.js. Nothing here is hand-written:
+// the findings, engine attribution, versions and coverage are whatever the engines
+// actually reported.
+const SCAN = process.argv[4] || path.join(__dirname, '..', 'scan.json');
+if (!fs.existsSync(SCAN)) {
+    console.error(`No scan data at ${SCAN}. Produce it first:\n` +
+        '  node tools/real-scan.js <repo-to-scan> scan.json');
+    process.exit(1);
 }
-panel._scanCoverage = coverage;
+const scan = JSON.parse(fs.readFileSync(SCAN, 'utf8'));
+
+const LIMIT = Number(process.env.LEAKLOCK_SHOT_LIMIT || 6);
+
+// A real scan of this repository returns ~45 findings, which is far too tall for a
+// documentation image, and their natural order groups every engine's findings
+// together. Take a sample that spans the engines instead: corroborated findings
+// first, then one per engine. The records themselves are untouched — this only
+// chooses which real rows appear.
+function sampleAcrossEngines(all, limit) {
+    const multi = all.filter(r => (r.engines || []).length > 1);
+    const picked = multi.slice(0, limit);
+    const seen = new Set(picked);
+    for (const engineId of ['noseyparker', 'gitleaks', 'trufflehog']) {
+        for (const r of all) {
+            if (picked.length >= limit) { break; }
+            if (seen.has(r)) { continue; }
+            if ((r.engines || [])[0] === engineId) { picked.push(r); seen.add(r); break; }
+        }
+    }
+    for (const r of all) {
+        if (picked.length >= limit) { break; }
+        if (!seen.has(r)) { picked.push(r); seen.add(r); }
+    }
+    return picked;
+}
+
+panel._scanResults = VIEW === 'empty' ? [] : sampleAcrossEngines(scan.results, LIMIT);
+panel._scanCoverage = scan.coverage;
+if (VIEW === 'empty') {
+    // The no-findings view, shown with the same real coverage record.
+    panel._scanCoverage = {
+        ...scan.coverage,
+        engines: (scan.coverage.engines || []).map(e => ({ ...e, findings: 0, verified: 0 }))
+    };
+}
 panel._resetScanSelection();
 
 if (VIEW !== 'empty') {
+    // Two manual rules, to show the editor. These are authored by definition — the
+    // feature exists precisely for text no scanner reports.
     panel._addCustomRule('internal-build.example.invalid', 'literal', 'redacted.invalid');
     panel._addCustomRule('ACME-CUSTOMER-[0-9]{6}', 'regex', '*****');
-    const rules = panel._getCustomRules();
-    panel._scanCleanup.customRulePreviews[rules[0].id] = {
-        commitCount: 12, commits: [], files: ['docs/deploy.md', 'scripts/publish.sh'],
-        branches: ['main', 'release/0.7.0'], truncated: false, maxCount: 200
-    };
 }
 
 let html = panel._getHtmlForWebview();

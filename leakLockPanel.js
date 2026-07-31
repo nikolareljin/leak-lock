@@ -3479,26 +3479,56 @@ class LeakLockPanel {
             }
             seen.add(exactKey);
 
+            // Keyed on position only. Engines rarely capture byte-identical spans of
+            // the same credential — Nosey Parker reported
+            // `mongodb://admin:password@localhost:27017/` where TruffleHog reported the
+            // same secret with `/mydb` on the end — so requiring the exact string here
+            // meant corroboration almost never registered on real repositories.
             const locationKey = [
                 result.file,
                 result.line,
-                result.fullSecret,
                 result.commitHash || ""
             ].join("\0");
-            const existing = byLocation.get(locationKey);
+            const candidates = byLocation.get(locationKey);
 
-            if (existing && engine && existing.engine && engine !== existing.engine) {
+            const existing = candidates && candidates.find(other =>
+                other.engine && engine && other.engine !== engine
+                && this._sameSecret(other.fullSecret, result.fullSecret)
+            );
+
+            if (existing) {
                 this._mergeCrossEngineResult(existing, result);
                 continue;
             }
 
             merged.push(result);
-            if (!existing) {
-                byLocation.set(locationKey, result);
+            if (candidates) {
+                candidates.push(result);
+            } else {
+                byLocation.set(locationKey, [result]);
             }
         }
 
         return merged;
+    }
+
+    /**
+     * Do two engines describe the same credential?
+     *
+     * Identical is the easy case. Beyond that, engines legitimately capture different
+     * spans — a connection string with or without its database suffix, a token with or
+     * without its prefix — so containment counts too. The length floor keeps a short
+     * fragment from swallowing an unrelated finding that happens to share a line.
+     */
+    _sameSecret(a, b) {
+        if (!a || !b) {
+            return false;
+        }
+        if (a === b) {
+            return true;
+        }
+        const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+        return shorter.length >= 8 && longer.includes(shorter);
     }
 
     /**
@@ -3523,6 +3553,15 @@ class LeakLockPanel {
             if (target[key] === null || target[key] === undefined || target[key] === '') {
                 target[key] = value;
             }
+        }
+
+        // Keep the longest capture of the secret. A rewrite replaces what it is given,
+        // so redacting the shorter span would leave the remainder in history.
+        if (incoming.fullSecret && target.fullSecret
+            && incoming.fullSecret.length > target.fullSecret.length) {
+            target.fullSecret = incoming.fullSecret;
+            target.secret = this._truncateSecret(incoming.fullSecret);
+            target.isSecretTruncated = target.secret !== incoming.fullSecret;
         }
 
         // A live-credential confirmation from any engine wins.
@@ -4863,6 +4902,10 @@ class LeakLockPanel {
                 }
             };
         } finally {
+            // _cleanupTempFiles removes the root-owned datastore via a container when
+            // rmSync hits EACCES (which it does — the scanner runs as root). That
+            // leaves the enclosing mkdtemp directory empty, so a plain rmSync clears
+            // it. Verified against a real scan: nothing is left in the temp directory.
             await this._cleanupTempFiles(tempDatastore);
             try {
                 fs.rmSync(datastoreRoot, { recursive: true, force: true });
