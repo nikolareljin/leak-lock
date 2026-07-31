@@ -139,6 +139,39 @@ function runDockerCommand(args, options = {}) {
     });
 }
 
+/**
+ * Turn a raw `git fetch` failure into something a user can act on.
+ *
+ * Git dumps a multi-line wall of remote output on auth failures. Surfacing that
+ * verbatim in a toast tells the user a command they never asked to run has failed,
+ * without telling them what to do about it.
+ *
+ * @returns {{kind: string, message: string, detail: string}}
+ */
+function summarizeGitRemoteError(error) {
+    const raw = `${error && error.message ? error.message : ''}\n${error && error.stderr ? error.stderr : ''}`;
+    const detail = raw.replace(/\s+/g, ' ').trim();
+
+    let kind = 'unreachable';
+    let message = 'Could not reach the remote to refresh refs.';
+
+    if (/SAML SSO|single sign-on|single-sign-on/i.test(raw)) {
+        kind = 'sso';
+        message =
+            'The remote requires SAML SSO authorisation. Authorise your token or SSH key for the organisation, ' +
+            'then prepare again.';
+    } else if (/Authentication failed|could not read Username|Permission denied|access rights|403/i.test(raw)) {
+        kind = 'auth';
+        message =
+            'Authentication to the remote failed. Check your credentials or SSH key, then prepare again.';
+    } else if (/Could not resolve host|Network is unreachable|Connection timed out|timed out/i.test(raw)) {
+        kind = 'network';
+        message = 'The remote is unreachable — check your network or VPN, then prepare again.';
+    }
+
+    return { kind, message, detail };
+}
+
 // HTML escaping function to prevent XSS
 function escapeHtml(unsafe) {
     if (typeof unsafe !== 'string') {
@@ -350,6 +383,12 @@ class LeakLockPanel {
             // force-push. The panel shows a persistent confirmation and the push
             // only happens once the user confirms it here. null = nothing staged.
             pendingPush: null, // { repoDir, remote, verify, label, refCount }
+            // Repository the prepared plan targets. The executors use this rather than
+            // re-deriving a path, so a cleanup can only ever run where it was planned.
+            preparedRepo: null,
+            // Set when the plan-time ref refresh failed (SSO, auth, offline). The
+            // script is still generated; the in-panel run is withheld.
+            refreshError: null,
             // Set when Nosey Parker is enabled but Docker is missing, so the scan
             // degrades to the remaining engines instead of failing outright.
             noseyParkerUnavailable: null
@@ -2545,6 +2584,7 @@ class LeakLockPanel {
         const customRuleCount = this._getCustomRules().length;
         const noneSelected = selectedCount === 0 && customRuleCount === 0;
         const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
+        const refreshBlock = this._renderRefreshError(this._scanCleanup.refreshError);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
         const verifyBlock = this._renderVerifyResult(this._scanCleanup.verifyResult);
         const pendingPushBlock = this._renderPendingPush(this._scanCleanup.pendingPush);
@@ -2611,6 +2651,7 @@ class LeakLockPanel {
                 </table>
                 ${pendingPushBlock}
                 ${blockedBlock}
+                ${refreshBlock}
                 ${verifyBlock}
                 <div class="run-section" style="margin-top: 18px;">
                     <h3>⚡ BFG-based cleanup (recommended)</h3>
@@ -2624,7 +2665,7 @@ class LeakLockPanel {
                     ${preparedBlockBfg}
                     ${this._scanCleanup.preparedMode === 'bfg' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
-                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
+                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || this._scanCleanup.refreshError || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
                     </div>
                 </div>
 
@@ -2640,7 +2681,7 @@ class LeakLockPanel {
                     ${preparedBlockGit}
                     ${this._scanCleanup.preparedMode === 'git' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
-                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
+                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || this._scanCleanup.refreshError || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
                     </div>
                 </div>
 
@@ -2685,6 +2726,42 @@ class LeakLockPanel {
     }
 
     /** Blocking banner: a rewrite here would discard unpushed local commits. */
+    /**
+     * Explain a failed plan-time ref refresh without dumping git's raw remote output.
+     *
+     * The script is still available: it fetches and re-checks ahead-branches itself as
+     * its first two steps, so running it by hand is safe even though the panel cannot
+     * verify the plan from here.
+     */
+    _renderRefreshError(refreshError) {
+        if (!refreshError) {
+            return '';
+        }
+        return `
+            <div style="margin-top: 12px; padding: 10px; border-radius: 4px;
+                        background: var(--vscode-inputValidation-warningBackground);
+                        border: 1px solid var(--vscode-editorWarning-foreground);">
+                <strong>⚠️ Could not refresh refs from the remote — the script below was still generated.</strong>
+                <div style="margin-top: 4px;">${escapeHtml(refreshError.message)}</div>
+                <div style="margin-top: 6px; font-size: 0.9em;">
+                    Running the cleanup <em>from this panel</em> is disabled, because Leak Lock cannot confirm your
+                    local branches match the remote. <strong>Save as .sh</strong> and run it once the remote is
+                    reachable — the script refreshes refs and re-checks for unpushed commits itself before it
+                    rewrites anything.
+                </div>
+                <details style="margin-top: 6px;">
+                    <summary style="cursor: pointer; font-size: 0.9em;">Show the git output</summary>
+                    <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.85em; margin: 6px 0 0 0;">${escapeHtml(refreshError.detail)}</pre>
+                </details>
+            </div>
+        `;
+    }
+
+    /** Test seam and single entry point for classifying a remote failure. */
+    _classifyRemoteError(error) {
+        return summarizeGitRemoteError(error);
+    }
+
     _renderBlockedBranches(branches, reason) {
         if (reason === 'no-remote') {
             return `
@@ -5817,6 +5894,8 @@ class LeakLockPanel {
         this._scanCleanup.blockedBranches = null;
         this._scanCleanup.blockedReason = null;
         this._scanCleanup.verifyResult = null;
+        this._scanCleanup.refreshError = null;
+        this._scanCleanup.preparedRepo = null;
         this._updateWebviewContent();
         try {
             // Preflight: refresh every ref, then refuse to plan a rewrite that
@@ -5839,6 +5918,20 @@ class LeakLockPanel {
             this._scanCleanup.replacements = resolvedReplacements;
             this._scanCleanup.replacementsFile = null;
             this._scanCleanup.pushPlan = preflight.pushPlan;
+            // Execute exactly what was planned. The BFG executor used to resolve its
+            // own repository and could pick a different one than the plan and the push
+            // plan the user reviewed.
+            this._scanCleanup.preparedRepo = scanPath;
+            // A script the user can read, save and run by hand is still produced when
+            // refs could not be refreshed; only the in-panel run is withheld, because
+            // that is the step LL-001 guards.
+            this._scanCleanup.refreshError = preflight.refreshError || null;
+            if (preflight.refreshError) {
+                vscode.window.showWarningMessage(
+                    `${preflight.refreshError.message} The cleanup script was still generated — you can save and run it ` +
+                    'manually; it refreshes refs itself before rewriting anything.'
+                );
+            }
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to prepare cleanup: ${e.message}`);
         } finally {
@@ -5863,14 +5956,25 @@ class LeakLockPanel {
                 `No "${remote}" remote is configured. Add one (git remote add ${remote} <url>) and prepare again — ` +
                 `history cleanup rewrites and pushes every remote branch and tag.`
             );
-            return { blocked: true, reason: 'no-remote', ahead: [], pushPlan: null, remoteUrl: null };
+            return { blocked: true, reason: 'no-remote', ahead: [], pushPlan: null, remoteUrl: null, refreshError: null };
         }
-        await gitRewrite.fetchAllRefs(repoDir, remote);
-        const fetchedAt = new Date().toISOString();
-        this._recordFetchAt(repoDir, fetchedAt);
-        // Keep the Remove Files indicator in sync when this is its repo.
-        if (repoDir === this._removalState.repoDir) {
-            this._removalState.lastFetchAt = fetchedAt;
+        // Refreshing refs is required before a rewrite (LL-001), but it is a network
+        // operation and it must not be a hard gate on *generating* the script. A
+        // remote behind SSO, an expired token, being offline or on the wrong VPN would
+        // otherwise leave the user with nothing at all — exactly when a script they can
+        // run by hand is most useful. So: attempt it, record the failure, and let the
+        // caller decide. Execution is gated separately.
+        let refreshError = null;
+        try {
+            await gitRewrite.fetchAllRefs(repoDir, remote);
+            const fetchedAt = new Date().toISOString();
+            this._recordFetchAt(repoDir, fetchedAt);
+            // Keep the Remove Files indicator in sync when this is its repo.
+            if (repoDir === this._removalState.repoDir) {
+                this._removalState.lastFetchAt = fetchedAt;
+            }
+        } catch (error) {
+            refreshError = summarizeGitRemoteError(error);
         }
 
         const unsafe = await gitRewrite.findUnsafeLocalBranches(repoDir, remote);
@@ -5879,12 +5983,12 @@ class LeakLockPanel {
                 `Cannot rewrite history: ${unsafe.ahead.length} local branch(es) have commits that are not on ${remote}. ` +
                 `Push them first, then prepare again.`
             );
-            return { blocked: true, reason: 'unpushed-commits', ahead: unsafe.ahead, pushPlan: null, remoteUrl: null };
+            return { blocked: true, reason: 'unpushed-commits', ahead: unsafe.ahead, pushPlan: null, remoteUrl: null, refreshError };
         }
 
         const pushPlan = await gitRewrite.buildPushPlan(repoDir, remote);
         const remoteUrl = await gitRewrite.getRemoteUrl(repoDir, remote);
-        return { blocked: false, ahead: [], pushPlan, remoteUrl, localOnly: unsafe.localOnly };
+        return { blocked: false, ahead: [], pushPlan, remoteUrl, localOnly: unsafe.localOnly, refreshError };
     }
 
     async _prepareScanBfgCommand(replacements) {
@@ -5898,6 +6002,17 @@ class LeakLockPanel {
     async _runPreparedScanCleanup(mode) {
         if (!this._scanCleanup.preparedCommand || this._scanCleanup.preparedMode !== mode) {
             vscode.window.showWarningMessage('Prepare the cleanup command first.');
+            return;
+        }
+        // LL-001 guards the *rewrite*, not the script. If refs could not be refreshed
+        // the plan may be stale, so the in-panel run is refused — but the generated
+        // script remains available to save and run by hand, and it refreshes refs
+        // itself before touching anything.
+        if (this._scanCleanup.refreshError) {
+            vscode.window.showErrorMessage(
+                `Cannot run the cleanup from the panel: ${this._scanCleanup.refreshError.message} ` +
+                'Use "Save as .sh" and run the script once the remote is reachable, or fix access and prepare again.'
+            );
             return;
         }
         const replacements = this._scanCleanup.replacements;
@@ -5923,7 +6038,9 @@ class LeakLockPanel {
             return;
         }
 
-        const scanPath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        // The repository the plan and the push plan the user reviewed were built for.
+        const scanPath = this._scanCleanup.preparedRepo
+            || this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!scanPath) {
             vscode.window.showErrorMessage('No directory selected or workspace available.');
             return;
@@ -6160,7 +6277,11 @@ class LeakLockPanel {
         }
 
         try {
-            const scanPath = this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            // Was `this._selectedDirectory || workspaceFolders[0]`, which omitted the
+            // scanned path entirely: a BFG cleanup could rewrite a repository that was
+            // never scanned, planned, or shown in the push plan.
+            const scanPath = this._scanCleanup.preparedRepo
+                || this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (!scanPath) {
                 vscode.window.showErrorMessage('No directory selected or workspace available.');
                 return;

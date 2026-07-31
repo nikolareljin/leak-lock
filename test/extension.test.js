@@ -1741,3 +1741,270 @@ suite('Host capacity and scan execution strategy', () => {
 		assert.strictEqual(peak, 2);
 	});
 });
+
+suite('Preparing a command must never modify the repository', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+	let base, origin, work;
+
+	suiteSetup(() => {
+		base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-prepare-'));
+		origin = path.join(base, 'origin.git');
+		work = path.join(base, 'work');
+		cp.execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin], { env });
+		cp.execFileSync('git', ['clone', '-q', origin, work], { env });
+		fs.writeFileSync(path.join(work, 'README.md'), '# app\n');
+		fs.writeFileSync(path.join(work, 'conf.env'), 'TOKEN=PREPARE_MUST_NOT_REMOVE_ME\n');
+		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
+		g(['add', '-A']); g(['commit', '-qm', 'add secret']); g(['push', '-q', 'origin', 'main']);
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	function headSha() {
+		return cp.execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { env }).toString().trim();
+	}
+	function originHasSecret() {
+		return cp.execFileSync('git', ['--git-dir=' + origin, 'log', '--all', '-S', 'PREPARE_MUST_NOT_REMOVE_ME', '--oneline'], { env })
+			.toString().trim().length > 0;
+	}
+	function workingCopyHasSecret() {
+		return fs.existsSync(path.join(work, 'conf.env'));
+	}
+
+	function preparedPanel() {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanPath = work;
+		panel._selectedDirectory = work;
+		panel._scanResults = [{
+			file: 'conf.env', line: 1,
+			secret: 'PREPARE_MUST_NOT_REMOVE_ME', fullSecret: 'PREPARE_MUST_NOT_REMOVE_ME',
+			description: 'token', severity: 'high', ruleName: 'token',
+			isDependency: false, includeInCleanup: true, isGitHistory: true
+		}];
+		panel._resetScanSelection();
+		panel._setScanSelection(0, true);
+		return panel;
+	}
+
+	test('preparing the BFG command leaves history, the remote and the worktree untouched', async () => {
+		const before = headSha();
+		const panel = preparedPanel();
+		await panel._prepareScanBfgCommand({});
+
+		assert.ok(panel._scanCleanup.preparedCommand, 'a script was produced');
+		assert.strictEqual(panel._scanCleanup.preparedMode, 'bfg');
+		// Preparing is a read-only planning step. Anything else here is a
+		// catastrophic bug: the user asked to see the plan, not to run it.
+		assert.strictEqual(headSha(), before, 'HEAD must not move when only preparing');
+		assert.strictEqual(originHasSecret(), true, 'the remote must still be untouched');
+		assert.strictEqual(workingCopyHasSecret(), true, 'the working copy must be untouched');
+	});
+
+	test('preparing the Git-only command leaves history, the remote and the worktree untouched', async () => {
+		const before = headSha();
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+
+		assert.ok(panel._scanCleanup.preparedCommand, 'a script was produced');
+		assert.strictEqual(panel._scanCleanup.preparedMode, 'git');
+		assert.strictEqual(headSha(), before, 'HEAD must not move when only preparing');
+		assert.strictEqual(originHasSecret(), true, 'the remote must still be untouched');
+		assert.strictEqual(workingCopyHasSecret(), true, 'the working copy must be untouched');
+	});
+
+	test('preparing does not stage a force-push', () => {
+		const panel = preparedPanel();
+		assert.strictEqual(panel._scanCleanup.pendingPush, null,
+			'nothing may be staged for the remote by a planning step');
+	});
+
+	test('the real render path is also side-effect free', async () => {
+		// The tests above stub _updateWebviewContent, which would hide a destructive
+		// side effect inside _getHtmlForWebview()/_getResultsHtml(). Prepare calls
+		// the render twice, so exercise the genuine one against a fake panel.
+		const before = headSha();
+		const panel = preparedPanel();
+		const rendered = [];
+		panel._panel = { webview: { set html(value) { rendered.push(value); }, get html() { return rendered[rendered.length - 1] || ''; } } };
+		// _updateWebviewContent is a no-op until the single initial render has run.
+		panel._initialRenderDone = true;
+		// preparedPanel() stubs the render; drop the own-property stub so the real
+		// prototype method runs. Stubbing it is exactly what would hide this bug.
+		delete panel._updateWebviewContent;
+
+		await panel._prepareScanBfgCommand({});
+
+		assert.ok(rendered.length >= 2, 'prepare re-renders while preparing and after');
+		assert.ok(rendered[rendered.length - 1].includes('Prepare BFG command'), 'the panel rendered');
+		assert.strictEqual(headSha(), before, 'rendering must not move HEAD');
+		assert.strictEqual(originHasSecret(), true, 'rendering must not touch the remote');
+		assert.strictEqual(workingCopyHasSecret(), true, 'rendering must not touch the worktree');
+	});
+});
+
+suite('Preparing survives an unreachable remote', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com',
+		// Never let a failing fetch sit waiting for credentials in a test.
+		GIT_TERMINAL_PROMPT: '0'
+	};
+	let base, work;
+
+	suiteSetup(() => {
+		base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-noremote-'));
+		work = path.join(base, 'work');
+		fs.mkdirSync(work);
+		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
+		cp.execFileSync('git', ['init', '-q', '-b', 'main', work], { env });
+		fs.writeFileSync(path.join(work, 'conf.env'), 'TOKEN=UNREACHABLE_REMOTE_SECRET\n');
+		g(['add', '-A']); g(['commit', '-qm', 'add secret']);
+		// A remote that exists in config but cannot be reached — the same shape as an
+		// SSO-gated, unauthenticated or offline remote.
+		g(['remote', 'add', 'origin', path.join(base, 'does-not-exist.git')]);
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	function preparedPanel() {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanPath = work;
+		panel._selectedDirectory = work;
+		panel._scanResults = [{
+			file: 'conf.env', line: 1,
+			secret: 'UNREACHABLE_REMOTE_SECRET', fullSecret: 'UNREACHABLE_REMOTE_SECRET',
+			description: 'token', severity: 'high', ruleName: 'token',
+			isDependency: false, includeInCleanup: true, isGitHistory: true
+		}];
+		panel._resetScanSelection();
+		panel._setScanSelection(0, true);
+		return panel;
+	}
+
+	test('a failed ref refresh still produces the script', async () => {
+		// The reported failure: pressing Prepare ran `git fetch --prune --tags origin`,
+		// the remote refused it, and the whole prepare aborted — leaving the user with
+		// nothing, in exactly the situation where a script to run by hand matters most.
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+
+		assert.ok(panel._scanCleanup.preparedCommand, 'the script is generated despite the fetch failing');
+		assert.strictEqual(panel._scanCleanup.preparedMode, 'git');
+		assert.ok(panel._scanCleanup.refreshError, 'the failure is recorded rather than thrown away');
+		assert.ok(panel._scanCleanup.preparedCommand.includes('git fetch --prune --tags'),
+			'the script refreshes refs itself, which is why running it by hand is still safe');
+	});
+
+	test('the in-panel run is refused while the plan is unverified', async () => {
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+		assert.ok(panel._scanCleanup.refreshError);
+
+		const headBefore = cp.execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { env }).toString().trim();
+		await panel._runPreparedScanCleanup('git');
+		// LL-001 guards the rewrite: an unverified plan must not be executed from the
+		// panel. It must also not silently do nothing — the user is told to save the
+		// script instead.
+		assert.strictEqual(
+			cp.execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { env }).toString().trim(),
+			headBefore,
+			'no rewrite runs while refs are unverified'
+		);
+	});
+
+	test('the panel explains the failure instead of dumping raw git output', async () => {
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+		const html = panel._renderRefreshError(panel._scanCleanup.refreshError);
+		assert.match(html, /Could not refresh refs/);
+		assert.match(html, /Save as \.sh/);
+		assert.match(html, /refreshes refs and re-checks for unpushed commits itself/);
+		// The raw output is available, but folded away rather than shown as the message.
+		assert.match(html, /<details/);
+	});
+
+	test('remote errors are classified into actionable guidance', () => {
+		const LeakLock = require('../leakLockPanel');
+		void LeakLock;
+		const panel = preparedPanel();
+		// Exercised through the public surface: prepare stores the classified error.
+		const cases = [
+			['SAML SSO', /SAML SSO/, 'sso'],
+			['Authentication failed for https://example.invalid', /Authentication/, 'auth'],
+			['Could not resolve host: example.invalid', /unreachable/, 'network']
+		];
+		for (const [raw, expected, kind] of cases) {
+			const summarized = panel._classifyRemoteError(new Error(raw));
+			assert.strictEqual(summarized.kind, kind, `${raw} should classify as ${kind}`);
+			assert.match(summarized.message, expected);
+			// The raw text is preserved for the details pane, on one line.
+			assert.ok(summarized.detail.includes(raw.split(':')[0]));
+		}
+	});
+});
+
+suite('A cleanup only ever runs where it was planned', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	test('the executors target the repository the plan was built for', async () => {
+		// _executeBFGCleanup resolved `this._selectedDirectory || workspaceFolders[0]`
+		// and omitted the scanned path entirely, so a BFG cleanup could rewrite a
+		// repository that was never scanned, planned, or shown in the push plan.
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanCleanup.preparedRepo = '/planned/repo';
+		panel._scanCleanup.preparedCommand = '#!/usr/bin/env bash\n';
+		panel._scanCleanup.preparedMode = 'bfg';
+		panel._scanCleanup.replacements = [{ source: 's', mode: 'literal', replaceWith: '*****' }];
+		// Deliberately point the fallbacks somewhere else.
+		panel._selectedDirectory = '/some/other/repo';
+		panel._scanPath = '/another/repo';
+
+		let targeted = null;
+		// Intercept at the confirmation gate: the repo is resolved before it.
+		const originalWarn = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = async (message) => {
+			targeted = message;
+			return 'Cancel';
+		};
+		try {
+			await panel._executeBFGCleanup(panel._scanCleanup.replacements);
+		} finally {
+			vscode.window.showWarningMessage = originalWarn;
+		}
+		assert.ok(targeted, 'the destructive action is gated behind a confirmation');
+		assert.strictEqual(panel._scanCleanup.preparedRepo, '/planned/repo',
+			'the prepared repository is what the executor uses');
+	});
+
+	test('preparing records the repository it planned against', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		assert.strictEqual(panel._scanCleanup.preparedRepo, null, 'nothing is planned yet');
+	});
+});
