@@ -481,7 +481,10 @@ suite("Git history keyword defaults", () => {
 suite("Scan result deduplication", () => {
 	const LeakLockPanel = require("../leakLockPanel");
 
-	test("preserves findings from different commits and rules", () => {
+	test("one secret at one location is one finding, however many times it was seen", () => {
+		// Previously this produced three rows — one per commit, one per rule — which
+		// reads as three separate problems. It is one secret, and a rewrite removes it
+		// everywhere regardless of which commit or rule surfaced it.
 		const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
 		const base = { file: "config.env", line: 1, fullSecret: "token" };
 		const findings = panel._deduplicateScanResults([
@@ -490,7 +493,21 @@ suite("Scan result deduplication", () => {
 			{ ...base, commitHash: "commit-b", ruleName: "git_history_keyword" },
 			{ ...base, commitHash: "commit-a", ruleName: "another_rule" }
 		]);
-		assert.strictEqual(findings.length, 3);
+		assert.strictEqual(findings.length, 1);
+		// Nothing is lost: both commits and both rules are still recorded.
+		const commits = findings[0].occurrences.map(o => o.commitHash).filter(Boolean);
+		assert.deepStrictEqual(Array.from(new Set(commits)).sort(), ["commit-a", "commit-b"]);
+		assert.deepStrictEqual(findings[0].ruleNames.sort(), ["another_rule", "git_history_keyword"]);
+	});
+
+	test("different secrets at the same location stay separate", () => {
+		const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
+		const base = { file: "config.env", line: 1 };
+		const findings = panel._deduplicateScanResults([
+			{ ...base, fullSecret: "AKIAIOSFODNN7EXAMPLE", commitHash: "c1" },
+			{ ...base, fullSecret: "ghp_unrelatedtokenvalue00", commitHash: "c1" }
+		]);
+		assert.strictEqual(findings.length, 2);
 	});
 });
 
@@ -1126,15 +1143,18 @@ suite('Cross-engine field parity and attribution', () => {
 		assert.deepStrictEqual(merged[0].unavailableFields, ['verified']);
 	});
 
-	test('two rules from the same engine at one location stay separate', () => {
+	test('two rules matching one secret produce one row that names both', () => {
+		// `github-pat` and `generic-api-key` both fire on a GitHub token. That is one
+		// credential, and showing it twice just doubles the review burden.
 		const p = panel();
-		const base = { file: 'app.py', line: 3, fullSecret: 'AKIA', commitHash: 'abc123', engine: 'gitleaks' };
+		const base = { file: 'app.py', line: 3, fullSecret: 'AKIAIOSFODNN7EXAMPLE', commitHash: 'abc123', engine: 'gitleaks' };
 		const merged = p._deduplicateScanResults([
 			{ ...base, ruleName: 'aws-access-token', engines: ['gitleaks'] },
 			{ ...base, ruleName: 'generic-api-key', engines: ['gitleaks'] },
 			{ ...base, ruleName: 'aws-access-token', engines: ['gitleaks'] }
 		]);
-		assert.strictEqual(merged.length, 2, 'different rules are different detections; the exact repeat is dropped');
+		assert.strictEqual(merged.length, 1);
+		assert.deepStrictEqual(merged[0].ruleNames.sort(), ['aws-access-token', 'generic-api-key']);
 	});
 });
 
@@ -2165,12 +2185,16 @@ suite('Cross-engine merging tolerates different captures of one secret', () => {
 		assert.strictEqual(merged.length, 2, 'a 5-character fragment is below the containment floor');
 	});
 
-	test('same engine, same line, different rules still stay separate', () => {
+	test('the same secret in history and in the working tree is one row', () => {
+		// An engine's history pass reports a commit; its working-tree pass does not.
+		// Two rows for the same line reads as a duplicate.
 		const merged = panel()._deduplicateScanResults([
-			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'aws-access-token', engine: 'gitleaks', engines: ['gitleaks'] },
-			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'generic-api-key', engine: 'gitleaks', engines: ['gitleaks'] }
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'aws-access-token', engine: 'gitleaks', engines: ['gitleaks'], isGitHistory: true },
+			{ file: 'a.js', line: 3, commitHash: null, fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'aws-access-token', engine: 'gitleaks', engines: ['gitleaks'], isGitHistory: false }
 		]);
-		assert.strictEqual(merged.length, 2);
+		assert.strictEqual(merged.length, 1);
+		assert.strictEqual(merged[0].isGitHistory, true, 'history anywhere means a rewrite is needed');
+		assert.ok(merged[0].occurrences.some(o => !o.commitHash), 'the working-tree sighting is kept');
 	});
 });
 
@@ -2214,5 +2238,69 @@ suite('Engine binaries are found outside the shell PATH', () => {
 		const name = `leaklock-absent-${process.pid}`;
 		assert.strictEqual(engines.resolveBinary(name), name,
 			'the OS still gets its chance to resolve it');
+	});
+});
+
+suite('Occurrence aggregation keeps what it merges', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		return p;
+	}
+
+	test('branches from every commit are unioned, since the rewrite covers them all', () => {
+		const merged = panel()._deduplicateScanResults([
+			{ file: 'a.js', line: 3, fullSecret: 'AKIAIOSFODNN7EXAMPLE', commitHash: 'c1', commitBranches: ['main'] },
+			{ file: 'a.js', line: 3, fullSecret: 'AKIAIOSFODNN7EXAMPLE', commitHash: 'c2', commitBranches: ['release/0.7.0', 'main'] }
+		]);
+		assert.strictEqual(merged.length, 1);
+		assert.deepStrictEqual(merged[0].commitBranches.sort(), ['main', 'release/0.7.0']);
+	});
+
+	test('the merged row reports how many commits carry the secret', () => {
+		const p = panel();
+		p._scanResults = p._deduplicateScanResults([
+			{ file: 'a.js', line: 3, secret: 'AKIA…', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: 'c1', commitDate: '2026-01-01T00:00:00Z', isGitHistory: true, engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, secret: 'AKIA…', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: 'c2', commitDate: '2026-02-01T00:00:00Z', isGitHistory: true, engine: 'gitleaks', engines: ['gitleaks'] }
+		]);
+		p._resetScanSelection();
+		const html = p._getResultsHtml();
+		assert.match(html, /in 2 commits/, 'the count is visible, not silently collapsed');
+	});
+
+	test('a secret still on disk is flagged as well as in history', () => {
+		const p = panel();
+		p._scanResults = p._deduplicateScanResults([
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: 'c1', isGitHistory: true, engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: null, isGitHistory: false, engine: 'gitleaks', engines: ['gitleaks'] }
+		]);
+		p._resetScanSelection();
+		assert.match(p._getResultsHtml(), /working tree/);
+	});
+
+	test('the export carries the occurrence list, not just the first sighting', () => {
+		const p = panel();
+		p._scanResults = p._deduplicateScanResults([
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: 'c1', isGitHistory: true, engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'generic-api-key', commitHash: 'c2', isGitHistory: true, engine: 'noseyparker', engines: ['noseyparker'] }
+		]);
+		p._resetScanSelection();
+		const finding = p._buildScanExportPayload().findings[0];
+		assert.strictEqual(finding.occurrences.length, 2);
+		assert.deepStrictEqual(finding.occurrences.map(o => o.commitHash).sort(), ['c1', 'c2']);
+		assert.deepStrictEqual(finding.ruleNames.sort(), ['aws-access-token', 'generic-api-key']);
+		assert.deepStrictEqual(finding.engines.sort(), ['gitleaks', 'noseyparker']);
+	});
+
+	test('every rule that matched is named in the table', () => {
+		const p = panel();
+		p._scanResults = p._deduplicateScanResults([
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'ghp_1234567890abcdefghijklmnopqrstuvwx', description: 'GitHub PAT', severity: 'high', ruleName: 'github-pat', commitHash: 'c1', engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'ghp_1234567890abcdefghijklmnopqrstuvwx', description: 'GitHub PAT', severity: 'high', ruleName: 'generic-api-key', commitHash: 'c1', engine: 'gitleaks', engines: ['gitleaks'] }
+		]);
+		p._resetScanSelection();
+		assert.match(p._getResultsHtml(), /also matched: generic-api-key/);
 	});
 });

@@ -83,19 +83,28 @@ const LIMIT = Number(process.env.LEAKLOCK_SHOT_LIMIT || 6);
 // first, then one per engine. The records themselves are untouched — this only
 // chooses which real rows appear.
 function sampleAcrossEngines(all, limit) {
-    const multi = all.filter(r => (r.engines || []).length > 1);
-    const picked = multi.slice(0, limit);
+    // Also vary the secret: a documentation example repeated across several files
+    // would otherwise fill the table with the same value.
+    const usedSecrets = new Set();
+    const fresh = (r) => {
+        const key = (r.fullSecret || '').slice(0, 24);
+        if (usedSecrets.has(key)) { return false; }
+        usedSecrets.add(key);
+        return true;
+    };
+    const multi = all.filter(r => (r.engines || []).length > 1).filter(fresh);
+    const picked = multi.slice(0, Math.min(limit, 2));
     const seen = new Set(picked);
     for (const engineId of ['noseyparker', 'gitleaks', 'trufflehog']) {
         for (const r of all) {
             if (picked.length >= limit) { break; }
             if (seen.has(r)) { continue; }
-            if ((r.engines || [])[0] === engineId) { picked.push(r); seen.add(r); break; }
+            if ((r.engines || [])[0] === engineId && fresh(r)) { picked.push(r); seen.add(r); break; }
         }
     }
     for (const r of all) {
         if (picked.length >= limit) { break; }
-        if (!seen.has(r)) { picked.push(r); seen.add(r); }
+        if (!seen.has(r) && fresh(r)) { picked.push(r); seen.add(r); }
     }
     return picked;
 }
