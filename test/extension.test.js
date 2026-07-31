@@ -2807,3 +2807,73 @@ suite('Preparing is never blocked by branch state', () => {
 		assert.strictEqual(reached, true, 'a clean branch state does not stop the run');
 	});
 });
+
+suite('Untracked working-tree findings', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+	let repo;
+
+	suiteSetup(async () => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-untracked-'));
+		cp.execFileSync('git', ['init', '-q', '-b', 'main', repo], { env });
+		fs.writeFileSync(path.join(repo, 'tracked.py'), 'KEY = "AKIAIOSFODNN7EXAMPLE"\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env });
+		cp.execFileSync('git', ['-C', repo, 'commit', '-qm', 'init'], { env });
+		// Present on disk, never committed.
+		fs.mkdirSync(path.join(repo, 'nested'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'nested', 'local.env'), 'SECRET=abc\n');
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	test('a file that exists but was never committed is flagged as untracked', async () => {
+		// A working-tree-only secret needs the file deleted, not a history rewrite.
+		// Resolving the display path against the scan root produced
+		// <scan>/<scanName>/<path>, which never exists, so this always said "tracked".
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._selectedDirectory = repo;
+		panel._scanPath = repo;
+		await panel._primeGitTracking(repo);
+
+		const relative = panel._getRelativeFilePath('nested/local.env');
+		assert.strictEqual(
+			panel._isUntrackedWorkingTreeFile('nested/local.env', relative, false),
+			true,
+			'the engine path must resolve even though the display path is prefixed'
+		);
+	});
+
+	test('a committed file is not flagged as untracked', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._selectedDirectory = repo;
+		panel._scanPath = repo;
+		await panel._primeGitTracking(repo);
+		assert.strictEqual(
+			panel._isUntrackedWorkingTreeFile('tracked.py', panel._getRelativeFilePath('tracked.py'), false),
+			false
+		);
+	});
+
+	test('a history finding is never treated as an untracked working-tree file', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._selectedDirectory = repo;
+		panel._scanPath = repo;
+		await panel._primeGitTracking(repo);
+		assert.strictEqual(panel._isUntrackedWorkingTreeFile('nested/local.env', 'x/nested/local.env', true), false);
+	});
+});

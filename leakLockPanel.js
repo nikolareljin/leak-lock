@@ -4350,11 +4350,28 @@ class LeakLockPanel {
             relativeFile.startsWith('git-history:')) {
             return false;
         }
-        let absPath = filePath;
-        if (!path.isAbsolute(absPath)) {
-            absPath = path.join(this._scanPath, relativeFile);
+        // Resolve against the engine's own path first. `relativeFile` is the display
+        // form, and _getRelativeFilePath() prefixes it with the scanned directory's
+        // name — so joining it to the scan path again looks for
+        // <scan>/<scanName>/<path>, which never exists. That made every untracked
+        // finding fall through as "tracked", so the "not committed" flag and its
+        // remediation advice (delete the file, do not rewrite history) never appeared.
+        const candidates = [];
+        if (path.isAbsolute(filePath)) {
+            candidates.push(filePath);
+        } else {
+            candidates.push(path.join(this._scanPath, filePath));
+            candidates.push(path.join(this._scanPath, relativeFile));
         }
-        if (!fs.existsSync(absPath)) {
+
+        const absPath = candidates.find(candidate => {
+            try {
+                return fs.existsSync(candidate);
+            } catch {
+                return false;
+            }
+        });
+        if (!absPath) {
             return false;
         }
         const relToRepo = path.relative(this._scanRepoRoot, absPath);
