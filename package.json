@@ -113,11 +113,6 @@
           "default": true,
           "description": "Run 'git fetch --prune --tags' before scanning. Without this, a branch that exists only as an unfetched remote ref is never scanned and the repository can be reported clean while the secret is still on the server."
         },
-        "leakLock.scan.includeIgnoredFiles": {
-          "type": "boolean",
-          "default": false,
-          "description": "Also scan working-tree files excluded by .gitignore (a local .env or *.pem, for example). These are not in history, so they are remediated by deleting the file rather than by rewriting history."
-        },
         "leakLock.noseyParker.image": {
           "type": "string",
           "default": "",

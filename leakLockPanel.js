@@ -16,9 +16,6 @@ const hostCapacity = require('./host-capacity');
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
 const MAX_VOLUME_NAME_LENGTH = 255; // Maximum Docker volume name length
 const DOCKER_PULL_TIMEOUT = 120000; // Docker pull timeout in milliseconds (2 minutes)
-// Fallback only; the effective value comes from leakLock.scan.timeoutSeconds so a large
-// repository is not forced to fail. See _getScanEngineSettings().
-const SCAN_TIMEOUT = scanEngineConfig.DEFAULT_SCAN_TIMEOUT_MS;
 const SECRET_TRUNCATE_LENGTH = 50; // Length to truncate secrets for display
 const GIT_MAX_BUFFER = 64 * 1024 * 1024; // History rewrites emit a lot of stdout
 const REMOTE_HEAD_FILTER_PATTERN = /\bHEAD$/; // Pattern to filter out remote HEAD refs
@@ -3125,15 +3122,20 @@ class LeakLockPanel {
             this._updateWebviewContent();
             const refRefresh = await this._refreshRefsForScan(engineSettings);
 
-            // Update progress: Pulling image
-            this._scanProgress = { stage: 'pull', message: `Pulling ${engineSettings.image}...` };
-            this._updateWebviewContent();
-
             const useNoseyParker = engineIds.includes('noseyparker')
                 && !this._scanCleanup.noseyParkerUnavailable;
 
+            // Only Nosey Parker pulls an image, and it does so inside its own engine
+            // task. Announcing a pull on a Gitleaks-only scan named a container the
+            // scan never touches.
+            if (useNoseyParker) {
+                this._scanProgress = { stage: 'pull', message: `Pulling ${engineSettings.image}...` };
+                this._updateWebviewContent();
+            }
+
             let scanRun = { results: [], incomplete: false, incompleteReason: null };
             const engineReports = [];
+            let excludedByDependencyRule = 0;
 
             if (engineIds.includes('noseyparker') && this._scanCleanup.noseyParkerUnavailable) {
                 engineReports.push({
@@ -3194,9 +3196,21 @@ class LeakLockPanel {
             }
 
             const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
-            const allResults = this._deduplicateScanResults(
+            let allResults = this._deduplicateScanResults(
                 engineResults.concat(keywordHistoryResults)
             );
+
+            // Only Nosey Parker accepts an ignore file, so without this the setting
+            // meant different things depending on which engines were enabled.
+            if (this._shouldExcludeDependencies()) {
+                const before = allResults.length;
+                allResults = allResults.filter(
+                    result => !scanEngineConfig.isInExcludedDependencyDir(result.file)
+                );
+                if (before !== allResults.length) {
+                    excludedByDependencyRule = before - allResults.length;
+                }
+            }
 
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
@@ -3216,7 +3230,8 @@ class LeakLockPanel {
                 pullResult,
                 refRefresh,
                 incomplete: scanRun.incomplete,
-                incompleteReason: scanRun.incompleteReason
+                incompleteReason: scanRun.incompleteReason,
+                excludedByDependencyRule
             });
             this._resetScanSelection();
             this._isScanning = false;
@@ -3334,7 +3349,7 @@ class LeakLockPanel {
      * rather than console output — the scan-side counterpart to the ref-by-ref push
      * plan that gates the rewrite.
      */
-    async _buildScanCoverage({ scanPath, settings, engineVersion, engines, strategy, pullResult, refRefresh, incomplete, incompleteReason }) {
+    async _buildScanCoverage({ scanPath, settings, engineVersion, engines, strategy, pullResult, refRefresh, incomplete, incompleteReason, excludedByDependencyRule }) {
         const cfg = settings || this._getScanEngineSettings();
         const coverage = {
             scanPath,
@@ -3371,6 +3386,7 @@ class LeakLockPanel {
             maxFileSizeMb: cfg.maxFileSizeMb,
             timeoutSeconds: Math.round(cfg.timeoutMs / 1000),
             dependencyHandling: vscode.workspace.getConfiguration('leakLock').get('dependencyHandling') || 'warning',
+            excludedByDependencyRule: excludedByDependencyRule || 0,
             refRefresh: refRefresh || { attempted: false, ok: false, reason: 'unknown' },
             refs: { localBranches: 0, remoteBranches: 0, remoteOnlyBranches: [], tags: 0, stashes: 0 }
         };
@@ -4617,6 +4633,10 @@ class LeakLockPanel {
             ? `<div class="coverage-note coverage-warn">⚠️ Could not pull <code>${escapeHtml(coverage.image)}</code>; a cached image was used${coverage.imagePullError ? ` (${escapeHtml(coverage.imagePullError)})` : ''}.</div>`
             : '';
 
+        const excludedNote = coverage.excludedByDependencyRule
+            ? `<div class="coverage-note">${coverage.excludedByDependencyRule} finding(s) hidden by <code>dependencyHandling: "exclude"</code>. Set it to <code>warning</code> to see them.</div>`
+            : '';
+
         const settings = [
             `ruleset <code>${escapeHtml(coverage.rulesetMode || 'default')}</code>`,
             `file-size limit ${coverage.maxFileSizeMb ? `${coverage.maxFileSizeMb} MB` : 'none'}`,
@@ -4647,7 +4667,7 @@ class LeakLockPanel {
                         ${fact('Engines', `${engineRows}${pullNote}`)}
                         ${fact('Execution', `${strategyValue}${droppedBlock}`)}
                         ${fact('Refs scanned', `${escapeHtml(refsSummary)}${refreshNote}${remoteOnlyBlock}`)}
-                        ${fact('Settings', settings)}
+                        ${fact('Settings', `${settings}${excludedNote}`)}
                     </div>
                 </details>
             </div>
@@ -4786,7 +4806,6 @@ class LeakLockPanel {
             rulesetMode: config.get('noseyParker.ruleset'),
             suppressRedundant: config.get('noseyParker.suppressRedundant'),
             maxFileSizeMb: config.get('noseyParker.maxFileSizeMb'),
-            includeIgnoredFiles: config.get('scan.includeIgnoredFiles'),
             refreshRefsBeforeScan: config.get('scan.refreshRefsBeforeScan'),
             timeoutSeconds: config.get('scan.timeoutSeconds')
         });
@@ -4905,7 +4924,24 @@ class LeakLockPanel {
             ? configured
             : ['gitleaks', 'trufflehog', 'noseyparker'];
         const known = new Set(['gitleaks', 'trufflehog', 'noseyparker']);
-        return ids.filter(id => known.has(id));
+        const valid = ids.filter(id => known.has(id));
+        const unknown = ids.filter(id => !known.has(id));
+
+        if (unknown.length > 0) {
+            vscode.window.showWarningMessage(
+                `Unknown scan engine(s) in leakLock.scan.engines: ${unknown.join(', ')}. ` +
+                `Valid values are ${Array.from(known).join(', ')}.`
+            );
+        }
+        if (valid.length === 0) {
+            // Scanning with nothing reports zero findings, which is indistinguishable
+            // from a clean repository — the one outcome this product must never fake.
+            vscode.window.showErrorMessage(
+                'No usable scan engine is configured, so nothing would be scanned. ' +
+                `Set leakLock.scan.engines to one or more of: ${Array.from(known).join(', ')}.`
+            );
+        }
+        return valid;
     }
 
     /**

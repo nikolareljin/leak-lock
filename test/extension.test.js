@@ -2304,3 +2304,110 @@ suite('Occurrence aggregation keeps what it merges', () => {
 		assert.match(p._getResultsHtml(), /also matched: generic-api-key/);
 	});
 });
+
+suite('PR review fixes', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const engines = require('../scan-engines');
+	const engineConfig = require('../scan-engine-config');
+
+	test('the TruffleHog repo argument is a valid file URL', () => {
+		// `file://` + a raw path is not a URL on Windows: C:\repo yields something
+		// TruffleHog cannot open, so scanning failed outright there.
+		const args = engines.buildTruffleHogArgs({ repoDir: '/home/u/my repo', verify: true });
+		const url = args[1];
+		assert.doesNotThrow(() => new URL(url), 'must parse as a URL');
+		assert.strictEqual(new URL(url).protocol, 'file:');
+		// A space has to be encoded, not passed through raw.
+		assert.ok(!url.includes(' '), 'path characters are percent-encoded');
+	});
+
+	test('the removed includeIgnoredFiles setting is gone everywhere', () => {
+		// It described behaviour that is already unconditionally true: every engine
+		// reads .gitignore'd files. A setting that cannot change anything is worse
+		// than no setting.
+		const pkg = require('../package.json');
+		assert.ok(!('leakLock.scan.includeIgnoredFiles' in pkg.contributes.configuration.properties));
+		assert.ok(!('includeIgnoredFiles' in engineConfig.normalizeScanSettings({})));
+	});
+
+	test('dependency exclusion is a path rule, applied to every engine alike', () => {
+		// Only Nosey Parker accepts an ignore file, so wiring the setting there alone
+		// made it mean different things depending on which engines were enabled.
+		const inDir = engineConfig.isInExcludedDependencyDir;
+		assert.strictEqual(inDir('node_modules/pkg/index.js'), true);
+		assert.strictEqual(inDir('app/vendor/lib/x.php'), true);
+		assert.strictEqual(inDir('node_modules'), true);
+		// Windows separators must not defeat it.
+		assert.strictEqual(inDir('app\\node_modules\\pkg\\index.js'), true);
+		// First-party directories are never excluded, even when similarly named.
+		assert.strictEqual(inDir('src/lib/index.js'), false);
+		assert.strictEqual(inDir('my_node_modules_helper.js'), false);
+		assert.strictEqual(inDir('build/output.js'), false, 'build/ can hold first-party source');
+		assert.strictEqual(inDir(null), false);
+	});
+
+	test('an unknown engine id warns instead of silently shrinking the scan', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const seen = [];
+		const originalWarn = vscode.window.showWarningMessage;
+		const originalError = vscode.window.showErrorMessage;
+		const originalGet = vscode.workspace.getConfiguration;
+		vscode.window.showWarningMessage = (m) => { seen.push(String(m)); };
+		vscode.window.showErrorMessage = (m) => { seen.push(String(m)); };
+		vscode.workspace.getConfiguration = () => ({ get: (k) => (k === 'scan.engines' ? ['gitleaks', 'typo-engine'] : undefined) });
+		try {
+			const ids = panel._getEnabledEngineIds();
+			assert.deepStrictEqual(ids, ['gitleaks']);
+			assert.ok(seen.some(m => /typo-engine/.test(m)), 'the unknown id is named');
+		} finally {
+			vscode.window.showWarningMessage = originalWarn;
+			vscode.window.showErrorMessage = originalError;
+			vscode.workspace.getConfiguration = originalGet;
+		}
+	});
+
+	test('configuring only unknown engines is reported as an error, not a clean scan', () => {
+		// Scanning with nothing returns zero findings, which is indistinguishable from
+		// a clean repository — the one result this product must never fake.
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const seen = [];
+		const originalError = vscode.window.showErrorMessage;
+		const originalWarn = vscode.window.showWarningMessage;
+		const originalGet = vscode.workspace.getConfiguration;
+		vscode.window.showErrorMessage = (m) => { seen.push(String(m)); };
+		vscode.window.showWarningMessage = () => {};
+		vscode.workspace.getConfiguration = () => ({ get: (k) => (k === 'scan.engines' ? ['nonsense'] : undefined) });
+		try {
+			assert.deepStrictEqual(panel._getEnabledEngineIds(), []);
+			assert.ok(seen.some(m => /nothing would be scanned/i.test(m)));
+		} finally {
+			vscode.window.showErrorMessage = originalError;
+			vscode.window.showWarningMessage = originalWarn;
+			vscode.workspace.getConfiguration = originalGet;
+		}
+	});
+
+	test('hidden dependency findings are reported, never silently dropped', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanCoverage = {
+			incomplete: false, engines: [{ id: 'gitleaks', displayName: 'Gitleaks', version: 'v8', ok: true, findings: 1 }],
+			refs: { localBranches: 1, remoteBranches: 1, tags: 0, stashes: 0, remoteOnlyBranches: [] },
+			refRefresh: { attempted: true, ok: true }, rulesetMode: 'default', maxFileSizeMb: 100,
+			timeoutSeconds: 300, dependencyHandling: 'exclude', excludedByDependencyRule: 12
+		};
+		const html = panel._renderScanCoverage();
+		assert.match(html, /12 finding\(s\) hidden/);
+		assert.match(html, /Set it to/);
+	});
+
+	test('a Gitleaks-only scan does not announce a container pull', async () => {
+		// The pull happens inside the Nosey Parker engine task; announcing it on a
+		// scan that never touches Docker named an image the scan does not use.
+		const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const pullIndex = src.indexOf("stage: 'pull'");
+		assert.ok(pullIndex > 0);
+		const preceding = src.slice(Math.max(0, pullIndex - 400), pullIndex);
+		assert.match(preceding, /if \(useNoseyParker\) \{/, 'the pull stage is gated on the engine running');
+	});
+});

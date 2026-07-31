@@ -34,7 +34,6 @@ const settings = {
     'scan.executionMode': 'auto',
     'scan.timeoutSeconds': 900,
     'scan.refreshRefsBeforeScan': true,
-    'scan.includeIgnoredFiles': false,
     'noseyParker.ruleset': 'default',
     'noseyParker.suppressRedundant': true,
     'noseyParker.maxFileSizeMb': 100,
