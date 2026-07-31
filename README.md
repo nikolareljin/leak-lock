@@ -166,8 +166,8 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 > See [docs/TEST_FIXTURE.md](docs/TEST_FIXTURE.md).
 >
 > Regenerate the webview images with `tools/real-scan.js` and
-> `tools/render-screenshots.js` (views: `results`, `empty`, `keywords`, `removeFiles`,
-> `prepared`, `pushPlan`, `protected`, `verified`). The two full-editor shots are taken
+> `tools/render-screenshots.js` (views: `results`, `empty`, `sidebar`, `keywords`,
+> `removeFiles`, `prepared`, `pushPlan`, `protected`, `verified`). The two full-editor shots are taken
 > from a live VS Code window, since the sidebar and activity bar are editor chrome the
 > renderer cannot produce — and they come from a separate run against the same fixture,
 > which is why the finding count differs from the figures above. Either way, scan a clone
