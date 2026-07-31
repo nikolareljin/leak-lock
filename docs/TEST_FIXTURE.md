@@ -36,6 +36,7 @@ bash tools/seed-fake-leaks.sh ../damn-vulnerable-repo --reset --push
 | `--local-remote` | Create a throwaway bare remote beside the repository, point `origin` at it, and push. Implies `--push` |
 | `--reset` | Delete the previously seeded branches and tag first |
 | `--list` | Show what a previous run created, then exit |
+| `--github-safe` | Omit the three types GitHub push protection rejects, so the fixture can be pushed to a **public GitHub** repository |
 
 `--local-remote` is the safest way to exercise the destructive paths: the remote is a bare
 repository on your disk, so a force-push costs nothing and can be thrown away.
@@ -74,26 +75,36 @@ never mixes with your own work.
 |---|---|
 | `leaklock-fixture/main-leaks` | The bulk of the history |
 | `leaklock-fixture/hotfix-db-creds` | MySQL and MongoDB URLs with passwords |
-| `leaklock-fixture/release-1.0` | Azure, SendGrid and Google credentials |
+| `leaklock-fixture/release-1.0` | Azure, SendGrid, Google and Twilio credentials |
 | `leaklock-fixture/legacy-import` | `htpasswd` and a Docker auth blob, added then deleted |
-| `leaklock-fixture/dev-alice` | Fine-grained GitHub token, JWT |
+| `leaklock-fixture/dev-alice` | Fine-grained GitHub token, Slack bot token, JWT |
 | `leaklock-fixture/experimental` | A Stripe test key, unreachable from the others |
 | `leaklock-fixture/ops-remote-only` | **Exists only on the remote** (with `--push`) |
 | `leaklock-fixture-v0.1.0` | A tag, so the push plan covers tag refs |
 
 ### Credential types
 
-AWS key and secret · GitHub PAT (classic and fine-grained) · Stripe test keys · Google API
-key · SendGrid · npm and PyPI registry tokens · JWT · Azure storage connection string ·
-Postgres, MySQL and MongoDB URLs with passwords · `.netrc` and `.htpasswd` entries · Docker
-auth blob · GCP service-account JSON · RSA and ed25519 private keys.
+AWS key and secret · GitHub PAT (classic and fine-grained) · Slack bot token and webhook ·
+Stripe test keys · Google API key · SendGrid · Twilio SID and token · npm and PyPI registry
+tokens · JWT · Azure storage connection string · Postgres, MySQL and MongoDB URLs with
+passwords · `.netrc` and `.htpasswd` entries · Docker auth blob · GCP service-account
+JSON · RSA and ed25519 private keys.
 
-### Why no Slack or Twilio
+### Slack and Twilio, and pushing to public GitHub
 
-GitHub's account-level push protection rejects Slack webhooks, Slack bot tokens and Twilio
-SIDs — and there is no way around it, because any shape a scanner detects GitHub detects
-too, using the same patterns. They were dropped so the public fixture repository can be
-re-seeded indefinitely without manual unblocking. Everything else pushes cleanly.
+All eighteen types are planted **by default**, which is what you want for local testing.
+
+Three of them — Slack webhook, Slack bot token, Twilio SID — are rejected by GitHub's
+**account-level push protection**, and there is no way around that: any shape a scanner
+detects, GitHub detects too, using the same patterns. So:
+
+- **Testing locally** (including `--local-remote`): use the default. Everything is planted.
+- **Pushing to a public GitHub repo**: add `--github-safe`, which omits those three.
+  The other fifteen push cleanly.
+
+Alternatively you can push the full set yourself and click through the one-time unblock
+URL GitHub prints for each — but those need re-approving after every re-seed, which is why
+the flag exists.
 
 ---
 

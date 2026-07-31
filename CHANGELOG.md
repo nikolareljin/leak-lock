@@ -42,6 +42,9 @@
 ### Fixed — Untracked Findings Were Never Flagged
 - **A secret present on disk but never committed was reported as though it were in history.** The check resolved the *display* path against the scan root, and that path already carries the scanned directory's name as a prefix — so it looked for `<scan>/<scanName>/<path>`, which never exists, and every finding fell through as "tracked". The consequence was the wrong remediation: an uncommitted `.env` was presented as needing a history rewrite when deleting the file is the fix. Engine paths are now resolved first. Found by building the test fixture below.
 
+### Changed — Fixture Credential Coverage
+- **All eighteen credential types are planted by default**, including Slack and Twilio — they are exactly what you want when testing locally, and `--local-remote` is the better way to exercise the destructive paths anyway. Three of them (Slack webhook, Slack bot token, Twilio SID) are rejected by GitHub's account-level push protection, and no shape satisfies both sides, since a scanner and GitHub match on the same patterns. The new `--github-safe` flag omits just those three so the fixture can be pushed to a **public** GitHub repository; the other fifteen push cleanly either way.
+
 ### Added — Test Fixture Documentation
 - **[docs/TEST_FIXTURE.md](docs/TEST_FIXTURE.md)** documents the generator: options, what gets planted and why, what each case exercises, the expected scan result, manual redaction rules worth trying, and how to undo a run. It also names the public fixture repository, <https://github.com/nikolareljin/damn-vulnerable-repo>.
 - The generator no longer trips a scanner when run against `tools/` itself. Four literals — a Twilio token, an Azure key, a PEM fallback and a service-account key id — still matched despite the fragment-splitting, which would have added permanent findings to the project whose job is finding them. `gitleaks detect --source tools --no-git` now reports zero.

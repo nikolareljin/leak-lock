@@ -12,6 +12,10 @@
 #                     so the full push/verify flow works without a real server
 #   --reset           delete previously seeded branches and the tag first
 #   --list            show what a previous run created, then exit
+#   --github-safe     omit the three credential types GitHub push protection rejects
+#                     (Slack webhook, Slack bot token, Twilio SID), so the fixture can
+#                     be pushed to a public GitHub repository. Everything else is
+#                     planted either way.
 #
 # EVERYTHING PLANTED IS FAKE.
 #   AWS uses Amazon's own published example key; Stripe values carry the sk_test_
@@ -26,13 +30,14 @@
 # permanent findings to the very project that scans for them.
 set -euo pipefail
 
-TARGET=""; DO_PUSH=0; LOCAL_REMOTE=0; DO_RESET=0; DO_LIST=0
+TARGET=""; DO_PUSH=0; LOCAL_REMOTE=0; DO_RESET=0; DO_LIST=0; GITHUB_SAFE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --push) DO_PUSH=1 ;;
     --local-remote) LOCAL_REMOTE=1 ;;
     --reset) DO_RESET=1 ;;
     --list) DO_LIST=1 ;;
+    --github-safe) GITHUB_SAFE=1 ;;
     -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     -*) echo "unknown option: $1" >&2; exit 2 ;;
     *) TARGET="$1" ;;
@@ -40,7 +45,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ -n "$TARGET" ] || { echo "usage: seed-fake-leaks.sh <target-repo> [--push] [--local-remote] [--reset] [--list]" >&2; exit 2; }
+[ -n "$TARGET" ] || { echo "usage: seed-fake-leaks.sh <target-repo> [--push] [--local-remote] [--reset] [--list] [--github-safe]" >&2; exit 2; }
 TARGET="$(cd "$TARGET" 2>/dev/null && pwd)" || { echo "no such directory: $TARGET" >&2; exit 2; }
 git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git repository: $TARGET" >&2; exit 2; }
 
@@ -108,6 +113,18 @@ export GIT_COMMITTER_NAME="Leak Lock Fixture" GIT_COMMITTER_EMAIL="fixture@examp
 # account-level push protection rejects them, and any shape our engines detect
 # GitHub detects too, so they cannot live in a public fixture. Every other
 # provider below pushes fine.
+# Slack and Twilio are planted by default — they are exactly what you want when
+# testing locally. GitHub's account-level push protection rejects them and no shape
+# satisfies both sides, since a scanner and GitHub match on the same patterns, so
+# --github-safe omits them for a public GitHub push.
+SLACK_BOT=""; SLACK_HOOK=""; TWILIO_SID=""; TWILIO_TOKEN=""
+if [ "$GITHUB_SAFE" = 0 ]; then
+  SLACK_BOT="xoxb-""1111111111-2222222222-abcdefghijklmnopqrstuvwx"
+  SLACK_HOOK="https://hooks.slack.com/services/""T00000000/B00000000/abcdefghijklmnopqrstuvwx"
+  TWILIO_SID="AC""0123456789abcdef0123456789abcdef"
+  TWILIO_TOKEN="0123456789""abcdef01""23456789""abcdef"
+fi
+
 AWS_ID="AKIA""IOSFODNN7EXAMPLE"
 AWS_SECRET="wJalrXUtnFEMI/K7MDENG/bPxRfiCY""EXAMPLEKEY"
 GH_PAT="ghp_""wJalrXUtnFEMIKBDENGbPxRfiCYEXAMPLE01"
@@ -127,6 +144,17 @@ MONGO_URL="mongodb://svc_user:""M0ngoPass-NotReal@db.internal-corp-7.example:270
 DOCKER_AUTH="$(printf 'builduser:BuildPass-NotReal' | base64 2>/dev/null | tr -d '\n')"
 SA_KEY_ID="0123456789""abcdef0123""456789abcd""ef01234567"
 HTPASSWD_HASH='$apr1$abcdefgh$0123456789abcdefghijkl'
+
+SLACK_HOOK_LINE=""; SLACK_BOT_LINE=""; TWILIO_LINES=""; OPS_SLACK_LINE=""
+if [ -n "$SLACK_HOOK" ]; then SLACK_HOOK_LINE="SLACK_WEBHOOK=\"$SLACK_HOOK\""; fi
+if [ -n "$SLACK_BOT" ]; then
+  SLACK_BOT_LINE="SLACK_BOT_TOKEN = \"$SLACK_BOT\""
+  OPS_SLACK_LINE="OPS_SLACK_TOKEN=\"$SLACK_BOT\""
+fi
+if [ -n "$TWILIO_SID" ]; then
+  TWILIO_LINES="TWILIO_ACCOUNT_SID=\"$TWILIO_SID\"
+TWILIO_AUTH_TOKEN=\"$TWILIO_TOKEN\""
+fi
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 if command -v ssh-keygen >/dev/null 2>&1; then
@@ -186,8 +214,10 @@ commit "fixture: remove deployment keys"
 cat > "$D/ci/deploy.sh" <<EOF
 #!/usr/bin/env bash
 GITHUB_TOKEN="$GH_PAT"
+$SLACK_HOOK_LINE
 curl -H "Authorization: token \$GITHUB_TOKEN" https://api.github.com/user
 EOF
+sed -i '/^$/d' "$D/ci/deploy.sh"
 cat > "$D/ci/netrc" <<EOF
 machine artifacts.internal-corp-7.example
   login builduser
@@ -256,7 +286,9 @@ cat > "$D/config/cloud.env" <<EOF
 AZURE_STORAGE_CONNECTION_STRING="$AZURE_CS"
 SENDGRID_API_KEY="$SENDGRID"
 GOOGLE_API_KEY="$GOOGLE_KEY"
+$TWILIO_LINES
 EOF
+sed -i '/^$/d' "$D/config/cloud.env"
 commit "fixture: release 1.0 cloud configuration"
 
 start_branch "$PREFIX/legacy-import"
@@ -273,8 +305,10 @@ start_branch "$PREFIX/dev-alice"
 mkdir -p "$D/scripts"
 cat > "$D/scripts/notify.py" <<EOF
 GITHUB_FINE_GRAINED = "$GH_FINE"
+$SLACK_BOT_LINE
 JWT = "$JWT_TOK"
 EOF
+sed -i '/^$/d' "$D/scripts/notify.py"
 commit "fixture: add notification helper"
 
 start_branch "$PREFIX/experimental"
@@ -335,7 +369,9 @@ if [ "$DO_PUSH" = 1 ]; then
     cat > leaklock-fixture/ops/keys.env <<EOF
 AWS_ACCESS_KEY_ID="$AWS_ID"
 OPS_DB_URL="$MONGO_URL"
+$OPS_SLACK_LINE
 EOF
+    sed -i '/^$/d' leaklock-fixture/ops/keys.env
     cp "$WORK/id_ed25519" leaklock-fixture/ops/id_ed25519
     git -c user.name="Leak Lock Fixture" -c user.email="fixture@example.invalid" add -A
     git -c user.name="Leak Lock Fixture" -c user.email="fixture@example.invalid" commit -qm "fixture: ops-only credentials"
