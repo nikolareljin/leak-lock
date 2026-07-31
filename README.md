@@ -165,10 +165,12 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 > Nothing carries a `VERIFIED LIVE` badge because there is nothing live to verify.
 > See [docs/TEST_FIXTURE.md](docs/TEST_FIXTURE.md).
 >
-> Regenerate all of them with `tools/real-scan.js` and `tools/render-screenshots.js`
-> (views: `results`, `empty`, `sidebar`, `keywords`, `removeFiles`, `prepared`,
-> `pushPlan`, `protected`, `verified`). Scan a clone under `/tmp/repos` rather than your
-> home directory — the paths are visible in the images.
+> Regenerate the webview images with `tools/real-scan.js` and
+> `tools/render-screenshots.js` (views: `results`, `empty`, `keywords`, `removeFiles`,
+> `prepared`, `pushPlan`, `protected`, `verified`). The Control Panel shot below is taken
+> from a live VS Code window, since the activity bar is editor chrome the renderer cannot
+> produce. Either way, scan a clone under `/tmp/repos` rather than your home directory —
+> the paths are visible in the images.
 
 ### Scan results — multi-engine, with attribution
 
@@ -208,14 +210,14 @@ and branches a rule touches before anything is rewritten.
 "No findings" means nothing without its scope, so the coverage panel sits directly beneath
 it.
 
-### The Control Panel
+### Opening it — the Control Panel
 
-![Control Panel](docs/website/img/control-panel.png)
+![Activity bar icon and the Control Panel](docs/website/img/activity-bar-control-panel.png)
 
-The sidebar surface, behind the shield icon in the activity bar: dependency status (Docker
-and the Nosey Parker image, Java and BFG — all optional, installed on first run), the
-auto-detected target repository, the scan trigger, and entry points to keyword history
-search and Remove Files.
+**The shield icon in the activity bar opens it.** Everything starts from this sidebar:
+dependency status (Docker and the Nosey Parker image, Java and BFG — all optional, and
+installed on first run from the `Details` pane), the auto-detected target repository, the
+scan trigger, and the entry points to keyword history search and Remove Files.
 
 ### Keyword history search
 
