@@ -76,6 +76,9 @@ temp/
 bfg.jar
 secrets-replacements.txt
 scan_*.json
+# Scan reports contain real secrets when produced from a real repository.
+scan.json
+leaklock-scan.json
 np.*
 *.backup
 *.old

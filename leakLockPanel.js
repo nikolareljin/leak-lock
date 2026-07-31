@@ -7,12 +7,15 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const gitRewrite = require('./git-rewrite');
+const scanEngineConfig = require('./scan-engine-config');
+const scanEngines = require('./scan-engines');
+const redactionRules = require('./redaction-rules');
+const hostCapacity = require('./host-capacity');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
 const MAX_VOLUME_NAME_LENGTH = 255; // Maximum Docker volume name length
 const DOCKER_PULL_TIMEOUT = 120000; // Docker pull timeout in milliseconds (2 minutes)
-const SCAN_TIMEOUT = 300000; // Scan timeout in milliseconds (5 minutes)
 const SECRET_TRUNCATE_LENGTH = 50; // Length to truncate secrets for display
 const GIT_MAX_BUFFER = 64 * 1024 * 1024; // History rewrites emit a lot of stdout
 const REMOTE_HEAD_FILTER_PATTERN = /\bHEAD$/; // Pattern to filter out remote HEAD refs
@@ -62,15 +65,40 @@ function escapeShellArg(arg) {
 }
 
 // Helper function to safely construct Docker commands using spawn instead of exec
+//
+// `timeout` terminates the container rather than only abandoning the promise. The
+// previous Promise.race wrapper left the scan container running after a timeout, so a
+// repository that timed out kept consuming CPU with nothing reading its output.
 function runDockerCommand(args, options = {}) {
+    const { timeout, ...spawnOptions } = options;
     return new Promise((resolve, reject) => {
         const dockerProcess = spawn('docker', args, {
             stdio: ['ignore', 'pipe', 'pipe'],
-            ...options
+            ...spawnOptions
         });
 
         let stdout = '';
         let stderr = '';
+        let timedOut = false;
+        let timer = null;
+
+        if (Number.isFinite(timeout) && timeout > 0) {
+            timer = setTimeout(() => {
+                timedOut = true;
+                try {
+                    dockerProcess.kill('SIGTERM');
+                } catch {
+                    // Process may already have exited; the close handler still fires.
+                }
+            }, timeout);
+        }
+
+        const clearTimer = () => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        };
 
         dockerProcess.stdout?.on('data', (data) => {
             stdout += data.toString();
@@ -81,6 +109,15 @@ function runDockerCommand(args, options = {}) {
         });
 
         dockerProcess.on('close', (code) => {
+            clearTimer();
+            if (timedOut) {
+                const error = new Error(`Docker command timed out after ${Math.round(timeout / 1000)}s`);
+                error.timedOut = true;
+                error.stdout = stdout;
+                error.stderr = stderr;
+                reject(error);
+                return;
+            }
             if (code === 0) {
                 resolve({ stdout, stderr, code });
             } else {
@@ -93,9 +130,83 @@ function runDockerCommand(args, options = {}) {
         });
 
         dockerProcess.on('error', (error) => {
+            clearTimer();
             reject(error);
         });
     });
+}
+
+/**
+ * Turn a raw `git fetch` failure into something a user can act on.
+ *
+ * Git dumps a multi-line wall of remote output on auth failures. Surfacing that
+ * verbatim in a toast tells the user a command they never asked to run has failed,
+ * without telling them what to do about it.
+ *
+ * @returns {{kind: string, message: string, detail: string}}
+ */
+const DEFAULT_REMOTE_NAME = 'origin';
+
+function summarizeGitRemoteError(error, command = 'git fetch') {
+    const raw = [
+        error && error.message ? error.message : '',
+        error && error.stderr ? error.stderr : ''
+    ].filter(Boolean).join('\n');
+    const detail = raw.replace(/\s+/g, ' ').trim();
+
+    let kind = 'unreachable';
+    let cause = 'The remote could not be contacted.';
+    let fix = 'Check that the remote is reachable, then press Prepare again.';
+
+    if (/SAML SSO|single sign-on|single-sign-on/i.test(raw)) {
+        kind = 'sso';
+        cause = 'The organisation that owns this remote enforces SAML single sign-on, and your credential is not authorised for it.';
+        fix = 'Authorise your personal access token or SSH key for that organisation, then press Prepare again.';
+    } else if (/Authentication failed|could not read Username|Permission denied|access rights|403/i.test(raw)) {
+        kind = 'auth';
+        cause = 'Git was refused access to the remote.';
+        fix = 'Check the credential or SSH key git uses for this remote, then press Prepare again.';
+    } else if (/Could not resolve host|Network is unreachable|Connection timed out|timed out/i.test(raw)) {
+        kind = 'network';
+        cause = 'The remote host could not be reached.';
+        fix = 'Check your network or VPN connection, then press Prepare again.';
+    } else if (/would clobber existing tag|\[rejected\].*tag/i.test(raw)) {
+        // `git fetch --tags` exits non-zero when a tag points somewhere different on the
+        // remote. The remote was reached and read perfectly well — reporting this as
+        // "could not be contacted" sends the user to check their network and VPN for a
+        // problem that is a diverged tag, and it is routine after a history rewrite,
+        // which is exactly when this tool runs.
+        kind = 'tag-conflict';
+        cause = 'The remote was reached, but a tag points at a different commit locally than on the remote, so git refused to overwrite it.';
+        fix = 'Run `git fetch --tags --force ' + DEFAULT_REMOTE_NAME + '` to take the remote\'s version, or delete the local tag, then try again.';
+    } else if (/does not appear to be a git repository|Repository not found|not found/i.test(raw)) {
+        kind = 'missing';
+        cause = 'The configured remote does not point at a repository git can read.';
+        fix = 'Check `git remote -v` for this repository, then press Prepare again.';
+    }
+
+    return { kind, command, cause, fix, detail };
+}
+
+/**
+ * Parse `git branch --no-color -a --contains <sha>` into real branch names.
+ *
+ * The output is not a plain list: it marks the current branch with `*`, includes the
+ * symbolic `remotes/origin/HEAD -> origin/main` line, and can emit
+ * `(HEAD detached at …)`. A `\bHEAD$` filter alone misses the symbolic line, which
+ * then shows up in the UI as though it were a branch called
+ * "remotes/origin/HEAD -> origin/main".
+ */
+function parseContainingBranches(stdout) {
+    return String(stdout || '')
+        .split('\n')
+        .map(line => line.replace(/^[*+]?\s*/, '').trim())
+        .filter(Boolean)
+        .filter(name =>
+            !name.includes('->') &&
+            !name.includes('HEAD detached') &&
+            !REMOTE_HEAD_FILTER_PATTERN.test(name)
+        );
 }
 
 // HTML escaping function to prevent XSS
@@ -296,6 +407,11 @@ class LeakLockPanel {
             // reset the user's choices back to "everything checked".
             selection: null, // Set<number>; null = seed with all eligible findings
             replacementValues: {}, // { [findingIndex]: string }
+            // User-authored "source text -> replace with" rules, for content no
+            // scanner flagged. Unlike selection these are not tied to _scanResults
+            // indices, so they survive a re-scan and a completed push.
+            customRules: [], // { id, source, mode: 'literal'|'regex', replaceWith }
+            customRulePreviews: {}, // { [ruleId]: { commits, files, branches, truncated } }
             pushPlan: null, // ref-by-ref preview of the force-push
             blockedBranches: null, // local branches with unpushed commits
             blockedReason: null, // 'unpushed-commits' | 'no-remote' | null
@@ -303,8 +419,24 @@ class LeakLockPanel {
             // After the LOCAL rewrite runs, this holds everything needed to
             // force-push. The panel shows a persistent confirmation and the push
             // only happens once the user confirms it here. null = nothing staged.
-            pendingPush: null // { repoDir, remote, verify, label, refCount }
+            pendingPush: null, // { repoDir, remote, verify, label, refCount }
+            // Set when the remote refused the push because a ref is protected. Kept in
+            // state, not just a toast, because the fix happens outside the editor and the
+            // user needs the steps still on screen when they come back.
+            pushBlockedByProtection: null,
+            // Repository the prepared plan targets. The executors use this rather than
+            // re-deriving a path, so a cleanup can only ever run where it was planned.
+            preparedRepo: null,
+            // Set when the read-only plan check could not reach the remote (SSO,
+            // credentials, network). Preparation stops; nothing is generated.
+            remoteError: null,
+            // Set when Nosey Parker is enabled but Docker is missing, so the scan
+            // degrades to the remaining engines instead of failing outright.
+            noseyParkerUnavailable: null
         };
+        // What the last scan actually covered. "No findings" is only meaningful
+        // alongside this, so it is rendered with the results rather than logged.
+        this._scanCoverage = null; // see _buildScanCoverage()
         this._dependenciesInstalled = false;
         this._panel = null;
 
@@ -452,6 +584,16 @@ class LeakLockPanel {
                         break;
                     case 'scan.setReplacement':
                         LeakLockPanel.currentPanel._setScanReplacement(message.index, message.value);
+                        break;
+                    case 'scan.addCustomRule':
+                        LeakLockPanel.currentPanel._handleAddCustomRule(message.source, message.mode, message.replaceWith);
+                        break;
+                    case 'scan.removeCustomRule':
+                        LeakLockPanel.currentPanel._removeCustomRule(message.id);
+                        LeakLockPanel.currentPanel._updateWebviewContent();
+                        break;
+                    case 'scan.previewCustomRule':
+                        LeakLockPanel.currentPanel._previewCustomRule(message.id);
                         break;
                     case 'scan.saveScript':
                         LeakLockPanel.currentPanel._saveCleanupScript();
@@ -766,6 +908,140 @@ class LeakLockPanel {
                     }
                     
                     /* Empty Results Styles */
+                    /* Scan coverage. Rendered next to the celebratory empty state,
+                       which is centred — this block is dense reference material and
+                       must stay left-aligned regardless of what encloses it. */
+                    .scan-coverage {
+                        text-align: left;
+                        margin: 16px 0;
+                        padding: 14px 16px;
+                        border: 1px solid var(--vscode-panel-border);
+                        border-radius: 6px;
+                        background: var(--vscode-editor-background);
+                        font-size: 0.9em;
+                        line-height: 1.5;
+                    }
+
+                    /* Collapsed by default: the panel is reference material, and on a
+                       busy repository the detail runs to hundreds of branch names. The
+                       summary line carries the numbers, and any warning is promoted
+                       into it so collapsing hides volume, never a caveat. */
+                    .coverage-toggle > summary {
+                        cursor: pointer;
+                        display: flex;
+                        flex-wrap: wrap;
+                        align-items: baseline;
+                        gap: 4px 10px;
+                        list-style: revert;
+                    }
+
+                    .coverage-title { font-weight: 600; }
+
+                    .coverage-summary { color: var(--vscode-descriptionForeground); }
+
+                    .coverage-badge {
+                        color: var(--vscode-editorWarning-foreground);
+                        border: 1px solid var(--vscode-editorWarning-foreground);
+                        border-radius: 10px;
+                        padding: 0 8px;
+                        font-size: 0.85em;
+                        white-space: nowrap;
+                    }
+
+                    .coverage-raw {
+                        white-space: pre-wrap;
+                        word-break: break-word;
+                        font-size: 0.9em;
+                        margin: 6px 0 0 0;
+                    }
+
+                    .coverage-intro {
+                        margin: 10px 0 12px 0;
+                        color: var(--vscode-descriptionForeground);
+                    }
+
+                    /* Label/value pairs. Collapses to a single column when the panel is
+                       narrow, so the values never get squeezed into a thin ribbon. */
+                    .coverage-grid {
+                        display: grid;
+                        grid-template-columns: minmax(90px, max-content) 1fr;
+                        gap: 8px 16px;
+                        align-items: start;
+                    }
+
+                    @media (max-width: 640px) {
+                        .coverage-grid {
+                            grid-template-columns: 1fr;
+                            gap: 2px 0;
+                        }
+                        .coverage-label {
+                            margin-top: 8px;
+                        }
+                    }
+
+                    .coverage-label {
+                        color: var(--vscode-descriptionForeground);
+                        text-transform: uppercase;
+                        font-size: 0.8em;
+                        letter-spacing: 0.04em;
+                        padding-top: 2px;
+                    }
+
+                    .coverage-value { min-width: 0; }
+
+                    .coverage-engine {
+                        display: flex;
+                        gap: 8px;
+                        align-items: baseline;
+                        flex-wrap: wrap;
+                    }
+
+                    .coverage-note {
+                        color: var(--vscode-descriptionForeground);
+                        font-size: 0.92em;
+                        margin: 2px 0 6px 0;
+                    }
+
+                    .coverage-warn { color: var(--vscode-editorWarning-foreground); }
+                    .coverage-muted { color: var(--vscode-descriptionForeground); }
+
+                    .coverage-details { margin-top: 4px; }
+                    .coverage-details summary { cursor: pointer; }
+
+                    .coverage-branchlist {
+                        margin-top: 6px;
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 4px 6px;
+                        max-height: 160px;
+                        overflow-y: auto;
+                    }
+
+                    .coverage-incomplete {
+                        background: var(--vscode-inputValidation-warningBackground);
+                        border: 1px solid var(--vscode-editorWarning-foreground);
+                        padding: 10px;
+                        border-radius: 4px;
+                        margin-bottom: 12px;
+                    }
+
+                    .scan-not-run { border-color: var(--vscode-editorWarning-foreground); }
+
+                    .scan-not-run h2 { color: var(--vscode-editorWarning-foreground); }
+
+                    .not-run-reasons {
+                        display: inline-block;
+                        text-align: left;
+                        margin: 12px auto;
+                        padding-left: 18px;
+                        color: var(--vscode-descriptionForeground);
+                    }
+
+                    .partial-warning {
+                        color: var(--vscode-editorWarning-foreground);
+                        font-weight: 600;
+                    }
+
                     .empty-results {
                         text-align: center;
                         padding: 40px 20px;
@@ -1075,10 +1351,14 @@ class LeakLockPanel {
                             master.indeterminate = selected > 0 && selected < total;
                         }
 
+                        // Manual redaction rules are cleaned by the same mechanism as
+                        // findings, so a rules-only cleanup must not be gated on the
+                        // finding checkboxes.
+                        const customRules = document.querySelectorAll('[data-rule-remove]').length;
                         ['prepare-bfg-button', 'prepare-git-button'].forEach(function (id) {
                             const btn = document.getElementById(id);
                             if (btn) {
-                                btn.disabled = selected === 0;
+                                btn.disabled = selected === 0 && customRules === 0;
                             }
                         });
                     }
@@ -1164,6 +1444,59 @@ class LeakLockPanel {
                         replacementDebounce = setTimeout(function () {
                             postReplacement(input);
                         }, 200);
+                    });
+
+                    // --- Manual redaction rules ---
+                    // Delegated listeners, so rules added after this script ran are
+                    // wired without re-binding, and no inline handlers are needed.
+                    function submitCustomRule() {
+                        const source = document.getElementById('custom-rule-source');
+                        const mode = document.getElementById('custom-rule-mode');
+                        const replacement = document.getElementById('custom-rule-replacement');
+                        if (!source || !source.value.trim()) {
+                            return;
+                        }
+                        vscode.postMessage({
+                            command: 'scan.addCustomRule',
+                            source: source.value,
+                            mode: mode ? mode.value : 'literal',
+                            replaceWith: replacement ? replacement.value : ''
+                        });
+                        source.value = '';
+                        if (replacement) { replacement.value = ''; }
+                    }
+
+                    document.addEventListener('click', function (event) {
+                        if (event.target.closest('#custom-rule-add')) {
+                            submitCustomRule();
+                            return;
+                        }
+                        const removeBtn = event.target.closest('[data-rule-remove]');
+                        if (removeBtn) {
+                            vscode.postMessage({
+                                command: 'scan.removeCustomRule',
+                                id: removeBtn.getAttribute('data-rule-remove')
+                            });
+                            return;
+                        }
+                        const previewBtn = event.target.closest('[data-rule-preview]');
+                        if (previewBtn) {
+                            vscode.postMessage({
+                                command: 'scan.previewCustomRule',
+                                id: previewBtn.getAttribute('data-rule-preview')
+                            });
+                        }
+                    });
+
+                    document.addEventListener('keydown', function (event) {
+                        if (event.key !== 'Enter') {
+                            return;
+                        }
+                        const field = event.target.closest('#custom-rule-source, #custom-rule-replacement');
+                        if (field) {
+                            event.preventDefault();
+                            submitCustomRule();
+                        }
                     });
 
                     document.addEventListener('DOMContentLoaded', refreshSelectionUi);
@@ -2191,12 +2524,12 @@ class LeakLockPanel {
 
     _getResultsHtml() {
         if (this._scanResults.length === 0) {
-            return `
-                <div class="scan-section">
-                    <h2>✅ No Findings Found</h2>
-                    <p>Great! No findings (potential secrets or policy references) were detected in your repository.</p>
-                </div>
-            `;
+            // In production _getScanResultsSection() handles the empty case and only
+            // delegates here for non-empty results, so this branch is unreachable —
+            // but it used to render its own unconditional "Great! No findings" and
+            // would have been a second false all-clear the moment anything called it
+            // directly. One owner for the empty state instead of two that can disagree.
+            return this._renderEmptyScanState();
         }
 
         const severityColors = {
@@ -2325,6 +2658,21 @@ class LeakLockPanel {
                     parts.push(`<span title="Commit date" style="color: var(--vscode-descriptionForeground);">${escapeHtml(commitDateFormatted)}</span>`);
                     tooltipParts.push('Date: ' + commitDateFormatted);
                 }
+                // The same secret at one line often appears in several commits, and in
+                // the working tree as well as in history. Those are one problem, so
+                // they are one row — but the count and the commit list stay visible,
+                // because the rewrite has to cover all of them.
+                const occurrences = Array.isArray(result.occurrences) ? result.occurrences : [];
+                const commits = occurrences.map(o => o.commitHash).filter(Boolean);
+                const uniqueCommits = Array.from(new Set(commits));
+                if (uniqueCommits.length > 1) {
+                    parts.push(`<span title="${escapeHtml(uniqueCommits.join('\n'))}" style="color: var(--vscode-descriptionForeground); font-size: 0.85em;">in ${uniqueCommits.length} commits</span>`);
+                    tooltipParts.push(`Commits (${uniqueCommits.length}): ` + uniqueCommits.join(', '));
+                }
+                if (occurrences.some(o => !o.commitHash)) {
+                    parts.push('<span title="Also present in the working tree, not only in history." style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.85em;">+ working tree</span>');
+                    tooltipParts.push('Also present in the working tree.');
+                }
                 gitInfoHtml = parts.join('<br>');
                 gitInfoTooltip = tooltipParts.join('\n');
             } else {
@@ -2355,6 +2703,9 @@ class LeakLockPanel {
                     <td>
                         <input type="text" class="replacement-input" data-finding-index="${index}" value="${escapeHtml(this._getReplacementValue(index))}" placeholder="Replacement value" ${cleanupDisabled ? 'disabled' : ''}>
                     </td>
+                    <td style="font-size: 0.85em; line-height: 1.5;">
+                        ${this._renderEngineAttribution(result)}
+                    </td>
                     <td title="${escapeHtml(gitInfoTooltip)}" style="font-size: 0.85em; line-height: 1.4; overflow: visible; white-space: normal; word-break: break-word;">
                         ${gitInfoHtml}
                     </td>
@@ -2365,6 +2716,9 @@ class LeakLockPanel {
                             </span>
                             <span style="font-size: 0.9em;">
                                 ${escapeHtml(result.description)}
+                                ${Array.isArray(result.ruleNames) && result.ruleNames.length > 1
+                                    ? ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.85em;" title="Every rule that matched this secret">— also matched: ${escapeHtml(result.ruleNames.filter(r => r !== result.ruleName).join(', '))}</span>`
+                                    : ''}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">— in a third-party dependency, not your code (not selectable)</span>' : ''}
                                 ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
                                 ${!includeInCleanup ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(excluded from cleanup)</span>' : ''}
@@ -2418,17 +2772,27 @@ class LeakLockPanel {
             <div id="scan-prepared-command-git" class="danger-command">${escapeHtml(gitCommandText)}</div>
             ${prepared && this._scanCleanup.preparedMode === "git" ? renderPreparedActions("scan-prepared-command-git") : ""}
         `;
-        const noneSelected = selectedCount === 0;
+        // Manual rules are cleaned by the same mechanism as findings, so they count
+        // toward whether there is anything to prepare.
+        const customRuleCount = this._getCustomRules().length;
+        const noneSelected = selectedCount === 0 && customRuleCount === 0;
         const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
+        const refreshBlock = this._renderRemoteError(this._scanCleanup.remoteError);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
         const verifyBlock = this._renderVerifyResult(this._scanCleanup.verifyResult);
-        const pendingPushBlock = this._renderPendingPush(this._scanCleanup.pendingPush);
+        const pendingPushBlock =
+            this._renderProtectionBlock(this._scanCleanup.pushBlockedByProtection) +
+            this._renderPendingPush(this._scanCleanup.pendingPush);
 
         return `
             <div class="scan-section">
                 <h2>🔍 Scan Results</h2>
                 <div style="margin:6px 0 10px 0; font-size:0.9em; color:${fetchColor}; display:flex; align-items:center; gap:8px;">
-                    <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${this._removalState.lastFetchAt ? escapeHtml(new Date(this._removalState.lastFetchAt).toLocaleString()) : 'never'}${fetchNote}</span>
+                    <!-- lastFetchISO, not _removalState.lastFetchAt: the latter belongs to the
+                         Remove Files view and is unset during a scan, so this line claimed
+                         "never" while the colour and staleness beside it were computed from
+                         the correct value. -->
+                    <span title="${escapeHtml(fetchTooltip)}">Refs status: Last fetched ${lastFetchISO ? escapeHtml(new Date(lastFetchISO).toLocaleString()) : 'never'}${fetchNote}</span>
                     <button style="padding:4px 8px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border:none; border-radius:4px; cursor:pointer;" onclick="refetchNow()">⟳ Refetch now</button>
                 </div>
                 <div style="margin-bottom: 15px;">
@@ -2459,7 +2823,9 @@ class LeakLockPanel {
                             </div>
                         ` : ''}
                     </div>
+                    ${this._renderScanCoverage()}
                 </div>
+                ${this._renderCustomRules()}
                 <script>window.__branchData = ${JSON.stringify(branchDataMap).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>
                 <table class="results-table">
                     <thead>
@@ -2469,12 +2835,13 @@ class LeakLockPanel {
                                     ${eligibleIndexes.length === 0 ? 'disabled' : ''}
                                     ${selectedCount > 0 && selectedCount === eligibleIndexes.length ? 'checked' : ''}>
                             </th>
-                            <th style="width: 20%;">File</th>
-                            <th style="width: 50px;">Line</th>
-                            <th style="width: 20%;">Secret</th>
-                            <th style="width: 12%;">Replace With</th>
-                            <th style="width: 15%;">Git Info</th>
-                            <th>Description</th>
+                            <th style="width: 17%;">File</th>
+                            <th style="width: 44px;">Line</th>
+                            <th style="width: 16%;">Secret</th>
+                            <th style="width: 10%;">Replace With</th>
+                            <th style="width: 11%;" title="Which engine reported this finding. A secret found by one engine and missed by another is visible here.">Engine</th>
+                            <th style="width: 13%;">Git Info</th>
+                            <th style="width: 22%;">Description</th>
                         </tr>
                     </thead>
                     <tbody id="scan-findings-body">
@@ -2483,6 +2850,7 @@ class LeakLockPanel {
                 </table>
                 ${pendingPushBlock}
                 ${blockedBlock}
+                ${refreshBlock}
                 ${verifyBlock}
                 <div class="run-section" style="margin-top: 18px;">
                     <h3>⚡ BFG-based cleanup (recommended)</h3>
@@ -2496,7 +2864,7 @@ class LeakLockPanel {
                     ${preparedBlockBfg}
                     ${this._scanCleanup.preparedMode === 'bfg' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
-                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
+                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || (this._scanCleanup.blockedBranches || []).length > 0 || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
                     </div>
                 </div>
 
@@ -2512,7 +2880,7 @@ class LeakLockPanel {
                     ${preparedBlockGit}
                     ${this._scanCleanup.preparedMode === 'git' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
-                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
+                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || (this._scanCleanup.blockedBranches || []).length > 0 || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
                     </div>
                 </div>
 
@@ -2557,6 +2925,50 @@ class LeakLockPanel {
     }
 
     /** Blocking banner: a rewrite here would discard unpushed local commits. */
+    /**
+     * Explain why preparation stopped.
+     *
+     * Three things this must get right, because the previous wording was misread as
+     * "the cleanup ran":
+     *   1. Lead with the fact that nothing changed.
+     *   2. Name the exact command that failed, and say it is read-only.
+     *   3. Give the cause and the fix in plain language; keep git's raw remote output
+     *      folded away, since that is what made the original message alarming.
+     */
+    _renderRemoteError(remoteError) {
+        if (!remoteError) {
+            return '';
+        }
+        return `
+            <div style="margin-top: 12px; padding: 12px; border-radius: 4px;
+                        background: var(--vscode-inputValidation-errorBackground);
+                        border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-editorError-foreground));">
+                <div style="font-size: 1.05em;"><strong>No cleanup was prepared, and nothing in your repository was changed.</strong></div>
+                <div style="margin-top: 6px;">
+                    No history was rewritten. No secret was removed. No commit, branch or tag was touched.
+                </div>
+                <div style="margin-top: 10px;">
+                    Before preparing a cleanup, Leak Lock compares your local branches against the remote, so a
+                    rewrite cannot silently discard commits you have not pushed. That check is the only command it
+                    runs, it is read-only, and it is:
+                </div>
+                <pre style="margin: 6px 0; padding: 6px 8px; border-radius: 3px; white-space: pre-wrap;
+                            background: var(--vscode-textCodeBlock-background);">${escapeHtml(remoteError.command)}</pre>
+                <div><strong>It failed.</strong> ${escapeHtml(remoteError.cause)}</div>
+                <div style="margin-top: 6px;"><strong>To fix it:</strong> ${escapeHtml(remoteError.fix)}</div>
+                <details style="margin-top: 8px;">
+                    <summary style="cursor: pointer; font-size: 0.9em;">Show what git reported</summary>
+                    <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.85em; margin: 6px 0 0 0;">${escapeHtml(remoteError.detail)}</pre>
+                </details>
+            </div>
+        `;
+    }
+
+    /** Test seam and single entry point for classifying a remote failure. */
+    _classifyRemoteError(error, command) {
+        return summarizeGitRemoteError(error, command);
+    }
+
     _renderBlockedBranches(branches, reason) {
         if (reason === 'no-remote') {
             return `
@@ -2578,13 +2990,19 @@ class LeakLockPanel {
             .join('');
         return `
             <div class="rewrite-blocked">
-                <strong>⛔ Rewrite blocked — unpushed local commits</strong>
+                <strong>⛔ The cleanup cannot be run yet — unpushed local commits</strong>
                 <p style="margin: 6px 0; font-size: 0.9em;">
-                    A ref-complete rewrite resets every local branch to its remote counterpart.
-                    These branches would lose commits, so Leak Lock stopped before touching anything:
+                    The script below was prepared and is safe to read and save. It is the
+                    <em>run</em> that is blocked: a ref-complete rewrite force-resets every branch that
+                    exists on the remote, and these hold commits the remote does not have, so running it
+                    would discard them:
                 </p>
                 <ul style="margin: 6px 0 6px 18px;">${rows}</ul>
-                <p style="margin: 6px 0; font-size: 0.9em;">Push them, then prepare again.</p>
+                <p style="margin: 6px 0; font-size: 0.9em;">
+                    Push or delete them and prepare again to enable the run. Nothing has been changed.
+                    The script re-checks this itself before rewriting anything, so running it by hand is
+                    safe too — it will refuse for the same reason.
+                </p>
             </div>
         `;
     }
@@ -2620,6 +3038,25 @@ class LeakLockPanel {
             return `
                 <div class="verify-clean">
                     <strong>✅ Verified clean on every remote ref</strong>
+                </div>
+            `;
+        }
+        // "could not check" and "checked, and it is still there" are different claims.
+        // Rendering the first as the second sends the user hunting for a leak that may
+        // not exist; rendering it as clean would be worse still. Report it as its own
+        // outcome: unverified.
+        const unverified = offenders.filter(o => o.notVerified);
+        if (unverified.length > 0) {
+            const why = unverified
+                .map(o => `<li>${escapeHtml(o.reason.replace(/^not verified: /, ''))}</li>`)
+                .join('');
+            return `
+                <div class="rewrite-blocked">
+                    <strong>⚠️ Not verified — this is not a clean result</strong>
+                    <p style="margin:6px 0;">The rewrite ran, but Leak Lock could not check the remote refs,
+                    so it cannot tell you whether the secret is gone:</p>
+                    <ul style="margin: 6px 0 6px 18px;">${why}</ul>
+                    <p style="margin:6px 0;">Check the remote yourself before treating this as done.</p>
                 </div>
             `;
         }
@@ -2685,6 +3122,7 @@ class LeakLockPanel {
             this._scanCleanup.blockedReason = null;
             this._scanCleanup.verifyResult = null;
             this._scanCleanup.pendingPush = null;
+            this._scanCleanup.noseyParkerUnavailable = null;
             // Indices from the previous scan no longer refer to the same findings.
             this._resetScanSelection();
             this._updateWebviewContent();
@@ -2718,59 +3156,167 @@ class LeakLockPanel {
             }
 
             this._scanPath = scanPath;
+            this._scanCoverage = null;
             await this._primeGitTracking(scanPath);
 
-            // Update progress: Checking Docker
-            this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
-            this._updateWebviewContent();
+            const engineSettings = this._getScanEngineSettings();
 
-            // Check if Docker is available
-            const dockerCheck = await this._checkDockerAvailability();
-            if (!dockerCheck.available) {
-                vscode.window.showErrorMessage(`Docker not available: ${dockerCheck.error}`);
-                this._isScanning = false;
-                this._updateWebviewContent();
-                return;
+            // Docker is only required by the Nosey Parker engine. Demanding it when
+            // the user runs Gitleaks alone — a single binary with no runtime — would
+            // block a scan that has no need of it.
+            // Decide how hard to push this machine before committing to a plan.
+            // Three scanners over a large history is real work; on a constrained host
+            // it is better to run one lightweight engine well than three badly. Any
+            // downgrade is reported, never silent — fewer engines means fewer findings.
+            const strategy = this._chooseScanStrategy();
+            const engineIds = strategy.engines;
+            if (strategy.dropped.length > 0) {
+                vscode.window.showWarningMessage(strategy.reason);
             }
 
-            // Update progress: Pulling image
-            this._scanProgress = { stage: 'pull', message: 'Pulling Nosey Parker image...' };
+            if (engineIds.includes('noseyparker')) {
+                this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
+                this._updateWebviewContent();
+
+                const dockerCheck = await this._checkDockerAvailability();
+                if (!dockerCheck.available) {
+                    const others = engineIds.filter(id => id !== 'noseyparker');
+                    if (others.length === 0) {
+                        vscode.window.showErrorMessage(
+                            `Docker not available: ${dockerCheck.error}. Nosey Parker is the only enabled engine and it requires Docker. ` +
+                            'Enable Gitleaks in leakLock.scan.engines to scan without Docker.'
+                        );
+                        this._isScanning = false;
+                        this._updateWebviewContent();
+                        return;
+                    }
+                    // Degrade to the engines that can still run rather than failing the
+                    // whole scan.
+                    vscode.window.showWarningMessage(
+                        `Docker not available (${dockerCheck.error}); skipping Nosey Parker. Scanning with: ${others.join(', ')}.`
+                    );
+                    this._scanCleanup.noseyParkerUnavailable = dockerCheck.error;
+                }
+            }
+
+            // Refresh refs before scanning. A branch that exists only as an unfetched
+            // remote ref is history the scan would never see, and reporting a
+            // repository clean on that basis is the failure this guards against.
+            this._scanProgress = { stage: 'refs', message: 'Refreshing git refs...' };
+            this._updateWebviewContent();
+            const refRefresh = await this._refreshRefsForScan(engineSettings);
+
+            const useNoseyParker = engineIds.includes('noseyparker')
+                && !this._scanCleanup.noseyParkerUnavailable;
+
+            // Only Nosey Parker pulls an image, and it does so inside its own engine
+            // task. Announcing a pull on a Gitleaks-only scan named a container the
+            // scan never touches.
+            if (useNoseyParker) {
+                this._scanProgress = { stage: 'pull', message: `Pulling ${engineSettings.image}...` };
+                this._updateWebviewContent();
+            }
+
+            let scanRun = { results: [], incomplete: false, incompleteReason: null };
+            const engineReports = [];
+            let excludedByDependencyRule = 0;
+
+            if (engineIds.includes('noseyparker') && this._scanCleanup.noseyParkerUnavailable) {
+                engineReports.push({
+                    id: 'noseyparker',
+                    displayName: 'Nosey Parker',
+                    version: null,
+                    ok: false,
+                    findings: 0,
+                    note: `Skipped — Docker not available: ${this._scanCleanup.noseyParkerUnavailable}`
+                });
+            }
+
+            // Each engine is an independent task. The strategy decides how many run at
+            // once; a failing engine still cannot take the others down with it.
+            const engineTasks = [];
+            if (useNoseyParker) {
+                engineTasks.push(() => this._runNoseyParkerEngine(scanPath, engineSettings));
+            }
+            for (const engineId of engineIds) {
+                if (engineId === 'noseyparker') {
+                    continue;
+                }
+                engineTasks.push(() => this._runExternalEngine(engineId, scanPath, engineSettings));
+            }
+
+            this._scanProgress = {
+                stage: 'scan',
+                message: strategy.mode === 'parallel'
+                    ? `Scanning with ${engineIds.length} engines in parallel...`
+                    : 'Scanning for secrets...'
+            };
             this._updateWebviewContent();
 
-            // Pull the latest Nosey Parker image
-            await this._pullNoseyParkerImage();
-
-            // Update progress: Initializing
-            this._scanProgress = { stage: 'init', message: 'Initializing datastore...' };
-            this._updateWebviewContent();
-
-            // Create and validate temporary datastore path
-            const tempDatastore = validateDockerPath(path.join(scanPath, '.noseyparker-temp'), [scanPath]);
-            await this._initializeDatastore(tempDatastore);
-
-            // Update progress: Scanning
-            this._scanProgress = { stage: 'scan', message: 'Scanning for secrets...' };
-            this._updateWebviewContent();
-
-            // Run the actual scan
-            const scanResults = await this._runNoseyParkerScan(scanPath, tempDatastore);
-            const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
-            const allResults = this._deduplicateScanResults(
-                scanResults.concat(keywordHistoryResults)
+            const outcomes = await hostCapacity.runWithConcurrency(
+                engineTasks,
+                strategy.mode === 'parallel' ? strategy.concurrency : 1
             );
+
+            let pullResult = null;
+            let engineVersion = null;
+            const engineResults = [];
+            for (const outcome of outcomes) {
+                if (!outcome || outcome.error) {
+                    console.warn('Engine task failed:', outcome && outcome.error && outcome.error.message);
+                    continue;
+                }
+                if (outcome.report) {
+                    engineReports.push(outcome.report);
+                }
+                if (outcome.results) {
+                    engineResults.push(...outcome.results);
+                }
+                if (outcome.id === 'noseyparker') {
+                    pullResult = outcome.pullResult;
+                    engineVersion = outcome.version;
+                    scanRun = outcome.scanRun || scanRun;
+                }
+            }
+
+            const keywordHistoryResults = await this._scanGitHistoryForKeywords(scanPath);
+            let allResults = this._deduplicateScanResults(
+                engineResults.concat(keywordHistoryResults)
+            );
+
+            // Only Nosey Parker accepts an ignore file, so without this the setting
+            // meant different things depending on which engines were enabled.
+            if (this._shouldExcludeDependencies()) {
+                const before = allResults.length;
+                allResults = allResults.filter(
+                    result => !scanEngineConfig.isInExcludedDependencyDir(result.file)
+                );
+                if (before !== allResults.length) {
+                    excludedByDependencyRule = before - allResults.length;
+                }
+            }
 
             // Update progress: Processing
             this._scanProgress = { stage: 'process', message: 'Processing results...' };
             this._updateWebviewContent();
-
-            // Clean up temporary datastore
-            await this._cleanupTempFiles(tempDatastore);
 
             // Enrich results with git branch names and commit dates
             await this._enrichResultsWithGitInfo(allResults, scanPath);
 
             // Update results
             this._scanResults = allResults;
+            this._scanCoverage = await this._buildScanCoverage({
+                scanPath,
+                settings: engineSettings,
+                engineVersion,
+                engines: engineReports,
+                strategy,
+                pullResult,
+                refRefresh,
+                incomplete: scanRun.incomplete,
+                incompleteReason: scanRun.incompleteReason,
+                excludedByDependencyRule
+            });
             this._resetScanSelection();
             this._isScanning = false;
             this._scanProgress = null;
@@ -2778,9 +3324,28 @@ class LeakLockPanel {
             // Update the webview
             this._updateWebviewContent();
 
-            // Show completion message
-            if (allResults.length > 0) {
+            // Show completion message. An incomplete scan never reports "no findings"
+            // as if the repository had been fully examined.
+            if (scanRun.incomplete) {
+                vscode.window.showWarningMessage(
+                    `Scan incomplete — ${allResults.length} finding(s) so far. ${scanRun.incompleteReason || ''}`.trim()
+                );
+            } else if (allResults.length > 0) {
                 vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} findings (potential secrets or policy references). Review them in the main panel.`);
+            } else if (!engineReports.some(engine => engine.ok)) {
+                // Zero findings because no engine ran is not the same as zero findings
+                // because nothing is there. `incomplete` above only covers the Nosey
+                // Parker timeout and parse paths, so it does not catch this. The panel
+                // renders "Nothing was scanned" here — the toast is what the user
+                // actually sees pop up, so it must not contradict it with a party emoji.
+                const failed = engineReports.length > 0
+                    ? engineReports
+                        .map(engine => `${engine.displayName || engine.id}: ${engine.note || 'did not run'}`)
+                        .join('; ')
+                    : 'No engines were enabled — check leakLock.scan.engines.';
+                vscode.window.showWarningMessage(
+                    `Nothing was scanned — no detection engine ran, so this is NOT a clean result. ${failed}`
+                );
             } else {
                 vscode.window.showInformationMessage('🎉 Scan complete! No findings (potential secrets or policy references) were found in your repository.');
             }
@@ -2814,6 +3379,156 @@ class LeakLockPanel {
         } catch (e) {
             this._scanRepoRoot = null;
             this._trackedFiles = null;
+        }
+    }
+
+    /**
+     * Refresh every ref before scanning.
+     *
+     * The rewrite path has required this since 0.6.0 (a rewrite planned against stale
+     * refs is unsafe). The scan path never did, which is the more dangerous omission:
+     * an unfetched remote-only branch is history the scanner never sees, and the user
+     * is told the repository is clean.
+     *
+     * Never throws — a fetch failure downgrades coverage, it does not cancel the scan.
+     */
+    async _refreshRefsForScan(settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        const repoRoot = this._scanRepoRoot;
+        if (!repoRoot) {
+            return { attempted: false, ok: false, reason: 'not-a-git-repository' };
+        }
+        if (!cfg.refreshRefsBeforeScan) {
+            return { attempted: false, ok: false, reason: 'disabled-by-setting' };
+        }
+        let remote;
+        try {
+            remote = await gitRewrite.hasRemote(repoRoot, gitRewrite.DEFAULT_REMOTE);
+        } catch {
+            remote = false;
+        }
+        if (!remote) {
+            return { attempted: false, ok: false, reason: 'no-remote' };
+        }
+        const command = gitRewrite.describeFetchCommand(gitRewrite.DEFAULT_REMOTE, { prune: false });
+        try {
+            // Read-only: a scan refreshes refs to widen coverage, it does not prune.
+            await gitRewrite.fetchAllRefs(repoRoot, gitRewrite.DEFAULT_REMOTE, { prune: false });
+            // Record it. Without this the panel reports "Last fetched never (stale)" and
+            // asks the user to fetch immediately after the scan just fetched — while the
+            // coverage panel directly below says the refs were refreshed.
+            const fetchedAt = new Date().toISOString();
+            this._recordFetchAt(repoRoot, fetchedAt);
+            if (repoRoot === this._removalState.repoDir) {
+                this._removalState.lastFetchAt = fetchedAt;
+            }
+            return { attempted: true, ok: true, reason: null, remoteError: null, at: fetchedAt };
+        } catch (error) {
+            // Keep the classified cause for display and the raw output for a details
+            // pane. Splicing git's entire remote message into a summary line is what
+            // made this panel unreadable.
+            const remoteError = summarizeGitRemoteError(error, command);
+            return { attempted: true, ok: false, reason: remoteError.cause, remoteError };
+        }
+    }
+
+    /**
+     * Record which engine produced a finding, so a result set can be reproduced and a
+     * cross-engine discrepancy can be attributed rather than guessed at.
+     */
+    _stampEngine(result, engineVersion, engineId = 'noseyparker') {
+        if (!result || typeof result !== 'object') {
+            return result;
+        }
+        result.engine = result.engine || engineId;
+        result.engineVersion = result.engineVersion || engineVersion || null;
+        result.engines = Array.isArray(result.engines) && result.engines.length
+            ? result.engines
+            : [result.engine];
+        return result;
+    }
+
+    /**
+     * Describe what the scan actually covered.
+     *
+     * "No findings" only means something alongside this, so it is part of the result
+     * rather than console output — the scan-side counterpart to the ref-by-ref push
+     * plan that gates the rewrite.
+     */
+    async _buildScanCoverage({ scanPath, settings, engineVersion, engines, strategy, pullResult, refRefresh, incomplete, incompleteReason, excludedByDependencyRule }) {
+        const cfg = settings || this._getScanEngineSettings();
+        const coverage = {
+            scanPath,
+            incomplete: Boolean(incomplete),
+            incompleteReason: incompleteReason || null,
+            engines: Array.isArray(engines) && engines.length
+                ? engines
+                : [{
+                    id: 'noseyparker',
+                    displayName: 'Nosey Parker',
+                    version: engineVersion || null,
+                    ok: true,
+                    note: scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE
+                }],
+            strategy: strategy
+                ? {
+                    mode: strategy.mode,
+                    tier: strategy.tier,
+                    concurrency: strategy.concurrency,
+                    dropped: strategy.dropped,
+                    reason: strategy.reason,
+                    host: {
+                        cpus: strategy.host.cpus,
+                        totalMemGb: Number(strategy.host.totalMemGb.toFixed(1)),
+                        memorySource: strategy.host.memorySource,
+                        loadPerCore: strategy.host.loadPerCore
+                    }
+                }
+                : null,
+            image: cfg.image,
+            imagePulled: pullResult ? pullResult.pulled : null,
+            imagePullError: pullResult ? pullResult.error : null,
+            rulesetMode: cfg.rulesetMode,
+            maxFileSizeMb: cfg.maxFileSizeMb,
+            timeoutSeconds: Math.round(cfg.timeoutMs / 1000),
+            dependencyHandling: vscode.workspace.getConfiguration('leakLock').get('dependencyHandling') || 'warning',
+            excludedByDependencyRule: excludedByDependencyRule || 0,
+            refRefresh: refRefresh || { attempted: false, ok: false, reason: 'unknown' },
+            refs: { localBranches: 0, remoteBranches: 0, remoteOnlyBranches: [], tags: 0, stashes: 0 }
+        };
+
+        const repoRoot = this._scanRepoRoot;
+        if (!repoRoot) {
+            return coverage;
+        }
+
+        try {
+            const [locals, remotes, tags] = await Promise.all([
+                gitRewrite.listLocalBranches(repoRoot).catch(() => []),
+                gitRewrite.listRemoteBranches(repoRoot, gitRewrite.DEFAULT_REMOTE).catch(() => []),
+                gitRewrite.listTags(repoRoot).catch(() => [])
+            ]);
+            const localSet = new Set(locals);
+            coverage.refs.localBranches = locals.length;
+            coverage.refs.remoteBranches = remotes.length;
+            coverage.refs.remoteOnlyBranches = remotes.filter(name => !localSet.has(name));
+            coverage.refs.tags = tags.length;
+            coverage.refs.stashes = await this._countStashEntries(repoRoot);
+        } catch (error) {
+            console.warn('Could not build ref coverage summary:', error.message);
+        }
+
+        return coverage;
+    }
+
+    async _countStashEntries(repoRoot) {
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        try {
+            const { stdout } = await execFileAsync('git', ['-C', repoRoot, 'stash', 'list'], { timeout: 10000 });
+            return stdout.split('\n').filter(line => line.trim()).length;
+        } catch {
+            return 0;
         }
     }
 
@@ -2868,22 +3583,180 @@ class LeakLockPanel {
         return result;
     }
 
+    /**
+     * Collapse duplicates without losing information.
+     *
+     * The unit a user acts on is **one secret in one place**, not one detection event.
+     * A single credential routinely produces several rows otherwise:
+     *
+     *  - the same secret at the same line in two different commits, because it was
+     *    touched twice;
+     *  - the same secret from an engine's history pass and its working-tree pass, one
+     *    with a commit and one without;
+     *  - the same secret matched by two rules of one engine (`github-pat` and
+     *    `generic-api-key` both fire on a GitHub token);
+     *  - the same secret found by two engines, each capturing a slightly different span.
+     *
+     * None of those are separate problems, and a rewrite removes the value everywhere
+     * regardless. So findings are grouped by file, line and secret, and everything that
+     * differs — commits, dates, engines, rules — is aggregated onto the surviving row
+     * as `occurrences` rather than being duplicated into extra rows or dropped.
+     */
     _deduplicateScanResults(results) {
-        const seen = new Set();
-        return results.filter((result) => {
-            const key = [
-                result.file,
-                result.line,
-                result.fullSecret,
-                result.commitHash || "",
-                result.ruleName || ""
-            ].join("\0");
-            if (seen.has(key)) {
-                return false;
+        const byLocation = new Map();
+        const merged = [];
+
+        for (const result of results) {
+            const locationKey = [result.file, result.line].join("\0");
+            const candidates = byLocation.get(locationKey);
+            const existing = candidates && candidates.find(
+                other => this._sameSecret(other.fullSecret, result.fullSecret)
+            );
+
+            if (existing) {
+                this._mergeOccurrence(existing, result);
+                continue;
             }
-            seen.add(key);
+
+            this._seedOccurrences(result);
+            merged.push(result);
+            if (candidates) {
+                candidates.push(result);
+            } else {
+                byLocation.set(locationKey, [result]);
+            }
+        }
+
+        return merged;
+    }
+
+    /** Give a surviving row its first occurrence, so the list is never partial. */
+    _seedOccurrences(result) {
+        if (!Array.isArray(result.occurrences)) {
+            result.occurrences = [{
+                commitHash: result.commitHash || null,
+                commitDate: result.commitDate || null,
+                engine: result.engine || null,
+                ruleName: result.ruleName || null,
+                isGitHistory: Boolean(result.isGitHistory)
+            }];
+        }
+        if (!Array.isArray(result.ruleNames)) {
+            result.ruleNames = result.ruleName ? [result.ruleName] : [];
+        }
+        return result;
+    }
+
+    /**
+     * Fold another sighting of the same secret into the surviving row.
+     *
+     * Fields are only filled in, never overwritten, so a merge can add detail but never
+     * subtract it.
+     */
+    _mergeOccurrence(target, incoming) {
+        this._seedOccurrences(target);
+
+        const engines = new Set(target.engines || (target.engine ? [target.engine] : []));
+        for (const id of incoming.engines || (incoming.engine ? [incoming.engine] : [])) {
+            engines.add(id);
+        }
+        target.engines = Array.from(engines);
+
+        // Every rule that matched this secret, so a merge does not hide that two
+        // detectors agreed.
+        const rules = new Set(target.ruleNames);
+        if (incoming.ruleName) {
+            rules.add(incoming.ruleName);
+        }
+        for (const rule of incoming.ruleNames || []) {
+            rules.add(rule);
+        }
+        target.ruleNames = Array.from(rules);
+
+        // One entry per distinct commit, so "which commits carry this" survives.
+        const seen = new Set(target.occurrences.map(o => `${o.commitHash || ''}\0${o.engine || ''}`));
+        for (const occurrence of (incoming.occurrences || [{
+            commitHash: incoming.commitHash || null,
+            commitDate: incoming.commitDate || null,
+            engine: incoming.engine || null,
+            ruleName: incoming.ruleName || null,
+            isGitHistory: Boolean(incoming.isGitHistory)
+        }])) {
+            const key = `${occurrence.commitHash || ''}\0${occurrence.engine || ''}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                target.occurrences.push(occurrence);
+            }
+        }
+
+        for (const [key, value] of Object.entries(incoming)) {
+            if (value === null || value === undefined || value === '') {
+                continue;
+            }
+            if (['engines', 'engine', 'unavailableFields', 'occurrences', 'ruleNames'].includes(key)) {
+                continue;
+            }
+            if (target[key] === null || target[key] === undefined || target[key] === '') {
+                target[key] = value;
+            }
+        }
+
+        // Merge the branch lists: a secret in two commits can be on different branches,
+        // and the rewrite has to cover all of them.
+        if (Array.isArray(incoming.commitBranches) && incoming.commitBranches.length) {
+            const branches = new Set(target.commitBranches || []);
+            for (const branch of incoming.commitBranches) {
+                branches.add(branch);
+            }
+            target.commitBranches = Array.from(branches);
+        }
+
+        // Keep the longest capture of the secret. A rewrite replaces what it is given,
+        // so redacting the shorter span would leave the remainder in history.
+        if (incoming.fullSecret && target.fullSecret
+            && incoming.fullSecret.length > target.fullSecret.length) {
+            target.fullSecret = incoming.fullSecret;
+            target.secret = this._truncateSecret(incoming.fullSecret);
+            target.isSecretTruncated = target.secret !== incoming.fullSecret;
+        }
+
+        // Present in history anywhere means a history rewrite is required.
+        if (incoming.isGitHistory) {
+            target.isGitHistory = true;
+        }
+
+        // A live-credential confirmation from any engine wins.
+        if (incoming.verified === true) {
+            target.verified = true;
+            target.severity = target.isDependency || target.isUntracked ? target.severity : 'high';
+        }
+
+        // A field is only unavailable if it was unavailable from every engine that
+        // reported this finding.
+        const targetUnavailable = new Set(target.unavailableFields || []);
+        const incomingUnavailable = new Set(incoming.unavailableFields || []);
+        target.unavailableFields = Array.from(targetUnavailable).filter(f => incomingUnavailable.has(f));
+
+        return target;
+    }
+
+    /**
+     * Do two engines describe the same credential?
+     *
+     * Identical is the easy case. Beyond that, engines legitimately capture different
+     * spans — a connection string with or without its database suffix, a token with or
+     * without its prefix — so containment counts too. The length floor keeps a short
+     * fragment from swallowing an unrelated finding that happens to share a line.
+     */
+    _sameSecret(a, b) {
+        if (!a || !b) {
+            return false;
+        }
+        if (a === b) {
             return true;
-        });
+        }
+        const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+        return shorter.length >= 8 && longer.includes(shorter);
     }
 
     _stableHash(input) {
@@ -3496,14 +4369,7 @@ class LeakLockPanel {
                         '-C', repoDir,
                         'branch', '--no-color', '-a', '--contains', hash
                     ], { timeout: 10000 });
-                    branches = branchOut.split('\n')
-                        .map(b => b.trim().replace(/^\*\s*/, ''))
-                        .filter(Boolean)
-                        .filter(b =>
-                            !b.includes('HEAD detached') &&
-                            !b.includes('->') &&
-                            !REMOTE_HEAD_FILTER_PATTERN.test(b)
-                        );
+                    branches = parseContainingBranches(branchOut);
                 } catch {
                     // branch --contains can fail for orphaned commits
                 }
@@ -3563,11 +4429,28 @@ class LeakLockPanel {
             relativeFile.startsWith('git-history:')) {
             return false;
         }
-        let absPath = filePath;
-        if (!path.isAbsolute(absPath)) {
-            absPath = path.join(this._scanPath, relativeFile);
+        // Resolve against the engine's own path first. `relativeFile` is the display
+        // form, and _getRelativeFilePath() prefixes it with the scanned directory's
+        // name — so joining it to the scan path again looks for
+        // <scan>/<scanName>/<path>, which never exists. That made every untracked
+        // finding fall through as "tracked", so the "not committed" flag and its
+        // remediation advice (delete the file, do not rewrite history) never appeared.
+        const candidates = [];
+        if (path.isAbsolute(filePath)) {
+            candidates.push(filePath);
+        } else {
+            candidates.push(path.join(this._scanPath, filePath));
+            candidates.push(path.join(this._scanPath, relativeFile));
         }
-        if (!fs.existsSync(absPath)) {
+
+        const absPath = candidates.find(candidate => {
+            try {
+                return fs.existsSync(candidate);
+            } catch {
+                return false;
+            }
+        });
+        if (!absPath) {
             return false;
         }
         const relToRepo = path.relative(this._scanRepoRoot, absPath);
@@ -3593,36 +4476,389 @@ class LeakLockPanel {
         }
     }
 
-    _getScanResultsSection() {
-        // Show scanning progress
-        if (this._isScanning) {
+    _handleAddCustomRule(source, mode, replaceWith) {
+        const outcome = this._addCustomRule(source, mode, replaceWith);
+        if (!outcome.ok) {
+            vscode.window.showErrorMessage(`Rule rejected: ${outcome.errors.join(' ')}`);
+            return;
+        }
+        for (const warning of outcome.warnings) {
+            vscode.window.showWarningMessage(warning);
+        }
+        this._updateWebviewContent();
+    }
+
+    /**
+     * The manual redaction rule editor.
+     *
+     * Rendered whether or not the scan found anything, because the whole point is
+     * content no scanner flags: an internal hostname, a private repository name, a
+     * customer identifier. A clean scan is exactly when a user reaches for this.
+     */
+    _renderCustomRules() {
+        const rules = this._getCustomRules();
+        const previews = this._scanCleanup.customRulePreviews || {};
+
+        const ruleRows = rules.map(rule => {
+            const preview = previews[rule.id];
+            let previewHtml = '';
+            if (preview && preview.error) {
+                previewHtml = `<div style="color: var(--vscode-editorWarning-foreground); font-size: 0.85em;">Preview failed: ${escapeHtml(preview.error)}</div>`;
+            } else if (preview) {
+                const zero = preview.commitCount === 0;
+                previewHtml = `
+                    <div style="font-size: 0.85em; margin-top: 4px; ${zero ? 'color: var(--vscode-editorWarning-foreground);' : 'color: var(--vscode-descriptionForeground);'}">
+                        ${zero
+                            ? '⚠️ Matches nothing in history. A rule that matches nothing is almost always a typo — check it before running a rewrite for it.'
+                            : `Touches <strong>${preview.commitCount}${preview.truncated ? '+' : ''}</strong> commit(s), ${preview.files.length} file(s)${preview.branches.length ? `, on: <code>${escapeHtml(preview.branches.slice(0, 6).join(', '))}</code>` : ''}${preview.truncated ? ` — capped at ${preview.maxCount} commits, the real total is higher` : ''}`
+                        }
+                        ${preview.files.length ? `<div style="margin-top: 2px;">Files: <code>${escapeHtml(preview.files.slice(0, 8).join(', '))}</code>${preview.files.length > 8 ? ` and ${preview.files.length - 8} more` : ''}</div>` : ''}
+                    </div>`;
+            }
+
             return `
+                <tr data-rule-id="${escapeHtml(rule.id)}">
+                    <td style="font-family: monospace; word-break: break-all;">${escapeHtml(rule.source)}</td>
+                    <td><span style="background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; font-size: 0.8em;">${escapeHtml(rule.mode)}</span></td>
+                    <td style="font-family: monospace;">${escapeHtml(rule.replaceWith)}</td>
+                    <td style="white-space: nowrap; overflow: visible;">
+                        <button class="scan-button" data-rule-preview="${escapeHtml(rule.id)}" title="Show which commits, files and branches this rule touches — without changing anything.">🔍 Preview</button>
+                        <button class="scan-button" data-rule-remove="${escapeHtml(rule.id)}">✕ Remove</button>
+                    </td>
+                </tr>
+                ${previewHtml ? `<tr data-rule-id="${escapeHtml(rule.id)}"><td colspan="4">${previewHtml}</td></tr>` : ''}
+            `;
+        }).join('');
+
+        return `
+            <div class="scan-section" id="custom-rules-section" style="margin-top: 16px;">
+                <h3 style="margin-bottom: 4px;">✏️ Manual redaction rules</h3>
+                <p style="font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                    Remove text no scanner flagged — an internal hostname, a private repository or team name, a
+                    customer identifier, an old email domain. Rules run through the same reviewed, verified
+                    cleanup as detected secrets: refs are refreshed, the push plan is shown, and the remote is
+                    re-checked afterwards.
+                </p>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; margin: 10px 0;">
+                    <label style="display: flex; flex-direction: column; font-size: 0.85em; flex: 2; min-width: 220px;">
+                        Source text
+                        <input type="text" id="custom-rule-source" placeholder="internal.corp.example.com" autocomplete="off"
+                            style="padding: 6px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);">
+                    </label>
+                    <label style="display: flex; flex-direction: column; font-size: 0.85em;">
+                        Match
+                        <select id="custom-rule-mode" style="padding: 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);">
+                            <option value="literal">literal</option>
+                            <option value="regex">regex</option>
+                        </select>
+                    </label>
+                    <label style="display: flex; flex-direction: column; font-size: 0.85em; flex: 1; min-width: 140px;">
+                        Replace with
+                        <input type="text" id="custom-rule-replacement" placeholder="${escapeHtml(redactionRules.DEFAULT_REPLACEMENT)}" autocomplete="off"
+                            style="padding: 6px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);">
+                    </label>
+                    <button class="scan-button" id="custom-rule-add">➕ Add rule</button>
+                </div>
+                ${rules.length === 0
+                    ? '<p style="font-size: 0.85em; color: var(--vscode-descriptionForeground);">No manual rules yet. Rules persist across re-scans, because they are not tied to a scan result.</p>'
+                    : `<table class="results-table">
+                        <thead><tr><th>Source text</th><th style="width: 80px;">Match</th><th style="width: 20%;">Replace with</th><th style="width: 250px; white-space: nowrap;">Actions</th></tr></thead>
+                        <tbody>${ruleRows}</tbody>
+                       </table>
+                       <p style="font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 6px;">
+                           Preview each rule before running a cleanup. A history rewrite cannot be undone, and a
+                           typed string arrives with none of the provenance a scan finding carries.
+                       </p>`}
+            </div>
+        `;
+    }
+
+    /**
+     * Per-finding engine attribution.
+     *
+     * Names the engines that found it and, just as importantly, the enabled engines
+     * that did not. That single line is what turns "GitGuardian found more than you
+     * did" from a mystery into a checkable fact.
+     */
+    _renderEngineAttribution(result) {
+        const found = Array.isArray(result.engines) && result.engines.length
+            ? result.engines
+            : (result.engine ? [result.engine] : []);
+
+        if (!found.length) {
+            return '<span style="color: var(--vscode-descriptionForeground);">—</span>';
+        }
+
+        const labels = {
+            gitleaks: 'Gitleaks',
+            trufflehog: 'TruffleHog',
+            noseyparker: 'Nosey Parker'
+        };
+
+        const badges = found.map(id => `
+            <span style="display: inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; font-size: 0.85em; margin: 1px 2px 1px 0;">
+                ${escapeHtml(labels[id] || id)}
+            </span>
+        `).join('');
+
+        const ranEngines = (this._scanCoverage?.engines || [])
+            .filter(engine => engine.ok)
+            .map(engine => engine.id);
+        const missedBy = ranEngines.filter(id => !found.includes(id));
+        const missedNote = missedBy.length
+            ? `<div style="color: var(--vscode-descriptionForeground); font-size: 0.85em; margin-top: 2px;" title="These engines ran against the same repository and did not report this finding.">missed by ${escapeHtml(missedBy.map(id => labels[id] || id).join(', '))}</div>`
+            : '';
+
+        const verifiedBadge = result.verified === true
+            ? `<div style="margin-top: 3px;"><span style="background: var(--vscode-testing-iconFailed, #d73a49); color: #fff; padding: 1px 6px; border-radius: 8px; font-size: 0.8em; font-weight: 600;" title="TruffleHog confirmed this credential is still live. Rotate it now — rewriting history does not revoke it.">VERIFIED LIVE</span></div>`
+            : '';
+
+        // A field nobody could supply is stated, so a blank cell meaning "nothing
+        // here" is never confused with one meaning "this engine cannot tell you".
+        const unavailable = Array.isArray(result.unavailableFields) && result.unavailableFields.length
+            ? `<div style="color: var(--vscode-descriptionForeground); font-size: 0.8em; margin-top: 2px;" title="Not reported by the engine(s) that found this finding.">no ${escapeHtml(result.unavailableFields.join(', '))}</div>`
+            : '';
+
+        return `${badges}${verifiedBadge}${missedNote}${unavailable}`;
+    }
+
+    /**
+     * What the scan actually covered.
+     *
+     * "No findings" is only meaningful next to this, so it is rendered with the
+     * results — the scan-side counterpart to the ref-by-ref push plan that gates a
+     * rewrite. Anything bounded says so; a silently truncated result set reads as
+     * "we covered everything" when it did not.
+     */
+    _renderScanCoverage() {
+        const coverage = this._scanCoverage;
+        if (!coverage) {
+            return '';
+        }
+
+        const fact = (label, value) => `
+            <div class="coverage-label">${escapeHtml(label)}</div>
+            <div class="coverage-value">${value}</div>`;
+
+        const engines = coverage.engines || [];
+        const refs = coverage.refs || {};
+        const remoteOnly = refs.remoteOnlyBranches || [];
+        const refRefresh = coverage.refRefresh || {};
+        const strategy = coverage.strategy;
+
+        // --- Warnings ---------------------------------------------------------
+        // Collected first, because these are never hidden behind the toggle. The
+        // point of collapsing is to hide volume, not to hide the reasons a result
+        // might be incomplete.
+        const warnings = [];
+        if (refRefresh.attempted && !refRefresh.ok) {
+            warnings.push('refs not refreshed');
+        }
+        if (strategy && strategy.dropped && strategy.dropped.length) {
+            warnings.push(`${strategy.dropped.length} engine${strategy.dropped.length === 1 ? '' : 's'} skipped`);
+        }
+        if (engines.some(engine => !engine.ok)) {
+            warnings.push(`${engines.filter(e => !e.ok).length} engine did not run`);
+        }
+        if (coverage.imagePulled === false) {
+            warnings.push('cached scanner image');
+        }
+
+        const engineNames = engines.filter(e => e.ok).map(e => e.displayName);
+        // The merged count, matching the table. Per-engine counts sum higher because a
+        // secret found by two engines is one row; those live in the detail.
+        const totalFindings = Array.isArray(this._scanResults)
+            ? this._scanResults.length
+            : engines.reduce((sum, e) => sum + (e.ok ? (e.findings || 0) : 0), 0);
+        const refTotal = (refs.localBranches || 0) + (refs.remoteBranches || 0) + (refs.tags || 0);
+
+        const summaryBits = [
+            engineNames.length ? engineNames.join(' + ') : 'no engine ran',
+            `${totalFindings} finding${totalFindings === 1 ? '' : 's'}`,
+            `${refTotal} ref${refTotal === 1 ? '' : 's'} scanned`
+        ];
+        if (strategy) {
+            summaryBits.push(strategy.mode);
+        }
+
+        const warningBadge = warnings.length
+            ? `<span class="coverage-badge">⚠️ ${escapeHtml(warnings.join(' · '))}</span>`
+            : '';
+
+        // --- Detail -----------------------------------------------------------
+        const engineRows = engines.map(engine => {
+            const status = engine.ok ? '✅' : '⚠️';
+            // A missing version is stated, not faked: some distribution builds print
+            // a placeholder where a version belongs.
+            const version = engine.version
+                ? `<code>${escapeHtml(engine.version)}</code>`
+                : '<span class="coverage-muted">version unknown</span>';
+            const findings = engine.ok
+                ? `${engine.findings} finding${engine.findings === 1 ? '' : 's'}`
+                : 'did not run';
+            const verified = engine.verified
+                ? ` · <strong>${engine.verified} verified live</strong>`
+                : '';
+            const note = engine.note ? `<div class="coverage-note">${escapeHtml(engine.note)}</div>` : '';
+            const engineWarnings = (engine.warnings || []).map(w =>
+                `<div class="coverage-note coverage-warn">${escapeHtml(w)}</div>`
+            ).join('');
+            return `
+                <div class="coverage-engine">
+                    <span>${status}</span>
+                    <span><strong>${escapeHtml(engine.displayName)}</strong> ${version}</span>
+                    <span class="coverage-muted">${escapeHtml(findings)}${verified}</span>
+                </div>
+                ${note}${engineWarnings}`;
+        }).join('');
+
+        const refsSummary = [
+            `${refs.localBranches || 0} local branch${refs.localBranches === 1 ? '' : 'es'}`,
+            `${refs.remoteBranches || 0} remote`,
+            `${refs.tags || 0} tag${refs.tags === 1 ? '' : 's'}`,
+            `${refs.stashes || 0} stash entr${refs.stashes === 1 ? 'y' : 'ies'}`
+        ].join(' · ');
+
+        const refreshNote = refRefresh.ok
+            ? '<div class="coverage-note">Refs were refreshed from origin before scanning.</div>'
+            : `<div class="coverage-note coverage-warn">
+                    Refs were <strong>not</strong> refreshed${refRefresh.reason ? ` — ${escapeHtml(refRefresh.reason)}` : ''}
+                    History that exists only on the remote may not have been scanned.
+                    ${refRefresh.remoteError ? `<details class="coverage-details"><summary>What git reported</summary><pre class="coverage-raw">${escapeHtml(refRefresh.remoteError.detail)}</pre></details>` : ''}
+               </div>`;
+
+        // A long branch list is the bulk of this panel on a busy repository and is
+        // rarely what the reader came for. Show the count; keep the names one click away.
+        const remoteOnlyBlock = remoteOnly.length
+            ? `<details class="coverage-details">
+                    <summary>${remoteOnly.length} branch${remoteOnly.length === 1 ? '' : 'es'} exist only on the remote</summary>
+                    <div class="coverage-branchlist">${remoteOnly.map(b => `<code>${escapeHtml(b)}</code>`).join(' ')}</div>
+               </details>`
+            : '';
+
+        const strategyValue = strategy
+            ? `<strong>${escapeHtml(strategy.mode)}</strong>${strategy.mode === 'parallel' ? ` (${strategy.concurrency} at a time)` : ''}
+               <div class="coverage-note">${escapeHtml(strategy.reason)}</div>`
+            : '<span class="coverage-muted">not recorded</span>';
+
+        const droppedBlock = strategy && strategy.dropped && strategy.dropped.length
+            ? `<div class="coverage-note coverage-warn">⚠️ Skipped for host capacity: <code>${escapeHtml(strategy.dropped.join(', '))}</code>. Fewer engines means fewer findings — set <code>leakLock.scan.executionMode</code> to override.</div>`
+            : '';
+
+        const pullNote = coverage.imagePulled === false
+            ? `<div class="coverage-note coverage-warn">⚠️ Could not pull <code>${escapeHtml(coverage.image)}</code>; a cached image was used${coverage.imagePullError ? ` (${escapeHtml(coverage.imagePullError)})` : ''}.</div>`
+            : '';
+
+        const excludedNote = coverage.excludedByDependencyRule
+            ? `<div class="coverage-note">${coverage.excludedByDependencyRule} finding(s) hidden by <code>dependencyHandling: "exclude"</code>. Set it to <code>warning</code> to see them.</div>`
+            : '';
+
+        const settings = [
+            `ruleset <code>${escapeHtml(coverage.rulesetMode || 'default')}</code>`,
+            `file-size limit ${coverage.maxFileSizeMb ? `${coverage.maxFileSizeMb} MB` : 'none'}`,
+            `timeout ${coverage.timeoutSeconds}s`,
+            `dependencies <code>${escapeHtml(coverage.dependencyHandling)}</code>`
+        ].join(' · ');
+
+        // An incomplete scan is a finding in its own right, so it sits outside the
+        // toggle and is always visible.
+        const incompleteBanner = coverage.incomplete
+            ? `<div class="coverage-incomplete">
+                    <strong>⚠️ Scan incomplete — these results are not exhaustive.</strong>
+                    <div>${escapeHtml(coverage.incompleteReason || '')}</div>
+               </div>`
+            : '';
+
+        return `
+            <div class="scan-coverage">
+                ${incompleteBanner}
+                <details class="coverage-toggle">
+                    <summary>
+                        <span class="coverage-title">📋 Scan coverage</span>
+                        <span class="coverage-summary">${escapeHtml(summaryBits.join(' · '))}</span>
+                        ${warningBadge}
+                    </summary>
+                    <p class="coverage-intro">A result is only as good as what was examined. This is what this scan looked at.</p>
+                    <div class="coverage-grid">
+                        ${fact('Engines', `${engineRows}${pullNote}`)}
+                        ${fact('Execution', `${strategyValue}${droppedBlock}`)}
+                        ${fact('Refs scanned', `${escapeHtml(refsSummary)}${refreshNote}${remoteOnlyBlock}`)}
+                        ${fact('Settings', `${settings}${excludedNote}`)}
+                    </div>
+                </details>
+            </div>
+        `;
+    }
+
+    /**
+     * The one renderer for "the scan produced no findings".
+     *
+     * Single owner on purpose: zero findings means three different things depending
+     * on what ran, and two renderers making that call independently is how one of
+     * them ends up saying "clean" while the other says nothing was scanned.
+     */
+    _renderEmptyScanState() {
+            // Zero findings means nothing at all if nothing ran. Reporting "no issues"
+            // when every engine failed is a false all-clear — the single worst output
+            // this product can produce, and the failure the coverage panel exists to
+            // prevent. Say what happened instead.
+            // Keyed on "a scan produced coverage" rather than "at least one engine was
+            // reported": an empty engine list — leakLock.scan.engines set to [], or to
+            // values that filter to nothing — examined the repository just as little as
+            // three failing engines did, and must not read differently.
+            const engines = this._scanCoverage?.engines || [];
+            const ranSuccessfully = engines.filter(engine => engine.ok);
+            // `ok` is false for an engine that ran but did not finish — a timeout sets
+            // it via `ok: !scanRun.incomplete`. That engine *did* examine part of the
+            // repository, so claiming "no detection engine ran" would be wrong, and
+            // would contradict the incomplete banner rendered just below. The
+            // incomplete state has its own accurate message; leave it to it.
+            if (this._scanCoverage && !this._scanCoverage.incomplete && ranSuccessfully.length === 0) {
+                return `
                 <div class="scan-section">
-                    <h2>🔍 Scanning Repository</h2>
-                    <div class="scanning-progress">
-                        <div class="spinner"></div>
-                        <p class="progress-message">${escapeHtml(this._scanProgress?.message || 'Scanning in progress...')}</p>
-                        <div class="progress-stages">
-                            <span class="stage ${this._scanProgress?.stage === 'docker' ? 'active' : ''}">Docker Check</span>
-                            <span class="stage ${this._scanProgress?.stage === 'pull' ? 'active' : ''}">Pull Image</span>
-                            <span class="stage ${this._scanProgress?.stage === 'init' ? 'active' : ''}">Initialize</span>
-                            <span class="stage ${this._scanProgress?.stage === 'scan' ? 'active' : ''}">Scan Files</span>
-                            <span class="stage ${this._scanProgress?.stage === 'process' ? 'active' : ''}">Process Results</span>
+                    <div class="empty-results scan-not-run">
+                        <div class="empty-icon">🚫</div>
+                        <h2>Nothing was scanned</h2>
+                        <p>
+                            No detection engine ran, so this is <strong>not</strong> a clean result —
+                            your repository has not been checked at all.
+                        </p>
+                        ${engines.length > 0
+                            ? `<ul class="not-run-reasons">
+                                ${engines.map(engine => `
+                                    <li><strong>${escapeHtml(engine.displayName)}</strong> — ${escapeHtml(engine.note || 'did not run')}</li>
+                                `).join('')}
+                            </ul>`
+                            // An empty list here would render as an empty bullet list, which
+                            // reads as "no problems" — the opposite of what it means.
+                            : `<ul class="not-run-reasons">
+                                <li>No engines were enabled, so there was nothing to run.</li>
+                            </ul>`}
+                        <p class="hint">
+                            Install at least one engine, or check <code>leakLock.scan.engines</code>,
+                            then scan again.
+                        </p>
+                        <div class="action-buttons">
+                            <button class="scan-button" onclick="requestNewScan()">🔄 Scan Again</button>
                         </div>
                     </div>
                 </div>
+                ${this._renderScanCoverage()}
+                ${this._renderCustomRules()}
             `;
-        }
+            }
 
-        // Show results or empty state
-        if (!this._scanResults || this._scanResults.length === 0) {
             return `
                 <div class="scan-section">
                     <div class="empty-results">
                         <div class="empty-icon">🛡️</div>
                         <h2>No Security Issues Found!</h2>
                         <p>Great news! Your repository scan completed successfully with no secrets or credentials detected.</p>
-                        
+                        ${engines.some(engine => !engine.ok)
+                            ? `<p class="partial-warning">⚠️ ${engines.filter(e => !e.ok).length} of ${engines.length} engines did not run, so this result is narrower than it looks. See the coverage below.</p>`
+                            : ''}
+
+
                         <div class="scan-summary">
                             <div class="summary-item">
                                 <span class="summary-icon">✅</span>
@@ -3662,7 +4898,35 @@ class LeakLockPanel {
                         </div>
                     </div>
                 </div>
+                ${this._renderScanCoverage()}
+                ${this._renderCustomRules()}
             `;
+    }
+
+    _getScanResultsSection() {
+        // Show scanning progress
+        if (this._isScanning) {
+            return `
+                <div class="scan-section">
+                    <h2>🔍 Scanning Repository</h2>
+                    <div class="scanning-progress">
+                        <div class="spinner"></div>
+                        <p class="progress-message">${escapeHtml(this._scanProgress?.message || 'Scanning in progress...')}</p>
+                        <div class="progress-stages">
+                            <span class="stage ${this._scanProgress?.stage === 'docker' ? 'active' : ''}">Docker Check</span>
+                            <span class="stage ${this._scanProgress?.stage === 'pull' ? 'active' : ''}">Pull Image</span>
+                            <span class="stage ${this._scanProgress?.stage === 'init' ? 'active' : ''}">Initialize</span>
+                            <span class="stage ${this._scanProgress?.stage === 'scan' ? 'active' : ''}">Scan Files</span>
+                            <span class="stage ${this._scanProgress?.stage === 'process' ? 'active' : ''}">Process Results</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show results or empty state
+        if (!this._scanResults || this._scanResults.length === 0) {
+            return this._renderEmptyScanState();
         }
 
         // Show actual results (existing logic)
@@ -3710,18 +4974,71 @@ class LeakLockPanel {
         });
     }
 
-    async _pullNoseyParkerImage() {
-        return new Promise((resolve, reject) => {
-            const pullCommand = 'docker pull ghcr.io/praetorian-inc/noseyparker:latest';
-            exec(pullCommand, { timeout: DOCKER_PULL_TIMEOUT }, (error, stdout, stderr) => {
-                if (error) {
-                    console.warn('Failed to pull latest image, using existing:', error.message);
-                    resolve(); // Continue with existing image
-                } else {
-                    resolve();
+    /**
+     * Read the scan engine settings from VS Code and normalise them.
+     * All clamping lives in scan-engine-config so the values cannot drift from what
+     * the engine will accept.
+     */
+    _getScanEngineSettings() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        return scanEngineConfig.normalizeScanSettings({
+            image: config.get('noseyParker.image'),
+            rulesetMode: config.get('noseyParker.ruleset'),
+            suppressRedundant: config.get('noseyParker.suppressRedundant'),
+            maxFileSizeMb: config.get('noseyParker.maxFileSizeMb'),
+            refreshRefsBeforeScan: config.get('scan.refreshRefsBeforeScan'),
+            timeoutSeconds: config.get('scan.timeoutSeconds')
+        });
+    }
+
+    /**
+     * Pull the pinned scanner image.
+     *
+     * A failed pull no longer resolves silently. Continuing with a cached image is
+     * acceptable — doing it without telling anyone is how two machines running the same
+     * extension version produced different findings on the same repository.
+     *
+     * @returns {Promise<{pulled: boolean, error: string|null}>}
+     */
+    async _pullNoseyParkerImage(settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        return new Promise((resolve) => {
+            execFile('docker', ['pull', cfg.image], { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
+                if (!error) {
+                    resolve({ pulled: true, error: null });
+                    return;
                 }
+                const message = error.message || String(error);
+                console.warn(`Failed to pull ${cfg.image}, using cached image if present:`, message);
+                vscode.window.showWarningMessage(
+                    `Leak Lock could not pull ${cfg.image}. Scanning will continue with the locally cached image, ` +
+                    'which may be a different version than expected.'
+                );
+                resolve({ pulled: false, error: message });
             });
         });
+    }
+
+    /**
+     * Resolve the engine version actually in use, so it can be recorded on findings and
+     * in exports. Never throws: an unknown version must not stop a scan.
+     */
+    async _resolveNoseyParkerVersion(settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        try {
+            const { stdout } = await runDockerCommand(
+                scanEngineConfig.buildNoseyParkerVersionArgs({ settings: cfg }),
+                { timeout: 30000 }
+            );
+            // `noseyparker --version` prints "noseyparker 0.24.0"; the tool name is
+            // already the column header, so keep only the version.
+            const firstLine = String(stdout || '').split('\n').map(l => l.trim()).filter(Boolean)[0] || '';
+            const match = firstLine.match(/\d+\.\d+\.\d+/);
+            return match ? `v${match[0]}` : (scanEngineConfig.NOSEYPARKER_PINNED_VERSION || null);
+        } catch (error) {
+            console.warn('Could not resolve Nosey Parker version:', error.message);
+            return null;
+        }
     }
 
     async _initializeDatastore(datastorePath) {
@@ -3746,13 +5063,11 @@ class LeakLockPanel {
                     const parentDir = validateDockerPath(path.dirname(validatedDatastorePath));
                     const datastoreName = sanitizeDockerVolumeName(path.basename(validatedDatastorePath));
 
-                    const dockerArgs = [
-                        'run', '--rm',
-                        '-v', `${parentDir}:/workspace`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'datastore', 'init',
-                        '--datastore', `/workspace/${datastoreName}`
-                    ];
+                    const dockerArgs = scanEngineConfig.buildNoseyParkerDatastoreInitArgs({
+                        parentMount: parentDir,
+                        datastoreName,
+                        settings: this._getScanEngineSettings()
+                    });
 
                     runDockerCommand(dockerArgs).then(() => {
                         resolve();
@@ -3777,102 +5092,318 @@ class LeakLockPanel {
         }
     }
 
-    async _runNoseyParkerScan(scanPath, datastorePath) {
-        return new Promise((resolve, reject) => {
-            try {
-                // Validate paths before using them
-                const validatedScanPath = validateDockerPath(scanPath);
-                const validatedDatastorePath = validateDockerPath(datastorePath);
+    /**
+     * Which engines the user has enabled, in run order.
+     * Gitleaks leads because it is the only maintained engine with a ruleset that can
+     * still receive new detectors.
+     */
+    _getEnabledEngineIds() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        const configured = config.get('scan.engines');
+        const ids = Array.isArray(configured) && configured.length
+            ? configured
+            : ['gitleaks', 'trufflehog', 'noseyparker'];
+        const known = new Set(['gitleaks', 'trufflehog', 'noseyparker']);
+        const valid = ids.filter(id => known.has(id));
+        const unknown = ids.filter(id => !known.has(id));
 
-                // Get dependency handling configuration
-                const config = vscode.workspace.getConfiguration('leakLock');
-                const dependencyHandling = config.get('dependencyHandling') || 'warning';
+        if (unknown.length > 0) {
+            vscode.window.showWarningMessage(
+                `Unknown scan engine(s) in leakLock.scan.engines: ${unknown.join(', ')}. ` +
+                `Valid values are ${Array.from(known).join(', ')}.`
+            );
+        }
+        if (valid.length === 0) {
+            // Scanning with nothing reports zero findings, which is indistinguishable
+            // from a clean repository — the one outcome this product must never fake.
+            vscode.window.showErrorMessage(
+                'No usable scan engine is configured, so nothing would be scanned. ' +
+                `Set leakLock.scan.engines to one or more of: ${Array.from(known).join(', ')}.`
+            );
+        }
+        return valid;
+    }
 
-                // Create ignore file for proper exclusion if needed
-                if (dependencyHandling === 'exclude') {
-                    // For now, let's skip file-based exclusions to avoid issues
-                    // We'll handle dependency filtering in the results processing instead
-                    console.log('Dependency exclusion will be handled in post-processing');
-                }
-
-                // Ensure git history scanning is explicitly enabled (built into args below)
-
-                // First scan the repository with full git history using safe Docker command
-                const scanArgs = [
-                    'run', '--rm',
-                    '-v', `${validatedScanPath}:/scan`,
-                    '-v', `${validatedDatastorePath}:/datastore`,
-                    'ghcr.io/praetorian-inc/noseyparker:latest',
-                    'scan',
-                    '--datastore', '/datastore',
-                    '--git-history', 'full',
-                    '/scan'
-                ];
-
-                // Use a timeout wrapper for the Docker command
-                const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error(`Scan timeout after ${SCAN_TIMEOUT / 1000 / 60} minutes`)), SCAN_TIMEOUT);
-                });
-
-                Promise.race([runDockerCommand(scanArgs), timeoutPromise]).then(({ stdout: scanStdout, stderr: scanStderr }) => {
-                    // Continue to report generation - Nosey Parker may return non-zero exit codes even on successful scans
-
-                    // Now report the findings in structured format using safe Docker command
-                    const reportArgs = [
-                        'run', '--rm',
-                        '-v', `${validatedDatastorePath}:/datastore`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'report',
-                        '--datastore', '/datastore',
-                        '--format', 'json'
-                    ];
-
-                    runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
-                        try {
-                            const results = this._parseNoseyParkerResults(reportStdout);
-                            resolve(results);
-                        } catch (parseError) {
-                            console.warn('Failed to parse JSON results, using fallback:', parseError.message);
-                            resolve(this._createFallbackResults(reportStdout + scanStdout));
-                        }
-                    }).catch(reportError => {
-                        console.warn('Report command failed, trying alternative approach:', reportError.message);
-                        resolve(this._createFallbackResults(scanStdout + scanStderr));
-                    });
-                }).catch(scanError => {
-                    // Handle scan errors, but allow exit code 2 which is common for Nosey Parker
-                    if (scanError.code !== 2) {
-                        console.error('Scan error details:', { error: scanError, stdout: scanError.stdout, stderr: scanError.stderr });
-                        reject(new Error(`Scan failed: ${scanError.message}\nStderr: ${scanError.stderr || ''}`));
-                        return;
-                    }
-                    // If exit code 2, try to continue with report generation
-                    const reportArgs = [
-                        'run', '--rm',
-                        '-v', `${validatedDatastorePath}:/datastore`,
-                        'ghcr.io/praetorian-inc/noseyparker:latest',
-                        'report',
-                        '--datastore', '/datastore',
-                        '--format', 'json'
-                    ];
-
-                    runDockerCommand(reportArgs).then(({ stdout: reportStdout }) => {
-                        try {
-                            const results = this._parseNoseyParkerResults(reportStdout);
-                            resolve(results);
-                        } catch (parseError) {
-                            console.warn('Failed to parse JSON results, using fallback:', parseError.message);
-                            resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
-                        }
-                    }).catch(reportError => {
-                        console.warn('Report command also failed:', reportError.message);
-                        resolve(this._createFallbackResults(scanError.stdout + scanError.stderr));
-                    });
-                });
-            } catch (validationError) {
-                reject(new Error(`Path validation failed: ${validationError.message}`));
-            }
+    /**
+     * How hard to push this machine.
+     *
+     * `auto` sizes the plan to the host; an explicit mode is honoured, because the user
+     * knows their machine better than a heuristic does.
+     */
+    _chooseScanStrategy() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        return hostCapacity.chooseScanStrategy({
+            engines: this._getEnabledEngineIds(),
+            mode: config.get('scan.executionMode') || 'auto'
         });
+    }
+
+    /**
+     * Nosey Parker as a self-contained engine task, so it can be scheduled alongside
+     * the others rather than always running first.
+     */
+    async _runNoseyParkerEngine(scanPath, settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        const pullResult = await this._pullNoseyParkerImage(cfg);
+        const version = await this._resolveNoseyParkerVersion(cfg);
+
+        // Datastore lives in the OS temp directory, never inside the tree being
+        // scanned — otherwise the scanner enumerates its own SQLite database and
+        // Leak Lock writes into the repository it is auditing.
+        const datastoreRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-datastore-'));
+        const tempDatastore = validateDockerPath(path.join(datastoreRoot, 'noseyparker.np'), [datastoreRoot]);
+
+        try {
+            await this._initializeDatastore(tempDatastore);
+            const scanRun = await this._runNoseyParkerScan(scanPath, tempDatastore, cfg);
+            const results = (scanRun.results || []).map(
+                result => this._stampEngine(result, version, 'noseyparker')
+            );
+            scanRun.results = results;
+            return {
+                id: 'noseyparker',
+                results,
+                scanRun,
+                pullResult,
+                version,
+                report: {
+                    id: 'noseyparker',
+                    displayName: 'Nosey Parker',
+                    version,
+                    ok: !scanRun.incomplete,
+                    findings: results.length,
+                    note: scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE
+                }
+            };
+        } finally {
+            // _cleanupTempFiles removes the root-owned datastore via a container when
+            // rmSync hits EACCES (which it does — the scanner runs as root). That
+            // leaves the enclosing mkdtemp directory empty, so a plain rmSync clears
+            // it. Verified against a real scan: nothing is left in the temp directory.
+            await this._cleanupTempFiles(tempDatastore);
+            try {
+                fs.rmSync(datastoreRoot, { recursive: true, force: true });
+            } catch {
+                // Best effort; the directory lives in the OS temp directory.
+            }
+        }
+    }
+
+    /**
+     * Run one external engine and map its findings through the shared post-processing.
+     *
+     * Never throws: a missing or failing engine disables that engine, never the scan,
+     * and says so in the report the coverage panel renders.
+     */
+    async _runExternalEngine(engineId, scanPath, settings) {
+        const cfg = settings || this._getScanEngineSettings();
+        const config = vscode.workspace.getConfiguration('leakLock');
+        const engine = scanEngines.getEngine(engineId);
+        if (!engine) {
+            return { id: engineId, results: [], report: null };
+        }
+
+        const binary = config.get(`${engineId}.binaryPath`) || undefined;
+        let available = false;
+        try {
+            available = await engine.isAvailable({ binary });
+        } catch {
+            available = false;
+        }
+        if (!available) {
+            return {
+                id: engine.id,
+                results: [],
+                report: {
+                    id: engine.id,
+                    displayName: engine.displayName,
+                    version: null,
+                    ok: false,
+                    findings: 0,
+                    note: `Not installed or not on PATH. Install: ${engine.installHint}`
+                }
+            };
+        }
+
+        const version = await engine.version({ binary });
+
+        try {
+            const scanOptions = { repoDir: scanPath, binary, timeoutMs: cfg.timeoutMs };
+            if (engine.id === 'gitleaks') {
+                scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
+                scanOptions.configPath = config.get('gitleaks.configPath') || undefined;
+                scanOptions.baselinePath = config.get('gitleaks.baselinePath') || undefined;
+            }
+            if (engine.id === 'trufflehog') {
+                // Verification makes read-only calls to third-party providers using
+                // the discovered credential. Off unless the user asked for it.
+                scanOptions.verify = config.get('trufflehog.verify') === true;
+            }
+
+            // Without verification this engine cannot report a verdict at all, so the
+            // field is declared unavailable rather than rendered as "not live".
+            const capabilities = (engine.id === 'trufflehog' && scanOptions.verify === false)
+                ? { ...engine.capabilities, unavailable: [...engine.capabilities.unavailable, 'verified'] }
+                : engine.capabilities;
+
+            const outcome = await engine.scan(scanOptions);
+            const results = (outcome.findings || []).map(finding =>
+                this._createResultFromEngineFinding(finding, engine.id, version, capabilities)
+            );
+            return {
+                id: engine.id,
+                results,
+                report: {
+                    id: engine.id,
+                    displayName: engine.displayName,
+                    version,
+                    ok: true,
+                    findings: results.length,
+                    verified: outcome.verified || 0,
+                    warnings: outcome.warnings || [],
+                    note: engine.capabilities.verification && scanOptions.verify === false
+                        ? 'Credential verification disabled; findings are unverified.'
+                        : null
+                }
+            };
+        } catch (error) {
+            console.warn(`${engine.displayName} scan failed:`, error.message);
+            return {
+                id: engine.id,
+                results: [],
+                report: {
+                    id: engine.id,
+                    displayName: engine.displayName,
+                    version,
+                    ok: false,
+                    findings: 0,
+                    note: `Scan failed: ${error.message}`
+                }
+            };
+        }
+    }
+
+    /**
+     * True when the user asked for dependency directories to be excluded from scanning
+     * rather than merely flagged.
+     */
+    _shouldExcludeDependencies() {
+        const config = vscode.workspace.getConfiguration('leakLock');
+        return (config.get('dependencyHandling') || 'warning') === 'exclude';
+    }
+
+    /**
+     * Materialise the gitignore-syntax exclude file that backs
+     * `dependencyHandling: "exclude"`. Written outside the scanned tree.
+     *
+     * @returns {{dir: string, file: string}|null}
+     */
+    _writeDependencyIgnoreFile() {
+        try {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-ignore-'));
+            const file = path.join(dir, 'leaklock-ignore');
+            fs.writeFileSync(file, scanEngineConfig.buildDependencyIgnoreFile(), { mode: 0o600 });
+            return { dir, file };
+        } catch (error) {
+            console.warn('Could not write dependency ignore file:', error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Run the scan and produce the report.
+     *
+     * Returns `{ results, incomplete, incompleteReason }` rather than a bare array: a
+     * timed-out scan now reports whatever the datastore already holds instead of
+     * throwing everything away, and the caller has to know the difference between
+     * "found nothing" and "stopped looking".
+     */
+    async _runNoseyParkerScan(scanPath, datastorePath, settings) {
+        const cfg = settings || this._getScanEngineSettings();
+
+        let validatedScanPath;
+        let validatedDatastorePath;
+        try {
+            validatedScanPath = validateDockerPath(scanPath);
+            validatedDatastorePath = validateDockerPath(datastorePath);
+        } catch (validationError) {
+            throw new Error(`Path validation failed: ${validationError.message}`);
+        }
+
+        const ignoreFile = this._shouldExcludeDependencies() ? this._writeDependencyIgnoreFile() : null;
+
+        const scanArgs = scanEngineConfig.buildNoseyParkerScanArgs({
+            scanMount: validatedScanPath,
+            datastoreMount: validatedDatastorePath,
+            ignoreFileMount: ignoreFile ? ignoreFile.file : null,
+            settings: cfg
+        });
+
+        let scanStdout = '';
+        let scanStderr = '';
+        let incomplete = false;
+        let incompleteReason = null;
+
+        try {
+            const result = await runDockerCommand(scanArgs, { timeout: cfg.timeoutMs });
+            scanStdout = result.stdout;
+            scanStderr = result.stderr;
+        } catch (scanError) {
+            scanStdout = scanError.stdout || '';
+            scanStderr = scanError.stderr || '';
+            if (scanError.timedOut) {
+                // The datastore is written incrementally, so the report below still has
+                // real findings in it. Surfacing those beats reporting zero.
+                incomplete = true;
+                incompleteReason =
+                    `The scan was stopped after ${Math.round(cfg.timeoutMs / 1000)}s. ` +
+                    'These results cover only the part of the repository that was scanned. ' +
+                    'Raise leakLock.scan.timeoutSeconds and rescan for complete coverage.';
+            } else if (scanError.code !== 2) {
+                // Exit code 2 is routine for Nosey Parker and does not indicate failure.
+                console.error('Scan error details:', {
+                    message: scanError.message,
+                    stdout: scanError.stdout,
+                    stderr: scanError.stderr
+                });
+                throw new Error(`Scan failed: ${scanError.message}\nStderr: ${scanError.stderr || ''}`);
+            }
+        } finally {
+            if (ignoreFile) {
+                try {
+                    fs.rmSync(ignoreFile.dir, { recursive: true, force: true });
+                } catch {
+                    // Best effort; the file lives in the OS temp directory.
+                }
+            }
+        }
+
+        const reportArgs = scanEngineConfig.buildNoseyParkerReportArgs({
+            datastoreMount: validatedDatastorePath,
+            settings: cfg
+        });
+
+        let results;
+        try {
+            const { stdout: reportStdout } = await runDockerCommand(reportArgs, { timeout: cfg.timeoutMs });
+            try {
+                results = this._parseNoseyParkerResults(reportStdout);
+            } catch (parseError) {
+                console.warn('Failed to parse JSON results, using fallback:', parseError.message);
+                results = this._createFallbackResults(reportStdout + scanStdout);
+                incomplete = true;
+                incompleteReason = incompleteReason ||
+                    'The scanner output could not be parsed as JSON, so findings were recovered from text and carry no secret values.';
+            }
+        } catch (reportError) {
+            console.warn('Report command failed, falling back to text parsing:', reportError.message);
+            results = this._createFallbackResults(scanStdout + scanStderr);
+            incomplete = true;
+            incompleteReason = incompleteReason ||
+                `The report step failed (${reportError.message}), so findings were recovered from text and are not exhaustive.`;
+        }
+
+        return { results: results || [], incomplete, incompleteReason };
     }
 
     /**
@@ -4364,6 +5895,17 @@ class LeakLockPanel {
             }
         }
 
+        // Engines other than Nosey Parker carry provenance in their own JSON rather
+        // than in an NP `match` object, so they supply it here. Everything below this
+        // point is engine-agnostic: one severity rule, one dependency rule, one
+        // truncation rule, for every engine.
+        if (typeof normalizedOptions.commitHash === 'string' && normalizedOptions.commitHash) {
+            commitHash = normalizedOptions.commitHash;
+        }
+        if (normalizedOptions.commitDate) {
+            commitDate = normalizedOptions.commitDate;
+        }
+
         const fullSecret = typeof secret === 'string' ? secret : String(secret);
         const displaySecret = this._truncateSecret(fullSecret);
         const includeInCleanup = normalizedOptions.includeInCleanup !== false;
@@ -4386,7 +5928,68 @@ class LeakLockPanel {
             commitDate: commitDate
         };
 
+        // Additive detail from engines that supply more than Nosey Parker does
+        // (columns, entropy, author, fingerprint, live-credential verification).
+        // Never overwrites a field above: parity is a floor, not a ceiling.
+        if (normalizedOptions.extraFields && typeof normalizedOptions.extraFields === 'object') {
+            for (const [key, value] of Object.entries(normalizedOptions.extraFields)) {
+                if (value === null || value === undefined) {
+                    continue;
+                }
+                if (!Object.prototype.hasOwnProperty.call(result, key)) {
+                    result[key] = value;
+                }
+            }
+        }
+
+        // A credential confirmed live by TruffleHog outranks any rule-name heuristic.
+        // Nothing in this repository matters more than a key that still works.
+        if (result.verified === true && !isInDependency && !isUntracked) {
+            result.severity = 'high';
+            result.description = `${result.description} — VERIFIED LIVE credential`;
+        }
+
         return result;
+    }
+
+    /**
+     * Map one normalised engine finding onto the shared result shape.
+     *
+     * Deliberately routes through _createResult so a Gitleaks or TruffleHog finding is
+     * classified, scored and truncated by exactly the same rules as a Nosey Parker one.
+     */
+    _createResultFromEngineFinding(finding, engineId, engineVersion, capabilities) {
+        const filePath = finding.file || 'unknown';
+        const secret = finding.secret || finding.matchText || '';
+        const result = this._createResult(
+            filePath,
+            Number.isFinite(finding.line) ? finding.line : 1,
+            secret,
+            finding.description || finding.ruleId || 'Potential secret',
+            finding.ruleId || '',
+            null,
+            {
+                forceGitHistory: finding.isGitHistory === true,
+                commitHash: finding.commitHash || null,
+                commitDate: finding.commitDate || null,
+                extraFields: {
+                    endLine: finding.endLine,
+                    startColumn: finding.startColumn,
+                    endColumn: finding.endColumn,
+                    entropy: finding.entropy,
+                    fingerprint: finding.fingerprint,
+                    author: finding.author,
+                    authorEmail: finding.authorEmail,
+                    commitMessage: finding.commitMessage,
+                    verified: finding.verified,
+                    verifiedAt: finding.verifiedAt
+                }
+            }
+        );
+        // Fields this engine cannot supply are marked, not left blank — a blank cell
+        // meaning "nothing here" must not be confused with one meaning "unknown".
+        result.unavailableFields = (capabilities && capabilities.unavailable) || [];
+        return this._stampEngine(result, engineVersion, engineId);
     }
 
     _isInDependencyDirectory(filePath) {
@@ -4449,10 +6052,33 @@ class LeakLockPanel {
         }
     }
 
+    /**
+     * Accept either the legacy `{ source: replaceWith }` map or a list of rules, and
+     * always produce rules. The map form has no way to express regex mode, so manual
+     * rules carry it explicitly rather than having it inferred at the point of use.
+     */
+    _toRuleList(input) {
+        if (Array.isArray(input)) {
+            return input.map(rule => ({
+                source: rule.source,
+                mode: rule.mode === 'regex' ? 'regex' : 'literal',
+                replaceWith: rule.replaceWith
+            }));
+        }
+        if (input && typeof input === 'object') {
+            return Object.entries(input).map(([source, replaceWith]) => ({
+                source,
+                mode: 'literal',
+                replaceWith
+            }));
+        }
+        return [];
+    }
+
     _buildReplacementScriptSetup(replacements) {
-        const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
-            `${secret}==>${replacement}`
-        ).join("\n");
+        const replacementLines = this._toRuleList(replacements)
+            .map(rule => redactionRules.formatRuleLine(rule))
+            .join("\n");
         return {
             preambleLines: [
                 "# Keep sensitive replacement data outside the repository.",
@@ -4477,9 +6103,9 @@ class LeakLockPanel {
                 }
             }
             const replacementsFile = path.join(tempDir, "replacements.txt");
-            const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
-                `${secret}==>${replacement}`
-            ).join("\n");
+            const replacementLines = this._toRuleList(replacements)
+                .map(rule => redactionRules.formatRuleLine(rule))
+                .join("\n");
             fs.writeFileSync(replacementsFile, replacementLines, { mode: 0o600, flag: "wx" });
             return await callback(replacementsFile);
         } finally {
@@ -4497,10 +6123,15 @@ class LeakLockPanel {
         return gitRewrite.buildRewriteScript({
             repoDir: scanPath,
             remote: gitRewrite.DEFAULT_REMOTE,
+            requiredCommands: ['git', 'java'],
             rewriteLines: [
                 `java -jar ${gitRewrite.shellQuote(bfgPath)} --replace-text "$replacement_file"`
             ],
-            verifyLiterals: Object.keys(replacements),
+            // Verification re-reads the same rule file the rewrite consumed, so each
+            // secret appears exactly once in the script — inside the owner-only temp
+            // file — instead of being repeated in a grep line per rule. It also cannot
+            // drift from what was actually rewritten.
+            verifyRulesFile: '"$replacement_file"',
             ...secureSetup
         });
     }
@@ -4510,10 +6141,11 @@ class LeakLockPanel {
         return gitRewrite.buildRewriteScript({
             repoDir: scanPath,
             remote: gitRewrite.DEFAULT_REMOTE,
+            requiredCommands: ['git', 'git-filter-repo'],
             rewriteLines: [
                 'git filter-repo --replace-text "$replacement_file" --force'
             ],
-            verifyLiterals: Object.keys(replacements),
+            verifyRulesFile: '"$replacement_file"',
             restoreRemote: true,
             remoteUrl,
             ...secureSetup
@@ -4573,7 +6205,154 @@ class LeakLockPanel {
 
     _getReplacementValue(index) {
         const stored = this._scanCleanup.replacementValues[index];
-        return typeof stored === 'string' && stored.length > 0 ? stored : '*****';
+        return typeof stored === 'string' && stored.length > 0
+            ? stored
+            : redactionRules.DEFAULT_REPLACEMENT;
+    }
+
+    // ---- Manual redaction rules -------------------------------------------------
+    //
+    // Content no scanner flags — an internal hostname, a private repository name, a
+    // customer identifier — is removed through the same reviewed, verified pipeline as
+    // a detected secret rather than by hand-rolling BFG outside the extension.
+
+    _nextCustomRuleId() {
+        this._customRuleCounter = (this._customRuleCounter || 0) + 1;
+        return `rule-${this._customRuleCounter}-${this._stableHash(String(this._customRuleCounter))}`;
+    }
+
+    _getCustomRules() {
+        return Array.isArray(this._scanCleanup.customRules) ? this._scanCleanup.customRules : [];
+    }
+
+    /**
+     * @returns {{ok: boolean, errors: string[], warnings: string[], rule: object|null}}
+     */
+    _addCustomRule(source, mode, replaceWith) {
+        const candidate = {
+            source: typeof source === 'string' ? source : '',
+            mode: mode === 'regex' ? 'regex' : 'literal',
+            replaceWith: typeof replaceWith === 'string' ? replaceWith : ''
+        };
+        const validation = redactionRules.validateRule(candidate);
+        if (!validation.valid) {
+            return { ok: false, errors: validation.errors, warnings: validation.warnings, rule: null };
+        }
+        const rule = redactionRules.normalizeRule(candidate, () => this._nextCustomRuleId());
+        const existing = this._getCustomRules();
+        // Re-adding the same source in the same mode edits it rather than producing a
+        // second rule that silently shadows the first.
+        const duplicate = existing.find(r => r.source === rule.source && r.mode === rule.mode);
+        if (duplicate) {
+            duplicate.replaceWith = rule.replaceWith;
+            this._scanCleanup.customRulePreviews[duplicate.id] = null;
+            return { ok: true, errors: [], warnings: validation.warnings, rule: duplicate };
+        }
+        existing.push(rule);
+        this._scanCleanup.customRules = existing;
+        return { ok: true, errors: [], warnings: validation.warnings, rule };
+    }
+
+    _removeCustomRule(id) {
+        this._scanCleanup.customRules = this._getCustomRules().filter(rule => rule.id !== id);
+        delete this._scanCleanup.customRulePreviews[id];
+    }
+
+    /**
+     * Every rule the cleanup will apply: selected findings plus manual rules.
+     *
+     * Findings are always literal — the value is the secret itself. Manual rules carry
+     * their own mode, which has to survive all the way to the rewrite-rule file.
+     */
+    _resolveCleanupRules(replacements) {
+        const fromFindings = this._resolveScanReplacements(replacements);
+        const rules = Object.entries(fromFindings).map(([source, replaceWith]) => ({
+            source,
+            mode: 'literal',
+            replaceWith
+        }));
+        for (const rule of this._getCustomRules()) {
+            // A manual rule for a string a scanner also found must not produce two
+            // identical lines in the rewrite file.
+            if (rules.some(r => r.source === rule.source && r.mode === rule.mode)) {
+                continue;
+            }
+            rules.push({ source: rule.source, mode: rule.mode, replaceWith: rule.replaceWith });
+        }
+        return rules;
+    }
+
+    /**
+     * Dry run: what would this rule actually touch?
+     *
+     * A finding arrives with provenance; a typed string arrives with none. Committing
+     * to an irreversible rewrite without knowing whether a rule matches three commits
+     * or three thousand is not something this product should ask of anyone — the same
+     * reasoning behind the ref-by-ref push plan.
+     */
+    async _previewCustomRule(id) {
+        const rule = this._getCustomRules().find(r => r.id === id);
+        if (!rule) {
+            return null;
+        }
+        const repoDir = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!repoDir) {
+            vscode.window.showErrorMessage('No repository selected to preview against.');
+            return null;
+        }
+
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const maxCount = 200;
+        try {
+            const { stdout } = await execFileAsync(
+                'git',
+                ['-C', repoDir, ...redactionRules.buildPreviewArgs(rule, { maxCount })],
+                { timeout: 60000, maxBuffer: GIT_MAX_BUFFER }
+            );
+            const parsed = redactionRules.parsePreviewOutput(stdout);
+            const branches = await this._branchesContainingCommits(
+                repoDir, parsed.commits.map(c => c.hash).slice(0, 25)
+            );
+            const preview = {
+                commitCount: parsed.commits.length,
+                commits: parsed.commits.slice(0, 20),
+                files: parsed.files,
+                branches,
+                // A bounded preview says so; a silently truncated one reads as
+                // "this is everything" when it is not.
+                truncated: parsed.commits.length >= maxCount,
+                maxCount
+            };
+            this._scanCleanup.customRulePreviews[id] = preview;
+            this._updateWebviewContent();
+            return preview;
+        } catch (error) {
+            console.warn('Rule preview failed:', error.message);
+            this._scanCleanup.customRulePreviews[id] = { error: error.message };
+            this._updateWebviewContent();
+            return null;
+        }
+    }
+
+    async _branchesContainingCommits(repoDir, hashes) {
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const branches = new Set();
+        for (const hash of hashes) {
+            try {
+                const { stdout } = await execFileAsync(
+                    'git', ['-C', repoDir, 'branch', '--no-color', '-a', '--contains', hash],
+                    { timeout: 10000 }
+                );
+                for (const name of parseContainingBranches(stdout)) {
+                    branches.add(name);
+                }
+            } catch {
+                // A branch listing failure degrades the preview; it must not stop it.
+            }
+        }
+        return Array.from(branches);
     }
 
     _setScanSelection(index, selected) {
@@ -4652,9 +6431,12 @@ class LeakLockPanel {
     }
 
     async _prepareScanReplacementCommand(mode, replacements) {
-        const resolvedReplacements = this._resolveScanReplacements(replacements);
-        if (!resolvedReplacements || Object.keys(resolvedReplacements).length === 0) {
-            vscode.window.showWarningMessage('No secrets selected for removal.');
+        // Manual rules count toward the cleanup: a user with three rules and no
+        // selected findings is the exact case the feature exists for, and used to be
+        // refused here.
+        const resolvedReplacements = this._resolveCleanupRules(replacements);
+        if (!resolvedReplacements || resolvedReplacements.length === 0) {
+            vscode.window.showWarningMessage('Nothing selected for removal. Select a finding or add a manual redaction rule.');
             return;
         }
         const scanPath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -4666,6 +6448,8 @@ class LeakLockPanel {
         this._scanCleanup.blockedBranches = null;
         this._scanCleanup.blockedReason = null;
         this._scanCleanup.verifyResult = null;
+        this._scanCleanup.remoteError = null;
+        this._scanCleanup.preparedRepo = null;
         this._updateWebviewContent();
         try {
             // Preflight: refresh every ref, then refuse to plan a rewrite that
@@ -4676,9 +6460,24 @@ class LeakLockPanel {
                 this._scanCleanup.blockedReason = preflight.reason;
                 this._scanCleanup.preparedCommand = null;
                 this._scanCleanup.preparedMode = null;
+                this._scanCleanup.remoteError = preflight.remoteError || null;
+                if (preflight.remoteError) {
+                    // Say what was attempted, that nothing changed, and what to do.
+                    // Never phrase this as a failed "cleanup": the user pressed
+                    // Prepare, and a message about a cleanup failing reads as though
+                    // one had been started.
+                    vscode.window.showErrorMessage(
+                        'Nothing was changed. Before preparing a cleanup, Leak Lock checks your branches against ' +
+                        `the remote by running ${preflight.remoteError.command}. That check could not run: ` +
+                        `${preflight.remoteError.cause} ${preflight.remoteError.fix}`
+                    );
+                }
                 return;
             }
-            this._scanCleanup.blockedReason = null;
+            // A branch ahead of the remote no longer stops preparation; it stops the
+            // run. Recorded here so the panel states it above the script.
+            this._scanCleanup.blockedBranches = preflight.ahead.length ? preflight.ahead : null;
+            this._scanCleanup.blockedReason = preflight.ahead.length ? 'unpushed-commits' : null;
 
             const command = mode === "git"
                 ? this._buildScanGitReplaceCommand(scanPath, resolvedReplacements, preflight.remoteUrl)
@@ -4688,8 +6487,17 @@ class LeakLockPanel {
             this._scanCleanup.replacements = resolvedReplacements;
             this._scanCleanup.replacementsFile = null;
             this._scanCleanup.pushPlan = preflight.pushPlan;
+            // Execute exactly what was planned. The BFG executor used to resolve its
+            // own repository and could pick a different one than the plan and the push
+            // plan the user reviewed.
+            this._scanCleanup.preparedRepo = scanPath;
+            this._scanCleanup.remoteError = null;
         } catch (e) {
-            vscode.window.showErrorMessage(`Failed to prepare cleanup: ${e.message}`);
+            // "Failed to prepare cleanup" reads as though a cleanup was attempted.
+            // Nothing has run at this point; say so.
+            vscode.window.showErrorMessage(
+                `Nothing was changed. Leak Lock could not build the cleanup script: ${e.message}`
+            );
         } finally {
             this._scanCleanup.preparing = false;
             this._updateWebviewContent();
@@ -4712,28 +6520,62 @@ class LeakLockPanel {
                 `No "${remote}" remote is configured. Add one (git remote add ${remote} <url>) and prepare again — ` +
                 `history cleanup rewrites and pushes every remote branch and tag.`
             );
-            return { blocked: true, reason: 'no-remote', ahead: [], pushPlan: null, remoteUrl: null };
+            return { blocked: true, reason: 'no-remote', ahead: [], pushPlan: null, remoteUrl: null, remoteError: null };
         }
-        await gitRewrite.fetchAllRefs(repoDir, remote);
-        const fetchedAt = new Date().toISOString();
-        this._recordFetchAt(repoDir, fetchedAt);
-        // Keep the Remove Files indicator in sync when this is its repo.
-        if (repoDir === this._removalState.repoDir) {
-            this._removalState.lastFetchAt = fetchedAt;
+        // Comparing local branches against the remote is what stops a rewrite from
+        // silently discarding commits (LL-001), and it needs current refs. This is the
+        // one network command a plan runs, and it is deliberately read-only: no
+        // --prune, so planning never deletes refs.
+        //
+        // If it cannot run, the plan cannot be trusted and preparation stops here.
+        // Nothing is generated and nothing is offered, because a cleanup script built
+        // from an unverified comparison is worse than no script.
+        const fetchCommand = gitRewrite.describeFetchCommand(remote, { prune: false });
+        try {
+            await gitRewrite.fetchAllRefs(repoDir, remote, { prune: false });
+            const fetchedAt = new Date().toISOString();
+            this._recordFetchAt(repoDir, fetchedAt);
+            // Keep the Remove Files indicator in sync when this is its repo.
+            if (repoDir === this._removalState.repoDir) {
+                this._removalState.lastFetchAt = fetchedAt;
+            }
+        } catch (error) {
+            const remoteError = summarizeGitRemoteError(error, fetchCommand);
+            return {
+                blocked: true,
+                reason: 'remote-unreachable',
+                ahead: [],
+                pushPlan: null,
+                remoteUrl: null,
+                remoteError
+            };
         }
 
         const unsafe = await gitRewrite.findUnsafeLocalBranches(repoDir, remote);
-        if (unsafe.ahead.length > 0) {
-            vscode.window.showErrorMessage(
-                `Cannot rewrite history: ${unsafe.ahead.length} local branch(es) have commits that are not on ${remote}. ` +
-                `Push them first, then prepare again.`
-            );
-            return { blocked: true, reason: 'unpushed-commits', ahead: unsafe.ahead, pushPlan: null, remoteUrl: null };
-        }
-
         const pushPlan = await gitRewrite.buildPushPlan(repoDir, remote);
         const remoteUrl = await gitRewrite.getRemoteUrl(repoDir, remote);
-        return { blocked: false, ahead: [], pushPlan, remoteUrl, localOnly: unsafe.localOnly };
+
+        // Only branches the rewrite actually force-resets can lose commits.
+        // materializeRemoteBranches() resets every branch that exists on the remote, so
+        // today this is the whole `ahead` set — `ahead` means "has a remote counterpart
+        // and is ahead of it". Stating the rule as an intersection rather than assuming
+        // it keeps the block correct if materialisation ever becomes selective.
+        const willBeReset = new Set(pushPlan ? pushPlan.forceUpdate : []);
+        const aheadBlockingRun = unsafe.ahead.filter(entry => willBeReset.has(entry.branch));
+
+        // Deliberately not `blocked`. Preparing a cleanup is planning, not rewriting:
+        // the user asked to read a script. The generated script re-checks this itself
+        // before touching anything (step 2), and the in-panel run is refused
+        // separately, so producing the script costs no safety while withholding it only
+        // stops the user seeing what would happen.
+        return {
+            blocked: false,
+            ahead: aheadBlockingRun,
+            pushPlan,
+            remoteUrl,
+            localOnly: unsafe.localOnly,
+            remoteError: null
+        };
     }
 
     async _prepareScanBfgCommand(replacements) {
@@ -4747,6 +6589,18 @@ class LeakLockPanel {
     async _runPreparedScanCleanup(mode) {
         if (!this._scanCleanup.preparedCommand || this._scanCleanup.preparedMode !== mode) {
             vscode.window.showWarningMessage('Prepare the cleanup command first.');
+            return;
+        }
+        // The safety rule lives here, where a rewrite is actually about to happen —
+        // not at prepare time, where the user only asked to read the script.
+        const blocking = this._scanCleanup.blockedBranches;
+        if (Array.isArray(blocking) && blocking.length > 0) {
+            const list = blocking.map(b => `${b.branch} (+${b.count})`).join(', ');
+            vscode.window.showErrorMessage(
+                'Nothing was changed. The cleanup force-resets every branch that exists on the remote, and these ' +
+                `local branch(es) hold commits the remote does not have, so running it would discard them: ${list}. ` +
+                'Push or delete them, then prepare again. The prepared script is still available to read and save.'
+            );
             return;
         }
         const replacements = this._scanCleanup.replacements;
@@ -4772,7 +6626,9 @@ class LeakLockPanel {
             return;
         }
 
-        const scanPath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        // The repository the plan and the push plan the user reviewed were built for.
+        const scanPath = this._scanCleanup.preparedRepo
+            || this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!scanPath) {
             vscode.window.showErrorMessage('No directory selected or workspace available.');
             return;
@@ -4816,15 +6672,19 @@ class LeakLockPanel {
                 );
             });
 
-            this._stagePushForConfirmation('Git-only cleanup', scanPath, report, {
-                literals: Object.keys(replacements)
-            });
+            this._stagePushForConfirmation(
+                'Git-only cleanup', scanPath, report,
+                redactionRules.partitionForVerification(this._toRuleList(replacements))
+            );
         } catch (error) {
             if (error instanceof gitRewrite.AheadBranchesError) {
                 this._scanCleanup.blockedBranches = error.branches;
                 this._updateWebviewContent();
             }
-            vscode.window.showErrorMessage(`Git-only cleanup failed: ${error.message}`);
+            vscode.window.showErrorMessage(
+                'Git-only cleanup did not complete. Your remote was not touched — this step only rewrites ' +
+                `local history, and the force-push is a separate confirmation. Reason: ${error.message}`
+            );
         }
     }
 
@@ -4835,6 +6695,7 @@ class LeakLockPanel {
      */
     _stagePushForConfirmation(label, repoDir, report, verify) {
         this._scanCleanup.verifyResult = null;
+        this._scanCleanup.pushBlockedByProtection = null;
         this._scanCleanup.pendingPush = {
             repoDir,
             remote: gitRewrite.DEFAULT_REMOTE,
@@ -4862,6 +6723,9 @@ class LeakLockPanel {
             vscode.window.showWarningMessage('Nothing staged to push. Run a cleanup first.');
             return;
         }
+        // A retry starts clean: leaving the previous protection block on screen while a
+        // new push runs would tell the user the attempt already failed.
+        this._scanCleanup.pushBlockedByProtection = null;
         let offenders = null;
         try {
             await vscode.window.withProgress({
@@ -4878,7 +6742,17 @@ class LeakLockPanel {
             this._scanCleanup.verifyResult = offenders;
             this._scanCleanup.pendingPush = null;
 
-            if (offenders && offenders.length > 0) {
+            if (offenders && offenders.some(o => o.notVerified)) {
+                // The push succeeded, but nothing was actually checked. Saying "still
+                // present" would be a different — and unsupported — claim, and saying
+                // "verified clean" would be a lie, so say exactly what happened.
+                const reasons = offenders.filter(o => o.notVerified).map(o => o.reason).join('; ');
+                vscode.window.showWarningMessage(
+                    `⚠️ ${pending.label}: the force-push completed, but Leak Lock could NOT verify the result — ${reasons}. ` +
+                    'Treat this as unverified: check the remote yourself before assuming the secret is gone.'
+                );
+                this._updateWebviewContent();
+            } else if (offenders && offenders.length > 0) {
                 const refs = offenders.map(o => `${o.ref} (${o.reason})`).join(', ');
                 vscode.window.showErrorMessage(
                     `⚠️ ${pending.label}: force-push done but the target is STILL PRESENT on: ${refs}`
@@ -4894,9 +6768,99 @@ class LeakLockPanel {
                 this._updateWebviewContent();
             }
         } catch (error) {
-            vscode.window.showErrorMessage(`Force-push failed: ${error.message}`);
+            // A protected branch is the most likely way this fails on a real repository,
+            // and the raw git output actively misleads: --atomic makes one protected ref
+            // reject every ref, so the user sees nine failures and concludes the rewrite
+            // is broken. Name the one cause and what to do about it.
+            const protection = gitRewrite.parseProtectedRefRejection(error);
+            if (protection) {
+                this._scanCleanup.pushBlockedByProtection = {
+                    ...protection,
+                    remote: pending.remote,
+                    label: pending.label
+                };
+                const names = protection.protectedRefs.join(', ') || 'a protected branch';
+                vscode.window.showWarningMessage(
+                    `${pending.label}: the remote refused the push because ${names} is protected. ` +
+                    'Nothing was pushed — your remote is unchanged and the secret is still on it. ' +
+                    'The panel explains how to finish the cleanup.'
+                );
+            } else {
+                this._scanCleanup.pushBlockedByProtection = null;
+                vscode.window.showErrorMessage(`Force-push failed: ${error.message}`);
+            }
             this._updateWebviewContent();
         }
+    }
+
+    /**
+     * Explain a protected-branch rejection and what to do about it.
+     *
+     * The local rewrite is already done and `pendingPush` survives the failure, so this
+     * is genuinely a "lift the rule, press the button again" situation — but nothing in
+     * git's output says so, and the atomic rollback makes it look far worse than it is.
+     */
+    _renderProtectionBlock(blocked) {
+        if (!blocked) {
+            return '';
+        }
+        const refs = blocked.protectedRefs.length > 0 ? blocked.protectedRefs : ['(the remote did not say which)'];
+        const refList = refs.map(r => `<code>${escapeHtml(r)}</code>`).join(', ');
+        const collateral = blocked.collateralRefs.length;
+
+        // Name the actual UI the user has to open. Generic advice ("adjust your branch
+        // protection") is the part people get stuck on.
+        const steps = {
+            github: [
+                'Open the repository on GitHub → <strong>Settings</strong> → <strong>Branches</strong> (or <strong>Rules → Rulesets</strong> if you use rulesets).',
+                `Edit the rule protecting ${refList}.`,
+                'Tick <strong>Allow force pushes</strong>. If <em>Do not allow bypassing the above settings</em> is on, turn it off too, or add yourself to the bypass list.',
+                'Come back here and press <strong>Confirm force-push</strong> again — the rewrite is already done, only the push is left.',
+                '<strong>Turn the protection back on</strong> as soon as the push succeeds.'
+            ],
+            gitlab: [
+                'Open the project on GitLab → <strong>Settings</strong> → <strong>Repository</strong> → <strong>Protected branches</strong>.',
+                `Set <strong>Allowed to force push</strong> for ${refList}, or unprotect it temporarily.`,
+                'Come back here and press <strong>Confirm force-push</strong> again.',
+                '<strong>Restore the protection</strong> once the push succeeds.'
+            ],
+            bitbucket: [
+                'Open the repository on Bitbucket → <strong>Repository settings</strong> → <strong>Branch restrictions</strong>.',
+                `Allow rewriting history for ${refList}, or remove the restriction temporarily.`,
+                'Come back here and press <strong>Confirm force-push</strong> again.',
+                '<strong>Restore the restriction</strong> once the push succeeds.'
+            ]
+        }[blocked.provider] || [
+            `Ask whoever administers this remote to allow a force-push to ${refList}, or to lift the protection temporarily.`,
+            'Come back here and press <strong>Confirm force-push</strong> again — the rewrite is already done, only the push is left.',
+            '<strong>Restore the protection</strong> once the push succeeds.'
+        ];
+
+        return `
+            <div class="rewrite-blocked">
+                <strong>⛔ The remote refused the push — ${refList} is protected</strong>
+                <p style="margin:8px 0;">
+                    <strong>Nothing was pushed.</strong> Your remote is unchanged, which also means
+                    <strong>the secret is still on it</strong>. Your local history is already rewritten;
+                    only the push is outstanding.
+                </p>
+                ${collateral > 0 ? `
+                <p style="margin:8px 0;">
+                    Git listed ${collateral} other ref${collateral === 1 ? '' : 's'} as rejected. Those are
+                    <em>not</em> separate problems: the push is atomic, so one protected ref rolls back the
+                    whole transaction. Fix ${refList} and they all go through together.
+                </p>` : ''}
+                <p style="margin:8px 0;"><strong>To finish the cleanup:</strong></p>
+                <ol style="margin:6px 0 6px 18px;">
+                    ${steps.map(step => `<li style="margin:4px 0;">${step}</li>`).join('')}
+                </ol>
+                <p class="hint" style="margin:8px 0;">
+                    Keeping ${refList} protected is the right default — this is a deliberate,
+                    temporary exception for a history rewrite, which is exactly the operation the rule
+                    is there to prevent by accident.
+                </p>
+            </div>
+        `;
     }
 
     /** The user declined the force-push. The local rewrite stays; the remote is untouched. */
@@ -4905,6 +6869,7 @@ class LeakLockPanel {
             return;
         }
         this._scanCleanup.pendingPush = null;
+        this._scanCleanup.pushBlockedByProtection = null;
         this._updateWebviewContent();
         vscode.window.showWarningMessage(
             'Force-push cancelled. Your LOCAL history was rewritten, but the remote was NOT changed. ' +
@@ -4931,6 +6896,14 @@ class LeakLockPanel {
             );
         }
         const refCount = (report.materialized || []).length;
+        if (report.offenders && report.offenders.some(o => o.notVerified)) {
+            const reasons = report.offenders.filter(o => o.notVerified).map(o => o.reason).join('; ');
+            vscode.window.showWarningMessage(
+                `⚠️ ${label} finished, but Leak Lock could NOT verify the remote — ${reasons}. ` +
+                'Treat this as unverified: check the remote yourself before assuming the target is gone.'
+            );
+            return;
+        }
         if (report.offenders && report.offenders.length > 0) {
             const refs = report.offenders.map(o => `${o.ref} (${o.reason})`).join(', ');
             vscode.window.showErrorMessage(
@@ -5008,7 +6981,11 @@ class LeakLockPanel {
         }
 
         try {
-            const scanPath = this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            // Was `this._selectedDirectory || workspaceFolders[0]`, which omitted the
+            // scanned path entirely: a BFG cleanup could rewrite a repository that was
+            // never scanned, planned, or shown in the push plan.
+            const scanPath = this._scanCleanup.preparedRepo
+                || this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
             if (!scanPath) {
                 vscode.window.showErrorMessage('No directory selected or workspace available.');
                 return;
@@ -5055,9 +7032,10 @@ class LeakLockPanel {
                 );
             });
 
-            this._stagePushForConfirmation('BFG cleanup', scanPath, report, {
-                literals: Object.keys(replacements)
-            });
+            this._stagePushForConfirmation(
+                'BFG cleanup', scanPath, report,
+                redactionRules.partitionForVerification(this._toRuleList(replacements))
+            );
 
         } catch (error) {
             console.error('BFG execution error:', error);
@@ -5065,7 +7043,10 @@ class LeakLockPanel {
                 this._scanCleanup.blockedBranches = error.branches;
                 this._updateWebviewContent();
             }
-            vscode.window.showErrorMessage(`❌ BFG cleanup failed: ${error.message}`);
+            vscode.window.showErrorMessage(
+                'BFG cleanup did not complete. Your remote was not touched — this step only rewrites ' +
+                `local history, and the force-push is a separate confirmation. Reason: ${error.message}`
+            );
         }
     }
 
@@ -5085,8 +7066,33 @@ class LeakLockPanel {
             summary: {
                 severities: severityCounts,
                 dependencyFindings: this._scanResults.filter(result => result.isDependency).length,
-                gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length
+                gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length,
+                verifiedLiveCredentials: this._scanResults.filter(result => result.verified === true).length
             },
+            // What the scan examined. An exported report that omits this cannot be
+            // audited later: "no findings" means nothing without its scope, and an
+            // incomplete scan must never be mistaken for a completed one.
+            coverage: this._scanCoverage
+                ? {
+                    incomplete: Boolean(this._scanCoverage.incomplete),
+                    incompleteReason: this._scanCoverage.incompleteReason,
+                    engines: (this._scanCoverage.engines || []).map(engine => ({
+                        id: engine.id,
+                        displayName: engine.displayName,
+                        version: engine.version,
+                        ok: Boolean(engine.ok),
+                        findings: engine.findings,
+                        note: engine.note || null
+                    })),
+                    refs: this._scanCoverage.refs,
+                    refsRefreshed: Boolean(this._scanCoverage.refRefresh?.ok),
+                    strategy: this._scanCoverage.strategy || null,
+                    rulesetMode: this._scanCoverage.rulesetMode,
+                    maxFileSizeMb: this._scanCoverage.maxFileSizeMb,
+                    timeoutSeconds: this._scanCoverage.timeoutSeconds,
+                    dependencyHandling: this._scanCoverage.dependencyHandling
+                }
+                : null,
             findings: this._scanResults.map(result => ({
                 file: result.file,
                 line: result.line,
@@ -5101,7 +7107,36 @@ class LeakLockPanel {
                 isUntracked: Boolean(result.isUntracked),
                 commitHash: result.commitHash || null,
                 commitBranches: result.commitBranches || null,
-                commitDate: result.commitDate || null
+                commitDate: result.commitDate || null,
+                // Engine attribution and the extra detail maintained engines supply.
+                // Present for every finding so the export shape does not vary by engine;
+                // null means "this engine did not report it", and unavailableFields says
+                // which of those nulls are structural rather than absent.
+                engine: result.engine || null,
+                engines: result.engines || (result.engine ? [result.engine] : []),
+                engineVersion: result.engineVersion || null,
+                ruleName: result.ruleName || null,
+                verified: typeof result.verified === 'boolean' ? result.verified : null,
+                verifiedAt: result.verifiedAt || null,
+                endLine: Number.isFinite(result.endLine) ? result.endLine : null,
+                startColumn: Number.isFinite(result.startColumn) ? result.startColumn : null,
+                endColumn: Number.isFinite(result.endColumn) ? result.endColumn : null,
+                entropy: Number.isFinite(result.entropy) ? result.entropy : null,
+                fingerprint: result.fingerprint || null,
+                author: redactSensitive ? null : (result.author || null),
+                authorEmail: redactSensitive ? null : (result.authorEmail || null),
+                commitMessage: redactSensitive ? null : (result.commitMessage || null),
+                unavailableFields: result.unavailableFields || [],
+                // Every commit this secret was seen in at this location, plus a
+                // working-tree entry (null commit) when it is still on disk.
+                ruleNames: result.ruleNames || (result.ruleName ? [result.ruleName] : []),
+                occurrences: (result.occurrences || []).map(o => ({
+                    commitHash: o.commitHash || null,
+                    commitDate: o.commitDate || null,
+                    engine: o.engine || null,
+                    ruleName: o.ruleName || null,
+                    isGitHistory: Boolean(o.isGitHistory)
+                }))
             }))
         };
     }
@@ -5321,3 +7356,6 @@ class LeakLockPanel {
 LeakLockPanel._currentPanel = null;
 
 module.exports = LeakLockPanel;
+// Exported for tests: parsing `git branch --contains` output is easy to get subtly
+// wrong and both call sites depend on it.
+module.exports.__parseContainingBranches = parseContainingBranches;

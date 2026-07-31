@@ -42,7 +42,7 @@ On first launch, you'll see the welcome view:
 2. Wait for the installation process to complete
 3. Dependencies include:
    - Docker (must be pre-installed)
-   - Nosey Parker Docker image
+   - Detection engines (Gitleaks binary; optionally TruffleHog, or the Nosey Parker Docker image)
    - BFG Repo Cleaner tool
 
 ---
@@ -177,6 +177,54 @@ Use this guided flow to remove files or directories from your repository history
 - Final steps are highlighted in red
 - Click the appropriate button for BFG or Git to execute and cleanup
 - After completion, review changes and force-push if needed
+
+### If the push is refused: a protected branch
+
+The most common way a real cleanup stops. GitHub, GitLab and Bitbucket all block
+force-pushes to a protected branch — and a history rewrite *is* a force-push, which is
+exactly what the rule exists to prevent by accident.
+
+**Keep the protection.** It is doing its job. This is a deliberate, temporary exception.
+
+What you will see is misleading if you read it literally: the push is `--atomic`, so one
+protected branch rejects **every** ref. Nine `[remote rejected]` lines usually mean *one*
+problem, and the other eight say `(atomic transaction failed)` — those refs were fine and
+were rolled back with the transaction. Leak Lock separates the cause from the collateral
+and tells you which branch is actually blocking.
+
+Nothing is pushed when this happens: **the remote is unchanged, so the secret is still on
+it.** Your local history is already rewritten — only the push is outstanding.
+
+To finish, on GitHub:
+
+1. **Settings → Branches** (or **Rules → Rulesets** if you use rulesets)
+2. Edit the rule protecting the branch and tick **Allow force pushes**. If *Do not allow
+   bypassing the above settings* is on, turn it off or add yourself to the bypass list.
+3. Back in Leak Lock, press **Confirm force-push** again.
+4. **Turn the protection back on immediately.**
+
+On GitLab: *Settings → Repository → Protected branches* → allow force push. On Bitbucket:
+*Repository settings → Branch restrictions*. On any other host, ask whoever administers it
+to lift the restriction briefly.
+
+### After the force-push: what "verified" means
+
+Leak Lock re-fetches and re-greps **every** remote branch and tag after pushing, rather
+than trusting that the rewrite did what it said. There are three possible outcomes, and
+they are deliberately kept distinct:
+
+| Outcome | What it means | What to do |
+|---|---|---|
+| ✅ **Verified clean on every remote ref** | Every ref was fetched and checked, and the target is gone from all of them | Tell everyone with a clone to re-clone or hard-reset |
+| ⚠️ **Still present** | Refs were checked, and the target is **still there** on the ones listed | The rewrite did not fully take. Do not assume the leak is closed — rotate the credential |
+| ⚠️ **Not verified** | The check could not run: no search criteria, or no refs found under the remote | **This is not a clean result.** Nothing was examined, so it says nothing either way — check the remote yourself |
+
+The third one exists because an empty result set and a successful check look identical
+unless you keep them apart. A tool that says "clean" when it simply never looked is worse
+than one that says nothing, so Leak Lock will not make the claim it did not test.
+
+The generated cleanup script applies the same rule: it exits non-zero and prints
+`NOT VERIFIED` rather than reporting clean when it examined no refs.
 
 ### Notes and Limitations
 
@@ -380,10 +428,32 @@ Use this guided flow to remove files or directories from your repository history
 
 ### External Tools
 
-**Nosey Parker**
-- [Project page](https://github.com/praetorian-inc/noseyparker)
-- Advanced secret detection engine with 100+ curated rules
-- Fast and precise; maintained by Praetorian with active community
+**Gitleaks** — default detection engine
+- [Project page](https://github.com/gitleaks/gitleaks) · MIT · actively maintained
+- Install: `brew install gitleaks`, `apt install gitleaks`, or a release binary. No Docker or JVM needed.
+- Scans full git history across every ref, plus a separate working-tree pass that also
+  covers untracked and `.gitignore`d files
+- Supplies detail the other engines do not: column ranges, entropy, commit author, and a
+  stable fingerprint used for baselines
+
+**TruffleHog** — optional, credential verification
+- [Project page](https://github.com/trufflesecurity/trufflehog) · AGPL-3.0 · actively maintained
+- Install: `brew install trufflehog` or a release binary. Leak Lock runs it as an external
+  process only, so the extension stays MIT-licensed.
+- Answers the question no other engine here can: **is this credential still live?**
+- Verification makes read-only network calls to third-party providers *using the
+  discovered credential*, so it is **off by default**. Enable `leakLock.trufflehog.verify`
+  deliberately.
+- A verified credential is ranked above everything else and badged `VERIFIED LIVE` —
+  rewriting history does not revoke a working key, so it needs rotating first.
+
+**Nosey Parker** — optional, legacy
+- [Project page](https://github.com/praetorian-inc/noseyparker) · Apache-2.0
+- ⚠️ **Archived read-only upstream on 2026-04-24**; `v0.24.0` (May 2025) is the final
+  release and its ruleset can no longer gain detectors. Leak Lock pins that version.
+- Requires Docker. Kept because its history walker and finding-level deduplication are
+  excellent — it groups matches sharing a rule and capture groups into a single finding,
+  which keeps large result sets reviewable.
 
 **BFG Repo Cleaner**
 - [Project page](https://rtyley.github.io/bfg-repo-cleaner/)
@@ -391,7 +461,7 @@ Use this guided flow to remove files or directories from your repository history
 - Ideal for removing large files or secrets across history
 
 ### Why Leak Lock
-- Seamlessly integrates Nosey Parker and BFG/git workflows inside VS Code
+- Seamlessly integrates multi-engine scanning and BFG/git workflows inside VS Code
 - Offers both name‑based (BFG) and path‑exact (git) removal with previews
 - Adds safe defaults, warnings, and copyable commands for clear, auditable changes
 

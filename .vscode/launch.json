@@ -10,7 +10,16 @@
 			"type": "extensionHost",
 			"request": "launch",
 			"args": [
-				"--extensionDevelopmentPath=${workspaceFolder}"
+				"--extensionDevelopmentPath=${workspaceFolder}",
+				// Do not activate unrelated extensions from the user's normal profile.
+				// Leak Lock is still loaded from --extensionDevelopmentPath above.
+				"--disable-extensions",
+				// This built-in extension is not covered by --disable-extensions and its
+				// proxy code currently calls Node's deprecated url.parse() API.
+				"--disable-extension=vscode.github",
+				// Copilot Chat bundles the deprecated punycode dependency and is not needed
+				// while debugging Leak Lock.
+				"--disable-extension=GitHub.copilot-chat"
 			]
 		}
 	]

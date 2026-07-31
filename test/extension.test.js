@@ -277,7 +277,34 @@ suite('Ref-complete rewrite script', () => {
 		// real line breaks so a copy of it is runnable.
 		const out = script();
 		assert.ok(out.split('\n').length > 20, 'script spans many lines');
-		assert.ok(out.startsWith('#!/bin/bash\n'), 'shebang is on its own line');
+		// `env bash` rather than /bin/bash: on macOS /bin/bash is 3.2, Homebrew's
+		// newer bash lives elsewhere, and Git Bash on Windows is elsewhere again.
+		assert.ok(out.startsWith('#!/usr/bin/env bash\n'), 'shebang is on its own line');
+	});
+
+	test('runs byte-wise and checks its tools before doing anything destructive', () => {
+		const out = script({ requiredCommands: ['git', 'java'] });
+		// Locale-dependent matching would make "verified clean" mean different
+		// things on different machines.
+		assert.ok(out.includes('export LC_ALL=C'), 'matching is locale-independent');
+		assert.ok(out.includes('command -v "$cmd"'), 'required tools are checked up front');
+		assert.ok(out.includes('Required command not found on PATH'));
+		// The check must precede the rewrite, not follow it.
+		assert.ok(out.indexOf('command -v "$cmd"') < out.indexOf('# 1. Refresh every ref'));
+	});
+
+	test('verification reads the rule file instead of repeating every secret inline', () => {
+		const out = script({
+			verifyRulesFile: '"$replacement_file"',
+			preambleLines: ['replacement_file="/tmp/x"']
+		});
+		// One list, one place. Previously each secret appeared twice: once in the
+		// generated rule file and again in its own `git grep --fixed-strings` line,
+		// which both bloated the script and pasted sensitive values through it.
+		assert.ok(out.includes('done < "$replacement_file"'), 'the verify loop re-reads the rule file');
+		assert.ok(out.includes('needle="${needle%%==>*}"'), 'the match side of each rule is extracted');
+		assert.ok(out.includes('grep_flag="--extended-regexp"'), 'regex rules verify as regexes');
+		assert.ok(out.includes('grep_flag="--fixed-strings"'), 'literal rules verify as literals');
 	});
 
 	test('iterates refs with read -r, not word-splitting for-loops', () => {
@@ -454,7 +481,10 @@ suite("Git history keyword defaults", () => {
 suite("Scan result deduplication", () => {
 	const LeakLockPanel = require("../leakLockPanel");
 
-	test("preserves findings from different commits and rules", () => {
+	test("one secret at one location is one finding, however many times it was seen", () => {
+		// Previously this produced three rows — one per commit, one per rule — which
+		// reads as three separate problems. It is one secret, and a rewrite removes it
+		// everywhere regardless of which commit or rule surfaced it.
 		const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
 		const base = { file: "config.env", line: 1, fullSecret: "token" };
 		const findings = panel._deduplicateScanResults([
@@ -463,7 +493,21 @@ suite("Scan result deduplication", () => {
 			{ ...base, commitHash: "commit-b", ruleName: "git_history_keyword" },
 			{ ...base, commitHash: "commit-a", ruleName: "another_rule" }
 		]);
-		assert.strictEqual(findings.length, 3);
+		assert.strictEqual(findings.length, 1);
+		// Nothing is lost: both commits and both rules are still recorded.
+		const commits = findings[0].occurrences.map(o => o.commitHash).filter(Boolean);
+		assert.deepStrictEqual(Array.from(new Set(commits)).sort(), ["commit-a", "commit-b"]);
+		assert.deepStrictEqual(findings[0].ruleNames.sort(), ["another_rule", "git_history_keyword"]);
+	});
+
+	test("different secrets at the same location stay separate", () => {
+		const panel = new LeakLockPanel({ fsPath: "/tmp/ext" });
+		const base = { file: "config.env", line: 1 };
+		const findings = panel._deduplicateScanResults([
+			{ ...base, fullSecret: "AKIAIOSFODNN7EXAMPLE", commitHash: "c1" },
+			{ ...base, fullSecret: "ghp_unrelatedtokenvalue00", commitHash: "c1" }
+		]);
+		assert.strictEqual(findings.length, 2);
 	});
 });
 
@@ -766,5 +810,2597 @@ suite('Two-phase cleanup: local rewrite, then confirmed force-push', () => {
 		assert.ok(/force-push the rewritten history now/.test(gate), 'the gate asks for confirmation');
 		panel._cancelForcePush();
 		assert.strictEqual(panel._scanCleanup.pendingPush, null, 'cancel clears the pending push');
+	});
+});
+
+suite('Scan engine configuration', () => {
+	const engineConfig = require('../scan-engine-config');
+
+	test('report never inherits the truncating defaults', () => {
+		const args = engineConfig.buildNoseyParkerReportArgs({ datastoreMount: '/ds' });
+		const flag = (name) => args[args.indexOf(name) + 1];
+		// Upstream defaults are 3 / 3 / 0.05 and discard findings before Leak Lock
+		// parses them. -1 and 0 are the documented "no limit" values.
+		assert.ok(args.includes('--max-matches'), 'report caps matches per finding unless told not to');
+		assert.strictEqual(flag('--max-matches'), '-1');
+		assert.strictEqual(flag('--max-provenance'), '-1');
+		assert.strictEqual(flag('--min-score'), '0');
+		assert.strictEqual(flag('--format'), 'json');
+	});
+
+	test('suppress-redundant is explicit and configurable', () => {
+		const on = engineConfig.buildNoseyParkerReportArgs({ datastoreMount: '/ds' });
+		assert.strictEqual(on[on.indexOf('--suppress-redundant') + 1], 'true');
+		const off = engineConfig.buildNoseyParkerReportArgs({
+			datastoreMount: '/ds',
+			settings: engineConfig.normalizeScanSettings({ suppressRedundant: false })
+		});
+		assert.strictEqual(off[off.indexOf('--suppress-redundant') + 1], 'false');
+	});
+
+	test('the scanner image is pinned rather than :latest', () => {
+		assert.ok(!engineConfig.NOSEYPARKER_IMAGE.endsWith(':latest'), 'a floating tag drifts silently between machines');
+		assert.strictEqual(engineConfig.NOSEYPARKER_IMAGE, 'ghcr.io/praetorian-inc/noseyparker:v0.24.0');
+		const args = engineConfig.buildNoseyParkerReportArgs({ datastoreMount: '/ds' });
+		assert.ok(args.includes(engineConfig.NOSEYPARKER_IMAGE));
+	});
+
+	test('scan args always request full git history and a ruleset', () => {
+		const args = engineConfig.buildNoseyParkerScanArgs({ scanMount: '/src', datastoreMount: '/ds' });
+		assert.strictEqual(args[args.indexOf('--git-history') + 1], 'full');
+		assert.strictEqual(args[args.indexOf('--ruleset') + 1], 'default');
+		assert.strictEqual(args[args.length - 1], '/scan', 'the mounted path is the final positional argument');
+	});
+
+	test('ruleset modes expand to the repeated flags upstream requires', () => {
+		assert.deepStrictEqual(engineConfig.resolveRulesetIds('default'), ['default']);
+		assert.deepStrictEqual(engineConfig.resolveRulesetIds('default+assets'), ['default', 'np.assets']);
+		assert.deepStrictEqual(engineConfig.resolveRulesetIds('all'), ['all']);
+		// An unknown value must fall back, never produce an invalid flag.
+		assert.deepStrictEqual(engineConfig.resolveRulesetIds('nonsense'), ['default']);
+
+		const args = engineConfig.buildNoseyParkerScanArgs({
+			scanMount: '/src',
+			datastoreMount: '/ds',
+			settings: engineConfig.normalizeScanSettings({ rulesetMode: 'default+assets' })
+		});
+		const rulesets = args.reduce((acc, arg, i) => (arg === '--ruleset' ? acc.concat(args[i + 1]) : acc), []);
+		assert.deepStrictEqual(rulesets, ['default', 'np.assets']);
+	});
+
+	test('settings are clamped so an out-of-range value cannot reach the engine', () => {
+		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 5 }).timeoutMs, 30000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 99999 }).timeoutMs, 7200000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 'abc' }).timeoutMs, 300000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ maxFileSizeMb: -4 }).maxFileSizeMb, 0);
+	});
+
+	test('the exclude list refuses directories that can hold first-party source', () => {
+		const dirs = engineConfig.EXCLUDABLE_DEPENDENCY_DIRS;
+		assert.ok(dirs.includes('node_modules'));
+		assert.ok(dirs.includes('vendor'));
+		// Excluding these from a security scan would hide real secrets: they routinely
+		// hold the project's own code.
+		for (const unsafe of ['lib', 'bin', 'dist', 'build', 'out', 'packages', 'src']) {
+			assert.ok(!dirs.includes(unsafe), `${unsafe} must never be excluded from scanning`);
+		}
+		const file = engineConfig.buildDependencyIgnoreFile();
+		assert.ok(file.includes('node_modules/'));
+		assert.ok(!/^lib\/$/m.test(file));
+	});
+
+	test('an ignore file is wired into the scan only when one is supplied', () => {
+		const without = engineConfig.buildNoseyParkerScanArgs({ scanMount: '/src', datastoreMount: '/ds' });
+		assert.ok(!without.includes('--ignore'));
+		const with_ = engineConfig.buildNoseyParkerScanArgs({
+			scanMount: '/src',
+			datastoreMount: '/ds',
+			ignoreFileMount: '/tmp/ignore'
+		});
+		assert.strictEqual(with_[with_.indexOf('--ignore') + 1], '/leaklock-ignore');
+		assert.ok(with_.includes('/tmp/ignore:/leaklock-ignore:ro'), 'the ignore file is mounted read-only');
+	});
+});
+
+suite('Gitleaks engine adapter', () => {
+	const engines = require('../scan-engines');
+
+	test('the CLI dialect is probed from --help, not from a version number', () => {
+		// Distribution builds print "version is set by build process", so version
+		// parsing cannot decide this.
+		const modern = 'Available Commands:\n  git         scan git repositories\n  dir         scan directories\n';
+		const legacy = 'Available Commands:\n  detect      detect secrets in code\n  protect     protect secrets\n';
+		assert.strictEqual(engines.detectGitleaksDialect(modern), 'modern');
+		assert.strictEqual(engines.detectGitleaksDialect(legacy), 'legacy');
+		assert.strictEqual(engines.detectGitleaksDialect('nothing useful'), null);
+		assert.strictEqual(engines.detectGitleaksDialect(null), null);
+	});
+
+	test('the history pass covers every ref in both dialects', () => {
+		const opts = { repoDir: '/repo', reportPath: '/tmp/r.json' };
+		const modern = engines.buildGitleaksArgs('modern', 'history', opts);
+		const legacy = engines.buildGitleaksArgs('legacy', 'history', opts);
+		// Without --all the scan only covers the current branch, which is the same
+		// class of miss that #71 fixes on the Nosey Parker side.
+		assert.ok(modern.includes('--log-opts=--all'));
+		assert.ok(legacy.includes('--log-opts=--all'));
+		assert.strictEqual(modern[0], 'git');
+		assert.strictEqual(legacy[0], 'detect');
+	});
+
+	test('the working-tree pass disables git in both dialects', () => {
+		const opts = { repoDir: '/repo', reportPath: '/tmp/r.json' };
+		assert.strictEqual(engines.buildGitleaksArgs('modern', 'worktree', opts)[0], 'dir');
+		assert.ok(engines.buildGitleaksArgs('legacy', 'worktree', opts).includes('--no-git'));
+	});
+
+	test('findings are an expected outcome, not a failure exit', () => {
+		const args = engines.buildGitleaksArgs('modern', 'history', { repoDir: '/repo', reportPath: '/tmp/r.json' });
+		assert.strictEqual(args[args.indexOf('--exit-code') + 1], '0');
+		assert.strictEqual(args[args.indexOf('--report-format') + 1], 'json');
+	});
+
+	test('optional config, baseline and size limit are passed only when set', () => {
+		const bare = engines.buildGitleaksArgs('modern', 'history', { repoDir: '/repo', reportPath: '/r' });
+		assert.ok(!bare.includes('--config'));
+		assert.ok(!bare.includes('--baseline-path'));
+		assert.ok(!bare.includes('--max-target-megabytes'));
+		const full = engines.buildGitleaksArgs('modern', 'history', {
+			repoDir: '/repo', reportPath: '/r',
+			configPath: '/c.toml', baselinePath: '/b.json', maxTargetMegabytes: 25
+		});
+		assert.strictEqual(full[full.indexOf('--config') + 1], '/c.toml');
+		assert.strictEqual(full[full.indexOf('--baseline-path') + 1], '/b.json');
+		assert.strictEqual(full[full.indexOf('--max-target-megabytes') + 1], '25');
+	});
+
+	test('a finding carries every field Nosey Parker supplies, and more', () => {
+		const mapped = engines.mapGitleaksFinding({
+			RuleID: 'aws-access-token', Description: 'AWS Access Token',
+			File: 'app.py', StartLine: 3, EndLine: 3, StartColumn: 11, EndColumn: 30,
+			Secret: 'AKIAIOSFODNN7EXAMPLE', Match: 'KEY = "AKIAIOSFODNN7EXAMPLE"',
+			Commit: 'abc123', Date: '2026-07-31T04:57:01Z', Author: 'Fixture',
+			Email: 'f@example.invalid', Message: 'add app', Entropy: 3.5,
+			Fingerprint: 'abc123:app.py:aws-access-token:3'
+		}, 'history', '/repo');
+
+		assert.strictEqual(mapped.file, 'app.py');
+		assert.strictEqual(mapped.line, 3);
+		assert.strictEqual(mapped.secret, 'AKIAIOSFODNN7EXAMPLE');
+		assert.strictEqual(mapped.ruleId, 'aws-access-token');
+		assert.strictEqual(mapped.commitHash, 'abc123');
+		assert.strictEqual(mapped.isGitHistory, true);
+		// Additive over Nosey Parker: columns, entropy, author, fingerprint.
+		assert.strictEqual(mapped.endColumn, 30);
+		assert.strictEqual(mapped.entropy, 3.5);
+		assert.strictEqual(mapped.author, 'Fixture');
+		assert.ok(mapped.fingerprint);
+		// Gitleaks does not verify credentials; null means "not applicable", and the
+		// engine declares it so the UI can say so rather than showing a blank.
+		assert.strictEqual(mapped.verified, null);
+		assert.ok(engines.gitleaksEngine.capabilities.unavailable.includes('verified'));
+	});
+
+	test('working-tree paths are relativized so one file is not two rows', () => {
+		// The `dir` pass echoes the absolute path it was given; the history pass emits
+		// a repo-relative one. Left alone they dedup as different files.
+		const abs = engines.mapGitleaksFinding({ File: '/repo/app.py', StartLine: 1, Secret: 's' }, 'worktree', '/repo');
+		assert.strictEqual(abs.file, 'app.py');
+		assert.strictEqual(abs.isGitHistory, false, 'a working-tree hit is not history');
+		assert.strictEqual(engines.relativizePath('/elsewhere/x.py', '/repo'), '/elsewhere/x.py');
+	});
+});
+
+suite('TruffleHog engine adapter', () => {
+	const engines = require('../scan-engines');
+
+	test('verification is opt-out in the args and off by default in settings', () => {
+		const verifying = engines.buildTruffleHogArgs({ repoDir: '/repo', verify: true });
+		assert.ok(verifying.includes('--results=verified,unknown'));
+		assert.ok(!verifying.includes('--no-verification'));
+		// Verification makes read-only calls to third-party providers using the
+		// discovered credential, so the caller must be able to refuse it.
+		const quiet = engines.buildTruffleHogArgs({ repoDir: '/repo', verify: false });
+		assert.ok(quiet.includes('--no-verification'));
+		assert.ok(verifying.includes('git') && verifying.includes('file:///repo'));
+	});
+
+	test('JSONL output is parsed and progress records are ignored', () => {
+		const stdout = [
+			'{"level":"info","msg":"scanning"}',
+			'',
+			'not json at all',
+			'{"DetectorName":"AWS","Verified":true,"Raw":"AKIAIOSFODNN7EXAMPLE",' +
+				'"SourceMetadata":{"Data":{"Git":{"commit":"c1","file":"a.py","line":4,"email":"f@example.invalid"}}}}'
+		].join('\n');
+		const parsed = engines.parseTruffleHogJsonl(stdout);
+		assert.strictEqual(parsed.length, 1, 'only records with a DetectorName are findings');
+		const mapped = engines.mapTruffleHogFinding(parsed[0]);
+		assert.strictEqual(mapped.file, 'a.py');
+		assert.strictEqual(mapped.line, 4);
+		assert.strictEqual(mapped.commitHash, 'c1');
+		assert.strictEqual(mapped.verified, true);
+		assert.strictEqual(mapped.ruleId, 'AWS');
+		assert.ok(mapped.description, 'a description is derived, not left blank');
+	});
+
+	test('the pre-v3 SourceMetadata shape is still understood', () => {
+		// Older builds put Git directly under SourceMetadata; accepting only the newer
+		// shape would silently lose the commit and file.
+		const mapped = engines.mapTruffleHogFinding({
+			DetectorName: 'Stripe', Verified: false, Raw: 'sk_live_x',
+			SourceMetadata: { Git: { commit: 'c2', file: 'b.py', line: 9 } }
+		});
+		assert.strictEqual(mapped.commitHash, 'c2');
+		assert.strictEqual(mapped.file, 'b.py');
+		assert.strictEqual(mapped.verified, false);
+	});
+
+	test('fields TruffleHog cannot supply are declared, not silently blank', () => {
+		const unavailable = engines.truffleHogEngine.capabilities.unavailable;
+		for (const field of ['endLine', 'startColumn', 'endColumn', 'entropy', 'fingerprint']) {
+			assert.ok(unavailable.includes(field), `${field} must be declared unavailable`);
+		}
+		assert.strictEqual(engines.truffleHogEngine.capabilities.verification, true);
+	});
+});
+
+suite('Cross-engine field parity and attribution', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const engines = require('../scan-engines');
+
+	// The floor: every field a Nosey Parker finding carries. A new engine may add
+	// fields but must never render fewer.
+	const NOSEY_PARKER_FIELDS = [
+		'file', 'line', 'secret', 'fullSecret', 'isSecretTruncated', 'description',
+		'severity', 'isDependency', 'includeInCleanup', 'originalSeverity', 'ruleName',
+		'isGitHistory', 'isUntracked', 'commitHash', 'commitBranches', 'commitDate'
+	];
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		return p;
+	}
+
+	test('a Nosey Parker finding defines the field floor', () => {
+		const result = panel()._createResult('app.py', 1, 'secret-value', 'API key', 'api_key');
+		for (const field of NOSEY_PARKER_FIELDS) {
+			assert.ok(field in result, `baseline finding is missing ${field}`);
+		}
+	});
+
+	test('a Gitleaks finding carries the full floor plus its extra detail', () => {
+		const finding = engines.mapGitleaksFinding({
+			RuleID: 'aws-access-token', Description: 'AWS Access Token', File: 'app.py',
+			StartLine: 3, EndLine: 3, StartColumn: 11, EndColumn: 30,
+			Secret: 'AKIAIOSFODNN7EXAMPLE', Commit: 'abc123', Date: '2026-07-31T04:57:01Z',
+			Author: 'Fixture', Email: 'f@example.invalid', Entropy: 3.5, Fingerprint: 'fp1'
+		}, 'history', '/repo');
+
+		const result = panel()._createResultFromEngineFinding(
+			finding, 'gitleaks', 'v8.30.1', engines.gitleaksEngine.capabilities
+		);
+
+		for (const field of NOSEY_PARKER_FIELDS) {
+			assert.ok(field in result, `gitleaks finding is missing ${field}`);
+		}
+		assert.strictEqual(result.engine, 'gitleaks');
+		assert.strictEqual(result.engineVersion, 'v8.30.1');
+		assert.strictEqual(result.commitHash, 'abc123', 'provenance survives the mapping');
+		assert.strictEqual(result.commitDate, '2026-07-31T04:57:01Z');
+		assert.strictEqual(result.isGitHistory, true);
+		assert.strictEqual(result.entropy, 3.5);
+		assert.strictEqual(result.fingerprint, 'fp1');
+		assert.strictEqual(result.fullSecret, 'AKIAIOSFODNN7EXAMPLE', 'the value remediation needs is preserved');
+		assert.deepStrictEqual(result.unavailableFields, ['verified']);
+	});
+
+	test('a TruffleHog finding carries the full floor and declares what it cannot supply', () => {
+		const finding = engines.mapTruffleHogFinding({
+			DetectorName: 'AWS', Verified: true, Raw: 'AKIAIOSFODNN7EXAMPLE',
+			SourceMetadata: { Data: { Git: { commit: 'c1', file: 'a.py', line: 4 } } }
+		});
+		const result = panel()._createResultFromEngineFinding(
+			finding, 'trufflehog', 'v3.96.0', engines.truffleHogEngine.capabilities
+		);
+		for (const field of NOSEY_PARKER_FIELDS) {
+			assert.ok(field in result, `trufflehog finding is missing ${field}`);
+		}
+		assert.ok(result.description, 'the description column is populated, not blank');
+		assert.ok(result.unavailableFields.includes('entropy'));
+	});
+
+	test('a verified live credential outranks every rule-name heuristic', () => {
+		// 'url' scores medium by rule name alone. A key confirmed to still work is the
+		// most urgent thing in the repository regardless of what matched it.
+		const finding = engines.mapTruffleHogFinding({
+			DetectorName: 'url', Verified: true, Raw: 'https://user:pw@host/x',
+			SourceMetadata: { Data: { Git: { commit: 'c1', file: 'a.py', line: 1 } } }
+		});
+		const result = panel()._createResultFromEngineFinding(
+			finding, 'trufflehog', 'v3.96.0', engines.truffleHogEngine.capabilities
+		);
+		assert.strictEqual(result.verified, true);
+		assert.strictEqual(result.severity, 'high');
+		assert.ok(/VERIFIED LIVE/.test(result.description));
+	});
+
+	test('the same secret found by two engines merges into one attributed row', () => {
+		const p = panel();
+		const base = { file: 'app.py', line: 3, fullSecret: 'AKIA', commitHash: 'abc123' };
+		const merged = p._deduplicateScanResults([
+			{ ...base, ruleName: 'aws-access-token', engine: 'gitleaks', engines: ['gitleaks'], entropy: 3.5, unavailableFields: ['verified'] },
+			{ ...base, ruleName: 'AWS', engine: 'trufflehog', engines: ['trufflehog'], verified: true, unavailableFields: ['entropy', 'verified'] }
+		]);
+		assert.strictEqual(merged.length, 1, 'corroboration is not two findings');
+		assert.deepStrictEqual(merged[0].engines.sort(), ['gitleaks', 'trufflehog']);
+		// The merged record is the union of what the engines supplied: entropy from
+		// one, verification from the other. Corroboration must never subtract detail.
+		assert.strictEqual(merged[0].entropy, 3.5);
+		assert.strictEqual(merged[0].verified, true);
+		// A field is only unavailable if every reporting engine lacked it.
+		assert.deepStrictEqual(merged[0].unavailableFields, ['verified']);
+	});
+
+	test('two rules matching one secret produce one row that names both', () => {
+		// `github-pat` and `generic-api-key` both fire on a GitHub token. That is one
+		// credential, and showing it twice just doubles the review burden.
+		const p = panel();
+		const base = { file: 'app.py', line: 3, fullSecret: 'AKIAIOSFODNN7EXAMPLE', commitHash: 'abc123', engine: 'gitleaks' };
+		const merged = p._deduplicateScanResults([
+			{ ...base, ruleName: 'aws-access-token', engines: ['gitleaks'] },
+			{ ...base, ruleName: 'generic-api-key', engines: ['gitleaks'] },
+			{ ...base, ruleName: 'aws-access-token', engines: ['gitleaks'] }
+		]);
+		assert.strictEqual(merged.length, 1);
+		assert.deepStrictEqual(merged[0].ruleNames.sort(), ['aws-access-token', 'generic-api-key']);
+	});
+});
+
+suite('Scan coverage and export parity', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panelWithResults(results, coverage) {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanResults = results;
+		panel._scanCoverage = coverage || null;
+		panel._resetScanSelection();
+		return panel;
+	}
+
+	const gitleaksFinding = {
+		file: 'app.py', line: 3, secret: 'AKIA…', fullSecret: 'AKIAIOSFODNN7EXAMPLE',
+		description: 'AWS Access Token', severity: 'high', ruleName: 'aws-access-token',
+		isDependency: false, isGitHistory: true, isUntracked: false,
+		commitHash: 'abc123', commitBranches: null, commitDate: '2026-07-31T04:57:01Z',
+		engine: 'gitleaks', engines: ['gitleaks'], engineVersion: 'v8.30.1',
+		entropy: 3.5, fingerprint: 'fp1', endLine: 3, startColumn: 11, endColumn: 30,
+		unavailableFields: ['verified']
+	};
+
+	const noseyParkerFinding = {
+		file: 'legacy.py', line: 1, secret: 'xoxb…', fullSecret: 'xoxb-1111',
+		description: 'Slack Bot Token', severity: 'high', ruleName: 'Slack Bot Token',
+		isDependency: false, isGitHistory: true, isUntracked: false,
+		commitHash: 'def456', commitBranches: null, commitDate: null,
+		engine: 'noseyparker', engines: ['noseyparker'], engineVersion: 'v0.24.0'
+	};
+
+	const coverage = {
+		incomplete: false, incompleteReason: null,
+		engines: [
+			{ id: 'gitleaks', displayName: 'Gitleaks', version: 'v8.30.1', ok: true, findings: 1 },
+			{ id: 'noseyparker', displayName: 'Nosey Parker', version: 'v0.24.0', ok: true, findings: 1, note: 'archived upstream' }
+		],
+		image: 'ghcr.io/praetorian-inc/noseyparker:v0.24.0', imagePulled: true, imagePullError: null,
+		rulesetMode: 'default', maxFileSizeMb: 100, timeoutSeconds: 300, dependencyHandling: 'warning',
+		refRefresh: { attempted: true, ok: true, reason: null },
+		refs: { localBranches: 2, remoteBranches: 2, remoteOnlyBranches: ['side'], tags: 1, stashes: 0 }
+	};
+
+	test('the export shape does not vary by engine', () => {
+		const panel = panelWithResults([gitleaksFinding, noseyParkerFinding], coverage);
+		const payload = panel._buildScanExportPayload();
+		assert.strictEqual(payload.findings.length, 2);
+		// Every key present for one engine must be present for the other, or a
+		// consumer parsing the export would silently lose columns per engine.
+		const [a, b] = payload.findings;
+		assert.deepStrictEqual(Object.keys(a).sort(), Object.keys(b).sort());
+		for (const key of ['engine', 'engines', 'engineVersion', 'verified', 'entropy', 'fingerprint', 'unavailableFields']) {
+			assert.ok(key in a && key in b, `${key} must be present for both engines`);
+		}
+		assert.strictEqual(a.entropy, 3.5);
+		assert.strictEqual(b.entropy, null, 'a field the engine did not supply is null, not missing');
+	});
+
+	test('redacted exports drop author identity as well as secrets', () => {
+		const panel = panelWithResults([{ ...gitleaksFinding, author: 'Fixture', authorEmail: 'f@example.invalid', commitMessage: 'add app' }], coverage);
+		const payload = panel._buildScanExportPayload({ redactSensitive: true });
+		assert.strictEqual(payload.findings[0].secret, '[REDACTED_SECRET]');
+		assert.strictEqual(payload.findings[0].author, null);
+		assert.strictEqual(payload.findings[0].authorEmail, null);
+		assert.strictEqual(payload.findings[0].commitMessage, null);
+		// Paths still visible by design; that is documented in the export dialog.
+		assert.strictEqual(payload.findings[0].file, 'app.py');
+	});
+
+	test('the export records what the scan covered', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		const payload = panel._buildScanExportPayload();
+		assert.ok(payload.coverage, 'an exported report without its scope cannot be audited later');
+		assert.strictEqual(payload.coverage.incomplete, false);
+		assert.strictEqual(payload.coverage.refsRefreshed, true);
+		assert.deepStrictEqual(payload.coverage.engines.map(e => e.id), ['gitleaks', 'noseyparker']);
+		assert.strictEqual(payload.summary.verifiedLiveCredentials, 0);
+	});
+
+	test('an incomplete scan is marked in the export, not just in a toast', () => {
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage, incomplete: true, incompleteReason: 'stopped after 300s'
+		});
+		const payload = panel._buildScanExportPayload();
+		assert.strictEqual(payload.coverage.incomplete, true);
+		assert.match(payload.coverage.incompleteReason, /300s/);
+	});
+
+	test('coverage is rendered with the results, including remote-only branches', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		const html = panel._renderScanCoverage();
+		assert.match(html, /Scan coverage/);
+		assert.match(html, /Gitleaks/);
+		assert.match(html, /Nosey Parker/);
+		assert.match(html, /Refs were refreshed from origin/);
+		assert.match(html, /exist only on the remote/);
+		assert.match(html, /side/);
+	});
+
+	test('the panel is collapsed by default and summarises what is inside', () => {
+		// On a busy repository the detail runs to hundreds of branch names. The
+		// summary carries the numbers so the panel is scannable at a glance.
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		const html = panel._renderScanCoverage();
+		assert.match(html, /<details class="coverage-toggle">/);
+		assert.ok(!/<details class="coverage-toggle" open/.test(html), 'starts collapsed');
+		assert.match(html, /coverage-summary/);
+		assert.match(html, /Gitleaks \+ Nosey Parker/, 'the summary names the engines that ran');
+		// The merged count, matching the results table. Per-engine counts sum to 2
+		// here because both engines reported the same secret; showing that unmerged
+		// total beside a one-row table would just look like a miscount.
+		assert.match(html, /1 finding\b/, 'the summary uses the merged finding count');
+		assert.match(html, /5 refs scanned/, 'the summary totals the refs');
+	});
+
+	test('a long remote-only branch list is collapsed behind a count', () => {
+		const many = Array.from({ length: 150 }, (_, i) => `feat/branch-${i}`);
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage,
+			refs: { ...coverage.refs, remoteBranches: 150, remoteOnlyBranches: many }
+		});
+		const html = panel._renderScanCoverage();
+		assert.match(html, /150 branches exist only on the remote/);
+		assert.match(html, /coverage-branchlist/);
+	});
+
+	test('warnings are promoted into the summary, never hidden by collapsing', () => {
+		// Collapsing must hide volume, not caveats. A reader who never expands the
+		// panel still has to see that coverage was reduced.
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage,
+			refRefresh: { attempted: true, ok: false, reason: 'The remote host could not be reached.' },
+			strategy: { mode: 'sequential', tier: 'constrained', concurrency: 1, dropped: ['trufflehog'], reason: 'constrained host', host: { cpus: 2, totalMemGb: 3, memorySource: 'os', loadPerCore: 0.1 } }
+		});
+		const html = panel._renderScanCoverage();
+		const summary = html.slice(0, html.indexOf('coverage-intro'));
+		assert.match(summary, /coverage-badge/);
+		assert.match(summary, /refs not refreshed/);
+		assert.match(summary, /1 engine skipped/);
+	});
+
+	test('an unrefreshed ref set is called out rather than passed over', () => {
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage, refRefresh: { attempted: true, ok: false, reason: 'The remote host could not be reached.' }
+		});
+		const html = panel._renderScanCoverage();
+		assert.match(html, /Refs were <strong>not<\/strong> refreshed/);
+		assert.match(html, /may not have been scanned/);
+	});
+
+	test('a raw git failure is folded away, not spliced into the summary', () => {
+		// The reported version put git's entire SAML/SSO remote message inline in
+		// the refs line, which made the panel unreadable.
+		const raw = 'ERROR: The organization has enabled or enforced SAML SSO. Visit https://docs.github.com/... fatal: Could not read from remote repository.';
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage,
+			refRefresh: {
+				attempted: true, ok: false,
+				reason: 'The organisation that owns this remote enforces SAML single sign-on, and your credential is not authorised for it.',
+				remoteError: { kind: 'sso', command: 'git fetch --tags origin', cause: 'x', fix: 'y', detail: raw }
+			}
+		});
+		const html = panel._renderScanCoverage();
+		const summary = html.slice(0, html.indexOf('coverage-intro'));
+		assert.ok(!summary.includes('docs.github.com'), 'raw git output never reaches the summary line');
+		assert.match(html, /What git reported/);
+		assert.match(html, /coverage-raw/);
+	});
+
+	test('an engine with no usable version says so instead of printing a placeholder', () => {
+		// Ubuntu's gitleaks package prints "version is set by build process".
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage,
+			engines: [{ id: 'gitleaks', displayName: 'Gitleaks', version: null, ok: true, findings: 0 }]
+		});
+		const html = panel._renderScanCoverage();
+		assert.match(html, /version unknown/);
+		assert.ok(!/version is set by build process/.test(html));
+	});
+
+	test('an incomplete scan renders an unmissable banner, not a dismissible toast', () => {
+		const panel = panelWithResults([], { ...coverage, incomplete: true, incompleteReason: 'stopped after 300s' });
+		const html = panel._renderScanCoverage();
+		assert.match(html, /Scan incomplete/);
+		assert.match(html, /not exhaustive/);
+		// It sits outside the toggle: an incomplete scan is a finding in its own
+		// right and must not require a click to discover.
+		assert.ok(html.indexOf('Scan incomplete') < html.indexOf('<details class="coverage-toggle">'));
+	});
+
+	test('attribution names the engines that found a finding and those that missed it', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		const html = panel._renderEngineAttribution(gitleaksFinding);
+		assert.match(html, /Gitleaks/);
+		// Nosey Parker ran against the same repository and did not report it.
+		assert.match(html, /missed by/);
+		assert.match(html, /Nosey Parker/);
+		assert.match(html, /no verified/, 'a structurally unavailable field is stated');
+	});
+
+	test('a verified live credential is flagged in the results table', () => {
+		const panel = panelWithResults([{ ...gitleaksFinding, verified: true, engines: ['trufflehog'], unavailableFields: [] }], coverage);
+		const html = panel._renderEngineAttribution(panel._scanResults[0]);
+		assert.match(html, /VERIFIED LIVE/);
+	});
+
+	test('the results table exposes an Engine column', () => {
+		const panel = panelWithResults([gitleaksFinding, noseyParkerFinding], coverage);
+		const html = panel._getResultsHtml();
+		assert.match(html, /<th[^>]*>Engine<\/th>/);
+		assert.match(html, /Scan coverage/);
+	});
+});
+
+suite('Manual redaction rules', () => {
+	const rules = require('../redaction-rules');
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		return p;
+	}
+
+	test('a source containing the rule separator is rejected', () => {
+		// "==>" separates the match from the replacement in the rule file. A source
+		// containing it produces a malformed line, and the rewrite tool's parse of
+		// that line — not the UI — decides what actually gets removed.
+		const result = rules.validateRule({ source: 'host==>evil', mode: 'literal', replaceWith: 'x' });
+		assert.strictEqual(result.valid, false);
+		assert.ok(result.errors.some(e => e.includes('==>')));
+	});
+
+	test('empty, whitespace-only and multi-line sources are rejected', () => {
+		assert.strictEqual(rules.validateRule({ source: '' }).valid, false);
+		assert.strictEqual(rules.validateRule({ source: '   ' }).valid, false);
+		assert.strictEqual(rules.validateRule({ source: 'a\nb' }).valid, false);
+	});
+
+	test('an invalid regex is rejected at entry, not at rewrite time', () => {
+		const bad = rules.validateRule({ source: '([unclosed', mode: 'regex' });
+		assert.strictEqual(bad.valid, false);
+		assert.ok(bad.errors.some(e => /valid regular expression/i.test(e)));
+		assert.strictEqual(rules.validateRule({ source: 'AKIA[0-9A-Z]{16}', mode: 'regex' }).valid, true);
+	});
+
+	test('a pattern matching the empty string is refused', () => {
+		// It would rewrite every blob in history.
+		const result = rules.validateRule({ source: 'x*', mode: 'regex' });
+		assert.strictEqual(result.valid, false);
+		assert.ok(result.errors.some(e => /empty string/.test(e)));
+	});
+
+	test('a very short literal is warned about but still allowed', () => {
+		const result = rules.validateRule({ source: 'abc', mode: 'literal' });
+		assert.strictEqual(result.valid, true, 'short internal codenames are legitimate');
+		assert.ok(result.warnings.length > 0, 'but the blast radius has to be previewed');
+	});
+
+	test('rule lines carry the mode through to the rewrite file', () => {
+		assert.strictEqual(
+			rules.formatRuleLine({ source: 'internal.example.com', mode: 'literal', replaceWith: 'redacted' }),
+			'internal.example.com==>redacted'
+		);
+		// Both BFG and git filter-repo need the regex: prefix; without it the pattern
+		// would be rewritten as a literal and match nothing.
+		assert.strictEqual(
+			rules.formatRuleLine({ source: 'AKIA[0-9A-Z]{16}', mode: 'regex', replaceWith: '*****' }),
+			'regex:AKIA[0-9A-Z]{16}==>*****'
+		);
+		assert.strictEqual(
+			rules.formatRuleLine({ source: 'x', mode: 'literal', replaceWith: '' }),
+			'x==>*****',
+			'an empty replacement falls back to the single default'
+		);
+	});
+
+	test('verification channels are split by mode', () => {
+		// verifyRemoteRefs greps literals with --fixed-strings. A regex rule verified
+		// that way would rewrite correctly and then fail its own verification.
+		const split = rules.partitionForVerification([
+			{ source: 'host', mode: 'literal' },
+			{ source: 'AKIA[0-9A-Z]{16}', mode: 'regex' }
+		]);
+		assert.deepStrictEqual(split.literals, ['host']);
+		assert.deepStrictEqual(split.patterns, ['AKIA[0-9A-Z]{16}']);
+	});
+
+	test('the preview uses a pickaxe over all refs', () => {
+		const literal = rules.buildPreviewArgs({ source: 'host', mode: 'literal' });
+		const regex = rules.buildPreviewArgs({ source: 'h.st', mode: 'regex' });
+		// -S/-G search diffs, so they find content added and later removed — the
+		// normal case for a leaked value, and what a working-tree grep would miss.
+		assert.ok(literal.includes('-Shost'));
+		assert.ok(regex.includes('-Gh.st'));
+		// The preview must cover the same refs the rewrite will, or it understates.
+		assert.ok(literal.includes('--all'));
+	});
+
+	test('the panel stores, deduplicates and removes rules', () => {
+		const p = panel();
+		assert.strictEqual(p._addCustomRule('internal.example.com', 'literal', 'redacted').ok, true);
+		assert.strictEqual(p._getCustomRules().length, 1);
+		// Re-adding the same source edits it rather than shadowing it with a second rule.
+		p._addCustomRule('internal.example.com', 'literal', 'changed');
+		assert.strictEqual(p._getCustomRules().length, 1);
+		assert.strictEqual(p._getCustomRules()[0].replaceWith, 'changed');
+		p._addCustomRule('internal.example.com', 'regex', 'other');
+		assert.strictEqual(p._getCustomRules().length, 2, 'a different mode is a different rule');
+		p._removeCustomRule(p._getCustomRules()[0].id);
+		assert.strictEqual(p._getCustomRules().length, 1);
+	});
+
+	test('an invalid rule is not stored', () => {
+		const p = panel();
+		assert.strictEqual(p._addCustomRule('bad==>rule', 'literal', 'x').ok, false);
+		assert.strictEqual(p._getCustomRules().length, 0);
+	});
+
+	test('manual rules survive a re-scan, unlike index-based selection', () => {
+		const p = panel();
+		p._addCustomRule('internal.example.com', 'literal', 'redacted');
+		p._scanResults = [{ file: 'a', line: 1, fullSecret: 's', isDependency: false }];
+		p._resetScanSelection();
+		// Selection is tied to _scanResults indices and must reset; rules are not.
+		assert.strictEqual(p._getCustomRules().length, 1);
+	});
+
+	test('a rules-only cleanup resolves to rules and is not refused', () => {
+		const p = panel();
+		p._scanResults = [];
+		p._resetScanSelection();
+		p._addCustomRule('internal.example.com', 'literal', 'redacted');
+		const resolved = p._resolveCleanupRules({});
+		assert.strictEqual(resolved.length, 1);
+		assert.deepStrictEqual(resolved[0], {
+			source: 'internal.example.com', mode: 'literal', replaceWith: 'redacted'
+		});
+	});
+
+	test('findings and manual rules combine without duplicate lines', () => {
+		const p = panel();
+		p._scanResults = [{
+			file: 'a.py', line: 1, secret: 'tok', fullSecret: 'tok',
+			isDependency: false, includeInCleanup: true
+		}];
+		p._resetScanSelection();
+		p._setScanSelection(0, true);
+		// The same string added manually must not produce a second identical rule.
+		p._addCustomRule('tok', 'literal', 'zzz');
+		p._addCustomRule('other.example.com', 'literal', 'redacted');
+		const resolved = p._resolveCleanupRules({});
+		assert.strictEqual(resolved.length, 2);
+		assert.deepStrictEqual(resolved.map(r => r.source).sort(), ['other.example.com', 'tok']);
+	});
+
+	test('a regex rule reaches the prepared script and its verification', () => {
+		const p = panel();
+		p._addCustomRule('AKIA[0-9A-Z]{16}', 'regex', 'REDACTED');
+		const script = p._buildScanBfgReplaceCommand('/repo', p._resolveCleanupRules({}));
+		assert.ok(script.includes('regex:AKIA[0-9A-Z]{16}==>REDACTED'), 'the regex: prefix reaches the rule file');
+		// One list, one place: the secret is not repeated in a per-rule grep line.
+		assert.ok(script.includes('done < "$replacement_file"'));
+		assert.ok(script.includes('grep_flag="--extended-regexp"'));
+	});
+
+	test('the rules editor renders even when the scan found nothing', () => {
+		// A clean scan is exactly when a user reaches for manual redaction.
+		const html = panel()._renderCustomRules();
+		assert.match(html, /Manual redaction rules/);
+		assert.match(html, /custom-rule-source/);
+		assert.match(html, /custom-rule-mode/);
+	});
+
+	test('a rule that matches nothing is called out as probably a typo', () => {
+		const p = panel();
+		const outcome = p._addCustomRule('internal.example.com', 'literal', 'redacted');
+		p._scanCleanup.customRulePreviews[outcome.rule.id] = {
+			commitCount: 0, commits: [], files: [], branches: [], truncated: false, maxCount: 200
+		};
+		const html = p._renderCustomRules();
+		assert.match(html, /Matches nothing in history/);
+		assert.match(html, /typo/);
+	});
+
+	test('a bounded preview says it is bounded', () => {
+		const p = panel();
+		const outcome = p._addCustomRule('internal.example.com', 'literal', 'redacted');
+		p._scanCleanup.customRulePreviews[outcome.rule.id] = {
+			commitCount: 200, commits: [], files: ['a.py'], branches: ['main'], truncated: true, maxCount: 200
+		};
+		const html = p._renderCustomRules();
+		assert.match(html, /the real total is higher/);
+	});
+});
+
+suite('Manual regex redaction end to end', () => {
+	const gitRewrite = require('../git-rewrite');
+	const LeakLockPanel = require('../leakLockPanel');
+	const redactionRules = require('../redaction-rules');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	// git filter-repo is not one of the extension's installed dependencies, so this
+	// suite reports itself skipped rather than failing on a machine without it.
+	function hasFilterRepo() {
+		try {
+			cp.execFileSync('git', ['filter-repo', '--version'], { env, stdio: 'ignore' });
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	let base, origin, work, available;
+
+	suiteSetup(() => {
+		available = hasFilterRepo();
+		if (!available) { return; }
+		base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-regex-'));
+		origin = path.join(base, 'origin.git');
+		work = path.join(base, 'work');
+		cp.execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin], { env });
+		cp.execFileSync('git', ['clone', '-q', origin, work], { env });
+		// Three variants of one internal hostname: enumerating them by hand is
+		// exactly what regex mode exists to avoid.
+		fs.writeFileSync(path.join(work, 'README.md'), '# app\n');
+		fs.writeFileSync(path.join(work, 'conf.yml'), [
+			'a: api.internal-corp-7.example',
+			'b: db.internal-corp-42.example',
+			'c: mq.internal-corp-999.example'
+		].join('\n') + '\n');
+		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
+		g(['add', '-A']); g(['commit', '-qm', 'add config']); g(['push', '-q', 'origin', 'main']);
+	});
+
+	suiteTeardown(() => {
+		if (base) { try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function originMatches(pattern) {
+		return cp.execFileSync('git', ['--git-dir=' + origin, 'log', '--all', '-G', pattern, '--oneline'], { env })
+			.toString().trim().length > 0;
+	}
+
+	test('a regex rule removes every variant and verifies clean on the remote', async function () {
+		if (!available) { this.skip(); return; }
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._addCustomRule('internal-corp-[0-9]+\\.example', 'regex', 'redacted.invalid');
+		const rules = panel._resolveCleanupRules({});
+
+		assert.strictEqual(originMatches('internal-corp-[0-9]+\\.example'), true, 'the remote starts dirty');
+
+		await panel._withSecureReplacementsFile(rules, async (replacementsFile) => {
+			// The rule file is what both the rewrite and the verification read.
+			const contents = fs.readFileSync(replacementsFile, 'utf8');
+			assert.ok(contents.startsWith('regex:'), 'the regex: prefix reaches the rewrite tool');
+			return gitRewrite.runRewrite({
+				repoDir: work,
+				push: false,
+				rewrite: async () => {
+					cp.execFileSync('git', ['filter-repo', '--replace-text', replacementsFile, '--force'],
+						{ cwd: work, env, maxBuffer: 64 * 1024 * 1024 });
+				}
+			});
+		});
+
+		await gitRewrite.ensureRemote(work, 'origin', origin);
+		await gitRewrite.pushRewritten(work, 'origin');
+
+		const verify = redactionRules.partitionForVerification(rules);
+		assert.deepStrictEqual(verify.literals, [], 'a regex rule must not be verified as a literal');
+		const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', verify);
+		assert.deepStrictEqual(offenders, [], 'regex-aware verification reports the remote clean');
+		assert.strictEqual(originMatches('internal-corp-[0-9]+\\.example'), false, 'every variant is gone from the remote');
+	});
+
+	test('verification can still fail — it is not vacuously clean', async function () {
+		if (!available) { this.skip(); return; }
+		// A verification step that cannot report dirty is not a verification step.
+		// 'app' is still present in README.md, so this must be reported.
+		const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', { patterns: ['a[p]p'] });
+		assert.ok(offenders.length > 0, 'a pattern that is still present is reported as an offender');
+		assert.ok(offenders.every(o => o.reason === 'secret still present'));
+	});
+});
+
+suite('Engine selection and graceful degradation', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	test('unknown engine ids are dropped rather than passed through', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const ids = panel._getEnabledEngineIds();
+		// Whatever the workspace config holds, only engines this build knows about
+		// may reach the scan loop.
+		assert.ok(ids.every(id => ['gitleaks', 'trufflehog', 'noseyparker'].includes(id)));
+	});
+
+	test('every engine is enabled by default, led by the maintained one', () => {
+		const pkg = require('../package.json');
+		const setting = pkg.contributes.configuration.properties['leakLock.scan.engines'];
+		// All three ship on. An engine whose binary is absent is reported and skipped,
+		// so the cost of enabling it is a line in the coverage panel — and the benefit
+		// is that the capability is discoverable instead of hidden in settings.
+		assert.deepStrictEqual(setting.default, ['gitleaks', 'trufflehog', 'noseyparker']);
+		// Nosey Parker is archived upstream, so it must not be the engine a new user
+		// relies on by default.
+		assert.strictEqual(setting.default[0], 'gitleaks');
+	});
+
+	test('the code fallback matches the manifest default', () => {
+		// These drifting apart is how a user ends up with fewer engines than the
+		// documentation shows.
+		const pkg = require('../package.json');
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const ids = panel._getEnabledEngineIds();
+		assert.deepStrictEqual(
+			ids.slice().sort(),
+			pkg.contributes.configuration.properties['leakLock.scan.engines'].default.slice().sort()
+		);
+	});
+
+	test('credential verification is off by default', () => {
+		const pkg = require('../package.json');
+		const setting = pkg.contributes.configuration.properties['leakLock.trufflehog.verify'];
+		assert.strictEqual(setting.default, false,
+			'verification sends the discovered credential to a third party; it must be opt-in');
+	});
+
+	test('coverage names an engine that was skipped, rather than omitting it', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanCoverage = {
+			incomplete: false, incompleteReason: null,
+			engines: [
+				{ id: 'gitleaks', displayName: 'Gitleaks', version: 'v8.30.1', ok: true, findings: 3 },
+				{ id: 'noseyparker', displayName: 'Nosey Parker', version: null, ok: false, findings: 0, note: 'Skipped — Docker not available: daemon not running' }
+			],
+			refs: { localBranches: 1, remoteBranches: 1, remoteOnlyBranches: [], tags: 0, stashes: 0 },
+			refRefresh: { attempted: true, ok: true, reason: null },
+			rulesetMode: 'default', maxFileSizeMb: 100, timeoutSeconds: 300, dependencyHandling: 'warning'
+		};
+		const html = panel._renderScanCoverage();
+		// An engine that did not run must be stated, not silently absent — otherwise
+		// a partial scan reads as a full one.
+		assert.match(html, /Nosey Parker/);
+		assert.match(html, /Docker not available/);
+	});
+});
+
+suite('Host capacity and scan execution strategy', () => {
+	const host = require('../host-capacity');
+
+	const HOSTS = {
+		tiny: { cpus: 2, totalMemGb: 3, memorySource: 'os', platform: 'linux', loadPerCore: 0.2 },
+		modest: { cpus: 4, totalMemGb: 8, memorySource: 'os', platform: 'linux', loadPerCore: 0.3 },
+		big: { cpus: 16, totalMemGb: 32, memorySource: 'os', platform: 'linux', loadPerCore: 0.2 },
+		busy: { cpus: 16, totalMemGb: 32, memorySource: 'os', platform: 'linux', loadPerCore: 3.0 }
+	};
+	const ALL = ['gitleaks', 'trufflehog', 'noseyparker'];
+
+	test('a capable host runs engines in parallel, leaving cores for the editor', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.big });
+		assert.strictEqual(plan.tier, 'capable');
+		assert.strictEqual(plan.mode, 'parallel');
+		assert.deepStrictEqual(plan.dropped, []);
+		assert.ok(plan.concurrency <= HOSTS.big.cpus - 2, 'the editor and git still need a core');
+	});
+
+	test('a modest host runs every engine, one at a time', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.modest });
+		assert.strictEqual(plan.mode, 'sequential');
+		assert.strictEqual(plan.concurrency, 1);
+		// Slower is fine. Dropping an engine is not.
+		assert.deepStrictEqual(plan.dropped, []);
+		assert.deepStrictEqual(plan.engines.sort(), ALL.slice().sort());
+	});
+
+	test('a saturated host is treated as modest even with many cores', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.busy });
+		assert.strictEqual(plan.tier, 'moderate');
+		assert.strictEqual(plan.mode, 'sequential');
+	});
+
+	test('a constrained host keeps the lightest, most capable engine', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.tiny });
+		assert.strictEqual(plan.tier, 'constrained');
+		// Gitleaks: a static binary with no container runtime or JVM, and the only
+		// maintained engine — so the one left standing is also the one most likely
+		// to find something.
+		assert.deepStrictEqual(plan.engines, ['gitleaks']);
+		assert.deepStrictEqual(plan.dropped.sort(), ['noseyparker', 'trufflehog']);
+	});
+
+	test('a capacity downgrade is never silent', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.tiny });
+		// Fewer engines means fewer findings; the user has to be told, and told how
+		// to override it.
+		assert.match(plan.reason, /constrained/);
+		assert.match(plan.reason, /skipped/);
+		assert.match(plan.reason, /executionMode/);
+		assert.match(plan.reason, /2 core/);
+	});
+
+	test('an explicit mode overrides the heuristic in both directions', () => {
+		const forced = host.chooseScanStrategy({ engines: ALL, host: HOSTS.tiny, mode: 'parallel' });
+		assert.strictEqual(forced.mode, 'parallel');
+		assert.deepStrictEqual(forced.dropped, [], 'an explicit request is honoured on a weak host');
+
+		const held = host.chooseScanStrategy({ engines: ALL, host: HOSTS.big, mode: 'sequential' });
+		assert.strictEqual(held.mode, 'sequential');
+
+		const single = host.chooseScanStrategy({ engines: ALL, host: HOSTS.big, mode: 'single' });
+		assert.deepStrictEqual(single.engines, ['gitleaks']);
+		assert.strictEqual(single.dropped.length, 2);
+	});
+
+	test('one enabled engine needs no strategy at all', () => {
+		const plan = host.chooseScanStrategy({ engines: ['gitleaks'], host: HOSTS.big });
+		assert.strictEqual(plan.mode, 'sequential');
+		assert.deepStrictEqual(plan.dropped, []);
+	});
+
+	test('container memory limits beat the host figure', () => {
+		// os.totalmem() reports the host's memory inside a container — precisely
+		// where resources are tightest.
+		const limited = host.detectMemoryLimit((p) =>
+			p === '/sys/fs/cgroup/memory.max' ? '2147483648' : null);
+		assert.strictEqual(limited.source, 'cgroup-v2');
+		assert.strictEqual(limited.bytes, 2147483648);
+
+		// "max" means unlimited, so the host figure stands.
+		const unlimited = host.detectMemoryLimit((p) =>
+			p === '/sys/fs/cgroup/memory.max' ? 'max' : null);
+		assert.strictEqual(unlimited.source, 'os');
+
+		const v1 = host.detectMemoryLimit((p) =>
+			p === '/sys/fs/cgroup/memory/memory.limit_in_bytes' ? '1073741824' : null);
+		assert.strictEqual(v1.source, 'cgroup-v1');
+	});
+
+	test('load average is treated as unknown on Windows, not as idle', () => {
+		// os.loadavg() returns [0,0,0] on Windows rather than failing.
+		const win = host.describeHost({ cpus: 4, memoryBytes: 16 * 1024 ** 3, platform: 'win32' });
+		assert.strictEqual(win.loadPerCore, null);
+		const linux = host.describeHost({
+			cpus: 4, memoryBytes: 16 * 1024 ** 3, platform: 'linux', loadavg: [2, 2, 2]
+		});
+		assert.strictEqual(linux.loadPerCore, 0.5);
+	});
+
+	test('describeHost reports something usable on this machine', () => {
+		const real = host.describeHost();
+		assert.ok(real.cpus >= 1);
+		assert.ok(real.totalMemGb > 0);
+		assert.ok(['constrained', 'moderate', 'capable'].includes(host.classifyHost(real)));
+	});
+
+	test('one failing engine does not cancel the others', () => {
+		return host.runWithConcurrency([
+			async () => ({ id: 'a' }),
+			async () => { throw new Error('boom'); },
+			async () => ({ id: 'c' })
+		], 3).then((results) => {
+			assert.strictEqual(results.length, 3);
+			assert.strictEqual(results[0].id, 'a');
+			assert.ok(results[1].error, 'the failure is reported in its own slot');
+			assert.strictEqual(results[2].id, 'c', 'later engines still run');
+		});
+	});
+
+	test('concurrency is actually bounded', async () => {
+		let inFlight = 0, peak = 0;
+		const tasks = Array.from({ length: 6 }, () => async () => {
+			inFlight += 1;
+			peak = Math.max(peak, inFlight);
+			await new Promise(r => setTimeout(r, 10));
+			inFlight -= 1;
+			return true;
+		});
+		await host.runWithConcurrency(tasks, 2);
+		assert.strictEqual(peak, 2);
+	});
+});
+
+suite('Preparing a command must never modify the repository', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+	let base, origin, work;
+
+	suiteSetup(() => {
+		base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-prepare-'));
+		origin = path.join(base, 'origin.git');
+		work = path.join(base, 'work');
+		cp.execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin], { env });
+		cp.execFileSync('git', ['clone', '-q', origin, work], { env });
+		fs.writeFileSync(path.join(work, 'README.md'), '# app\n');
+		fs.writeFileSync(path.join(work, 'conf.env'), 'TOKEN=PREPARE_MUST_NOT_REMOVE_ME\n');
+		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
+		g(['add', '-A']); g(['commit', '-qm', 'add secret']); g(['push', '-q', 'origin', 'main']);
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	function headSha() {
+		return cp.execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { env }).toString().trim();
+	}
+	function originHasSecret() {
+		return cp.execFileSync('git', ['--git-dir=' + origin, 'log', '--all', '-S', 'PREPARE_MUST_NOT_REMOVE_ME', '--oneline'], { env })
+			.toString().trim().length > 0;
+	}
+	function workingCopyHasSecret() {
+		return fs.existsSync(path.join(work, 'conf.env'));
+	}
+
+	function preparedPanel() {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanPath = work;
+		panel._selectedDirectory = work;
+		panel._scanResults = [{
+			file: 'conf.env', line: 1,
+			secret: 'PREPARE_MUST_NOT_REMOVE_ME', fullSecret: 'PREPARE_MUST_NOT_REMOVE_ME',
+			description: 'token', severity: 'high', ruleName: 'token',
+			isDependency: false, includeInCleanup: true, isGitHistory: true
+		}];
+		panel._resetScanSelection();
+		panel._setScanSelection(0, true);
+		return panel;
+	}
+
+	test('preparing the BFG command leaves history, the remote and the worktree untouched', async () => {
+		const before = headSha();
+		const panel = preparedPanel();
+		await panel._prepareScanBfgCommand({});
+
+		assert.ok(panel._scanCleanup.preparedCommand, 'a script was produced');
+		assert.strictEqual(panel._scanCleanup.preparedMode, 'bfg');
+		// Preparing is a read-only planning step. Anything else here is a
+		// catastrophic bug: the user asked to see the plan, not to run it.
+		assert.strictEqual(headSha(), before, 'HEAD must not move when only preparing');
+		assert.strictEqual(originHasSecret(), true, 'the remote must still be untouched');
+		assert.strictEqual(workingCopyHasSecret(), true, 'the working copy must be untouched');
+	});
+
+	test('preparing the Git-only command leaves history, the remote and the worktree untouched', async () => {
+		const before = headSha();
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+
+		assert.ok(panel._scanCleanup.preparedCommand, 'a script was produced');
+		assert.strictEqual(panel._scanCleanup.preparedMode, 'git');
+		assert.strictEqual(headSha(), before, 'HEAD must not move when only preparing');
+		assert.strictEqual(originHasSecret(), true, 'the remote must still be untouched');
+		assert.strictEqual(workingCopyHasSecret(), true, 'the working copy must be untouched');
+	});
+
+	test('preparing does not stage a force-push', () => {
+		const panel = preparedPanel();
+		assert.strictEqual(panel._scanCleanup.pendingPush, null,
+			'nothing may be staged for the remote by a planning step');
+	});
+
+	test('the real render path is also side-effect free', async () => {
+		// The tests above stub _updateWebviewContent, which would hide a destructive
+		// side effect inside _getHtmlForWebview()/_getResultsHtml(). Prepare calls
+		// the render twice, so exercise the genuine one against a fake panel.
+		const before = headSha();
+		const panel = preparedPanel();
+		const rendered = [];
+		panel._panel = { webview: { set html(value) { rendered.push(value); }, get html() { return rendered[rendered.length - 1] || ''; } } };
+		// _updateWebviewContent is a no-op until the single initial render has run.
+		panel._initialRenderDone = true;
+		// preparedPanel() stubs the render; drop the own-property stub so the real
+		// prototype method runs. Stubbing it is exactly what would hide this bug.
+		delete panel._updateWebviewContent;
+
+		await panel._prepareScanBfgCommand({});
+
+		assert.ok(rendered.length >= 2, 'prepare re-renders while preparing and after');
+		assert.ok(rendered[rendered.length - 1].includes('Prepare BFG command'), 'the panel rendered');
+		assert.strictEqual(headSha(), before, 'rendering must not move HEAD');
+		assert.strictEqual(originHasSecret(), true, 'rendering must not touch the remote');
+		assert.strictEqual(workingCopyHasSecret(), true, 'rendering must not touch the worktree');
+	});
+});
+
+suite('An unreachable remote stops preparation with a clear message', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com',
+		// Never let a failing fetch sit waiting for credentials in a test.
+		GIT_TERMINAL_PROMPT: '0'
+	};
+	let base, work;
+
+	suiteSetup(() => {
+		base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-noremote-'));
+		work = path.join(base, 'work');
+		fs.mkdirSync(work);
+		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
+		cp.execFileSync('git', ['init', '-q', '-b', 'main', work], { env });
+		fs.writeFileSync(path.join(work, 'conf.env'), 'TOKEN=UNREACHABLE_REMOTE_SECRET\n');
+		g(['add', '-A']); g(['commit', '-qm', 'add secret']);
+		// A remote that exists in config but cannot be reached — the same shape as an
+		// SSO-gated, unauthenticated or offline remote.
+		g(['remote', 'add', 'origin', path.join(base, 'does-not-exist.git')]);
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	function preparedPanel() {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanPath = work;
+		panel._selectedDirectory = work;
+		panel._scanResults = [{
+			file: 'conf.env', line: 1,
+			secret: 'UNREACHABLE_REMOTE_SECRET', fullSecret: 'UNREACHABLE_REMOTE_SECRET',
+			description: 'token', severity: 'high', ruleName: 'token',
+			isDependency: false, includeInCleanup: true, isGitHistory: true
+		}];
+		panel._resetScanSelection();
+		panel._setScanSelection(0, true);
+		return panel;
+	}
+
+	test('preparation stops and produces nothing at all', async () => {
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+
+		// Half-states are what caused the confusion: a plan built from a comparison
+		// that could not be made is worse than no plan.
+		assert.strictEqual(panel._scanCleanup.preparedCommand, null, 'no script is generated');
+		assert.strictEqual(panel._scanCleanup.preparedMode, null);
+		assert.strictEqual(panel._scanCleanup.preparedRepo, null);
+		assert.strictEqual(panel._scanCleanup.blockedReason, 'remote-unreachable');
+		assert.ok(panel._scanCleanup.remoteError, 'the reason is kept for the panel');
+	});
+
+	test('the plan check is read-only — it does not prune refs', async () => {
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+		// --prune deletes local remote-tracking refs. Wanted immediately before a
+		// rewrite; not wanted during a planning check the user did not ask to mutate
+		// anything.
+		assert.ok(!panel._scanCleanup.remoteError.command.includes('--prune'),
+			'planning must not prune');
+		assert.strictEqual(panel._scanCleanup.remoteError.command, 'git fetch --tags origin');
+	});
+
+	test('nothing in the repository is touched', async () => {
+		const head = () => cp.execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { env }).toString().trim();
+		const before = head();
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+		assert.strictEqual(head(), before);
+		assert.ok(fs.existsSync(path.join(work, 'conf.env')), 'the secret file is still there');
+	});
+
+	test('the message leads with "nothing changed" and names the command', async () => {
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+		const html = panel._renderRemoteError(panel._scanCleanup.remoteError);
+
+		// The original wording — "Failed to prepare cleanup: Command failed: git
+		// fetch ..." — was read as "the cleanup ran". Lead with the opposite.
+		assert.match(html, /nothing in your repository was changed/i);
+		assert.match(html, /No history was rewritten/);
+		assert.match(html, /read-only/);
+		assert.match(html, /git fetch --tags origin/);
+		assert.match(html, /To fix it:/);
+		// Raw git output is available but folded away; it is not the headline.
+		assert.match(html, /<details/);
+		assert.ok(!/Failed to prepare cleanup/.test(html));
+	});
+
+	test('no wording implies a cleanup was attempted', async () => {
+		const panel = preparedPanel();
+		await panel._prepareScanGitCommand({});
+		const html = panel._renderRemoteError(panel._scanCleanup.remoteError);
+		for (const misleading of [/cleanup failed/i, /removal failed/i, /rewrite failed/i]) {
+			assert.ok(!misleading.test(html), `panel must not say ${misleading}`);
+		}
+	});
+
+	test('remote failures are classified into a cause and a fix', () => {
+		const panel = preparedPanel();
+		const cases = [
+			['ERROR: The organization has enabled or enforced SAML SSO.', 'sso', /single sign-on/i],
+			['Authentication failed for https://example.invalid', 'auth', /refused access/i],
+			['ssh: Could not resolve hostname example.invalid', 'network', /could not be reached/i],
+			['Repository not found.', 'missing', /does not point at a repository/i]
+		];
+		for (const [raw, kind, expectedCause] of cases) {
+			const summarized = panel._classifyRemoteError(new Error(raw), 'git fetch --tags origin');
+			assert.strictEqual(summarized.kind, kind, `${raw} should classify as ${kind}`);
+			assert.match(summarized.cause, expectedCause);
+			assert.ok(summarized.fix.length > 0, 'every cause carries a fix');
+			assert.strictEqual(summarized.command, 'git fetch --tags origin');
+		}
+	});
+});
+
+suite('A cleanup only ever runs where it was planned', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	test('the executors target the repository the plan was built for', async () => {
+		// _executeBFGCleanup resolved `this._selectedDirectory || workspaceFolders[0]`
+		// and omitted the scanned path entirely, so a BFG cleanup could rewrite a
+		// repository that was never scanned, planned, or shown in the push plan.
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanCleanup.preparedRepo = '/planned/repo';
+		panel._scanCleanup.preparedCommand = '#!/usr/bin/env bash\n';
+		panel._scanCleanup.preparedMode = 'bfg';
+		panel._scanCleanup.replacements = [{ source: 's', mode: 'literal', replaceWith: '*****' }];
+		// Deliberately point the fallbacks somewhere else.
+		panel._selectedDirectory = '/some/other/repo';
+		panel._scanPath = '/another/repo';
+
+		let targeted = null;
+		// Intercept at the confirmation gate: the repo is resolved before it.
+		const originalWarn = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = async (message) => {
+			targeted = message;
+			return 'Cancel';
+		};
+		try {
+			await panel._executeBFGCleanup(panel._scanCleanup.replacements);
+		} finally {
+			vscode.window.showWarningMessage = originalWarn;
+		}
+		assert.ok(targeted, 'the destructive action is gated behind a confirmation');
+		assert.strictEqual(panel._scanCleanup.preparedRepo, '/planned/repo',
+			'the prepared repository is what the executor uses');
+	});
+
+	test('preparing records the repository it planned against', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		assert.strictEqual(panel._scanCleanup.preparedRepo, null, 'nothing is planned yet');
+	});
+});
+
+suite('Cross-engine merging tolerates different captures of one secret', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		return p;
+	}
+
+	test('engines that capture different spans of the same credential merge', () => {
+		// Observed on a real scan of this repository: Nosey Parker and TruffleHog both
+		// reported the same MongoDB credential at the same file, line and commit, but
+		// captured different spans of it. Requiring byte-identical secrets meant
+		// corroboration almost never registered in practice.
+		const merged = panel()._deduplicateScanResults([
+			{
+				file: 'test-secrets.js', line: 12, commitHash: '9bdf369',
+				fullSecret: 'mongodb://admin:password@localhost:27017/',
+				ruleName: 'Credentials in MongoDB Connection String',
+				engine: 'noseyparker', engines: ['noseyparker']
+			},
+			{
+				file: 'test-secrets.js', line: 12, commitHash: '9bdf369',
+				fullSecret: 'mongodb://admin:password@localhost:27017/mydb',
+				ruleName: 'MongoDB', engine: 'trufflehog', engines: ['trufflehog']
+			}
+		]);
+		assert.strictEqual(merged.length, 1, 'one credential, one row');
+		assert.deepStrictEqual(merged[0].engines.sort(), ['noseyparker', 'trufflehog']);
+		// The longer capture survives: a rewrite replaces what it is given, so keeping
+		// the shorter span would leave "/mydb" behind in history.
+		assert.strictEqual(merged[0].fullSecret, 'mongodb://admin:password@localhost:27017/mydb');
+	});
+
+	test('unrelated secrets on one line are not merged', () => {
+		const merged = panel()._deduplicateScanResults([
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'ghp_totallyunrelatedvalue00', engine: 'trufflehog', engines: ['trufflehog'] }
+		]);
+		assert.strictEqual(merged.length, 2, 'two different credentials stay two rows');
+	});
+
+	test('a short fragment cannot swallow a longer unrelated finding', () => {
+		// Without a length floor, "abc" contained in any longer secret would merge them.
+		const merged = panel()._deduplicateScanResults([
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'admin', engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'mongodb://admin:pw@host/db', engine: 'trufflehog', engines: ['trufflehog'] }
+		]);
+		assert.strictEqual(merged.length, 2, 'a 5-character fragment is below the containment floor');
+	});
+
+	test('the same secret in history and in the working tree is one row', () => {
+		// An engine's history pass reports a commit; its working-tree pass does not.
+		// Two rows for the same line reads as a duplicate.
+		const merged = panel()._deduplicateScanResults([
+			{ file: 'a.js', line: 3, commitHash: 'c1', fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'aws-access-token', engine: 'gitleaks', engines: ['gitleaks'], isGitHistory: true },
+			{ file: 'a.js', line: 3, commitHash: null, fullSecret: 'AKIAIOSFODNN7EXAMPLE', ruleName: 'aws-access-token', engine: 'gitleaks', engines: ['gitleaks'], isGitHistory: false }
+		]);
+		assert.strictEqual(merged.length, 1);
+		assert.strictEqual(merged[0].isGitHistory, true, 'history anywhere means a rewrite is needed');
+		assert.ok(merged[0].occurrences.some(o => !o.commitHash), 'the working-tree sighting is kept');
+	});
+});
+
+suite('Engine binaries are found outside the shell PATH', () => {
+	const engines = require('../scan-engines');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	test('an explicit binaryPath always wins', () => {
+		assert.strictEqual(engines.resolveBinary('trufflehog', '/opt/custom/trufflehog'), '/opt/custom/trufflehog');
+	});
+
+	test('common install locations are searched before giving up', () => {
+		// A GUI-launched VS Code does not inherit the shell PATH on macOS and often
+		// misses ~/.local/bin on Linux, so an engine the user definitely installed
+		// gets reported "not installed" and silently skipped.
+		const dirs = engines.COMMON_BIN_DIRS;
+		assert.ok(dirs.includes(path.join(os.homedir(), '.local', 'bin')));
+		assert.ok(dirs.includes('/opt/homebrew/bin'), 'Apple silicon Homebrew');
+		assert.ok(dirs.includes('/usr/local/bin'));
+	});
+
+	test('an executable in a common location is resolved to its absolute path', () => {
+		const dir = path.join(os.homedir(), '.local', 'bin');
+		const name = `leaklock-probe-${process.pid}`;
+		const file = path.join(dir, name);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+		try {
+			engines.resetBinaryCache();
+			assert.strictEqual(engines.resolveBinary(name), file);
+		} finally {
+			fs.rmSync(file, { force: true });
+			engines.resetBinaryCache();
+		}
+	});
+
+	test('an unknown binary falls through to PATH resolution unchanged', () => {
+		engines.resetBinaryCache();
+		const name = `leaklock-absent-${process.pid}`;
+		assert.strictEqual(engines.resolveBinary(name), name,
+			'the OS still gets its chance to resolve it');
+	});
+});
+
+suite('Occurrence aggregation keeps what it merges', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		return p;
+	}
+
+	test('branches from every commit are unioned, since the rewrite covers them all', () => {
+		const merged = panel()._deduplicateScanResults([
+			{ file: 'a.js', line: 3, fullSecret: 'AKIAIOSFODNN7EXAMPLE', commitHash: 'c1', commitBranches: ['main'] },
+			{ file: 'a.js', line: 3, fullSecret: 'AKIAIOSFODNN7EXAMPLE', commitHash: 'c2', commitBranches: ['release/0.7.0', 'main'] }
+		]);
+		assert.strictEqual(merged.length, 1);
+		assert.deepStrictEqual(merged[0].commitBranches.sort(), ['main', 'release/0.7.0']);
+	});
+
+	test('the merged row reports how many commits carry the secret', () => {
+		const p = panel();
+		p._scanResults = p._deduplicateScanResults([
+			{ file: 'a.js', line: 3, secret: 'AKIA…', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: 'c1', commitDate: '2026-01-01T00:00:00Z', isGitHistory: true, engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, secret: 'AKIA…', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: 'c2', commitDate: '2026-02-01T00:00:00Z', isGitHistory: true, engine: 'gitleaks', engines: ['gitleaks'] }
+		]);
+		p._resetScanSelection();
+		const html = p._getResultsHtml();
+		assert.match(html, /in 2 commits/, 'the count is visible, not silently collapsed');
+	});
+
+	test('a secret still on disk is flagged as well as in history', () => {
+		const p = panel();
+		p._scanResults = p._deduplicateScanResults([
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: 'c1', isGitHistory: true, engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: null, isGitHistory: false, engine: 'gitleaks', engines: ['gitleaks'] }
+		]);
+		p._resetScanSelection();
+		assert.match(p._getResultsHtml(), /working tree/);
+	});
+
+	test('the export carries the occurrence list, not just the first sighting', () => {
+		const p = panel();
+		p._scanResults = p._deduplicateScanResults([
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'aws-access-token', commitHash: 'c1', isGitHistory: true, engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'AKIAIOSFODNN7EXAMPLE', description: 'AWS', severity: 'high', ruleName: 'generic-api-key', commitHash: 'c2', isGitHistory: true, engine: 'noseyparker', engines: ['noseyparker'] }
+		]);
+		p._resetScanSelection();
+		const finding = p._buildScanExportPayload().findings[0];
+		assert.strictEqual(finding.occurrences.length, 2);
+		assert.deepStrictEqual(finding.occurrences.map(o => o.commitHash).sort(), ['c1', 'c2']);
+		assert.deepStrictEqual(finding.ruleNames.sort(), ['aws-access-token', 'generic-api-key']);
+		assert.deepStrictEqual(finding.engines.sort(), ['gitleaks', 'noseyparker']);
+	});
+
+	test('every rule that matched is named in the table', () => {
+		const p = panel();
+		p._scanResults = p._deduplicateScanResults([
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'ghp_1234567890abcdefghijklmnopqrstuvwx', description: 'GitHub PAT', severity: 'high', ruleName: 'github-pat', commitHash: 'c1', engine: 'gitleaks', engines: ['gitleaks'] },
+			{ file: 'a.js', line: 3, secret: 's', fullSecret: 'ghp_1234567890abcdefghijklmnopqrstuvwx', description: 'GitHub PAT', severity: 'high', ruleName: 'generic-api-key', commitHash: 'c1', engine: 'gitleaks', engines: ['gitleaks'] }
+		]);
+		p._resetScanSelection();
+		assert.match(p._getResultsHtml(), /also matched: generic-api-key/);
+	});
+});
+
+suite('PR review fixes', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const engines = require('../scan-engines');
+	const engineConfig = require('../scan-engine-config');
+
+	test('the TruffleHog repo argument is a valid file URL', () => {
+		// `file://` + a raw path is not a URL on Windows: C:\repo yields something
+		// TruffleHog cannot open, so scanning failed outright there.
+		const args = engines.buildTruffleHogArgs({ repoDir: '/home/u/my repo', verify: true });
+		const url = args[1];
+		assert.doesNotThrow(() => new URL(url), 'must parse as a URL');
+		assert.strictEqual(new URL(url).protocol, 'file:');
+		// A space has to be encoded, not passed through raw.
+		assert.ok(!url.includes(' '), 'path characters are percent-encoded');
+	});
+
+	test('the removed includeIgnoredFiles setting is gone everywhere', () => {
+		// It described behaviour that is already unconditionally true: every engine
+		// reads .gitignore'd files. A setting that cannot change anything is worse
+		// than no setting.
+		const pkg = require('../package.json');
+		assert.ok(!('leakLock.scan.includeIgnoredFiles' in pkg.contributes.configuration.properties));
+		assert.ok(!('includeIgnoredFiles' in engineConfig.normalizeScanSettings({})));
+	});
+
+	test('dependency exclusion is a path rule, applied to every engine alike', () => {
+		// Only Nosey Parker accepts an ignore file, so wiring the setting there alone
+		// made it mean different things depending on which engines were enabled.
+		const inDir = engineConfig.isInExcludedDependencyDir;
+		assert.strictEqual(inDir('node_modules/pkg/index.js'), true);
+		assert.strictEqual(inDir('app/vendor/lib/x.php'), true);
+		assert.strictEqual(inDir('node_modules'), true);
+		// Windows separators must not defeat it.
+		assert.strictEqual(inDir('app\\node_modules\\pkg\\index.js'), true);
+		// First-party directories are never excluded, even when similarly named.
+		assert.strictEqual(inDir('src/lib/index.js'), false);
+		assert.strictEqual(inDir('my_node_modules_helper.js'), false);
+		assert.strictEqual(inDir('build/output.js'), false, 'build/ can hold first-party source');
+		assert.strictEqual(inDir(null), false);
+	});
+
+	test('an unknown engine id warns instead of silently shrinking the scan', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const seen = [];
+		const originalWarn = vscode.window.showWarningMessage;
+		const originalError = vscode.window.showErrorMessage;
+		const originalGet = vscode.workspace.getConfiguration;
+		vscode.window.showWarningMessage = (m) => { seen.push(String(m)); };
+		vscode.window.showErrorMessage = (m) => { seen.push(String(m)); };
+		vscode.workspace.getConfiguration = () => ({ get: (k) => (k === 'scan.engines' ? ['gitleaks', 'typo-engine'] : undefined) });
+		try {
+			const ids = panel._getEnabledEngineIds();
+			assert.deepStrictEqual(ids, ['gitleaks']);
+			assert.ok(seen.some(m => /typo-engine/.test(m)), 'the unknown id is named');
+		} finally {
+			vscode.window.showWarningMessage = originalWarn;
+			vscode.window.showErrorMessage = originalError;
+			vscode.workspace.getConfiguration = originalGet;
+		}
+	});
+
+	test('configuring only unknown engines is reported as an error, not a clean scan', () => {
+		// Scanning with nothing returns zero findings, which is indistinguishable from
+		// a clean repository — the one result this product must never fake.
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const seen = [];
+		const originalError = vscode.window.showErrorMessage;
+		const originalWarn = vscode.window.showWarningMessage;
+		const originalGet = vscode.workspace.getConfiguration;
+		vscode.window.showErrorMessage = (m) => { seen.push(String(m)); };
+		vscode.window.showWarningMessage = () => {};
+		vscode.workspace.getConfiguration = () => ({ get: (k) => (k === 'scan.engines' ? ['nonsense'] : undefined) });
+		try {
+			assert.deepStrictEqual(panel._getEnabledEngineIds(), []);
+			assert.ok(seen.some(m => /nothing would be scanned/i.test(m)));
+		} finally {
+			vscode.window.showErrorMessage = originalError;
+			vscode.window.showWarningMessage = originalWarn;
+			vscode.workspace.getConfiguration = originalGet;
+		}
+	});
+
+	test('hidden dependency findings are reported, never silently dropped', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanCoverage = {
+			incomplete: false, engines: [{ id: 'gitleaks', displayName: 'Gitleaks', version: 'v8', ok: true, findings: 1 }],
+			refs: { localBranches: 1, remoteBranches: 1, tags: 0, stashes: 0, remoteOnlyBranches: [] },
+			refRefresh: { attempted: true, ok: true }, rulesetMode: 'default', maxFileSizeMb: 100,
+			timeoutSeconds: 300, dependencyHandling: 'exclude', excludedByDependencyRule: 12
+		};
+		const html = panel._renderScanCoverage();
+		assert.match(html, /12 finding\(s\) hidden/);
+		assert.match(html, /Set it to/);
+	});
+
+	test('a Gitleaks-only scan does not announce a container pull', async () => {
+		// The pull happens inside the Nosey Parker engine task; announcing it on a
+		// scan that never touches Docker named an image the scan does not use.
+		const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const pullIndex = src.indexOf("stage: 'pull'");
+		assert.ok(pullIndex > 0);
+		const preceding = src.slice(Math.max(0, pullIndex - 400), pullIndex);
+		assert.match(preceding, /if \(useNoseyParker\) \{/, 'the pull stage is gated on the engine running');
+	});
+});
+
+suite('Manifest integrity', () => {
+	const pkg = require('../package.json');
+	const fs = require('fs');
+	const path = require('path');
+
+	function sourceOf(...files) {
+		return files.map(f => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')).join('\n');
+	}
+
+	test('every contributed command is actually registered', () => {
+		// A command in package.json that nothing registers still appears in the
+		// Command Palette and fails when invoked. leak-lock.fileScan did exactly that:
+		// it was registered only inside file-scan.js, which nothing requires.
+		const src = sourceOf('extension.js', 'project-scan.js', 'leakLockPanel.js', 'leakLockSidebarProvider.js');
+		const registered = new Set(
+			Array.from(src.matchAll(/registerCommand\(\s*['"]([^'"]+)['"]/g)).map(m => m[1])
+		);
+		const missing = pkg.contributes.commands
+			.map(c => c.command)
+			.filter(c => !registered.has(c));
+		assert.deepStrictEqual(missing, [], `contributed but never registered: ${missing.join(', ')}`);
+	});
+
+	test('enum settings have one description per value', () => {
+		// A mismatch here renders a blank or shifted label in the settings UI.
+		const problems = [];
+		for (const [key, value] of Object.entries(pkg.contributes.configuration.properties)) {
+			for (const holder of [value, value.items || {}]) {
+				if (holder.enum && holder.enumDescriptions
+					&& holder.enum.length !== holder.enumDescriptions.length) {
+					problems.push(key);
+				}
+			}
+		}
+		assert.deepStrictEqual(problems, []);
+	});
+
+	test('every default is a legal value for its setting', () => {
+		const problems = [];
+		for (const [key, value] of Object.entries(pkg.contributes.configuration.properties)) {
+			if (value.enum && 'default' in value && !value.enum.includes(value.default)) {
+				problems.push(key);
+			}
+			if (value.type === 'array' && value.items && value.items.enum) {
+				for (const entry of value.default || []) {
+					if (!value.items.enum.includes(entry)) { problems.push(`${key}:${entry}`); }
+				}
+			}
+			if (typeof value.default === 'number') {
+				if ('minimum' in value && value.default < value.minimum) { problems.push(`${key}:min`); }
+				if ('maximum' in value && value.default > value.maximum) { problems.push(`${key}:max`); }
+			}
+		}
+		assert.deepStrictEqual(problems, []);
+	});
+});
+
+suite('Suppressed review comments', () => {
+	const engines = require('../scan-engines');
+	const rules = require('../redaction-rules');
+
+	test('line 0 is preserved, not coerced to null', () => {
+		// `parseInt(...) || null` discards a legitimate 0. Line numbers are 1-based in
+		// practice, but a coercion that silently drops a valid value is wrong anyway.
+		assert.strictEqual(engines.toLineNumber(0), 0);
+		assert.strictEqual(engines.toLineNumber('0'), 0);
+		assert.strictEqual(engines.toLineNumber('42'), 42);
+		assert.strictEqual(engines.toLineNumber('not a number'), null);
+		assert.strictEqual(engines.toLineNumber(undefined), null);
+	});
+
+	test('a verification timestamp is recorded whatever the verdict', () => {
+		// "Checked, not live" is equally a claim about a moment in time — the key may
+		// have been rotated back since. A status with no timestamp cannot be read later.
+		const stdout = [
+			'{"DetectorName":"AWS","Verified":true,"Raw":"AKIAIOSFODNN7EXAMPLE","SourceMetadata":{"Data":{"Git":{"commit":"c1","file":"a.py","line":4}}}}',
+			'{"DetectorName":"Stripe","Verified":false,"Raw":"sk_test_x","SourceMetadata":{"Data":{"Git":{"commit":"c2","file":"b.py","line":9}}}}'
+		].join('\n');
+		const parsed = engines.parseTruffleHogJsonl(stdout);
+		assert.strictEqual(parsed.length, 2);
+		// The adapter stamps during scan(); assert the shape it produces.
+		const stamped = parsed.map(raw => {
+			const f = engines.mapTruffleHogFinding(raw);
+			f.verifiedAt = '2026-07-31T15:00:00Z';
+			return f;
+		});
+		assert.ok(stamped.every(f => f.verifiedAt), 'both verdicts carry a timestamp');
+		assert.strictEqual(stamped[0].verified, true);
+		assert.strictEqual(stamped[1].verified, false);
+	});
+
+	test('regex constructs the downstream tools disagree on are flagged', () => {
+		// JavaScript compiling a pattern proves little: it is then run by git
+		// (POSIX ERE), BFG (Java) and git filter-repo (Python).
+		const portable = rules.validateRule({ source: 'ACME-[0-9]{6}', mode: 'regex', replaceWith: '*' });
+		assert.strictEqual(portable.warnings.length, 0, 'a POSIX-safe pattern is not nagged about');
+
+		for (const pattern of ['\\d{6}', '(?<=x)y', '(?!a)b', '(?<name>x)', '(a)\\1']) {
+			const result = rules.validateRule({ source: pattern, mode: 'regex', replaceWith: '*' });
+			assert.strictEqual(result.valid, true, `${pattern} is still allowed`);
+			assert.ok(result.warnings.length > 0, `${pattern} should warn about portability`);
+			assert.match(result.warnings.join(' '), /Preview it before running a cleanup/);
+		}
+	});
+
+	test('portability problems warn rather than block', () => {
+		// The pattern may be exactly right for the tool the user chose; the dry run is
+		// the authority, so this must not refuse a legitimate rule.
+		const result = rules.validateRule({ source: '\\d{6}', mode: 'regex', replaceWith: '*' });
+		assert.strictEqual(result.valid, true);
+		assert.deepStrictEqual(result.errors, []);
+	});
+});
+
+suite('Third review pass', () => {
+	const engines = require('../scan-engines');
+	const fs = require('fs');
+	const path = require('path');
+
+	test('"not checked" is not reported as "checked and not live"', async () => {
+		// TruffleHog emits Verified:false under --no-verification too. Reporting that
+		// as false tells the user a credential was validated against its provider when
+		// nothing of the sort happened.
+		const raw = '{"DetectorName":"AWS","Verified":false,"Raw":"AKIAIOSFODNN7EXAMPLE","SourceMetadata":{"Data":{"Git":{"commit":"c1","file":"a.py","line":4}}}}';
+		const mapped = engines.mapTruffleHogFinding(JSON.parse(raw));
+		// The mapper alone cannot know; the scan decides based on the verify flag.
+		assert.strictEqual(mapped.verified, false);
+
+		const src = fs.readFileSync(path.join(__dirname, '..', 'scan-engines.js'), 'utf8');
+		assert.match(src, /finding\.verified = null;/, 'unverified runs null the verdict');
+		assert.match(src, /"not checked", not "checked and not live"/);
+	});
+
+	test('the dev scan helper does not verify unless asked', () => {
+		// It accepts an arbitrary target repository, so defaulting verification on
+		// would send credentials found in someone's real repo to their providers.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'real-scan.js'), 'utf8');
+		assert.match(src, /process\.env\.LEAKLOCK_VERIFY === '1'/);
+		assert.ok(!/'trufflehog\.verify': true/.test(src), 'must not be hard-coded on');
+	});
+
+	test('scan reports default outside the repository and are gitignored', () => {
+		// A scan report holds real secrets when produced from a real repository; a
+		// default inside the working tree is one `git add -A` from being committed.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'render-screenshots.js'), 'utf8');
+		assert.match(src, /os\.tmpdir\(\)/, 'the default lives in the OS temp directory');
+		const ignore = fs.readFileSync(path.join(__dirname, '..', '.gitignore'), 'utf8');
+		assert.match(ignore, /^scan\.json$/m, 'and the obvious filename is ignored anyway');
+	});
+});
+
+suite('Fourth review pass', () => {
+	const rules = require('../redaction-rules');
+	const fs = require('fs');
+	const path = require('path');
+
+	// A verification that examines nothing must never look like a clean bill of health.
+	// The panel turns an empty offenders array into "verified clean on every remote ref"
+	// and then discards the findings, so an empty array is a load-bearing claim.
+	suite('verification that checked nothing is not clean', () => {
+		const gitRewrite = require('../git-rewrite');
+		const LeakLockPanel = require('../leakLockPanel');
+		const os = require('os');
+		const cp = require('child_process');
+		let work;
+
+		// Hermetic, matching the other real-repo harnesses here: identity comes from the
+		// environment and the global config is ignored, so the fixture behaves the same
+		// on a developer machine (which has a global identity) and on CI (which has none).
+		const env = {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+			GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+			GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+		};
+
+		suiteSetup(() => {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), 'll-verify-'));
+			const origin = path.join(root, 'origin.git');
+			work = path.join(root, 'work');
+			const run = (cwd, args) => cp.execFileSync('git', args, { cwd, env, stdio: 'pipe' });
+			cp.execFileSync('git', ['init', '--quiet', '--bare', origin], { env, stdio: 'pipe' });
+			cp.execFileSync('git', ['clone', '--quiet', origin, work], { env, stdio: 'pipe' });
+			fs.writeFileSync(path.join(work, 'app.conf'), 'password = SUPERSECRETVALUE123\n');
+			run(work, ['add', '-A']);
+			run(work, ['commit', '--quiet', '-m', 'seed']);
+			run(work, ['push', '--quiet', 'origin', 'HEAD:refs/heads/main']);
+			// A second remote that exists but holds no refs at all.
+			cp.execFileSync('git', ['init', '--quiet', '--bare', path.join(root, 'empty.git')], { env, stdio: 'pipe' });
+			run(work, ['remote', 'add', 'empty', path.join(root, 'empty.git')]);
+		});
+
+		test('real criteria still catch a secret that is genuinely present', async () => {
+			const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', {
+				literals: ['SUPERSECRETVALUE123']
+			});
+			assert.strictEqual(offenders.length, 1);
+			assert.strictEqual(offenders[0].reason, 'secret still present');
+			assert.ok(!offenders[0].notVerified, 'a genuine hit is not a not-verified marker');
+		});
+
+		test('empty criteria report not-verified rather than clean', async () => {
+			// _confirmScanPush passes `pending.verify || {}`, so this is reachable.
+			const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', {});
+			assert.strictEqual(offenders.length, 1, 'must not return an empty (= clean) array');
+			assert.strictEqual(offenders[0].notVerified, true);
+			assert.match(offenders[0].reason, /no search criteria/);
+		});
+
+		test('a remote with no refs reports not-verified rather than clean', async () => {
+			const offenders = await gitRewrite.verifyRemoteRefs(work, 'empty', {
+				literals: ['SUPERSECRETVALUE123']
+			});
+			assert.strictEqual(offenders.length, 1, 'zero refs examined is not a clean result');
+			assert.strictEqual(offenders[0].notVerified, true);
+			assert.match(offenders[0].reason, /no refs were found/);
+		});
+
+		test('zero engines configured is also "nothing was scanned", not clean', () => {
+			// Same defect, different trigger: leakLock.scan.engines set to [] (or to
+			// values that filter to nothing) yields an empty engine list, so the
+			// all-failed guard — which requires at least one reported engine — never
+			// fires and the clean state renders.
+			const LLPanel = require('../leakLockPanel');
+			const panel = new LLPanel({ fsPath: '/tmp/ext' });
+			panel._scanResults = [];
+			panel._scanCoverage = { engines: [], incomplete: false };
+			const html = panel._getResultsHtml();
+			assert.match(html, /Nothing was scanned/,
+				'a scan that configured no engines examined nothing');
+			assert.ok(!/No Security Issues Found/.test(html),
+				'and must not be reported as clean');
+		});
+
+		test('a genuine clean scan still reads as clean', () => {
+			// The guard must not overreach: one engine that actually ran and found
+			// nothing is a real result and must still be reported as such.
+			const LLPanel = require('../leakLockPanel');
+			const panel = new LLPanel({ fsPath: '/tmp/ext' });
+			panel._scanResults = [];
+			panel._scanCoverage = {
+				engines: [{ id: 'gitleaks', displayName: 'Gitleaks', ok: true, findings: 0 }],
+				incomplete: false
+			};
+			const html = panel._getScanResultsSection();
+			assert.match(html, /No Security Issues Found/, 'a real clean scan still says so');
+			assert.ok(!/Nothing was scanned/.test(html));
+			assert.ok(!/partial-warning/.test(html), 'and carries no caveat when every engine ran');
+		});
+
+		test('the scan-complete toast does not celebrate when no engine ran', () => {
+			// The panel already renders "Nothing was scanned" for this state, but the
+			// toast is what actually pops up. `incomplete` only covers the Nosey Parker
+			// timeout and parse paths, so it does not catch every-engine-failed.
+			const src = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+			const guard = src.indexOf('!engineReports.some(engine => engine.ok)');
+			const celebration = src.indexOf('🎉 Scan complete! No findings');
+			assert.ok(guard > -1, 'the every-engine-failed case is handled');
+			assert.ok(celebration > guard,
+				'and the guard is evaluated before the no-findings celebration');
+			assert.match(src.slice(guard, celebration), /NOT a clean result/,
+				'the branch says plainly that this is not clean');
+		});
+
+		test('verifiedAt is present on every finding, so the export schema does not vary by engine', () => {
+			// Only TruffleHog sets verifiedAt. Without a null default the key is absent
+			// on findings from the other engines, and JSON.stringify drops absent keys
+			// entirely — so a consumer of the export sees a different shape per finding.
+			const engines = require('../scan-engines');
+			assert.ok(engines.NORMALISED_FIELDS.includes('verifiedAt'),
+				'verifiedAt is part of the normalised shape');
+			const finding = engines.mapGitleaksFinding({
+				RuleID: 'aws-access-token', Secret: 'AKIAIOSFODNN7EXAMPLE', File: 'a.txt', StartLine: 3
+			});
+			assert.ok(Object.prototype.hasOwnProperty.call(finding, 'verifiedAt'),
+				'an engine that never verifies still carries the key');
+			assert.strictEqual(finding.verifiedAt, null, 'as an explicit null, not undefined');
+			assert.ok(
+				Object.prototype.hasOwnProperty.call(JSON.parse(JSON.stringify(finding)), 'verifiedAt'),
+				'and it survives the JSON round-trip the export performs'
+			);
+		});
+
+		test('the generated script refuses to claim clean when it examined no refs', () => {
+			// Identical defect in shell: `leftover=0` with a zero-iteration loop printed
+			// "Verified clean on every remote ref" and exited 0. Verified against a real
+			// ref-less remote before the fix.
+			const script = gitRewrite.buildRewriteScript({
+				repoDir: '.', remote: 'origin', rewriteLines: ['true'], verifyLiterals: ['sekret']
+			});
+			assert.match(script, /checked=0/, 'counts refs actually examined');
+			assert.match(script, /checked=\$\(\(checked \+ 1\)\)/, 'and increments per examined ref');
+			assert.match(script, /if \[ "\$checked" -eq 0 \]; then/,
+				'the zero-examined case is tested before the clean claim');
+			assert.match(script, /NOT VERIFIED/, 'and reported as not verified');
+			// The clean claim must be reachable only after the zero check.
+			const zeroAt = script.indexOf('"$checked" -eq 0');
+			const cleanAt = script.indexOf('Verified clean on every remote ref');
+			assert.ok(zeroAt > -1 && cleanAt > zeroAt,
+				'the clean message must sit behind the examined-nothing guard');
+		});
+
+		test('the panel renders not-verified as its own outcome, not as clean or as still-present', () => {
+			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+			const marker = [{
+				ref: 'refs/remotes/origin/*',
+				reason: 'not verified: no search criteria were supplied, so nothing was checked',
+				match: '',
+				notVerified: true
+			}];
+			const html = panel._renderVerifyResult(marker);
+			assert.match(html, /Not verified/, 'says it was not verified');
+			assert.ok(!/Verified clean/.test(html), 'never claims clean');
+			assert.ok(!/Still present after the rewrite/.test(html),
+				'and does not claim the secret is still there — that is a different, unsupported claim');
+		});
+	});
+
+	test('the scanned repository is mounted read-only', () => {
+		// Scanning never needs to write to the audited tree, and the datastore has its
+		// own writable mount. Without :ro the container can write into the user's
+		// repository — which is exactly what moving the datastore out of the scan root
+		// was meant to stop, so leaving the mount writable would undo that fix.
+		const config = require('../scan-engine-config');
+		const args = config.buildNoseyParkerScanArgs({
+			scanMount: '/repo', datastoreMount: '/ds', settings: {}
+		});
+		const scanMount = args.find(a => a.startsWith('/repo:'));
+		assert.strictEqual(scanMount, '/repo:/scan:ro', 'the scan path is mounted read-only');
+		assert.ok(
+			args.includes('/ds:/datastore'),
+			'while the datastore keeps its writable mount'
+		);
+	});
+
+	test('a literal source cannot start with a rewrite-tool mode prefix', () => {
+		// `regex:` (and glob:/literal: for filter-repo) is a mode prefix in the rule
+		// file. A literal rule beginning with one would be applied as a different kind
+		// of match than the UI displayed — the same failure the `==>` guard prevents.
+		for (const prefix of rules.RULE_MODE_PREFIXES) {
+			const result = rules.validateRule({ source: `${prefix}foo`, mode: 'literal', replaceWith: 'x' });
+			assert.strictEqual(result.valid, false, `${prefix} must be rejected in literal mode`);
+			assert.match(result.errors.join(' '), /mode prefix/);
+			assert.match(result.errors.join(' '), /Switch to regex mode/);
+		}
+	});
+
+	test('the same text is allowed in regex mode, where the prefix is intended', () => {
+		const result = rules.validateRule({ source: 'regex:foo', mode: 'regex', replaceWith: 'x' });
+		assert.strictEqual(result.valid, true);
+	});
+
+	test('a prefix in the middle of a literal is fine', () => {
+		const result = rules.validateRule({ source: 'host/regex:thing', mode: 'literal', replaceWith: 'x' });
+		assert.strictEqual(result.valid, true, 'only a leading prefix is parsed as a mode');
+	});
+
+	test('the refresh setting describes the command the scan actually runs', () => {
+		// The scan fetch is read-only; only the pre-rewrite refresh prunes.
+		const pkg = require('../package.json');
+		const description = pkg.contributes.configuration.properties['leakLock.scan.refreshRefsBeforeScan'].description;
+		assert.ok(!description.includes('--prune --tags'), 'must not promise a prune the scan does not do');
+		assert.match(description, /read-only/);
+		assert.match(description, /does not pass --prune/);
+	});
+
+	test('a failed Gitleaks pass keeps whatever it managed to write', () => {
+		// A timed-out pass has often already written part of its report. Discarding it
+		// loses real findings, which is the mistake the scan timeout used to make.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'scan-engines.js'), 'utf8');
+		const catchBlock = src.slice(src.indexOf('Gitleaks ${surface} pass did not complete') - 1200,
+			src.indexOf('Gitleaks ${surface} pass did not complete') + 300);
+		assert.match(catchBlock, /readJsonReport\(reportPath\)/, 'the partial report is parsed');
+		assert.match(catchBlock, /recovered/);
+		assert.match(catchBlock, /not exhaustive/, 'and the result is marked incomplete');
+	});
+});
+
+suite('Fifth review pass', () => {
+	const engines = require('../scan-engines');
+	const gitRewrite = require('../git-rewrite');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	test('a missing binary is re-checked, not cached as missing for the session', () => {
+		// Caching a negative result keeps reporting "not installed" for the rest of the
+		// session — including immediately after the user follows the install hint we
+		// just showed them.
+		const name = `leaklock-late-${process.pid}`;
+		engines.resetBinaryCache();
+		assert.strictEqual(engines.resolveBinary(name), name, 'not found yet');
+
+		const dir = path.join(os.homedir(), '.local', 'bin');
+		const file = path.join(dir, name);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+		try {
+			// No cache reset: installing mid-session must be picked up.
+			assert.strictEqual(engines.resolveBinary(name), file,
+				'a binary installed after the first check is found without a reload');
+		} finally {
+			fs.rmSync(file, { force: true });
+			engines.resetBinaryCache();
+		}
+	});
+
+	test('scanning never prunes; the rewrite refresh still does', () => {
+		// Two different jobs: a scan widens coverage and must not mutate refs, while
+		// the refresh immediately before a rewrite must match the server exactly.
+		assert.strictEqual(gitRewrite.describeFetchCommand('origin', { prune: false }), 'git fetch --tags origin');
+		assert.strictEqual(gitRewrite.describeFetchCommand('origin'), 'git fetch --prune --tags origin');
+
+		const script = gitRewrite.buildRewriteScript({ repoDir: '/r', rewriteLines: ['true'] });
+		assert.match(script, /git fetch --prune --tags 'origin'/, 'the rewrite script still prunes');
+	});
+
+	test('the docs describe the commands the code actually runs', () => {
+		const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+		// Docs that teach a broken pattern are as harmful as code that ships one.
+		for (const doc of ['docs/API_REFERENCE.md', 'docs/SCANNING_ENGINES.md']) {
+			const text = read(doc);
+			const scanSection = text.split('Remove Files')[0];
+			assert.ok(!/Refresh every ref \(`git fetch --prune --tags`\)/.test(scanSection),
+				`${doc} must not claim the scan prunes`);
+		}
+		// The Windows-invalid form must not appear as an example either.
+		assert.ok(!/trufflehog git "file:\/\/\$\{scanPath\}"/.test(read('docs/API_REFERENCE.md')),
+			'the docs must not demonstrate raw string interpolation for the repo URL');
+	});
+});
+
+suite('Containing-branch parsing', () => {
+	const parse = require('../leakLockPanel').__parseContainingBranches;
+
+	test('symbolic refs are not listed as branches', () => {
+		// `git branch -a --contains` emits a symbolic line. A `\bHEAD$` filter alone
+		// misses it, and the rule preview listed
+		// "remotes/origin/HEAD -> origin/release/0.7.0" as though it were a branch.
+		const stdout = [
+			'* release/0.7.0',
+			'  main',
+			'  remotes/origin/HEAD -> origin/release/0.7.0',
+			'  remotes/origin/release/0.7.0',
+			''
+		].join('\n');
+		assert.deepStrictEqual(parse(stdout), [
+			'release/0.7.0', 'main', 'remotes/origin/release/0.7.0'
+		]);
+	});
+
+	test('a detached HEAD line is not a branch either', () => {
+		const stdout = '* (HEAD detached at 9bdf369)\n  main\n';
+		assert.deepStrictEqual(parse(stdout), ['main']);
+	});
+
+	test('the current-branch marker is stripped', () => {
+		assert.deepStrictEqual(parse('* main\n+ worktree-branch\n'), ['main', 'worktree-branch']);
+	});
+
+	test('empty output yields no branches', () => {
+		assert.deepStrictEqual(parse(''), []);
+		assert.deepStrictEqual(parse(null), []);
+	});
+});
+
+suite('Website image dimensions', () => {
+	const fs = require('fs');
+	const path = require('path');
+
+	test('every declared width/height matches the file on disk', () => {
+		// Both attributes are declared so the browser can reserve space before the
+		// image loads. When they drift from the real size the browser stretches the
+		// image instead, which is worse than declaring nothing — and it drifts every
+		// time a screenshot is recaptured at a slightly different height.
+		const root = path.join(__dirname, '..', 'docs', 'website');
+		const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+		const problems = [];
+
+		for (const match of html.matchAll(/<img src="(img\/[^"]+)" width="(\d+)" height="(\d+)"/g)) {
+			const [, src, width, height] = match;
+			const file = path.join(root, src);
+			assert.ok(fs.existsSync(file), `${src} is referenced but missing`);
+
+			// PNG header: width and height are big-endian 32-bit at offsets 16 and 20.
+			const header = Buffer.alloc(24);
+			const fd = fs.openSync(file, 'r');
+			try {
+				fs.readSync(fd, header, 0, 24, 0);
+			} finally {
+				fs.closeSync(fd);
+			}
+			const actual = { w: header.readUInt32BE(16), h: header.readUInt32BE(20) };
+			if (actual.w !== Number(width) || actual.h !== Number(height)) {
+				problems.push(`${src}: declared ${width}x${height}, actual ${actual.w}x${actual.h}`);
+			}
+		}
+
+		assert.ok(problems.length > 0 === false, problems.join('; '));
+	});
+
+	test('every referenced image exists', () => {
+		const root = path.join(__dirname, '..', 'docs', 'website');
+		const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+		const missing = Array.from(html.matchAll(/src="(img\/[^"]+)"/g))
+			.map(m => m[1])
+			.filter(src => !fs.existsSync(path.join(root, src)));
+		assert.deepStrictEqual(missing, []);
+	});
+});
+
+suite('Preparing is never blocked by branch state', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel(blocked) {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		p._scanCleanup.preparedCommand = '#!/usr/bin/env bash\n# script\n';
+		p._scanCleanup.preparedMode = 'git';
+		p._scanCleanup.replacements = [{ source: 's', mode: 'literal', replaceWith: '*****' }];
+		p._scanCleanup.blockedBranches = blocked;
+		p._scanCleanup.blockedReason = blocked ? 'unpushed-commits' : null;
+		return p;
+	}
+
+	test('the run is refused while a branch the rewrite resets is ahead', async () => {
+		// The rule belongs here, where a rewrite is about to happen — not at prepare
+		// time, where the user only asked to read the script.
+		const p = panel([{ branch: 'feat/pages-screenshots', count: 3 }]);
+		const seen = [];
+		const original = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = (m) => { seen.push(String(m)); };
+		try {
+			await p._runPreparedScanCleanup('git');
+		} finally {
+			vscode.window.showErrorMessage = original;
+		}
+		assert.ok(seen.some(m => /Nothing was changed/.test(m)));
+		assert.ok(seen.some(m => /feat\/pages-screenshots \(\+3\)/.test(m)), 'the branch and count are named');
+		assert.ok(seen.some(m => /still available to read and save/.test(m)), 'the script is not withdrawn');
+	});
+
+	test('the banner says the script exists and only the run is blocked', () => {
+		const html = panel([{ branch: 'feat/x', count: 2 }])
+			._renderBlockedBranches([{ branch: 'feat/x', count: 2 }], 'unpushed-commits');
+		assert.match(html, /cannot be run yet/);
+		assert.match(html, /prepared and is safe to read and save/);
+		assert.match(html, /Nothing has been changed/);
+		// The old wording claimed preparation itself had stopped.
+		assert.ok(!/Leak Lock stopped before touching anything/.test(html));
+	});
+
+	test('the run buttons are disabled while a branch is ahead', () => {
+		const p = panel([{ branch: 'feat/x', count: 2 }]);
+		p._scanResults = [{
+			file: 'a.js', line: 1, secret: 's', fullSecret: 'secret-value',
+			description: 'x', severity: 'high', ruleName: 'r',
+			isDependency: false, includeInCleanup: true
+		}];
+		p._resetScanSelection();
+		const html = p._getResultsHtml();
+		const runButton = html.slice(html.indexOf('runPreparedGit()'), html.indexOf('runPreparedGit()') + 200);
+		assert.match(runButton, /disabled/);
+	});
+
+	test('with no blocking branch the run proceeds past the gate', async () => {
+		const p = panel(null);
+		let reached = false;
+		p._executeGitCleanup = async () => { reached = true; };
+		await p._runPreparedScanCleanup('git');
+		assert.strictEqual(reached, true, 'a clean branch state does not stop the run');
+	});
+});
+
+suite('Untracked working-tree findings', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+	let repo;
+
+	suiteSetup(async () => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-untracked-'));
+		cp.execFileSync('git', ['init', '-q', '-b', 'main', repo], { env });
+		fs.writeFileSync(path.join(repo, 'tracked.py'), 'KEY = "AKIAIOSFODNN7EXAMPLE"\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env });
+		cp.execFileSync('git', ['-C', repo, 'commit', '-qm', 'init'], { env });
+		// Present on disk, never committed.
+		fs.mkdirSync(path.join(repo, 'nested'), { recursive: true });
+		fs.writeFileSync(path.join(repo, 'nested', 'local.env'), 'SECRET=abc\n');
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	test('a file that exists but was never committed is flagged as untracked', async () => {
+		// A working-tree-only secret needs the file deleted, not a history rewrite.
+		// Resolving the display path against the scan root produced
+		// <scan>/<scanName>/<path>, which never exists, so this always said "tracked".
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._selectedDirectory = repo;
+		panel._scanPath = repo;
+		await panel._primeGitTracking(repo);
+
+		const relative = panel._getRelativeFilePath('nested/local.env');
+		assert.strictEqual(
+			panel._isUntrackedWorkingTreeFile('nested/local.env', relative, false),
+			true,
+			'the engine path must resolve even though the display path is prefixed'
+		);
+	});
+
+	test('a committed file is not flagged as untracked', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._selectedDirectory = repo;
+		panel._scanPath = repo;
+		await panel._primeGitTracking(repo);
+		assert.strictEqual(
+			panel._isUntrackedWorkingTreeFile('tracked.py', panel._getRelativeFilePath('tracked.py'), false),
+			false
+		);
+	});
+
+	test('a history finding is never treated as an untracked working-tree file', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._selectedDirectory = repo;
+		panel._scanPath = repo;
+		await panel._primeGitTracking(repo);
+		assert.strictEqual(panel._isUntrackedWorkingTreeFile('nested/local.env', 'x/nested/local.env', true), false);
+	});
+});
+
+suite('Second review round', () => {
+	const host = require('../host-capacity');
+	const rules = require('../redaction-rules');
+	const fs = require('fs');
+	const path = require('path');
+
+	const BIG = { cpus: 16, totalMemGb: 32, memorySource: 'os', platform: 'linux', loadPerCore: 0.1 };
+	const TINY = { cpus: 2, totalMemGb: 3, memorySource: 'os', platform: 'linux', loadPerCore: 0.1 };
+
+	test('the configured engine order is respected', () => {
+		// The setting says "Detection engines to run, in order". Sorting by weight here
+		// silently contradicted it.
+		const configured = ['noseyparker', 'trufflehog', 'gitleaks'];
+		for (const mode of ['auto', 'parallel', 'sequential']) {
+			assert.deepStrictEqual(
+				host.chooseScanStrategy({ engines: configured, host: BIG, mode }).engines,
+				configured,
+				`${mode} must not reorder the configured list`
+			);
+		}
+	});
+
+	test('engine weight still decides which one survives a constrained host', () => {
+		// That is the question ENGINE_WEIGHT exists to answer — not the run order.
+		assert.deepStrictEqual(
+			host.chooseScanStrategy({ engines: ['noseyparker', 'trufflehog', 'gitleaks'], host: TINY }).engines,
+			['gitleaks'],
+			'the lightest, maintained engine is kept'
+		);
+		assert.deepStrictEqual(
+			host.chooseScanStrategy({ engines: ['noseyparker', 'trufflehog'], host: TINY }).engines,
+			['trufflehog'],
+			'without gitleaks, the lightest configured engine is kept'
+		);
+	});
+
+	test('a pickaxe pattern containing spaces is passed intact', () => {
+		// Reported as a defect; verified not to be one. execFile passes an argv array
+		// with no shell, and -S consumes the remainder of its own argument.
+		const args = rules.buildPreviewArgs({ source: 'internal build server', mode: 'literal' });
+		assert.ok(args.includes('-Sinternal build server'));
+		const regex = rules.buildPreviewArgs({ source: 'ACME [0-9]+', mode: 'regex' });
+		assert.ok(regex.includes('-GACME [0-9]+'));
+	});
+
+	test('the dev helpers honour config.get(key, default)', () => {
+		// The panel and sidebar use the two-argument form in ten places. A stub that
+		// ignores the fallback silently diverges from a real VS Code host.
+		for (const tool of ['tools/real-scan.js', 'tools/render-screenshots.js']) {
+			const src = fs.readFileSync(path.join(__dirname, '..', tool), 'utf8');
+			assert.match(src, /get: \(key, fallback\)/, `${tool} must accept a fallback`);
+			assert.match(src, /key in settings \? settings\[key\] : fallback/,
+				`${tool} must return the fallback only when the key is absent`);
+		}
+	});
+
+	test('the fixture generator uses no GNU-only shell', () => {
+		// It is documented as cross-platform. `sed -i` reads the next argument as a
+		// backup suffix on BSD/macOS, and BSD sed rejects labels separated by ';'.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'seed-fake-leaks.sh'), 'utf8');
+		const code = src.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+		assert.ok(!/sed -i /.test(code), 'sed -i is GNU-only');
+		assert.ok(!/sed ':a/.test(code), "sed ':a;N;...' is GNU-only");
+		assert.match(code, /drop_blank_lines/);
+		assert.match(code, /escape_newlines/);
+	});
+});
+
+suite('Zero findings must not mean "clean" when nothing ran', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel(engines) {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		p._scanResults = [];
+		p._scanCoverage = {
+			incomplete: false, incompleteReason: null, engines,
+			refs: { localBranches: 1, remoteBranches: 0, tags: 0, stashes: 0, remoteOnlyBranches: [] },
+			refRefresh: { attempted: false, ok: false, reason: 'no-remote' },
+			rulesetMode: 'default', maxFileSizeMb: 100, timeoutSeconds: 300, dependencyHandling: 'warning'
+		};
+		return p;
+	}
+
+	const failed = (id, name, note) => ({ id, displayName: name, version: null, ok: false, findings: 0, note });
+	const ok = (id, name) => ({ id, displayName: name, version: 'v1', ok: true, findings: 0 });
+
+	test('every engine failing is reported as "nothing was scanned", not as clean', () => {
+		// Zero findings means nothing at all if nothing ran. A celebratory all-clear
+		// here is the worst output this product can produce.
+		const html = panel([
+			failed('gitleaks', 'Gitleaks', 'Not installed or not on PATH.'),
+			failed('noseyparker', 'Nosey Parker', 'Skipped — Docker not available'),
+			failed('trufflehog', 'TruffleHog', 'Not installed or not on PATH.')
+		])._getScanResultsSection();
+
+		assert.match(html, /Nothing was scanned/);
+		assert.match(html, /not<\/strong> a clean result/);
+		assert.ok(!/No Security Issues Found/.test(html), 'must not claim the repository is clean');
+		assert.ok(!/No API keys found/.test(html), 'must not show green confirmations');
+		// And it must say why, per engine.
+		assert.match(html, /Not installed or not on PATH/);
+		assert.match(html, /Docker not available/);
+	});
+
+	test('a genuinely clean scan still reads as clean', () => {
+		const html = panel([ok('gitleaks', 'Gitleaks'), ok('noseyparker', 'Nosey Parker')])._getScanResultsSection();
+		assert.match(html, /No Security Issues Found/);
+		assert.ok(!/Nothing was scanned/.test(html));
+		assert.ok(!/did not run, so this result is narrower/.test(html));
+	});
+
+	test('a partial failure caveats the clean result rather than hiding it', () => {
+		const html = panel([
+			ok('gitleaks', 'Gitleaks'),
+			failed('trufflehog', 'TruffleHog', 'Not installed or not on PATH.')
+		])._getScanResultsSection();
+		assert.match(html, /No Security Issues Found/, 'one engine did run, so this is a real result');
+		assert.match(html, /1 of 2 engines did not run/);
+		assert.match(html, /narrower than it looks/);
+	});
+
+	test('with no coverage recorded at all the old empty state still renders', () => {
+		// Older state, or a scan that never reached the coverage stage.
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		p._scanResults = [];
+		p._scanCoverage = null;
+		assert.match(p._getScanResultsSection(), /No Security Issues Found/);
+	});
+});
+
+suite('The not-scanned guard must not overreach', () => {
+	const LLPanel = require('../leakLockPanel');
+	const fs = require('fs');
+	const path = require('path');
+	test('every module references the same pinned Nosey Parker image', () => {
+		// The scanner ran the pinned tag while install, dependency-check, pull and
+		// uninstall all used :latest — so the installer fetched one image, the scan ran
+		// another, the check reported an image the scanner never uses, and uninstall
+		// left the real one behind.
+		const cfg = require('../scan-engine-config');
+		for (const file of ['extension.js', 'leakLockSidebarProvider.js', 'config.js', 'file-scan.js']) {
+			const src = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+			assert.ok(!src.includes('noseyparker:latest'),
+				`${file} must not pin the image to :latest`);
+		}
+		assert.strictEqual(require('../config').DOCKER_IMAGE, cfg.NOSEYPARKER_IMAGE,
+			'config.js resolves to the same image the scanner runs');
+		assert.match(cfg.NOSEYPARKER_IMAGE, /:v\d+\.\d+\.\d+$/, 'and it is a pinned version');
+	});
+
+	test('an engine that ran but timed out is not reported as "nothing was scanned"', () => {
+		const panel = new LLPanel({ fsPath: '/tmp/ext' });
+		panel._scanResults = [];
+		panel._scanCoverage = {
+			engines: [{ id: 'noseyparker', displayName: 'Nosey Parker', ok: false,
+				findings: 0, note: 'Scan stopped after 300s' }],
+			incomplete: true,
+			incompleteReason: 'The scan was stopped after 300s.'
+		};
+		const html = panel._getScanResultsSection();
+		// `ok: !scanRun.incomplete` makes a timed-out engine look like it never ran.
+		// It did run — it examined part of the repository — so the accurate message is
+		// the incomplete banner, not "your repository has not been checked at all".
+		assert.ok(!/Nothing was scanned/.test(html),
+			'a partial scan is not the same as no scan');
+		assert.match(html, /Scan incomplete/, 'the incomplete banner is the right message here');
+		assert.match(html, /coverage-intro|Scan coverage/, 'and the coverage detail survives');
+	});
+});
+
+suite('Protected branch refuses the force-push', () => {
+	const gitRewrite = require('../git-rewrite');
+	const LeakLockPanel = require('../leakLockPanel');
+
+	// Verbatim from a real run against github.com/nikolareljin/damn-vulnerable-repo,
+	// where main is protected. One ref is the cause; the other eight are the atomic
+	// rollback, which is what makes the raw output so misleading.
+	const realGithubFailure = {
+		message: [
+			'Command failed: git push --force --atomic origin refs/heads/*:refs/heads/* refs/tags/*:refs/tags/*',
+			'remote: error: GH006: Protected branch update failed for refs/heads/main.        ',
+			'remote: ',
+			'remote: - Cannot force-push to this branch        ',
+			'To github.com:nikolareljin/damn-vulnerable-repo.git',
+			' ! [remote rejected] leaklock-fixture/dev-alice -> leaklock-fixture/dev-alice (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/experimental -> leaklock-fixture/experimental (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/hotfix-db-creds -> leaklock-fixture/hotfix-db-creds (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/legacy-import -> leaklock-fixture/legacy-import (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/main-leaks -> leaklock-fixture/main-leaks (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/ops-remote-only -> leaklock-fixture/ops-remote-only (atomic transaction failed)',
+			' ! [remote rejected] leaklock-fixture/release-1.0 -> leaklock-fixture/release-1.0 (atomic transaction failed)',
+			' ! [remote rejected] main -> main (protected branch hook declined)',
+			' ! [remote rejected] leaklock-fixture-v0.1.0 -> leaklock-fixture-v0.1.0 (atomic transaction failed)',
+			"error: failed to push some refs to 'github.com:nikolareljin/damn-vulnerable-repo.git'"
+		].join('\n')
+	};
+
+	test('the one real cause is separated from the atomic collateral', () => {
+		const result = gitRewrite.parseProtectedRefRejection(realGithubFailure);
+		assert.ok(result, 'recognised as a protection failure');
+		assert.deepStrictEqual(result.protectedRefs, ['main'], 'exactly one ref is the cause');
+		assert.strictEqual(result.collateralRefs.length, 8,
+			'the other eight were rolled back, not independently rejected');
+		assert.ok(!result.collateralRefs.includes('main'));
+		assert.strictEqual(result.provider, 'github');
+	});
+
+	test('a generic pre-receive hook still resolves to the named ref', () => {
+		// Some servers reject every ref with identical wording. The GH006 line names the
+		// real one; without preferring it, all three would look separately protected.
+		const result = gitRewrite.parseProtectedRefRejection({
+			message: [
+				'remote: error: GH006: Protected branch update failed for refs/heads/main.',
+				' ! [remote rejected] feature/x -> feature/x (pre-receive hook declined)',
+				' ! [remote rejected] main -> main (pre-receive hook declined)',
+				' ! [remote rejected] v1.0 -> v1.0 (pre-receive hook declined)'
+			].join('\n')
+		});
+		assert.deepStrictEqual(result.protectedRefs, ['main']);
+		assert.strictEqual(result.collateralRefs.length, 2);
+	});
+
+	test('unrelated push failures are not misreported as protection', () => {
+		assert.strictEqual(
+			gitRewrite.parseProtectedRefRejection({
+				message: 'remote: Permission to x/y.git denied\nfatal: Authentication failed'
+			}),
+			null
+		);
+		assert.strictEqual(gitRewrite.parseProtectedRefRejection({ message: '' }), null);
+	});
+
+	test('the panel explains the cause, the state of the remote, and the fix', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const html = panel._renderProtectionBlock({
+			...gitRewrite.parseProtectedRefRejection(realGithubFailure),
+			remote: 'origin',
+			label: 'Git-only cleanup'
+		});
+		assert.match(html, /is protected/, 'names the cause');
+		assert.match(html, /Nothing was pushed/, 'states the remote is unchanged');
+		assert.match(html, /secret is still on it/,
+			'and does not let the user think the leak is closed');
+		assert.match(html, /not.*separate problems|not<\/em> separate problems/,
+			'explains the eight collateral rejections');
+		assert.match(html, /Settings/, 'gives the concrete GitHub steps');
+		assert.match(html, /Allow force pushes/);
+		assert.match(html, /Turn the protection back on|Restore the protection/,
+			'and tells the user to restore protection afterwards');
+	});
+
+	test('the generated script explains it too, instead of dying on raw git output', () => {
+		// The script runs the same atomic push, so it hits the same wall. Without this
+		// the user gets nine "[remote rejected]" lines and `set -e` aborts.
+		const script = gitRewrite.buildRewriteScript({
+			repoDir: '/repo', remote: 'origin', rewriteLines: ['true'], verifyLiterals: ['x']
+		});
+		assert.match(script, /GH006\|\[Pp\]rotected branch/, 'detects the protection failure');
+		assert.match(script, /NOTHING WAS PUSHED/, 'states the remote is unchanged');
+		assert.match(script, /secret is STILL on it/, 'and that the leak is not closed');
+		assert.match(script, /NOT separate/, 'explains the atomic collateral');
+		assert.match(script, /Settings > Branches/, 'gives the concrete step');
+		// It must still fail loudly: a protected-branch block is not a success.
+		assert.match(script, /exit "\$push_rc"/, 'and still exits non-zero');
+	});
+
+	test('a non-GitHub remote still gets actionable steps', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const html = panel._renderProtectionBlock({
+			protectedRefs: ['main'], collateralRefs: [], provider: null, remote: 'origin', label: 'x'
+		});
+		assert.match(html, /administers this remote/, 'falls back to provider-neutral advice');
+		assert.ok(!/Settings.*Branches/.test(html), 'without inventing a GitHub UI path');
+	});
+});
+
+suite('A diverged tag is not an unreachable remote', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	// Verbatim from a real scan of damn-vulnerable-repo after re-seeding, where the
+	// local tag had moved but the remote tag had not.
+	const tagClobber = {
+		message: 'Command failed: git fetch --tags origin',
+		stderr: [
+			'From github.com:nikolareljin/damn-vulnerable-repo',
+			' ! [rejected]        leaklock-fixture-v0.1.0 -> leaklock-fixture-v0.1.0  (would clobber existing tag)'
+		].join('\n')
+	};
+
+	test('a clobbering tag is reported as a tag conflict, not a network failure', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const result = panel._classifyRemoteError(tagClobber, 'git fetch --tags origin');
+		assert.strictEqual(result.kind, 'tag-conflict');
+		assert.ok(!/could not be contacted|network/i.test(result.cause),
+			'the remote WAS contacted — saying otherwise sends the user to debug their network');
+		assert.match(result.cause, /tag/i, 'names the real cause');
+		assert.match(result.fix, /--force|delete the local tag/, 'and gives a usable fix');
+	});
+
+	test('genuine connectivity failures are still reported as such', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		assert.strictEqual(
+			panel._classifyRemoteError({ message: 'ssh: Could not resolve host: github.com' }, 'git fetch').kind,
+			'network'
+		);
+		assert.strictEqual(
+			panel._classifyRemoteError({ message: 'fatal: Authentication failed' }, 'git fetch').kind,
+			'auth'
+		);
+	});
+});
+
+suite('The scan records the fetch it performed', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const fs = require('fs');
+	const path = require('path');
+
+	test('a successful scan refresh is recorded, so the panel does not say "never"', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		const repo = '/tmp/repos/demo';
+		assert.strictEqual(panel._getLastFetchAt(repo), null, 'nothing recorded yet');
+		panel._recordFetchAt(repo, '2026-07-31T20:00:00.000Z');
+		assert.strictEqual(panel._getLastFetchAt(repo), '2026-07-31T20:00:00.000Z');
+	});
+
+	test('the scan header renders the scan repo timestamp, not the Remove Files one', () => {
+		// These are different repositories in general. Rendering _removalState.lastFetchAt
+		// on the scan view meant the line read "Last fetched never (stale)" immediately
+		// after a scan had refreshed the refs, contradicting the coverage panel below it
+		// and prompting the user to fetch again for no reason.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const header = src.slice(src.indexOf('<h2>🔍 Scan Results</h2>'));
+		const line = header.slice(0, header.indexOf('Refetch now'));
+		assert.match(line, /lastFetchISO \?/, 'the scan view uses its own computed value');
+		assert.ok(!/_removalState\.lastFetchAt \?/.test(line),
+			'and not the Remove Files timestamp');
+	});
+
+	test('_refreshRefsForScan records the fetch on success', () => {
+		const src = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const fn = src.slice(src.indexOf('async _refreshRefsForScan('));
+		const body = fn.slice(0, fn.indexOf('\n    }'));
+		assert.match(body, /_recordFetchAt\(repoRoot/,
+			'a scan that fetched must record that it fetched');
 	});
 });

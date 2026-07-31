@@ -1,0 +1,33 @@
+[TODO]
+ID: LL-001
+Status: DONE (0.6.0)
+Title: Require full ref refresh before history rewrite and force-push
+Description: Add a mandatory preflight before any BFG, `git filter-repo`, or credential-cleanup rewrite. Leak Lock must refresh all remotes and tags, verify the ref set is current enough for rewrite planning, detect stale or unreachable refs, and block force-push guidance or execution until the repository has been fully refreshed. The safety goal is to prevent force-pushing rewritten history to branches that were not refreshed first and may no longer match the local rewrite basis.
+Resolution: `_rewritePreflight()` in leakLockPanel.js runs `gitRewrite.fetchAllRefs()` (which rejects on failure, unlike the old best-effort fetch) and blocks preparation when `findUnsafeLocalBranches()` reports local branches ahead of origin.
+
+ID: LL-002
+Status: DONE (0.6.0)
+Title: Add explicit ref-by-ref rewrite impact preview and push plan
+Description: Before destructive cleanup, show which branches, remotes, and tags will be affected, which refs refreshed successfully, which remain stale or unavailable, and which exact push actions will be required afterward. Replace blanket `git push --force --all` style behavior with an explicit ref-aware push plan that users can review before updating remotes.
+Resolution: `gitRewrite.buildPushPlan()` feeds a push-plan panel listing force-updated, remote-only, newly created, and tag refs. Pushes now use `--force --atomic --all/--tags` after materialising every remote branch, and `verifyRemoteRefs()` re-checks each ref afterwards.
+
+ID: LL-003
+Title: Integrate FoxGuard as an additional security scanning engine
+Description: Add optional FoxGuard integration alongside Nosey Parker using the upstream project at https://github.com/PwnKit-Labs/foxguard. Ground implementation in the documented FoxGuard workflow and command patterns from the upstream README, including repository scans, changed-file scans, diff scans, and secrets-focused scans. Normalize FoxGuard findings into Leak Lock’s results UI while preserving engine attribution, severity, and source details. Users should be able to run Nosey Parker only, FoxGuard only, or both.
+
+ID: LL-004
+Title: Export security findings as JSON or SARIF and support structured readback
+Description: Add structured findings export using JSON and SARIF. For FoxGuard-backed reporting, use structured output from the upstream FoxGuard project at https://github.com/PwnKit-Labs/foxguard rather than scraping terminal text. JSON should be the preferred internal readback or import format for Leak Lock, with SARIF supported for interoperability with external tooling. This applies to security findings reporting only, not generic text reports, and implementation should document how JSON results are parsed back into Leak Lock.
+
+ID: LL-005
+Title: Add AI Scan for highest-impact security issue prioritization
+Description: Add an optional `AI Scan` capability that uses structured Leak Lock, FoxGuard, or SARIF/JSON findings first and can then inspect the most relevant source files to highlight the highest-impact issues in the repository. Support Claude, Codex, and local Ollama as optional providers. The feature must be disabled by default, require explicit user opt-in, and fit the extension’s existing dependency-detection and setup flow. Detection should try to discover locally installed tools or common local runtimes where possible, then guide users through configuring credentials or an API endpoint and choosing which provider to use. The first version should be a hybrid findings-first review, not a fully autonomous agent, and should call out authentication simplicity, privacy, and provider-fallback behavior as design concerns.
+
+ID: LL-006
+Title: Add baseline and new-findings triage workflow for repeated scans
+Description: Support repeated local scanning by adding reviewed baselines, suppression management, and "new findings only" views across rescans. This should reduce noise and make combined Nosey Parker, FoxGuard, and AI-assisted prioritization practical for real repositories.
+
+ID: LL-007
+Title: Expand automated coverage for rewrite safety, structured reports, and AI Scan
+Description: Add tests for stale-ref blocking, rewrite-safety gating, multi-engine finding normalization, JSON/SARIF export and readback, and AI Scan provider configuration and detection behavior. Safety-critical cleanup and structured reporting should have stronger automated coverage than the repo currently has.
+[/TODO]
