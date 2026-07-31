@@ -5,7 +5,12 @@ const vscode = require('vscode');
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 
-const dockerImage = 'ghcr.io/praetorian-inc/noseyparker:latest';
+// One owner for the image reference. The scanner runs the pinned tag from
+// scan-engine-config; installing, checking or removing `:latest` here meant the
+// installer pulled one image and the scan then ran a different one, the check
+// reported an image the scanner never uses, and uninstall left the real one behind.
+const { NOSEYPARKER_IMAGE } = require('./scan-engine-config');
+const dockerImage = NOSEYPARKER_IMAGE;
 
 /**
  * Check if dependencies are already installed
@@ -31,7 +36,7 @@ async function checkDependencies() {
 		dependencies.docker = true;
 		
 		// Check Nosey Parker image
-		await execAsync('docker image inspect ghcr.io/praetorian-inc/noseyparker:latest');
+		await execAsync(`docker image inspect ${dockerImage}`);
 		dependencies.noseyparker = true;
 	} catch (error) {
 		console.log('Docker or Nosey Parker not available');
@@ -120,7 +125,7 @@ async function installDependencies(forceReinstall = false) {
 			
 			// Pull Nosey Parker Docker image
 			try {
-				await execAsync('docker pull ghcr.io/praetorian-inc/noseyparker:latest');
+				await execAsync(`docker pull ${dockerImage}`);
 				progress.report({ increment: 0, message: "Nosey Parker image ready ✓" });
 			} catch (error) {
 				console.error('Failed to pull Nosey Parker image:', error);
@@ -319,7 +324,7 @@ async function cleanupDependencies() {
 		// 1. Remove Nosey Parker Docker image
 		try {
 			console.log('Removing Nosey Parker Docker image...');
-			await execAsync('docker rmi ghcr.io/praetorian-inc/noseyparker:latest');
+			await execAsync(`docker rmi ${dockerImage}`);
 			console.log('✓ Nosey Parker Docker image removed');
 		} catch (error) {
 			console.log('Nosey Parker Docker image not found or already removed');

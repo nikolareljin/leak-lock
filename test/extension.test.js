@@ -3190,6 +3190,24 @@ suite('Zero findings must not mean "clean" when nothing ran', () => {
 
 suite('The not-scanned guard must not overreach', () => {
 	const LLPanel = require('../leakLockPanel');
+	const fs = require('fs');
+	const path = require('path');
+	test('every module references the same pinned Nosey Parker image', () => {
+		// The scanner ran the pinned tag while install, dependency-check, pull and
+		// uninstall all used :latest — so the installer fetched one image, the scan ran
+		// another, the check reported an image the scanner never uses, and uninstall
+		// left the real one behind.
+		const cfg = require('../scan-engine-config');
+		for (const file of ['extension.js', 'leakLockSidebarProvider.js', 'config.js', 'file-scan.js']) {
+			const src = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+			assert.ok(!src.includes('noseyparker:latest'),
+				`${file} must not pin the image to :latest`);
+		}
+		assert.strictEqual(require('../config').DOCKER_IMAGE, cfg.NOSEYPARKER_IMAGE,
+			'config.js resolves to the same image the scanner runs');
+		assert.match(cfg.NOSEYPARKER_IMAGE, /:v\d+\.\d+\.\d+$/, 'and it is a pinned version');
+	});
+
 	test('an engine that ran but timed out is not reported as "nothing was scanned"', () => {
 		const panel = new LLPanel({ fsPath: '/tmp/ext' });
 		panel._scanResults = [];
