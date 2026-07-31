@@ -2578,19 +2578,29 @@ suite('Fourth review pass', () => {
 		const cp = require('child_process');
 		let work;
 
+		// Hermetic, matching the other real-repo harnesses here: identity comes from the
+		// environment and the global config is ignored, so the fixture behaves the same
+		// on a developer machine (which has a global identity) and on CI (which has none).
+		const env = {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+			GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+			GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+		};
+
 		suiteSetup(() => {
 			const root = fs.mkdtempSync(path.join(os.tmpdir(), 'll-verify-'));
 			const origin = path.join(root, 'origin.git');
 			work = path.join(root, 'work');
-			const run = (cwd, args) => cp.execFileSync('git', args, { cwd, stdio: 'pipe' });
-			cp.execFileSync('git', ['init', '--quiet', '--bare', origin], { stdio: 'pipe' });
-			cp.execFileSync('git', ['clone', '--quiet', origin, work], { stdio: 'pipe' });
+			const run = (cwd, args) => cp.execFileSync('git', args, { cwd, env, stdio: 'pipe' });
+			cp.execFileSync('git', ['init', '--quiet', '--bare', origin], { env, stdio: 'pipe' });
+			cp.execFileSync('git', ['clone', '--quiet', origin, work], { env, stdio: 'pipe' });
 			fs.writeFileSync(path.join(work, 'app.conf'), 'password = SUPERSECRETVALUE123\n');
 			run(work, ['add', '-A']);
 			run(work, ['commit', '--quiet', '-m', 'seed']);
 			run(work, ['push', '--quiet', 'origin', 'HEAD:refs/heads/main']);
 			// A second remote that exists but holds no refs at all.
-			cp.execFileSync('git', ['init', '--quiet', '--bare', path.join(root, 'empty.git')], { stdio: 'pipe' });
+			cp.execFileSync('git', ['init', '--quiet', '--bare', path.join(root, 'empty.git')], { env, stdio: 'pipe' });
 			run(work, ['remote', 'add', 'empty', path.join(root, 'empty.git')]);
 		});
 
