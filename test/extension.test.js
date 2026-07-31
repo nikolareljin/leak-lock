@@ -2665,3 +2665,37 @@ suite('Fifth review pass', () => {
 			'the docs must not demonstrate raw string interpolation for the repo URL');
 	});
 });
+
+suite('Containing-branch parsing', () => {
+	const parse = require('../leakLockPanel').__parseContainingBranches;
+
+	test('symbolic refs are not listed as branches', () => {
+		// `git branch -a --contains` emits a symbolic line. A `\bHEAD$` filter alone
+		// misses it, and the rule preview listed
+		// "remotes/origin/HEAD -> origin/release/0.7.0" as though it were a branch.
+		const stdout = [
+			'* release/0.7.0',
+			'  main',
+			'  remotes/origin/HEAD -> origin/release/0.7.0',
+			'  remotes/origin/release/0.7.0',
+			''
+		].join('\n');
+		assert.deepStrictEqual(parse(stdout), [
+			'release/0.7.0', 'main', 'remotes/origin/release/0.7.0'
+		]);
+	});
+
+	test('a detached HEAD line is not a branch either', () => {
+		const stdout = '* (HEAD detached at 9bdf369)\n  main\n';
+		assert.deepStrictEqual(parse(stdout), ['main']);
+	});
+
+	test('the current-branch marker is stripped', () => {
+		assert.deepStrictEqual(parse('* main\n+ worktree-branch\n'), ['main', 'worktree-branch']);
+	});
+
+	test('empty output yields no branches', () => {
+		assert.deepStrictEqual(parse(''), []);
+		assert.deepStrictEqual(parse(null), []);
+	});
+});
