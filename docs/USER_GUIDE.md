@@ -178,6 +178,25 @@ Use this guided flow to remove files or directories from your repository history
 - Click the appropriate button for BFG or Git to execute and cleanup
 - After completion, review changes and force-push if needed
 
+### After the force-push: what "verified" means
+
+Leak Lock re-fetches and re-greps **every** remote branch and tag after pushing, rather
+than trusting that the rewrite did what it said. There are three possible outcomes, and
+they are deliberately kept distinct:
+
+| Outcome | What it means | What to do |
+|---|---|---|
+| ✅ **Verified clean on every remote ref** | Every ref was fetched and checked, and the target is gone from all of them | Tell everyone with a clone to re-clone or hard-reset |
+| ⚠️ **Still present** | Refs were checked, and the target is **still there** on the ones listed | The rewrite did not fully take. Do not assume the leak is closed — rotate the credential |
+| ⚠️ **Not verified** | The check could not run: no search criteria, or no refs found under the remote | **This is not a clean result.** Nothing was examined, so it says nothing either way — check the remote yourself |
+
+The third one exists because an empty result set and a successful check look identical
+unless you keep them apart. A tool that says "clean" when it simply never looked is worse
+than one that says nothing, so Leak Lock will not make the claim it did not test.
+
+The generated cleanup script applies the same rule: it exits non-zero and prints
+`NOT VERIFIED` rather than reporting clean when it examined no refs.
+
 ### Notes and Limitations
 
 - BFG’s deletion semantics are name-based; it does not support full path deletion
