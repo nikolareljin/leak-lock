@@ -2630,12 +2630,44 @@ suite('Fourth review pass', () => {
 			assert.match(offenders[0].reason, /no refs were found/);
 		});
 
+		test('zero engines configured is also "nothing was scanned", not clean', () => {
+			// Same defect, different trigger: leakLock.scan.engines set to [] (or to
+			// values that filter to nothing) yields an empty engine list, so the
+			// all-failed guard — which requires at least one reported engine — never
+			// fires and the clean state renders.
+			const LLPanel = require('../leakLockPanel');
+			const panel = new LLPanel({ fsPath: '/tmp/ext' });
+			panel._scanResults = [];
+			panel._scanCoverage = { engines: [], incomplete: false };
+			const html = panel._getResultsHtml();
+			assert.match(html, /Nothing was scanned/,
+				'a scan that configured no engines examined nothing');
+			assert.ok(!/No Security Issues Found/.test(html),
+				'and must not be reported as clean');
+		});
+
+		test('a genuine clean scan still reads as clean', () => {
+			// The guard must not overreach: one engine that actually ran and found
+			// nothing is a real result and must still be reported as such.
+			const LLPanel = require('../leakLockPanel');
+			const panel = new LLPanel({ fsPath: '/tmp/ext' });
+			panel._scanResults = [];
+			panel._scanCoverage = {
+				engines: [{ id: 'gitleaks', displayName: 'Gitleaks', ok: true, findings: 0 }],
+				incomplete: false
+			};
+			const html = panel._getScanResultsSection();
+			assert.match(html, /No Security Issues Found/, 'a real clean scan still says so');
+			assert.ok(!/Nothing was scanned/.test(html));
+			assert.ok(!/partial-warning/.test(html), 'and carries no caveat when every engine ran');
+		});
+
 		test('the scan-complete toast does not celebrate when no engine ran', () => {
 			// The panel already renders "Nothing was scanned" for this state, but the
 			// toast is what actually pops up. `incomplete` only covers the Nosey Parker
 			// timeout and parse paths, so it does not catch every-engine-failed.
 			const src = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
-			const guard = src.indexOf('engineReports.every(engine => !engine.ok)');
+			const guard = src.indexOf('!engineReports.some(engine => engine.ok)');
 			const celebration = src.indexOf('🎉 Scan complete! No findings');
 			assert.ok(guard > -1, 'the every-engine-failed case is handled');
 			assert.ok(celebration > guard,

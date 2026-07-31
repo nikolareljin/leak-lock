@@ -2509,12 +2509,12 @@ class LeakLockPanel {
 
     _getResultsHtml() {
         if (this._scanResults.length === 0) {
-            return `
-                <div class="scan-section">
-                    <h2>✅ No Findings Found</h2>
-                    <p>Great! No findings (potential secrets or policy references) were detected in your repository.</p>
-                </div>
-            `;
+            // In production _getScanResultsSection() handles the empty case and only
+            // delegates here for non-empty results, so this branch is unreachable —
+            // but it used to render its own unconditional "Great! No findings" and
+            // would have been a second false all-clear the moment anything called it
+            // directly. One owner for the empty state instead of two that can disagree.
+            return this._renderEmptyScanState();
         }
 
         const severityColors = {
@@ -3311,15 +3311,17 @@ class LeakLockPanel {
                 );
             } else if (allResults.length > 0) {
                 vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} findings (potential secrets or policy references). Review them in the main panel.`);
-            } else if (engineReports.length > 0 && engineReports.every(engine => !engine.ok)) {
+            } else if (!engineReports.some(engine => engine.ok)) {
                 // Zero findings because no engine ran is not the same as zero findings
                 // because nothing is there. `incomplete` above only covers the Nosey
                 // Parker timeout and parse paths, so it does not catch this. The panel
                 // renders "Nothing was scanned" here — the toast is what the user
                 // actually sees pop up, so it must not contradict it with a party emoji.
-                const failed = engineReports
-                    .map(engine => `${engine.displayName || engine.id}: ${engine.note || 'did not run'}`)
-                    .join('; ');
+                const failed = engineReports.length > 0
+                    ? engineReports
+                        .map(engine => `${engine.displayName || engine.id}: ${engine.note || 'did not run'}`)
+                        .join('; ')
+                    : 'No engines were enabled — check leakLock.scan.engines.';
                 vscode.window.showWarningMessage(
                     `Nothing was scanned — no detection engine ran, so this is NOT a clean result. ${failed}`
                 );
@@ -4759,36 +4761,25 @@ class LeakLockPanel {
         `;
     }
 
-    _getScanResultsSection() {
-        // Show scanning progress
-        if (this._isScanning) {
-            return `
-                <div class="scan-section">
-                    <h2>🔍 Scanning Repository</h2>
-                    <div class="scanning-progress">
-                        <div class="spinner"></div>
-                        <p class="progress-message">${escapeHtml(this._scanProgress?.message || 'Scanning in progress...')}</p>
-                        <div class="progress-stages">
-                            <span class="stage ${this._scanProgress?.stage === 'docker' ? 'active' : ''}">Docker Check</span>
-                            <span class="stage ${this._scanProgress?.stage === 'pull' ? 'active' : ''}">Pull Image</span>
-                            <span class="stage ${this._scanProgress?.stage === 'init' ? 'active' : ''}">Initialize</span>
-                            <span class="stage ${this._scanProgress?.stage === 'scan' ? 'active' : ''}">Scan Files</span>
-                            <span class="stage ${this._scanProgress?.stage === 'process' ? 'active' : ''}">Process Results</span>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-
-        // Show results or empty state
-        if (!this._scanResults || this._scanResults.length === 0) {
+    /**
+     * The one renderer for "the scan produced no findings".
+     *
+     * Single owner on purpose: zero findings means three different things depending
+     * on what ran, and two renderers making that call independently is how one of
+     * them ends up saying "clean" while the other says nothing was scanned.
+     */
+    _renderEmptyScanState() {
             // Zero findings means nothing at all if nothing ran. Reporting "no issues"
             // when every engine failed is a false all-clear — the single worst output
             // this product can produce, and the failure the coverage panel exists to
             // prevent. Say what happened instead.
+            // Keyed on "a scan produced coverage" rather than "at least one engine was
+            // reported": an empty engine list — leakLock.scan.engines set to [], or to
+            // values that filter to nothing — examined the repository just as little as
+            // three failing engines did, and must not read differently.
             const engines = this._scanCoverage?.engines || [];
             const ranSuccessfully = engines.filter(engine => engine.ok);
-            if (engines.length > 0 && ranSuccessfully.length === 0) {
+            if (this._scanCoverage && ranSuccessfully.length === 0) {
                 return `
                 <div class="scan-section">
                     <div class="empty-results scan-not-run">
@@ -4798,11 +4789,17 @@ class LeakLockPanel {
                             No detection engine ran, so this is <strong>not</strong> a clean result —
                             your repository has not been checked at all.
                         </p>
-                        <ul class="not-run-reasons">
-                            ${engines.map(engine => `
-                                <li><strong>${escapeHtml(engine.displayName)}</strong> — ${escapeHtml(engine.note || 'did not run')}</li>
-                            `).join('')}
-                        </ul>
+                        ${engines.length > 0
+                            ? `<ul class="not-run-reasons">
+                                ${engines.map(engine => `
+                                    <li><strong>${escapeHtml(engine.displayName)}</strong> — ${escapeHtml(engine.note || 'did not run')}</li>
+                                `).join('')}
+                            </ul>`
+                            // An empty list here would render as an empty bullet list, which
+                            // reads as "no problems" — the opposite of what it means.
+                            : `<ul class="not-run-reasons">
+                                <li>No engines were enabled, so there was nothing to run.</li>
+                            </ul>`}
                         <p class="hint">
                             Install at least one engine, or check <code>leakLock.scan.engines</code>,
                             then scan again.
@@ -4870,6 +4867,32 @@ class LeakLockPanel {
                 ${this._renderScanCoverage()}
                 ${this._renderCustomRules()}
             `;
+    }
+
+    _getScanResultsSection() {
+        // Show scanning progress
+        if (this._isScanning) {
+            return `
+                <div class="scan-section">
+                    <h2>🔍 Scanning Repository</h2>
+                    <div class="scanning-progress">
+                        <div class="spinner"></div>
+                        <p class="progress-message">${escapeHtml(this._scanProgress?.message || 'Scanning in progress...')}</p>
+                        <div class="progress-stages">
+                            <span class="stage ${this._scanProgress?.stage === 'docker' ? 'active' : ''}">Docker Check</span>
+                            <span class="stage ${this._scanProgress?.stage === 'pull' ? 'active' : ''}">Pull Image</span>
+                            <span class="stage ${this._scanProgress?.stage === 'init' ? 'active' : ''}">Initialize</span>
+                            <span class="stage ${this._scanProgress?.stage === 'scan' ? 'active' : ''}">Scan Files</span>
+                            <span class="stage ${this._scanProgress?.stage === 'process' ? 'active' : ''}">Process Results</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show results or empty state
+        if (!this._scanResults || this._scanResults.length === 0) {
+            return this._renderEmptyScanState();
         }
 
         // Show actual results (existing logic)
