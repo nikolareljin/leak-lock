@@ -1110,3 +1110,141 @@ suite('Cross-engine field parity and attribution', () => {
 		assert.strictEqual(merged.length, 2, 'different rules are different detections; the exact repeat is dropped');
 	});
 });
+
+suite('Scan coverage and export parity', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panelWithResults(results, coverage) {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanResults = results;
+		panel._scanCoverage = coverage || null;
+		panel._resetScanSelection();
+		return panel;
+	}
+
+	const gitleaksFinding = {
+		file: 'app.py', line: 3, secret: 'AKIA…', fullSecret: 'AKIAIOSFODNN7EXAMPLE',
+		description: 'AWS Access Token', severity: 'high', ruleName: 'aws-access-token',
+		isDependency: false, isGitHistory: true, isUntracked: false,
+		commitHash: 'abc123', commitBranches: null, commitDate: '2026-07-31T04:57:01Z',
+		engine: 'gitleaks', engines: ['gitleaks'], engineVersion: 'v8.30.1',
+		entropy: 3.5, fingerprint: 'fp1', endLine: 3, startColumn: 11, endColumn: 30,
+		unavailableFields: ['verified']
+	};
+
+	const noseyParkerFinding = {
+		file: 'legacy.py', line: 1, secret: 'xoxb…', fullSecret: 'xoxb-1111',
+		description: 'Slack Bot Token', severity: 'high', ruleName: 'Slack Bot Token',
+		isDependency: false, isGitHistory: true, isUntracked: false,
+		commitHash: 'def456', commitBranches: null, commitDate: null,
+		engine: 'noseyparker', engines: ['noseyparker'], engineVersion: 'v0.24.0'
+	};
+
+	const coverage = {
+		incomplete: false, incompleteReason: null,
+		engines: [
+			{ id: 'gitleaks', displayName: 'Gitleaks', version: 'v8.30.1', ok: true, findings: 1 },
+			{ id: 'noseyparker', displayName: 'Nosey Parker', version: 'v0.24.0', ok: true, findings: 1, note: 'archived upstream' }
+		],
+		image: 'ghcr.io/praetorian-inc/noseyparker:v0.24.0', imagePulled: true, imagePullError: null,
+		rulesetMode: 'default', maxFileSizeMb: 100, timeoutSeconds: 300, dependencyHandling: 'warning',
+		refRefresh: { attempted: true, ok: true, reason: null },
+		refs: { localBranches: 2, remoteBranches: 2, remoteOnlyBranches: ['side'], tags: 1, stashes: 0 }
+	};
+
+	test('the export shape does not vary by engine', () => {
+		const panel = panelWithResults([gitleaksFinding, noseyParkerFinding], coverage);
+		const payload = panel._buildScanExportPayload();
+		assert.strictEqual(payload.findings.length, 2);
+		// Every key present for one engine must be present for the other, or a
+		// consumer parsing the export would silently lose columns per engine.
+		const [a, b] = payload.findings;
+		assert.deepStrictEqual(Object.keys(a).sort(), Object.keys(b).sort());
+		for (const key of ['engine', 'engines', 'engineVersion', 'verified', 'entropy', 'fingerprint', 'unavailableFields']) {
+			assert.ok(key in a && key in b, `${key} must be present for both engines`);
+		}
+		assert.strictEqual(a.entropy, 3.5);
+		assert.strictEqual(b.entropy, null, 'a field the engine did not supply is null, not missing');
+	});
+
+	test('redacted exports drop author identity as well as secrets', () => {
+		const panel = panelWithResults([{ ...gitleaksFinding, author: 'Fixture', authorEmail: 'f@example.invalid', commitMessage: 'add app' }], coverage);
+		const payload = panel._buildScanExportPayload({ redactSensitive: true });
+		assert.strictEqual(payload.findings[0].secret, '[REDACTED_SECRET]');
+		assert.strictEqual(payload.findings[0].author, null);
+		assert.strictEqual(payload.findings[0].authorEmail, null);
+		assert.strictEqual(payload.findings[0].commitMessage, null);
+		// Paths still visible by design; that is documented in the export dialog.
+		assert.strictEqual(payload.findings[0].file, 'app.py');
+	});
+
+	test('the export records what the scan covered', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		const payload = panel._buildScanExportPayload();
+		assert.ok(payload.coverage, 'an exported report without its scope cannot be audited later');
+		assert.strictEqual(payload.coverage.incomplete, false);
+		assert.strictEqual(payload.coverage.refsRefreshed, true);
+		assert.deepStrictEqual(payload.coverage.engines.map(e => e.id), ['gitleaks', 'noseyparker']);
+		assert.strictEqual(payload.summary.verifiedLiveCredentials, 0);
+	});
+
+	test('an incomplete scan is marked in the export, not just in a toast', () => {
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage, incomplete: true, incompleteReason: 'stopped after 300s'
+		});
+		const payload = panel._buildScanExportPayload();
+		assert.strictEqual(payload.coverage.incomplete, true);
+		assert.match(payload.coverage.incompleteReason, /300s/);
+	});
+
+	test('coverage is rendered with the results, including remote-only branches', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		const html = panel._renderScanCoverage();
+		assert.match(html, /Scan coverage/);
+		assert.match(html, /Gitleaks/);
+		assert.match(html, /Nosey Parker/);
+		assert.match(html, /refs refreshed from origin/);
+		assert.match(html, /only on the remote/);
+		assert.match(html, /side/);
+	});
+
+	test('an unrefreshed ref set is called out rather than passed over', () => {
+		const panel = panelWithResults([gitleaksFinding], {
+			...coverage, refRefresh: { attempted: true, ok: false, reason: 'network unreachable' }
+		});
+		const html = panel._renderScanCoverage();
+		assert.match(html, /refs NOT refreshed/);
+		assert.match(html, /may not have been scanned/);
+	});
+
+	test('an incomplete scan renders an unmissable banner, not a dismissible toast', () => {
+		const panel = panelWithResults([], { ...coverage, incomplete: true, incompleteReason: 'stopped after 300s' });
+		const html = panel._renderScanCoverage();
+		assert.match(html, /Scan incomplete/);
+		assert.match(html, /not exhaustive/);
+	});
+
+	test('attribution names the engines that found a finding and those that missed it', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		const html = panel._renderEngineAttribution(gitleaksFinding);
+		assert.match(html, /Gitleaks/);
+		// Nosey Parker ran against the same repository and did not report it.
+		assert.match(html, /missed by/);
+		assert.match(html, /Nosey Parker/);
+		assert.match(html, /no verified/, 'a structurally unavailable field is stated');
+	});
+
+	test('a verified live credential is flagged in the results table', () => {
+		const panel = panelWithResults([{ ...gitleaksFinding, verified: true, engines: ['trufflehog'], unavailableFields: [] }], coverage);
+		const html = panel._renderEngineAttribution(panel._scanResults[0]);
+		assert.match(html, /VERIFIED LIVE/);
+	});
+
+	test('the results table exposes an Engine column', () => {
+		const panel = panelWithResults([gitleaksFinding, noseyParkerFinding], coverage);
+		const html = panel._getResultsHtml();
+		assert.match(html, /<th[^>]*>Engine<\/th>/);
+		assert.match(html, /Scan coverage/);
+	});
+});

@@ -2397,6 +2397,9 @@ class LeakLockPanel {
                     <td>
                         <input type="text" class="replacement-input" data-finding-index="${index}" value="${escapeHtml(this._getReplacementValue(index))}" placeholder="Replacement value" ${cleanupDisabled ? 'disabled' : ''}>
                     </td>
+                    <td style="font-size: 0.85em; line-height: 1.5;">
+                        ${this._renderEngineAttribution(result)}
+                    </td>
                     <td title="${escapeHtml(gitInfoTooltip)}" style="font-size: 0.85em; line-height: 1.4; overflow: visible; white-space: normal; word-break: break-word;">
                         ${gitInfoHtml}
                     </td>
@@ -2501,6 +2504,7 @@ class LeakLockPanel {
                             </div>
                         ` : ''}
                     </div>
+                    ${this._renderScanCoverage()}
                 </div>
                 <script>window.__branchData = ${JSON.stringify(branchDataMap).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>
                 <table class="results-table">
@@ -2515,6 +2519,7 @@ class LeakLockPanel {
                             <th style="width: 50px;">Line</th>
                             <th style="width: 20%;">Secret</th>
                             <th style="width: 12%;">Replace With</th>
+                            <th style="width: 10%;" title="Which engine reported this finding. A secret found by one engine and missed by another is visible here.">Engine</th>
                             <th style="width: 15%;">Git Info</th>
                             <th>Description</th>
                         </tr>
@@ -3891,6 +3896,117 @@ class LeakLockPanel {
         }
     }
 
+    /**
+     * Per-finding engine attribution.
+     *
+     * Names the engines that found it and, just as importantly, the enabled engines
+     * that did not. That single line is what turns "GitGuardian found more than you
+     * did" from a mystery into a checkable fact.
+     */
+    _renderEngineAttribution(result) {
+        const found = Array.isArray(result.engines) && result.engines.length
+            ? result.engines
+            : (result.engine ? [result.engine] : []);
+
+        if (!found.length) {
+            return '<span style="color: var(--vscode-descriptionForeground);">—</span>';
+        }
+
+        const labels = {
+            gitleaks: 'Gitleaks',
+            trufflehog: 'TruffleHog',
+            noseyparker: 'Nosey Parker'
+        };
+
+        const badges = found.map(id => `
+            <span style="display: inline-block; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; font-size: 0.85em; margin: 1px 2px 1px 0;">
+                ${escapeHtml(labels[id] || id)}
+            </span>
+        `).join('');
+
+        const ranEngines = (this._scanCoverage?.engines || [])
+            .filter(engine => engine.ok)
+            .map(engine => engine.id);
+        const missedBy = ranEngines.filter(id => !found.includes(id));
+        const missedNote = missedBy.length
+            ? `<div style="color: var(--vscode-descriptionForeground); font-size: 0.85em; margin-top: 2px;" title="These engines ran against the same repository and did not report this finding.">missed by ${escapeHtml(missedBy.map(id => labels[id] || id).join(', '))}</div>`
+            : '';
+
+        const verifiedBadge = result.verified === true
+            ? `<div style="margin-top: 3px;"><span style="background: var(--vscode-testing-iconFailed, #d73a49); color: #fff; padding: 1px 6px; border-radius: 8px; font-size: 0.8em; font-weight: 600;" title="TruffleHog confirmed this credential is still live. Rotate it now — rewriting history does not revoke it.">VERIFIED LIVE</span></div>`
+            : '';
+
+        // A field nobody could supply is stated, so a blank cell meaning "nothing
+        // here" is never confused with one meaning "this engine cannot tell you".
+        const unavailable = Array.isArray(result.unavailableFields) && result.unavailableFields.length
+            ? `<div style="color: var(--vscode-descriptionForeground); font-size: 0.8em; margin-top: 2px;" title="Not reported by the engine(s) that found this finding.">no ${escapeHtml(result.unavailableFields.join(', '))}</div>`
+            : '';
+
+        return `${badges}${verifiedBadge}${missedNote}${unavailable}`;
+    }
+
+    /**
+     * What the scan actually covered.
+     *
+     * "No findings" is only meaningful next to this, so it is rendered with the
+     * results — the scan-side counterpart to the ref-by-ref push plan that gates a
+     * rewrite. Anything bounded says so; a silently truncated result set reads as
+     * "we covered everything" when it did not.
+     */
+    _renderScanCoverage() {
+        const coverage = this._scanCoverage;
+        if (!coverage) {
+            return '';
+        }
+
+        const engineRows = (coverage.engines || []).map(engine => {
+            const status = engine.ok ? '✅' : '⚠️';
+            const version = engine.version ? ` <code>${escapeHtml(engine.version)}</code>` : '';
+            const findings = engine.ok ? ` — ${engine.findings} finding(s)` : '';
+            const verified = engine.verified ? ` · <strong>${engine.verified} verified live</strong>` : '';
+            const note = engine.note ? `<div style="color: var(--vscode-descriptionForeground); font-size: 0.9em; margin-left: 20px;">${escapeHtml(engine.note)}</div>` : '';
+            const warnings = (engine.warnings || []).map(w =>
+                `<div style="color: var(--vscode-editorWarning-foreground); font-size: 0.9em; margin-left: 20px;">${escapeHtml(w)}</div>`
+            ).join('');
+            return `<li>${status} <strong>${escapeHtml(engine.displayName)}</strong>${version}${findings}${verified}${note}${warnings}</li>`;
+        }).join('');
+
+        const refs = coverage.refs || {};
+        const remoteOnly = refs.remoteOnlyBranches || [];
+        const refRefresh = coverage.refRefresh || {};
+        const refreshNote = refRefresh.ok
+            ? 'refs refreshed from origin before scanning'
+            : `refs NOT refreshed (${escapeHtml(refRefresh.reason || 'unknown')}) — history that exists only on the remote may not have been scanned`;
+
+        const incompleteBanner = coverage.incomplete
+            ? `<div style="background: var(--vscode-inputValidation-warningBackground); border: 1px solid var(--vscode-editorWarning-foreground); padding: 10px; border-radius: 4px; margin-bottom: 10px;">
+                    <strong>⚠️ Scan incomplete — these results are not exhaustive.</strong>
+                    <div style="margin-top: 4px;">${escapeHtml(coverage.incompleteReason || '')}</div>
+               </div>`
+            : '';
+
+        const pullNote = coverage.imagePulled === false
+            ? `<li>⚠️ Could not pull <code>${escapeHtml(coverage.image)}</code>; a cached image was used${coverage.imagePullError ? ` (${escapeHtml(coverage.imagePullError)})` : ''}</li>`
+            : '';
+
+        return `
+            <div class="scan-coverage" style="margin: 12px 0; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px;">
+                ${incompleteBanner}
+                <h3 style="margin: 0 0 8px 0; font-size: 1em;">📋 Scan coverage</h3>
+                <p style="margin: 0 0 8px 0; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
+                    A result is only as good as what was examined. This is what this scan looked at.
+                </p>
+                <ul style="margin: 0; padding-left: 18px; font-size: 0.9em; line-height: 1.6;">
+                    ${engineRows}
+                    ${pullNote}
+                    <li>Refs: ${refs.localBranches || 0} local branch(es), ${refs.remoteBranches || 0} remote branch(es), ${refs.tags || 0} tag(s), ${refs.stashes || 0} stash entr(ies) — ${refreshNote}</li>
+                    ${remoteOnly.length ? `<li>Branches present only on the remote: <code>${escapeHtml(remoteOnly.join(', '))}</code></li>` : ''}
+                    <li>Ruleset: <code>${escapeHtml(coverage.rulesetMode || 'default')}</code> · file-size limit: ${coverage.maxFileSizeMb ? `${coverage.maxFileSizeMb} MB` : 'none'} · timeout: ${coverage.timeoutSeconds}s · dependencies: <code>${escapeHtml(coverage.dependencyHandling)}</code></li>
+                </ul>
+            </div>
+        `;
+    }
+
     _getScanResultsSection() {
         // Show scanning progress
         if (this._isScanning) {
@@ -3920,7 +4036,9 @@ class LeakLockPanel {
                         <div class="empty-icon">🛡️</div>
                         <h2>No Security Issues Found!</h2>
                         <p>Great news! Your repository scan completed successfully with no secrets or credentials detected.</p>
-                        
+
+                        ${this._renderScanCoverage()}
+
                         <div class="scan-summary">
                             <div class="summary-item">
                                 <span class="summary-icon">✅</span>
@@ -5641,8 +5759,32 @@ class LeakLockPanel {
             summary: {
                 severities: severityCounts,
                 dependencyFindings: this._scanResults.filter(result => result.isDependency).length,
-                gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length
+                gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length,
+                verifiedLiveCredentials: this._scanResults.filter(result => result.verified === true).length
             },
+            // What the scan examined. An exported report that omits this cannot be
+            // audited later: "no findings" means nothing without its scope, and an
+            // incomplete scan must never be mistaken for a completed one.
+            coverage: this._scanCoverage
+                ? {
+                    incomplete: Boolean(this._scanCoverage.incomplete),
+                    incompleteReason: this._scanCoverage.incompleteReason,
+                    engines: (this._scanCoverage.engines || []).map(engine => ({
+                        id: engine.id,
+                        displayName: engine.displayName,
+                        version: engine.version,
+                        ok: Boolean(engine.ok),
+                        findings: engine.findings,
+                        note: engine.note || null
+                    })),
+                    refs: this._scanCoverage.refs,
+                    refsRefreshed: Boolean(this._scanCoverage.refRefresh?.ok),
+                    rulesetMode: this._scanCoverage.rulesetMode,
+                    maxFileSizeMb: this._scanCoverage.maxFileSizeMb,
+                    timeoutSeconds: this._scanCoverage.timeoutSeconds,
+                    dependencyHandling: this._scanCoverage.dependencyHandling
+                }
+                : null,
             findings: this._scanResults.map(result => ({
                 file: result.file,
                 line: result.line,
@@ -5657,7 +5799,25 @@ class LeakLockPanel {
                 isUntracked: Boolean(result.isUntracked),
                 commitHash: result.commitHash || null,
                 commitBranches: result.commitBranches || null,
-                commitDate: result.commitDate || null
+                commitDate: result.commitDate || null,
+                // Engine attribution and the extra detail maintained engines supply.
+                // Present for every finding so the export shape does not vary by engine;
+                // null means "this engine did not report it", and unavailableFields says
+                // which of those nulls are structural rather than absent.
+                engine: result.engine || null,
+                engines: result.engines || (result.engine ? [result.engine] : []),
+                engineVersion: result.engineVersion || null,
+                ruleName: result.ruleName || null,
+                verified: typeof result.verified === 'boolean' ? result.verified : null,
+                endLine: Number.isFinite(result.endLine) ? result.endLine : null,
+                startColumn: Number.isFinite(result.startColumn) ? result.startColumn : null,
+                endColumn: Number.isFinite(result.endColumn) ? result.endColumn : null,
+                entropy: Number.isFinite(result.entropy) ? result.entropy : null,
+                fingerprint: result.fingerprint || null,
+                author: redactSensitive ? null : (result.author || null),
+                authorEmail: redactSensitive ? null : (result.authorEmail || null),
+                commitMessage: redactSensitive ? null : (result.commitMessage || null),
+                unavailableFields: result.unavailableFields || []
             }))
         };
     }
