@@ -2826,7 +2826,7 @@ class LeakLockPanel {
                     ${preparedBlockBfg}
                     ${this._scanCleanup.preparedMode === 'bfg' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
-                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
+                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || (this._scanCleanup.blockedBranches || []).length > 0 || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
                     </div>
                 </div>
 
@@ -2842,7 +2842,7 @@ class LeakLockPanel {
                     ${preparedBlockGit}
                     ${this._scanCleanup.preparedMode === 'git' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
-                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
+                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || (this._scanCleanup.blockedBranches || []).length > 0 || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
                     </div>
                 </div>
 
@@ -2952,13 +2952,19 @@ class LeakLockPanel {
             .join('');
         return `
             <div class="rewrite-blocked">
-                <strong>⛔ Rewrite blocked — unpushed local commits</strong>
+                <strong>⛔ The cleanup cannot be run yet — unpushed local commits</strong>
                 <p style="margin: 6px 0; font-size: 0.9em;">
-                    A ref-complete rewrite resets every local branch to its remote counterpart.
-                    These branches would lose commits, so Leak Lock stopped before touching anything:
+                    The script below was prepared and is safe to read and save. It is the
+                    <em>run</em> that is blocked: a ref-complete rewrite force-resets every branch that
+                    exists on the remote, and these hold commits the remote does not have, so running it
+                    would discard them:
                 </p>
                 <ul style="margin: 6px 0 6px 18px;">${rows}</ul>
-                <p style="margin: 6px 0; font-size: 0.9em;">Push them, then prepare again.</p>
+                <p style="margin: 6px 0; font-size: 0.9em;">
+                    Push or delete them and prepare again to enable the run. Nothing has been changed.
+                    The script re-checks this itself before rewriting anything, so running it by hand is
+                    safe too — it will refuse for the same reason.
+                </p>
             </div>
         `;
     }
@@ -6308,7 +6314,10 @@ class LeakLockPanel {
                 }
                 return;
             }
-            this._scanCleanup.blockedReason = null;
+            // A branch ahead of the remote no longer stops preparation; it stops the
+            // run. Recorded here so the panel states it above the script.
+            this._scanCleanup.blockedBranches = preflight.ahead.length ? preflight.ahead : null;
+            this._scanCleanup.blockedReason = preflight.ahead.length ? 'unpushed-commits' : null;
 
             const command = mode === "git"
                 ? this._buildScanGitReplaceCommand(scanPath, resolvedReplacements, preflight.remoteUrl)
@@ -6383,17 +6392,30 @@ class LeakLockPanel {
         }
 
         const unsafe = await gitRewrite.findUnsafeLocalBranches(repoDir, remote);
-        if (unsafe.ahead.length > 0) {
-            vscode.window.showErrorMessage(
-                `Cannot rewrite history: ${unsafe.ahead.length} local branch(es) have commits that are not on ${remote}. ` +
-                `Push them first, then prepare again.`
-            );
-            return { blocked: true, reason: 'unpushed-commits', ahead: unsafe.ahead, pushPlan: null, remoteUrl: null, remoteError: null };
-        }
-
         const pushPlan = await gitRewrite.buildPushPlan(repoDir, remote);
         const remoteUrl = await gitRewrite.getRemoteUrl(repoDir, remote);
-        return { blocked: false, ahead: [], pushPlan, remoteUrl, localOnly: unsafe.localOnly, remoteError: null };
+
+        // Only branches the rewrite actually force-resets can lose commits.
+        // materializeRemoteBranches() resets every branch that exists on the remote, so
+        // today this is the whole `ahead` set — `ahead` means "has a remote counterpart
+        // and is ahead of it". Stating the rule as an intersection rather than assuming
+        // it keeps the block correct if materialisation ever becomes selective.
+        const willBeReset = new Set(pushPlan ? pushPlan.forceUpdate : []);
+        const aheadBlockingRun = unsafe.ahead.filter(entry => willBeReset.has(entry.branch));
+
+        // Deliberately not `blocked`. Preparing a cleanup is planning, not rewriting:
+        // the user asked to read a script. The generated script re-checks this itself
+        // before touching anything (step 2), and the in-panel run is refused
+        // separately, so producing the script costs no safety while withholding it only
+        // stops the user seeing what would happen.
+        return {
+            blocked: false,
+            ahead: aheadBlockingRun,
+            pushPlan,
+            remoteUrl,
+            localOnly: unsafe.localOnly,
+            remoteError: null
+        };
     }
 
     async _prepareScanBfgCommand(replacements) {
@@ -6407,6 +6429,18 @@ class LeakLockPanel {
     async _runPreparedScanCleanup(mode) {
         if (!this._scanCleanup.preparedCommand || this._scanCleanup.preparedMode !== mode) {
             vscode.window.showWarningMessage('Prepare the cleanup command first.');
+            return;
+        }
+        // The safety rule lives here, where a rewrite is actually about to happen —
+        // not at prepare time, where the user only asked to read the script.
+        const blocking = this._scanCleanup.blockedBranches;
+        if (Array.isArray(blocking) && blocking.length > 0) {
+            const list = blocking.map(b => `${b.branch} (+${b.count})`).join(', ');
+            vscode.window.showErrorMessage(
+                'Nothing was changed. The cleanup force-resets every branch that exists on the remote, and these ' +
+                `local branch(es) hold commits the remote does not have, so running it would discard them: ${list}. ` +
+                'Push or delete them, then prepare again. The prepared script is still available to read and save.'
+            );
             return;
         }
         const replacements = this._scanCleanup.replacements;

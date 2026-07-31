@@ -2744,3 +2744,66 @@ suite('Website image dimensions', () => {
 		assert.deepStrictEqual(missing, []);
 	});
 });
+
+suite('Preparing is never blocked by branch state', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+
+	function panel(blocked) {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		p._scanCleanup.preparedCommand = '#!/usr/bin/env bash\n# script\n';
+		p._scanCleanup.preparedMode = 'git';
+		p._scanCleanup.replacements = [{ source: 's', mode: 'literal', replaceWith: '*****' }];
+		p._scanCleanup.blockedBranches = blocked;
+		p._scanCleanup.blockedReason = blocked ? 'unpushed-commits' : null;
+		return p;
+	}
+
+	test('the run is refused while a branch the rewrite resets is ahead', async () => {
+		// The rule belongs here, where a rewrite is about to happen — not at prepare
+		// time, where the user only asked to read the script.
+		const p = panel([{ branch: 'feat/pages-screenshots', count: 3 }]);
+		const seen = [];
+		const original = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = (m) => { seen.push(String(m)); };
+		try {
+			await p._runPreparedScanCleanup('git');
+		} finally {
+			vscode.window.showErrorMessage = original;
+		}
+		assert.ok(seen.some(m => /Nothing was changed/.test(m)));
+		assert.ok(seen.some(m => /feat\/pages-screenshots \(\+3\)/.test(m)), 'the branch and count are named');
+		assert.ok(seen.some(m => /still available to read and save/.test(m)), 'the script is not withdrawn');
+	});
+
+	test('the banner says the script exists and only the run is blocked', () => {
+		const html = panel([{ branch: 'feat/x', count: 2 }])
+			._renderBlockedBranches([{ branch: 'feat/x', count: 2 }], 'unpushed-commits');
+		assert.match(html, /cannot be run yet/);
+		assert.match(html, /prepared and is safe to read and save/);
+		assert.match(html, /Nothing has been changed/);
+		// The old wording claimed preparation itself had stopped.
+		assert.ok(!/Leak Lock stopped before touching anything/.test(html));
+	});
+
+	test('the run buttons are disabled while a branch is ahead', () => {
+		const p = panel([{ branch: 'feat/x', count: 2 }]);
+		p._scanResults = [{
+			file: 'a.js', line: 1, secret: 's', fullSecret: 'secret-value',
+			description: 'x', severity: 'high', ruleName: 'r',
+			isDependency: false, includeInCleanup: true
+		}];
+		p._resetScanSelection();
+		const html = p._getResultsHtml();
+		const runButton = html.slice(html.indexOf('runPreparedGit()'), html.indexOf('runPreparedGit()') + 200);
+		assert.match(runButton, /disabled/);
+	});
+
+	test('with no blocking branch the run proceeds past the gate', async () => {
+		const p = panel(null);
+		let reached = false;
+		p._executeGitCleanup = async () => { reached = true; };
+		await p._runPreparedScanCleanup('git');
+		assert.strictEqual(reached, true, 'a clean branch state does not stop the run');
+	});
+});
