@@ -2468,3 +2468,60 @@ suite('Manifest integrity', () => {
 		assert.deepStrictEqual(problems, []);
 	});
 });
+
+suite('Suppressed review comments', () => {
+	const engines = require('../scan-engines');
+	const rules = require('../redaction-rules');
+
+	test('line 0 is preserved, not coerced to null', () => {
+		// `parseInt(...) || null` discards a legitimate 0. Line numbers are 1-based in
+		// practice, but a coercion that silently drops a valid value is wrong anyway.
+		assert.strictEqual(engines.toLineNumber(0), 0);
+		assert.strictEqual(engines.toLineNumber('0'), 0);
+		assert.strictEqual(engines.toLineNumber('42'), 42);
+		assert.strictEqual(engines.toLineNumber('not a number'), null);
+		assert.strictEqual(engines.toLineNumber(undefined), null);
+	});
+
+	test('a verification timestamp is recorded whatever the verdict', () => {
+		// "Checked, not live" is equally a claim about a moment in time — the key may
+		// have been rotated back since. A status with no timestamp cannot be read later.
+		const stdout = [
+			'{"DetectorName":"AWS","Verified":true,"Raw":"AKIAIOSFODNN7EXAMPLE","SourceMetadata":{"Data":{"Git":{"commit":"c1","file":"a.py","line":4}}}}',
+			'{"DetectorName":"Stripe","Verified":false,"Raw":"sk_test_x","SourceMetadata":{"Data":{"Git":{"commit":"c2","file":"b.py","line":9}}}}'
+		].join('\n');
+		const parsed = engines.parseTruffleHogJsonl(stdout);
+		assert.strictEqual(parsed.length, 2);
+		// The adapter stamps during scan(); assert the shape it produces.
+		const stamped = parsed.map(raw => {
+			const f = engines.mapTruffleHogFinding(raw);
+			f.verifiedAt = '2026-07-31T15:00:00Z';
+			return f;
+		});
+		assert.ok(stamped.every(f => f.verifiedAt), 'both verdicts carry a timestamp');
+		assert.strictEqual(stamped[0].verified, true);
+		assert.strictEqual(stamped[1].verified, false);
+	});
+
+	test('regex constructs the downstream tools disagree on are flagged', () => {
+		// JavaScript compiling a pattern proves little: it is then run by git
+		// (POSIX ERE), BFG (Java) and git filter-repo (Python).
+		const portable = rules.validateRule({ source: 'ACME-[0-9]{6}', mode: 'regex', replaceWith: '*' });
+		assert.strictEqual(portable.warnings.length, 0, 'a POSIX-safe pattern is not nagged about');
+
+		for (const pattern of ['\\d{6}', '(?<=x)y', '(?!a)b', '(?<name>x)', '(a)\\1']) {
+			const result = rules.validateRule({ source: pattern, mode: 'regex', replaceWith: '*' });
+			assert.strictEqual(result.valid, true, `${pattern} is still allowed`);
+			assert.ok(result.warnings.length > 0, `${pattern} should warn about portability`);
+			assert.match(result.warnings.join(' '), /Preview it before running a cleanup/);
+		}
+	});
+
+	test('portability problems warn rather than block', () => {
+		// The pattern may be exactly right for the tool the user chose; the dry run is
+		// the authority, so this must not refuse a legitimate rule.
+		const result = rules.validateRule({ source: '\\d{6}', mode: 'regex', replaceWith: '*' });
+		assert.strictEqual(result.valid, true);
+		assert.deepStrictEqual(result.errors, []);
+	});
+});

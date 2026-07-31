@@ -34,6 +34,49 @@ const SHORT_SOURCE_THRESHOLD = 4;
 const MODES = Object.freeze(['literal', 'regex']);
 
 /**
+ * Constructs that do not mean the same thing in every tool that will see the pattern.
+ *
+ * A regex rule is compiled here by JavaScript, but it is then executed by:
+ *   - `git log -G<pattern>` for the dry-run preview   (POSIX ERE)
+ *   - `git grep -E <pattern>` for post-push verification (POSIX ERE)
+ *   - BFG's `regex:` form                              (Java)
+ *   - `git filter-repo --replace-text regex:`          (Python `re`)
+ *
+ * JavaScript accepting a pattern therefore proves very little. These are the constructs
+ * that most commonly pass here and then fail — or, worse, silently match differently —
+ * somewhere downstream. They are warnings rather than errors: the pattern may still be
+ * exactly right for the tool the user has chosen, and the dry run is the authority.
+ */
+const REGEX_PORTABILITY_CHECKS = Object.freeze([
+    {
+        test: /\(\?<[=!]/,
+        note: 'lookbehind `(?<=…)` / `(?<!…)` is not supported by POSIX regular expressions, so the dry-run preview and the post-push verification will not understand it'
+    },
+    {
+        test: /\(\?[=!]/,
+        note: 'lookahead `(?=…)` / `(?!…)` is not supported by POSIX regular expressions, so the dry-run preview and the post-push verification will not understand it'
+    },
+    {
+        test: /\(\?<[A-Za-z_]/,
+        note: 'named capture groups are not supported by POSIX regular expressions'
+    },
+    {
+        test: /\\[dDwWsS]/,
+        note: 'shorthand classes like `\\d` and `\\w` are not POSIX; prefer `[0-9]` and `[A-Za-z0-9_]`, which every tool in the chain understands'
+    },
+    {
+        test: /\\[1-9]/,
+        note: 'backreferences behave differently across the tools that will run this pattern'
+    }
+]);
+
+function findRegexPortabilityProblems(source) {
+    return REGEX_PORTABILITY_CHECKS
+        .filter(check => check.test.test(source))
+        .map(check => `This pattern uses ${check.note}. Preview it before running a cleanup — the dry run is what your tools actually accept.`);
+}
+
+/**
  * Validate one rule.
  * @returns {{valid: boolean, errors: string[], warnings: string[]}}
  */
@@ -76,6 +119,9 @@ function validateRule(rule) {
             }
         } catch (error) {
             errors.push(`Not a valid regular expression: ${error.message}`);
+        }
+        for (const note of findRegexPortabilityProblems(source)) {
+            warnings.push(note);
         }
     }
 
@@ -194,6 +240,8 @@ module.exports = {
     DEFAULT_REPLACEMENT,
     SHORT_SOURCE_THRESHOLD,
     MODES,
+    REGEX_PORTABILITY_CHECKS,
+    findRegexPortabilityProblems,
     validateRule,
     normalizeRule,
     formatRuleLine,
