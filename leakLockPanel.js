@@ -9,6 +9,7 @@ const os = require('os');
 const gitRewrite = require('./git-rewrite');
 const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
+const redactionRules = require('./redaction-rules');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -335,6 +336,11 @@ class LeakLockPanel {
             // reset the user's choices back to "everything checked".
             selection: null, // Set<number>; null = seed with all eligible findings
             replacementValues: {}, // { [findingIndex]: string }
+            // User-authored "source text -> replace with" rules, for content no
+            // scanner flagged. Unlike selection these are not tied to _scanResults
+            // indices, so they survive a re-scan and a completed push.
+            customRules: [], // { id, source, mode: 'literal'|'regex', replaceWith }
+            customRulePreviews: {}, // { [ruleId]: { commits, files, branches, truncated } }
             pushPlan: null, // ref-by-ref preview of the force-push
             blockedBranches: null, // local branches with unpushed commits
             blockedReason: null, // 'unpushed-commits' | 'no-remote' | null
@@ -494,6 +500,16 @@ class LeakLockPanel {
                         break;
                     case 'scan.setReplacement':
                         LeakLockPanel.currentPanel._setScanReplacement(message.index, message.value);
+                        break;
+                    case 'scan.addCustomRule':
+                        LeakLockPanel.currentPanel._handleAddCustomRule(message.source, message.mode, message.replaceWith);
+                        break;
+                    case 'scan.removeCustomRule':
+                        LeakLockPanel.currentPanel._removeCustomRule(message.id);
+                        LeakLockPanel.currentPanel._updateWebviewContent();
+                        break;
+                    case 'scan.previewCustomRule':
+                        LeakLockPanel.currentPanel._previewCustomRule(message.id);
                         break;
                     case 'scan.saveScript':
                         LeakLockPanel.currentPanel._saveCleanupScript();
@@ -1117,10 +1133,14 @@ class LeakLockPanel {
                             master.indeterminate = selected > 0 && selected < total;
                         }
 
+                        // Manual redaction rules are cleaned by the same mechanism as
+                        // findings, so a rules-only cleanup must not be gated on the
+                        // finding checkboxes.
+                        const customRules = document.querySelectorAll('[data-rule-remove]').length;
                         ['prepare-bfg-button', 'prepare-git-button'].forEach(function (id) {
                             const btn = document.getElementById(id);
                             if (btn) {
-                                btn.disabled = selected === 0;
+                                btn.disabled = selected === 0 && customRules === 0;
                             }
                         });
                     }
@@ -1206,6 +1226,59 @@ class LeakLockPanel {
                         replacementDebounce = setTimeout(function () {
                             postReplacement(input);
                         }, 200);
+                    });
+
+                    // --- Manual redaction rules ---
+                    // Delegated listeners, so rules added after this script ran are
+                    // wired without re-binding, and no inline handlers are needed.
+                    function submitCustomRule() {
+                        const source = document.getElementById('custom-rule-source');
+                        const mode = document.getElementById('custom-rule-mode');
+                        const replacement = document.getElementById('custom-rule-replacement');
+                        if (!source || !source.value.trim()) {
+                            return;
+                        }
+                        vscode.postMessage({
+                            command: 'scan.addCustomRule',
+                            source: source.value,
+                            mode: mode ? mode.value : 'literal',
+                            replaceWith: replacement ? replacement.value : ''
+                        });
+                        source.value = '';
+                        if (replacement) { replacement.value = ''; }
+                    }
+
+                    document.addEventListener('click', function (event) {
+                        if (event.target.closest('#custom-rule-add')) {
+                            submitCustomRule();
+                            return;
+                        }
+                        const removeBtn = event.target.closest('[data-rule-remove]');
+                        if (removeBtn) {
+                            vscode.postMessage({
+                                command: 'scan.removeCustomRule',
+                                id: removeBtn.getAttribute('data-rule-remove')
+                            });
+                            return;
+                        }
+                        const previewBtn = event.target.closest('[data-rule-preview]');
+                        if (previewBtn) {
+                            vscode.postMessage({
+                                command: 'scan.previewCustomRule',
+                                id: previewBtn.getAttribute('data-rule-preview')
+                            });
+                        }
+                    });
+
+                    document.addEventListener('keydown', function (event) {
+                        if (event.key !== 'Enter') {
+                            return;
+                        }
+                        const field = event.target.closest('#custom-rule-source, #custom-rule-replacement');
+                        if (field) {
+                            event.preventDefault();
+                            submitCustomRule();
+                        }
                     });
 
                     document.addEventListener('DOMContentLoaded', refreshSelectionUi);
@@ -2463,7 +2536,10 @@ class LeakLockPanel {
             <div id="scan-prepared-command-git" class="danger-command">${escapeHtml(gitCommandText)}</div>
             ${prepared && this._scanCleanup.preparedMode === "git" ? renderPreparedActions("scan-prepared-command-git") : ""}
         `;
-        const noneSelected = selectedCount === 0;
+        // Manual rules are cleaned by the same mechanism as findings, so they count
+        // toward whether there is anything to prepare.
+        const customRuleCount = this._getCustomRules().length;
+        const noneSelected = selectedCount === 0 && customRuleCount === 0;
         const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
         const verifyBlock = this._renderVerifyResult(this._scanCleanup.verifyResult);
@@ -2506,6 +2582,7 @@ class LeakLockPanel {
                     </div>
                     ${this._renderScanCoverage()}
                 </div>
+                ${this._renderCustomRules()}
                 <script>window.__branchData = ${JSON.stringify(branchDataMap).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>
                 <table class="results-table">
                     <thead>
@@ -3896,6 +3973,103 @@ class LeakLockPanel {
         }
     }
 
+    _handleAddCustomRule(source, mode, replaceWith) {
+        const outcome = this._addCustomRule(source, mode, replaceWith);
+        if (!outcome.ok) {
+            vscode.window.showErrorMessage(`Rule rejected: ${outcome.errors.join(' ')}`);
+            return;
+        }
+        for (const warning of outcome.warnings) {
+            vscode.window.showWarningMessage(warning);
+        }
+        this._updateWebviewContent();
+    }
+
+    /**
+     * The manual redaction rule editor.
+     *
+     * Rendered whether or not the scan found anything, because the whole point is
+     * content no scanner flags: an internal hostname, a private repository name, a
+     * customer identifier. A clean scan is exactly when a user reaches for this.
+     */
+    _renderCustomRules() {
+        const rules = this._getCustomRules();
+        const previews = this._scanCleanup.customRulePreviews || {};
+
+        const ruleRows = rules.map(rule => {
+            const preview = previews[rule.id];
+            let previewHtml = '';
+            if (preview && preview.error) {
+                previewHtml = `<div style="color: var(--vscode-editorWarning-foreground); font-size: 0.85em;">Preview failed: ${escapeHtml(preview.error)}</div>`;
+            } else if (preview) {
+                const zero = preview.commitCount === 0;
+                previewHtml = `
+                    <div style="font-size: 0.85em; margin-top: 4px; ${zero ? 'color: var(--vscode-editorWarning-foreground);' : 'color: var(--vscode-descriptionForeground);'}">
+                        ${zero
+                            ? '⚠️ Matches nothing in history. A rule that matches nothing is almost always a typo — check it before running a rewrite for it.'
+                            : `Touches <strong>${preview.commitCount}${preview.truncated ? '+' : ''}</strong> commit(s), ${preview.files.length} file(s)${preview.branches.length ? `, on: <code>${escapeHtml(preview.branches.slice(0, 6).join(', '))}</code>` : ''}${preview.truncated ? ` — capped at ${preview.maxCount} commits, the real total is higher` : ''}`
+                        }
+                        ${preview.files.length ? `<div style="margin-top: 2px;">Files: <code>${escapeHtml(preview.files.slice(0, 8).join(', '))}</code>${preview.files.length > 8 ? ` and ${preview.files.length - 8} more` : ''}</div>` : ''}
+                    </div>`;
+            }
+
+            return `
+                <tr data-rule-id="${escapeHtml(rule.id)}">
+                    <td style="font-family: monospace; word-break: break-all;">${escapeHtml(rule.source)}</td>
+                    <td><span style="background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; font-size: 0.8em;">${escapeHtml(rule.mode)}</span></td>
+                    <td style="font-family: monospace;">${escapeHtml(rule.replaceWith)}</td>
+                    <td style="white-space: nowrap;">
+                        <button class="scan-button" data-rule-preview="${escapeHtml(rule.id)}" title="Show which commits, files and branches this rule touches — without changing anything.">🔍 Preview</button>
+                        <button class="scan-button" data-rule-remove="${escapeHtml(rule.id)}">✕ Remove</button>
+                    </td>
+                </tr>
+                ${previewHtml ? `<tr data-rule-id="${escapeHtml(rule.id)}"><td colspan="4">${previewHtml}</td></tr>` : ''}
+            `;
+        }).join('');
+
+        return `
+            <div class="scan-section" id="custom-rules-section" style="margin-top: 16px;">
+                <h3 style="margin-bottom: 4px;">✏️ Manual redaction rules</h3>
+                <p style="font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                    Remove text no scanner flagged — an internal hostname, a private repository or team name, a
+                    customer identifier, an old email domain. Rules run through the same reviewed, verified
+                    cleanup as detected secrets: refs are refreshed, the push plan is shown, and the remote is
+                    re-checked afterwards.
+                </p>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; margin: 10px 0;">
+                    <label style="display: flex; flex-direction: column; font-size: 0.85em; flex: 2; min-width: 220px;">
+                        Source text
+                        <input type="text" id="custom-rule-source" placeholder="internal.corp.example.com" autocomplete="off"
+                            style="padding: 6px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);">
+                    </label>
+                    <label style="display: flex; flex-direction: column; font-size: 0.85em;">
+                        Match
+                        <select id="custom-rule-mode" style="padding: 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);">
+                            <option value="literal">literal</option>
+                            <option value="regex">regex</option>
+                        </select>
+                    </label>
+                    <label style="display: flex; flex-direction: column; font-size: 0.85em; flex: 1; min-width: 140px;">
+                        Replace with
+                        <input type="text" id="custom-rule-replacement" placeholder="${escapeHtml(redactionRules.DEFAULT_REPLACEMENT)}" autocomplete="off"
+                            style="padding: 6px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);">
+                    </label>
+                    <button class="scan-button" id="custom-rule-add">➕ Add rule</button>
+                </div>
+                ${rules.length === 0
+                    ? '<p style="font-size: 0.85em; color: var(--vscode-descriptionForeground);">No manual rules yet. Rules persist across re-scans, because they are not tied to a scan result.</p>'
+                    : `<table class="results-table">
+                        <thead><tr><th>Source text</th><th style="width: 80px;">Match</th><th style="width: 20%;">Replace with</th><th style="width: 200px;">Actions</th></tr></thead>
+                        <tbody>${ruleRows}</tbody>
+                       </table>
+                       <p style="font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 6px;">
+                           Preview each rule before running a cleanup. A history rewrite cannot be undone, and a
+                           typed string arrives with none of the provenance a scan finding carries.
+                       </p>`}
+            </div>
+        `;
+    }
+
     /**
      * Per-finding engine attribution.
      *
@@ -4038,6 +4212,7 @@ class LeakLockPanel {
                         <p>Great news! Your repository scan completed successfully with no secrets or credentials detected.</p>
 
                         ${this._renderScanCoverage()}
+                        ${this._renderCustomRules()}
 
                         <div class="scan-summary">
                             <div class="summary-item">
@@ -5123,10 +5298,33 @@ class LeakLockPanel {
         }
     }
 
+    /**
+     * Accept either the legacy `{ source: replaceWith }` map or a list of rules, and
+     * always produce rules. The map form has no way to express regex mode, so manual
+     * rules carry it explicitly rather than having it inferred at the point of use.
+     */
+    _toRuleList(input) {
+        if (Array.isArray(input)) {
+            return input.map(rule => ({
+                source: rule.source,
+                mode: rule.mode === 'regex' ? 'regex' : 'literal',
+                replaceWith: rule.replaceWith
+            }));
+        }
+        if (input && typeof input === 'object') {
+            return Object.entries(input).map(([source, replaceWith]) => ({
+                source,
+                mode: 'literal',
+                replaceWith
+            }));
+        }
+        return [];
+    }
+
     _buildReplacementScriptSetup(replacements) {
-        const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
-            `${secret}==>${replacement}`
-        ).join("\n");
+        const replacementLines = this._toRuleList(replacements)
+            .map(rule => redactionRules.formatRuleLine(rule))
+            .join("\n");
         return {
             preambleLines: [
                 "# Keep sensitive replacement data outside the repository.",
@@ -5151,9 +5349,9 @@ class LeakLockPanel {
                 }
             }
             const replacementsFile = path.join(tempDir, "replacements.txt");
-            const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
-                `${secret}==>${replacement}`
-            ).join("\n");
+            const replacementLines = this._toRuleList(replacements)
+                .map(rule => redactionRules.formatRuleLine(rule))
+                .join("\n");
             fs.writeFileSync(replacementsFile, replacementLines, { mode: 0o600, flag: "wx" });
             return await callback(replacementsFile);
         } finally {
@@ -5171,10 +5369,15 @@ class LeakLockPanel {
         return gitRewrite.buildRewriteScript({
             repoDir: scanPath,
             remote: gitRewrite.DEFAULT_REMOTE,
+            requiredCommands: ['git', 'java'],
             rewriteLines: [
                 `java -jar ${gitRewrite.shellQuote(bfgPath)} --replace-text "$replacement_file"`
             ],
-            verifyLiterals: Object.keys(replacements),
+            // Verification re-reads the same rule file the rewrite consumed, so each
+            // secret appears exactly once in the script — inside the owner-only temp
+            // file — instead of being repeated in a grep line per rule. It also cannot
+            // drift from what was actually rewritten.
+            verifyRulesFile: '"$replacement_file"',
             ...secureSetup
         });
     }
@@ -5184,10 +5387,11 @@ class LeakLockPanel {
         return gitRewrite.buildRewriteScript({
             repoDir: scanPath,
             remote: gitRewrite.DEFAULT_REMOTE,
+            requiredCommands: ['git', 'git-filter-repo'],
             rewriteLines: [
                 'git filter-repo --replace-text "$replacement_file" --force'
             ],
-            verifyLiterals: Object.keys(replacements),
+            verifyRulesFile: '"$replacement_file"',
             restoreRemote: true,
             remoteUrl,
             ...secureSetup
@@ -5247,7 +5451,157 @@ class LeakLockPanel {
 
     _getReplacementValue(index) {
         const stored = this._scanCleanup.replacementValues[index];
-        return typeof stored === 'string' && stored.length > 0 ? stored : '*****';
+        return typeof stored === 'string' && stored.length > 0
+            ? stored
+            : redactionRules.DEFAULT_REPLACEMENT;
+    }
+
+    // ---- Manual redaction rules -------------------------------------------------
+    //
+    // Content no scanner flags — an internal hostname, a private repository name, a
+    // customer identifier — is removed through the same reviewed, verified pipeline as
+    // a detected secret rather than by hand-rolling BFG outside the extension.
+
+    _nextCustomRuleId() {
+        this._customRuleCounter = (this._customRuleCounter || 0) + 1;
+        return `rule-${this._customRuleCounter}-${this._stableHash(String(this._customRuleCounter))}`;
+    }
+
+    _getCustomRules() {
+        return Array.isArray(this._scanCleanup.customRules) ? this._scanCleanup.customRules : [];
+    }
+
+    /**
+     * @returns {{ok: boolean, errors: string[], warnings: string[], rule: object|null}}
+     */
+    _addCustomRule(source, mode, replaceWith) {
+        const candidate = {
+            source: typeof source === 'string' ? source : '',
+            mode: mode === 'regex' ? 'regex' : 'literal',
+            replaceWith: typeof replaceWith === 'string' ? replaceWith : ''
+        };
+        const validation = redactionRules.validateRule(candidate);
+        if (!validation.valid) {
+            return { ok: false, errors: validation.errors, warnings: validation.warnings, rule: null };
+        }
+        const rule = redactionRules.normalizeRule(candidate, () => this._nextCustomRuleId());
+        const existing = this._getCustomRules();
+        // Re-adding the same source in the same mode edits it rather than producing a
+        // second rule that silently shadows the first.
+        const duplicate = existing.find(r => r.source === rule.source && r.mode === rule.mode);
+        if (duplicate) {
+            duplicate.replaceWith = rule.replaceWith;
+            this._scanCleanup.customRulePreviews[duplicate.id] = null;
+            return { ok: true, errors: [], warnings: validation.warnings, rule: duplicate };
+        }
+        existing.push(rule);
+        this._scanCleanup.customRules = existing;
+        return { ok: true, errors: [], warnings: validation.warnings, rule };
+    }
+
+    _removeCustomRule(id) {
+        this._scanCleanup.customRules = this._getCustomRules().filter(rule => rule.id !== id);
+        delete this._scanCleanup.customRulePreviews[id];
+    }
+
+    /**
+     * Every rule the cleanup will apply: selected findings plus manual rules.
+     *
+     * Findings are always literal — the value is the secret itself. Manual rules carry
+     * their own mode, which has to survive all the way to the rewrite-rule file.
+     */
+    _resolveCleanupRules(replacements) {
+        const fromFindings = this._resolveScanReplacements(replacements);
+        const rules = Object.entries(fromFindings).map(([source, replaceWith]) => ({
+            source,
+            mode: 'literal',
+            replaceWith
+        }));
+        for (const rule of this._getCustomRules()) {
+            // A manual rule for a string a scanner also found must not produce two
+            // identical lines in the rewrite file.
+            if (rules.some(r => r.source === rule.source && r.mode === rule.mode)) {
+                continue;
+            }
+            rules.push({ source: rule.source, mode: rule.mode, replaceWith: rule.replaceWith });
+        }
+        return rules;
+    }
+
+    /**
+     * Dry run: what would this rule actually touch?
+     *
+     * A finding arrives with provenance; a typed string arrives with none. Committing
+     * to an irreversible rewrite without knowing whether a rule matches three commits
+     * or three thousand is not something this product should ask of anyone — the same
+     * reasoning behind the ref-by-ref push plan.
+     */
+    async _previewCustomRule(id) {
+        const rule = this._getCustomRules().find(r => r.id === id);
+        if (!rule) {
+            return null;
+        }
+        const repoDir = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!repoDir) {
+            vscode.window.showErrorMessage('No repository selected to preview against.');
+            return null;
+        }
+
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const maxCount = 200;
+        try {
+            const { stdout } = await execFileAsync(
+                'git',
+                ['-C', repoDir, ...redactionRules.buildPreviewArgs(rule, { maxCount })],
+                { timeout: 60000, maxBuffer: GIT_MAX_BUFFER }
+            );
+            const parsed = redactionRules.parsePreviewOutput(stdout);
+            const branches = await this._branchesContainingCommits(
+                repoDir, parsed.commits.map(c => c.hash).slice(0, 25)
+            );
+            const preview = {
+                commitCount: parsed.commits.length,
+                commits: parsed.commits.slice(0, 20),
+                files: parsed.files,
+                branches,
+                // A bounded preview says so; a silently truncated one reads as
+                // "this is everything" when it is not.
+                truncated: parsed.commits.length >= maxCount,
+                maxCount
+            };
+            this._scanCleanup.customRulePreviews[id] = preview;
+            this._updateWebviewContent();
+            return preview;
+        } catch (error) {
+            console.warn('Rule preview failed:', error.message);
+            this._scanCleanup.customRulePreviews[id] = { error: error.message };
+            this._updateWebviewContent();
+            return null;
+        }
+    }
+
+    async _branchesContainingCommits(repoDir, hashes) {
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const branches = new Set();
+        for (const hash of hashes) {
+            try {
+                const { stdout } = await execFileAsync(
+                    'git', ['-C', repoDir, 'branch', '--no-color', '-a', '--contains', hash],
+                    { timeout: 10000 }
+                );
+                for (const line of stdout.split('\n')) {
+                    const name = line.replace(/^[*+]?\s*/, '').trim();
+                    if (name && !REMOTE_HEAD_FILTER_PATTERN.test(name)) {
+                        branches.add(name);
+                    }
+                }
+            } catch {
+                // A branch listing failure degrades the preview; it must not stop it.
+            }
+        }
+        return Array.from(branches);
     }
 
     _setScanSelection(index, selected) {
@@ -5326,9 +5680,12 @@ class LeakLockPanel {
     }
 
     async _prepareScanReplacementCommand(mode, replacements) {
-        const resolvedReplacements = this._resolveScanReplacements(replacements);
-        if (!resolvedReplacements || Object.keys(resolvedReplacements).length === 0) {
-            vscode.window.showWarningMessage('No secrets selected for removal.');
+        // Manual rules count toward the cleanup: a user with three rules and no
+        // selected findings is the exact case the feature exists for, and used to be
+        // refused here.
+        const resolvedReplacements = this._resolveCleanupRules(replacements);
+        if (!resolvedReplacements || resolvedReplacements.length === 0) {
+            vscode.window.showWarningMessage('Nothing selected for removal. Select a finding or add a manual redaction rule.');
             return;
         }
         const scanPath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -5490,9 +5847,10 @@ class LeakLockPanel {
                 );
             });
 
-            this._stagePushForConfirmation('Git-only cleanup', scanPath, report, {
-                literals: Object.keys(replacements)
-            });
+            this._stagePushForConfirmation(
+                'Git-only cleanup', scanPath, report,
+                redactionRules.partitionForVerification(this._toRuleList(replacements))
+            );
         } catch (error) {
             if (error instanceof gitRewrite.AheadBranchesError) {
                 this._scanCleanup.blockedBranches = error.branches;
@@ -5729,9 +6087,10 @@ class LeakLockPanel {
                 );
             });
 
-            this._stagePushForConfirmation('BFG cleanup', scanPath, report, {
-                literals: Object.keys(replacements)
-            });
+            this._stagePushForConfirmation(
+                'BFG cleanup', scanPath, report,
+                redactionRules.partitionForVerification(this._toRuleList(replacements))
+            );
 
         } catch (error) {
             console.error('BFG execution error:', error);
