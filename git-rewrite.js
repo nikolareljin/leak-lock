@@ -531,8 +531,15 @@ function buildRewriteScript(options) {
             '# 9. Verify the remote is actually clean on EVERY ref.',
             `git fetch --prune --tags ${remoteQ}`,
             'leftover=0',
+            // Count refs actually examined. A zero-iteration loop leaves leftover=0,
+            // which would print "Verified clean on every remote ref" having checked
+            // nothing at all -- the same false all-clear the in-extension
+            // verifyRemoteRefs guards against. The script must not be able to make a
+            // claim the loop never tested.
+            'checked=0',
             'while IFS= read -r ref; do',
-            '\tcase "$ref" in */HEAD) continue;; esac'
+            '\tcase "$ref" in */HEAD) continue;; esac',
+            '\tchecked=$((checked + 1))'
         );
         if (verifyRegex) {
             lines.push(
@@ -609,8 +616,12 @@ function buildRewriteScript(options) {
         }
         lines.push(
             `done < <(git for-each-ref --format='%(refname)' refs/remotes/${remote} refs/tags)`,
-            'if [ "$leftover" -eq 0 ]; then',
-            '\techo "Verified clean on every remote ref."',
+            'if [ "$checked" -eq 0 ]; then',
+            `\techo "NOT VERIFIED: no refs were found under refs/remotes/${remote}, so nothing was checked."`,
+            '\techo "This is NOT a clean result -- check the remote yourself."',
+            '\texit 1',
+            'elif [ "$leftover" -eq 0 ]; then',
+            '\techo "Verified clean on every remote ref ($checked checked)."',
             'else',
             // Exit non-zero so the failure is visible to automation / command
             // chaining, not just printed. The EXIT trap still restores the branch.
