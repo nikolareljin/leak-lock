@@ -76,12 +76,29 @@
               "noseyparker"
             ],
             "enumDescriptions": [
-              "Gitleaks — maintained, MIT, scans full git history, no Docker required",
-              "TruffleHog — verifies whether a discovered credential is still live (requires the trufflehog binary)",
-              "Nosey Parker — archived upstream on 2026-04-24; ruleset frozen at v0.24.0 (requires Docker)"
+              "Gitleaks \u2014 maintained, MIT, scans full git history, no Docker required",
+              "TruffleHog \u2014 verifies whether a discovered credential is still live (requires the trufflehog binary)",
+              "Nosey Parker \u2014 archived upstream on 2026-04-24; ruleset frozen at v0.24.0 (requires Docker)"
             ]
           },
           "markdownDescription": "Detection engines to run, in order. Findings from every enabled engine are merged and attributed, so a secret found by one engine and missed by another is visible as such. A missing engine binary disables that engine, never the whole scan."
+        },
+        "leakLock.scan.executionMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "parallel",
+            "sequential",
+            "single"
+          ],
+          "enumDescriptions": [
+            "Size the plan to this machine: parallel on a capable host, one at a time on a modest one, and a single lightweight engine on a constrained one",
+            "Always run every enabled engine at the same time",
+            "Always run engines one after another \u2014 slower, but the lightest touch on a busy machine",
+            "Run only one engine (Gitleaks when enabled): the fastest option, and the one that finds least"
+          ],
+          "markdownDescription": "How engines share this machine. `auto` inspects core count, available memory (respecting container limits) and current load. Any engine skipped because of host capacity is reported in the scan coverage panel \u2014 a downgrade is never silent, because fewer engines means fewer findings."
         },
         "leakLock.scan.timeoutSeconds": {
           "type": "number",
@@ -103,7 +120,7 @@
         "leakLock.noseyParker.image": {
           "type": "string",
           "default": "",
-          "description": "Override the Nosey Parker container image. Empty uses the pinned ghcr.io/praetorian-inc/noseyparker:v0.24.0 — the final release before the project was archived."
+          "description": "Override the Nosey Parker container image. Empty uses the pinned ghcr.io/praetorian-inc/noseyparker:v0.24.0 \u2014 the final release before the project was archived."
         },
         "leakLock.noseyParker.ruleset": {
           "type": "string",
@@ -116,7 +133,7 @@
           "enumDescriptions": [
             "Secret-detection rules only (Nosey Parker's own default)",
             "Secret-detection rules plus the cloud asset and identifier rules",
-            "Every loaded rule — higher recall, more false positives"
+            "Every loaded rule \u2014 higher recall, more false positives"
           ],
           "description": "Which Nosey Parker rulesets to enable."
         },
@@ -166,10 +183,10 @@
           ],
           "enumDescriptions": [
             "Show dependency findings as warnings (recommended)",
-            "Skip unambiguously third-party directories (node_modules, vendor, site-packages, …) during the scan",
+            "Skip unambiguously third-party directories (node_modules, vendor, site-packages, \u2026) during the scan",
             "Treat dependency findings the same as regular findings"
           ],
-          "markdownDescription": "How to handle secrets found in dependency directories. `exclude` only skips directories that cannot hold first-party source — `lib/`, `bin/`, `dist/` and `build/` are still scanned, because skipping them would hide real secrets."
+          "markdownDescription": "How to handle secrets found in dependency directories. `exclude` only skips directories that cannot hold first-party source \u2014 `lib/`, `bin/`, `dist/` and `build/` are still scanned, because skipping them would hide real secrets."
         },
         "leakLock.gitHistoryKeywordSearch.enabled": {
           "type": "boolean",

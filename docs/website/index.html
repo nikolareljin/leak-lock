@@ -240,7 +240,7 @@ footer .credit{margin-left:auto}
   <!-- ============ WHAT IT DOES ============ -->
   <section class="section wrap" id="what">
     <span class="section-label">what it does</span>
-    <h2>Five steps, from finding to verified clean</h2>
+    <h2>Six steps, from finding to verified clean</h2>
     <p class="intro">
       The whole tool is one loop: scan, review, fix, and confirm. Nothing runs until you have looked
       at the plan.
@@ -250,6 +250,10 @@ footer .credit{margin-left:auto}
       <div class="step">
         <h3>Find secrets with more than one engine</h3>
         <p><strong>Gitleaks</strong>, <strong>TruffleHog</strong> and <strong>Nosey Parker</strong> can run together over your working tree and full git history, and their results are merged into one list. They disagree more than you would expect — on a test repository one engine found seven secrets where another found two — so every finding names the engines that found it <em>and</em> the ones that missed it. TruffleHog can go further and check whether a key <strong>still works</strong>. On top of that: a path scan for files that shouldn't be there, and an opt-in keyword pass over commit messages, historical contents, and filenames for terms you choose — like <code>id_rsa</code> or an internal project name.</p>
+      </div>
+      <div class="step">
+        <h3>Sized to your machine</h3>
+        <p>Leak Lock checks how much machine it has before it commits to a plan — cores, memory (including the real limit inside a container, not the host's), and current load. A capable machine runs the engines <strong>in parallel</strong>, leaving cores for the editor. A modest one runs them <strong>one at a time</strong>. A genuinely constrained one runs <strong>Gitleaks alone</strong> — a single binary with no container runtime. If an engine gets skipped for capacity, the coverage panel <em>says so and names it</em>: fewer engines means fewer findings, and that is not something to hide. One setting overrides the lot.</p>
       </div>
       <div class="step">
         <h3>Review every finding — and what was actually scanned</h3>

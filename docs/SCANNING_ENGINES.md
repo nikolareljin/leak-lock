@@ -183,6 +183,54 @@ Add `"trufflehog"` to include verification.
 
 ---
 
+## How many engines run at once
+
+Three scanners over a large git history is real work, so Leak Lock sizes the plan to the
+machine before committing to it. `leakLock.scan.executionMode` defaults to `auto`.
+
+What `auto` inspects:
+
+- **Core count** — `os.cpus().length`
+- **Available memory** — respecting **container limits**. `os.totalmem()` reports the
+  *host's* memory even inside a container, so in a devcontainer or Codespace — exactly
+  where resources are tightest — it over-reports. The cgroup v2 (`/sys/fs/cgroup/memory.max`)
+  or v1 limit is used when one is set.
+- **Current load** — `os.loadavg()`, so a capable machine that is already saturated is
+  not given three more scanners. On Windows this returns `[0,0,0]` rather than failing, so
+  it is treated as *unknown* rather than *idle*.
+
+| Tier | Condition | Plan |
+|---|---|---|
+| **capable** | ≥ 6 cores **and** ≥ 8 GB, not saturated | All enabled engines **in parallel**, capped at `cores − 2` so the editor, language servers and git keep a core |
+| **moderate** | Anything in between, or a saturated capable host | All enabled engines, **one at a time**. Slower — but nothing is skipped |
+| **constrained** | ≤ 2 cores **or** < 4 GB | **One engine only**: Gitleaks when enabled |
+
+Gitleaks is the engine kept on a constrained host because it is a single static binary
+with no container runtime and no JVM, and because it is the only maintained engine with a
+full ruleset — so the one engine left standing is also the one most likely to find
+something.
+
+### A downgrade is never silent
+
+If host capacity causes an engine to be skipped, the coverage panel says so, names the
+skipped engines, and tells you how to override it. Fewer engines means fewer findings,
+and quietly scanning with less than you asked for is the same class of failure as a
+truncated result set.
+
+### Overriding it
+
+| Value | Behaviour |
+|---|---|
+| `auto` *(default)* | Size the plan to the machine, as above |
+| `parallel` | Always run every enabled engine at once, whatever the host |
+| `sequential` | Always run them one at a time — the lightest touch on a busy machine |
+| `single` | Run one engine only. Fastest, and finds least |
+
+An explicit value is always honoured, in both directions: you know your machine better
+than a heuristic does.
+
+---
+
 ## How results are merged
 
 Every engine's output goes through the **same** post-processing, in the same order, so
@@ -247,6 +295,7 @@ an incomplete scan cannot be mistaken for a completed one.
 | Setting | Default | Purpose |
 |---|---|---|
 | `leakLock.scan.engines` | `["gitleaks","noseyparker"]` | Which engines run, in order |
+| `leakLock.scan.executionMode` | `auto` | `auto`, `parallel`, `sequential` or `single` — see [How many engines run at once](#how-many-engines-run-at-once) |
 | `leakLock.scan.timeoutSeconds` | `300` | Per-engine timeout. On expiry, partial findings are reported and marked incomplete |
 | `leakLock.scan.refreshRefsBeforeScan` | `true` | `git fetch --prune --tags` first, so remote-only branches are not invisible |
 | `leakLock.scan.includeIgnoredFiles` | `false` | Also scan working-tree files excluded by `.gitignore` |

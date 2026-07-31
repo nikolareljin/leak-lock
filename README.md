@@ -315,6 +315,21 @@ and which enabled engines did not.
 - **Why it is still here**: an excellent history walker and the best deduplication model of the three — it groups matches sharing a rule and capture groups into a single finding, which keeps large result sets reviewable.
 - **Settings**: `leakLock.noseyParker.ruleset` (`default`, `default+assets`, `all`), `leakLock.noseyParker.suppressRedundant`, `leakLock.noseyParker.maxFileSizeMb`, `leakLock.noseyParker.image`
 
+### How many run at once
+`leakLock.scan.executionMode` defaults to `auto`, which sizes the plan to your machine —
+core count, available memory (respecting container limits, since `os.totalmem()` reports
+the *host's* memory inside a container), and current load:
+
+- **Capable host** (≥ 6 cores, ≥ 8 GB, not saturated) — all engines **in parallel**,
+  capped at `cores − 2` so the editor still has room
+- **Modest host** — all engines, **one at a time**. Slower, but nothing is skipped
+- **Constrained host** (≤ 2 cores or < 4 GB) — **Gitleaks only**: a single static binary
+  with no container runtime or JVM, and the only engine with a maintained ruleset
+
+If host capacity causes an engine to be skipped, **the coverage panel says so and names
+it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
+`executionMode` to `parallel`, `sequential` or `single` to decide for yourself.
+
 ### Choosing engines
 `leakLock.scan.engines` sets which run, and in what order. The default is
 `["gitleaks", "noseyparker"]`. A missing engine binary disables that engine — never the

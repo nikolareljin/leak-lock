@@ -1606,3 +1606,138 @@ suite('Engine selection and graceful degradation', () => {
 		assert.match(html, /Docker not available/);
 	});
 });
+
+suite('Host capacity and scan execution strategy', () => {
+	const host = require('../host-capacity');
+
+	const HOSTS = {
+		tiny: { cpus: 2, totalMemGb: 3, memorySource: 'os', platform: 'linux', loadPerCore: 0.2 },
+		modest: { cpus: 4, totalMemGb: 8, memorySource: 'os', platform: 'linux', loadPerCore: 0.3 },
+		big: { cpus: 16, totalMemGb: 32, memorySource: 'os', platform: 'linux', loadPerCore: 0.2 },
+		busy: { cpus: 16, totalMemGb: 32, memorySource: 'os', platform: 'linux', loadPerCore: 3.0 }
+	};
+	const ALL = ['gitleaks', 'trufflehog', 'noseyparker'];
+
+	test('a capable host runs engines in parallel, leaving cores for the editor', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.big });
+		assert.strictEqual(plan.tier, 'capable');
+		assert.strictEqual(plan.mode, 'parallel');
+		assert.deepStrictEqual(plan.dropped, []);
+		assert.ok(plan.concurrency <= HOSTS.big.cpus - 2, 'the editor and git still need a core');
+	});
+
+	test('a modest host runs every engine, one at a time', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.modest });
+		assert.strictEqual(plan.mode, 'sequential');
+		assert.strictEqual(plan.concurrency, 1);
+		// Slower is fine. Dropping an engine is not.
+		assert.deepStrictEqual(plan.dropped, []);
+		assert.deepStrictEqual(plan.engines.sort(), ALL.slice().sort());
+	});
+
+	test('a saturated host is treated as modest even with many cores', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.busy });
+		assert.strictEqual(plan.tier, 'moderate');
+		assert.strictEqual(plan.mode, 'sequential');
+	});
+
+	test('a constrained host keeps the lightest, most capable engine', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.tiny });
+		assert.strictEqual(plan.tier, 'constrained');
+		// Gitleaks: a static binary with no container runtime or JVM, and the only
+		// maintained engine — so the one left standing is also the one most likely
+		// to find something.
+		assert.deepStrictEqual(plan.engines, ['gitleaks']);
+		assert.deepStrictEqual(plan.dropped.sort(), ['noseyparker', 'trufflehog']);
+	});
+
+	test('a capacity downgrade is never silent', () => {
+		const plan = host.chooseScanStrategy({ engines: ALL, host: HOSTS.tiny });
+		// Fewer engines means fewer findings; the user has to be told, and told how
+		// to override it.
+		assert.match(plan.reason, /constrained/);
+		assert.match(plan.reason, /skipped/);
+		assert.match(plan.reason, /executionMode/);
+		assert.match(plan.reason, /2 core/);
+	});
+
+	test('an explicit mode overrides the heuristic in both directions', () => {
+		const forced = host.chooseScanStrategy({ engines: ALL, host: HOSTS.tiny, mode: 'parallel' });
+		assert.strictEqual(forced.mode, 'parallel');
+		assert.deepStrictEqual(forced.dropped, [], 'an explicit request is honoured on a weak host');
+
+		const held = host.chooseScanStrategy({ engines: ALL, host: HOSTS.big, mode: 'sequential' });
+		assert.strictEqual(held.mode, 'sequential');
+
+		const single = host.chooseScanStrategy({ engines: ALL, host: HOSTS.big, mode: 'single' });
+		assert.deepStrictEqual(single.engines, ['gitleaks']);
+		assert.strictEqual(single.dropped.length, 2);
+	});
+
+	test('one enabled engine needs no strategy at all', () => {
+		const plan = host.chooseScanStrategy({ engines: ['gitleaks'], host: HOSTS.big });
+		assert.strictEqual(plan.mode, 'sequential');
+		assert.deepStrictEqual(plan.dropped, []);
+	});
+
+	test('container memory limits beat the host figure', () => {
+		// os.totalmem() reports the host's memory inside a container — precisely
+		// where resources are tightest.
+		const limited = host.detectMemoryLimit((p) =>
+			p === '/sys/fs/cgroup/memory.max' ? '2147483648' : null);
+		assert.strictEqual(limited.source, 'cgroup-v2');
+		assert.strictEqual(limited.bytes, 2147483648);
+
+		// "max" means unlimited, so the host figure stands.
+		const unlimited = host.detectMemoryLimit((p) =>
+			p === '/sys/fs/cgroup/memory.max' ? 'max' : null);
+		assert.strictEqual(unlimited.source, 'os');
+
+		const v1 = host.detectMemoryLimit((p) =>
+			p === '/sys/fs/cgroup/memory/memory.limit_in_bytes' ? '1073741824' : null);
+		assert.strictEqual(v1.source, 'cgroup-v1');
+	});
+
+	test('load average is treated as unknown on Windows, not as idle', () => {
+		// os.loadavg() returns [0,0,0] on Windows rather than failing.
+		const win = host.describeHost({ cpus: 4, memoryBytes: 16 * 1024 ** 3, platform: 'win32' });
+		assert.strictEqual(win.loadPerCore, null);
+		const linux = host.describeHost({
+			cpus: 4, memoryBytes: 16 * 1024 ** 3, platform: 'linux', loadavg: [2, 2, 2]
+		});
+		assert.strictEqual(linux.loadPerCore, 0.5);
+	});
+
+	test('describeHost reports something usable on this machine', () => {
+		const real = host.describeHost();
+		assert.ok(real.cpus >= 1);
+		assert.ok(real.totalMemGb > 0);
+		assert.ok(['constrained', 'moderate', 'capable'].includes(host.classifyHost(real)));
+	});
+
+	test('one failing engine does not cancel the others', () => {
+		return host.runWithConcurrency([
+			async () => ({ id: 'a' }),
+			async () => { throw new Error('boom'); },
+			async () => ({ id: 'c' })
+		], 3).then((results) => {
+			assert.strictEqual(results.length, 3);
+			assert.strictEqual(results[0].id, 'a');
+			assert.ok(results[1].error, 'the failure is reported in its own slot');
+			assert.strictEqual(results[2].id, 'c', 'later engines still run');
+		});
+	});
+
+	test('concurrency is actually bounded', async () => {
+		let inFlight = 0, peak = 0;
+		const tasks = Array.from({ length: 6 }, () => async () => {
+			inFlight += 1;
+			peak = Math.max(peak, inFlight);
+			await new Promise(r => setTimeout(r, 10));
+			inFlight -= 1;
+			return true;
+		});
+		await host.runWithConcurrency(tasks, 2);
+		assert.strictEqual(peak, 2);
+	});
+});
