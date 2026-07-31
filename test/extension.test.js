@@ -2611,3 +2611,57 @@ suite('Fourth review pass', () => {
 		assert.match(catchBlock, /not exhaustive/, 'and the result is marked incomplete');
 	});
 });
+
+suite('Fifth review pass', () => {
+	const engines = require('../scan-engines');
+	const gitRewrite = require('../git-rewrite');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	test('a missing binary is re-checked, not cached as missing for the session', () => {
+		// Caching a negative result keeps reporting "not installed" for the rest of the
+		// session — including immediately after the user follows the install hint we
+		// just showed them.
+		const name = `leaklock-late-${process.pid}`;
+		engines.resetBinaryCache();
+		assert.strictEqual(engines.resolveBinary(name), name, 'not found yet');
+
+		const dir = path.join(os.homedir(), '.local', 'bin');
+		const file = path.join(dir, name);
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+		try {
+			// No cache reset: installing mid-session must be picked up.
+			assert.strictEqual(engines.resolveBinary(name), file,
+				'a binary installed after the first check is found without a reload');
+		} finally {
+			fs.rmSync(file, { force: true });
+			engines.resetBinaryCache();
+		}
+	});
+
+	test('scanning never prunes; the rewrite refresh still does', () => {
+		// Two different jobs: a scan widens coverage and must not mutate refs, while
+		// the refresh immediately before a rewrite must match the server exactly.
+		assert.strictEqual(gitRewrite.describeFetchCommand('origin', { prune: false }), 'git fetch --tags origin');
+		assert.strictEqual(gitRewrite.describeFetchCommand('origin'), 'git fetch --prune --tags origin');
+
+		const script = gitRewrite.buildRewriteScript({ repoDir: '/r', rewriteLines: ['true'] });
+		assert.match(script, /git fetch --prune --tags 'origin'/, 'the rewrite script still prunes');
+	});
+
+	test('the docs describe the commands the code actually runs', () => {
+		const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+		// Docs that teach a broken pattern are as harmful as code that ships one.
+		for (const doc of ['docs/API_REFERENCE.md', 'docs/SCANNING_ENGINES.md']) {
+			const text = read(doc);
+			const scanSection = text.split('Remove Files')[0];
+			assert.ok(!/Refresh every ref \(`git fetch --prune --tags`\)/.test(scanSection),
+				`${doc} must not claim the scan prunes`);
+		}
+		// The Windows-invalid form must not appear as an example either.
+		assert.ok(!/trufflehog git "file:\/\/\$\{scanPath\}"/.test(read('docs/API_REFERENCE.md')),
+			'the docs must not demonstrate raw string interpolation for the repo URL');
+	});
+});

@@ -93,8 +93,10 @@ function resolveBinary(name, explicit) {
             }
         }
     }
-    // Fall through to PATH resolution by the OS.
-    resolvedBinaries.set(name, name);
+    // Deliberately not cached. A negative result is only true until the user installs
+    // the engine, and caching it would keep reporting "not installed" for the rest of
+    // the session — including right after someone follows the install hint we just
+    // showed them. Only a successful absolute resolution is worth remembering.
     return name;
 }
 
