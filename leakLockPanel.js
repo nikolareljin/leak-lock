@@ -148,28 +148,36 @@ function runDockerCommand(args, options = {}) {
  *
  * @returns {{kind: string, message: string, detail: string}}
  */
-function summarizeGitRemoteError(error) {
-    const raw = `${error && error.message ? error.message : ''}\n${error && error.stderr ? error.stderr : ''}`;
+function summarizeGitRemoteError(error, command = 'git fetch') {
+    const raw = [
+        error && error.message ? error.message : '',
+        error && error.stderr ? error.stderr : ''
+    ].filter(Boolean).join('\n');
     const detail = raw.replace(/\s+/g, ' ').trim();
 
     let kind = 'unreachable';
-    let message = 'Could not reach the remote to refresh refs.';
+    let cause = 'The remote could not be contacted.';
+    let fix = 'Check that the remote is reachable, then press Prepare again.';
 
     if (/SAML SSO|single sign-on|single-sign-on/i.test(raw)) {
         kind = 'sso';
-        message =
-            'The remote requires SAML SSO authorisation. Authorise your token or SSH key for the organisation, ' +
-            'then prepare again.';
+        cause = 'The organisation that owns this remote enforces SAML single sign-on, and your credential is not authorised for it.';
+        fix = 'Authorise your personal access token or SSH key for that organisation, then press Prepare again.';
     } else if (/Authentication failed|could not read Username|Permission denied|access rights|403/i.test(raw)) {
         kind = 'auth';
-        message =
-            'Authentication to the remote failed. Check your credentials or SSH key, then prepare again.';
+        cause = 'Git was refused access to the remote.';
+        fix = 'Check the credential or SSH key git uses for this remote, then press Prepare again.';
     } else if (/Could not resolve host|Network is unreachable|Connection timed out|timed out/i.test(raw)) {
         kind = 'network';
-        message = 'The remote is unreachable — check your network or VPN, then prepare again.';
+        cause = 'The remote host could not be reached.';
+        fix = 'Check your network or VPN connection, then press Prepare again.';
+    } else if (/does not appear to be a git repository|Repository not found|not found/i.test(raw)) {
+        kind = 'missing';
+        cause = 'The configured remote does not point at a repository git can read.';
+        fix = 'Check `git remote -v` for this repository, then press Prepare again.';
     }
 
-    return { kind, message, detail };
+    return { kind, command, cause, fix, detail };
 }
 
 // HTML escaping function to prevent XSS
@@ -386,9 +394,9 @@ class LeakLockPanel {
             // Repository the prepared plan targets. The executors use this rather than
             // re-deriving a path, so a cleanup can only ever run where it was planned.
             preparedRepo: null,
-            // Set when the plan-time ref refresh failed (SSO, auth, offline). The
-            // script is still generated; the in-panel run is withheld.
-            refreshError: null,
+            // Set when the read-only plan check could not reach the remote (SSO,
+            // credentials, network). Preparation stops; nothing is generated.
+            remoteError: null,
             // Set when Nosey Parker is enabled but Docker is missing, so the scan
             // degrades to the remaining engines instead of failing outright.
             noseyParkerUnavailable: null
@@ -2584,7 +2592,7 @@ class LeakLockPanel {
         const customRuleCount = this._getCustomRules().length;
         const noneSelected = selectedCount === 0 && customRuleCount === 0;
         const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
-        const refreshBlock = this._renderRefreshError(this._scanCleanup.refreshError);
+        const refreshBlock = this._renderRemoteError(this._scanCleanup.remoteError);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
         const verifyBlock = this._renderVerifyResult(this._scanCleanup.verifyResult);
         const pendingPushBlock = this._renderPendingPush(this._scanCleanup.pendingPush);
@@ -2665,7 +2673,7 @@ class LeakLockPanel {
                     ${preparedBlockBfg}
                     ${this._scanCleanup.preparedMode === 'bfg' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
-                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || this._scanCleanup.refreshError || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
+                        <button class="danger-button" onclick="runPreparedBfg()" ${!prepared || this._scanCleanup.preparedMode !== 'bfg' ? 'disabled' : ''}>❗ Run BFG cleanup</button>
                     </div>
                 </div>
 
@@ -2681,7 +2689,7 @@ class LeakLockPanel {
                     ${preparedBlockGit}
                     ${this._scanCleanup.preparedMode === 'git' ? pushPlanBlock : ''}
                     <div style="margin-top: 10px;">
-                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || this._scanCleanup.refreshError || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
+                        <button class="danger-button" onclick="runPreparedGit()" ${!prepared || this._scanCleanup.preparedMode !== 'git' ? 'disabled' : ''}>❗ Run Git-only cleanup</button>
                     </div>
                 </div>
 
@@ -2727,39 +2735,47 @@ class LeakLockPanel {
 
     /** Blocking banner: a rewrite here would discard unpushed local commits. */
     /**
-     * Explain a failed plan-time ref refresh without dumping git's raw remote output.
+     * Explain why preparation stopped.
      *
-     * The script is still available: it fetches and re-checks ahead-branches itself as
-     * its first two steps, so running it by hand is safe even though the panel cannot
-     * verify the plan from here.
+     * Three things this must get right, because the previous wording was misread as
+     * "the cleanup ran":
+     *   1. Lead with the fact that nothing changed.
+     *   2. Name the exact command that failed, and say it is read-only.
+     *   3. Give the cause and the fix in plain language; keep git's raw remote output
+     *      folded away, since that is what made the original message alarming.
      */
-    _renderRefreshError(refreshError) {
-        if (!refreshError) {
+    _renderRemoteError(remoteError) {
+        if (!remoteError) {
             return '';
         }
         return `
-            <div style="margin-top: 12px; padding: 10px; border-radius: 4px;
-                        background: var(--vscode-inputValidation-warningBackground);
-                        border: 1px solid var(--vscode-editorWarning-foreground);">
-                <strong>⚠️ Could not refresh refs from the remote — the script below was still generated.</strong>
-                <div style="margin-top: 4px;">${escapeHtml(refreshError.message)}</div>
-                <div style="margin-top: 6px; font-size: 0.9em;">
-                    Running the cleanup <em>from this panel</em> is disabled, because Leak Lock cannot confirm your
-                    local branches match the remote. <strong>Save as .sh</strong> and run it once the remote is
-                    reachable — the script refreshes refs and re-checks for unpushed commits itself before it
-                    rewrites anything.
+            <div style="margin-top: 12px; padding: 12px; border-radius: 4px;
+                        background: var(--vscode-inputValidation-errorBackground);
+                        border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-editorError-foreground));">
+                <div style="font-size: 1.05em;"><strong>No cleanup was prepared, and nothing in your repository was changed.</strong></div>
+                <div style="margin-top: 6px;">
+                    No history was rewritten. No secret was removed. No commit, branch or tag was touched.
                 </div>
-                <details style="margin-top: 6px;">
-                    <summary style="cursor: pointer; font-size: 0.9em;">Show the git output</summary>
-                    <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.85em; margin: 6px 0 0 0;">${escapeHtml(refreshError.detail)}</pre>
+                <div style="margin-top: 10px;">
+                    Before preparing a cleanup, Leak Lock compares your local branches against the remote, so a
+                    rewrite cannot silently discard commits you have not pushed. That check is the only command it
+                    runs, it is read-only, and it is:
+                </div>
+                <pre style="margin: 6px 0; padding: 6px 8px; border-radius: 3px; white-space: pre-wrap;
+                            background: var(--vscode-textCodeBlock-background);">${escapeHtml(remoteError.command)}</pre>
+                <div><strong>It failed.</strong> ${escapeHtml(remoteError.cause)}</div>
+                <div style="margin-top: 6px;"><strong>To fix it:</strong> ${escapeHtml(remoteError.fix)}</div>
+                <details style="margin-top: 8px;">
+                    <summary style="cursor: pointer; font-size: 0.9em;">Show what git reported</summary>
+                    <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.85em; margin: 6px 0 0 0;">${escapeHtml(remoteError.detail)}</pre>
                 </details>
             </div>
         `;
     }
 
     /** Test seam and single entry point for classifying a remote failure. */
-    _classifyRemoteError(error) {
-        return summarizeGitRemoteError(error);
+    _classifyRemoteError(error, command) {
+        return summarizeGitRemoteError(error, command);
     }
 
     _renderBlockedBranches(branches, reason) {
@@ -5894,7 +5910,7 @@ class LeakLockPanel {
         this._scanCleanup.blockedBranches = null;
         this._scanCleanup.blockedReason = null;
         this._scanCleanup.verifyResult = null;
-        this._scanCleanup.refreshError = null;
+        this._scanCleanup.remoteError = null;
         this._scanCleanup.preparedRepo = null;
         this._updateWebviewContent();
         try {
@@ -5906,6 +5922,18 @@ class LeakLockPanel {
                 this._scanCleanup.blockedReason = preflight.reason;
                 this._scanCleanup.preparedCommand = null;
                 this._scanCleanup.preparedMode = null;
+                this._scanCleanup.remoteError = preflight.remoteError || null;
+                if (preflight.remoteError) {
+                    // Say what was attempted, that nothing changed, and what to do.
+                    // Never phrase this as a failed "cleanup": the user pressed
+                    // Prepare, and a message about a cleanup failing reads as though
+                    // one had been started.
+                    vscode.window.showErrorMessage(
+                        'Nothing was changed. Before preparing a cleanup, Leak Lock checks your branches against ' +
+                        `the remote by running ${preflight.remoteError.command}. That check could not run: ` +
+                        `${preflight.remoteError.cause} ${preflight.remoteError.fix}`
+                    );
+                }
                 return;
             }
             this._scanCleanup.blockedReason = null;
@@ -5922,18 +5950,13 @@ class LeakLockPanel {
             // own repository and could pick a different one than the plan and the push
             // plan the user reviewed.
             this._scanCleanup.preparedRepo = scanPath;
-            // A script the user can read, save and run by hand is still produced when
-            // refs could not be refreshed; only the in-panel run is withheld, because
-            // that is the step LL-001 guards.
-            this._scanCleanup.refreshError = preflight.refreshError || null;
-            if (preflight.refreshError) {
-                vscode.window.showWarningMessage(
-                    `${preflight.refreshError.message} The cleanup script was still generated — you can save and run it ` +
-                    'manually; it refreshes refs itself before rewriting anything.'
-                );
-            }
+            this._scanCleanup.remoteError = null;
         } catch (e) {
-            vscode.window.showErrorMessage(`Failed to prepare cleanup: ${e.message}`);
+            // "Failed to prepare cleanup" reads as though a cleanup was attempted.
+            // Nothing has run at this point; say so.
+            vscode.window.showErrorMessage(
+                `Nothing was changed. Leak Lock could not build the cleanup script: ${e.message}`
+            );
         } finally {
             this._scanCleanup.preparing = false;
             this._updateWebviewContent();
@@ -5956,17 +5979,19 @@ class LeakLockPanel {
                 `No "${remote}" remote is configured. Add one (git remote add ${remote} <url>) and prepare again — ` +
                 `history cleanup rewrites and pushes every remote branch and tag.`
             );
-            return { blocked: true, reason: 'no-remote', ahead: [], pushPlan: null, remoteUrl: null, refreshError: null };
+            return { blocked: true, reason: 'no-remote', ahead: [], pushPlan: null, remoteUrl: null, remoteError: null };
         }
-        // Refreshing refs is required before a rewrite (LL-001), but it is a network
-        // operation and it must not be a hard gate on *generating* the script. A
-        // remote behind SSO, an expired token, being offline or on the wrong VPN would
-        // otherwise leave the user with nothing at all — exactly when a script they can
-        // run by hand is most useful. So: attempt it, record the failure, and let the
-        // caller decide. Execution is gated separately.
-        let refreshError = null;
+        // Comparing local branches against the remote is what stops a rewrite from
+        // silently discarding commits (LL-001), and it needs current refs. This is the
+        // one network command a plan runs, and it is deliberately read-only: no
+        // --prune, so planning never deletes refs.
+        //
+        // If it cannot run, the plan cannot be trusted and preparation stops here.
+        // Nothing is generated and nothing is offered, because a cleanup script built
+        // from an unverified comparison is worse than no script.
+        const fetchCommand = gitRewrite.describeFetchCommand(remote, { prune: false });
         try {
-            await gitRewrite.fetchAllRefs(repoDir, remote);
+            await gitRewrite.fetchAllRefs(repoDir, remote, { prune: false });
             const fetchedAt = new Date().toISOString();
             this._recordFetchAt(repoDir, fetchedAt);
             // Keep the Remove Files indicator in sync when this is its repo.
@@ -5974,7 +5999,15 @@ class LeakLockPanel {
                 this._removalState.lastFetchAt = fetchedAt;
             }
         } catch (error) {
-            refreshError = summarizeGitRemoteError(error);
+            const remoteError = summarizeGitRemoteError(error, fetchCommand);
+            return {
+                blocked: true,
+                reason: 'remote-unreachable',
+                ahead: [],
+                pushPlan: null,
+                remoteUrl: null,
+                remoteError
+            };
         }
 
         const unsafe = await gitRewrite.findUnsafeLocalBranches(repoDir, remote);
@@ -5983,12 +6016,12 @@ class LeakLockPanel {
                 `Cannot rewrite history: ${unsafe.ahead.length} local branch(es) have commits that are not on ${remote}. ` +
                 `Push them first, then prepare again.`
             );
-            return { blocked: true, reason: 'unpushed-commits', ahead: unsafe.ahead, pushPlan: null, remoteUrl: null, refreshError };
+            return { blocked: true, reason: 'unpushed-commits', ahead: unsafe.ahead, pushPlan: null, remoteUrl: null, remoteError: null };
         }
 
         const pushPlan = await gitRewrite.buildPushPlan(repoDir, remote);
         const remoteUrl = await gitRewrite.getRemoteUrl(repoDir, remote);
-        return { blocked: false, ahead: [], pushPlan, remoteUrl, localOnly: unsafe.localOnly, refreshError };
+        return { blocked: false, ahead: [], pushPlan, remoteUrl, localOnly: unsafe.localOnly, remoteError: null };
     }
 
     async _prepareScanBfgCommand(replacements) {
@@ -6002,17 +6035,6 @@ class LeakLockPanel {
     async _runPreparedScanCleanup(mode) {
         if (!this._scanCleanup.preparedCommand || this._scanCleanup.preparedMode !== mode) {
             vscode.window.showWarningMessage('Prepare the cleanup command first.');
-            return;
-        }
-        // LL-001 guards the *rewrite*, not the script. If refs could not be refreshed
-        // the plan may be stale, so the in-panel run is refused — but the generated
-        // script remains available to save and run by hand, and it refreshes refs
-        // itself before touching anything.
-        if (this._scanCleanup.refreshError) {
-            vscode.window.showErrorMessage(
-                `Cannot run the cleanup from the panel: ${this._scanCleanup.refreshError.message} ` +
-                'Use "Save as .sh" and run the script once the remote is reachable, or fix access and prepare again.'
-            );
             return;
         }
         const replacements = this._scanCleanup.replacements;
@@ -6093,7 +6115,10 @@ class LeakLockPanel {
                 this._scanCleanup.blockedBranches = error.branches;
                 this._updateWebviewContent();
             }
-            vscode.window.showErrorMessage(`Git-only cleanup failed: ${error.message}`);
+            vscode.window.showErrorMessage(
+                'Git-only cleanup did not complete. Your remote was not touched — this step only rewrites ' +
+                `local history, and the force-push is a separate confirmation. Reason: ${error.message}`
+            );
         }
     }
 
@@ -6339,7 +6364,10 @@ class LeakLockPanel {
                 this._scanCleanup.blockedBranches = error.branches;
                 this._updateWebviewContent();
             }
-            vscode.window.showErrorMessage(`❌ BFG cleanup failed: ${error.message}`);
+            vscode.window.showErrorMessage(
+                'BFG cleanup did not complete. Your remote was not touched — this step only rewrites ' +
+                `local history, and the force-push is a separate confirmation. Reason: ${error.message}`
+            );
         }
     }
 
