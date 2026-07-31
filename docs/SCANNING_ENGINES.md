@@ -163,16 +163,6 @@ whatever was cached.
 | `leakLock.noseyParker.maxFileSizeMb` | `100` | Skip larger files; `0` means no limit |
 | `leakLock.noseyParker.image` | *(pinned)* | Override the container image |
 
-### Cross-engine merging, in practice
-
-Engines rarely capture byte-identical spans of the same credential. On the scan above,
-Nosey Parker reported `mongodb://admin:password@localhost:27017/` where TruffleHog
-reported the same secret with `/mydb` on the end — same file, same line, same commit.
-Merging therefore keys on position and treats one secret containing the other as the same
-finding, keeping the longer capture (a rewrite replaces what it is given, so redacting the
-shorter span would leave the remainder in history). A short fragment cannot swallow a
-longer neighbour: containment requires at least 8 characters.
-
 ### A truncation bug worth knowing about
 
 Before v0.7.0, Leak Lock invoked `noseyparker report` with no flags, inheriting upstream
@@ -284,16 +274,33 @@ two engines cannot disagree about what a finding is:
 7. Cleanup eligibility
 8. Occurrence aggregation, then the cross-engine merge
 
-Merging rules:
+Merging rules. The unit a user acts on is **one secret in one place**, not one detection
+event — and a rewrite removes the value everywhere regardless of which commit, rule or
+engine surfaced it. So findings are grouped by **file, line and secret**, and everything
+that differs is aggregated onto the surviving row rather than duplicated into extra rows:
 
-- An **exact repeat** (same engine, rule, location, secret) is a duplicate and is dropped.
-- The same secret at the same location from a **different** engine is not a duplicate, it
-  is corroboration. Those merge into one row whose field set is the **union** of both
-  engines' output — entropy from one, verification from the other. Corroboration never
-  subtracts detail.
-- **Two rules from the same engine** at one location stay separate. They are genuinely
-  different detections.
+- **The same secret in several commits** is one row. The commit list is kept and the row
+  says *"in N commits"*.
+- **The same secret in history and in the working tree** is one row — an engine's history
+  pass reports a commit and its working-tree pass does not. The row is flagged
+  *"+ working tree"*, because a file still on disk is a different remediation from one
+  only in history.
+- **Two rules matching one secret** is one row naming both. `github-pat` and
+  `generic-api-key` both fire on a GitHub token; that is one credential.
+- **Two engines finding one secret** is corroboration, not duplication. The merged row
+  carries the **union** of their fields — entropy from one, verification from the other —
+  and names every engine that found it. Merging never subtracts detail.
+- Engines rarely capture byte-identical spans, so containment counts as the same secret
+  and the **longer capture wins**: a rewrite replaces what it is given, and redacting the
+  shorter span would leave the remainder in history. Containment requires at least 8
+  characters so a fragment cannot swallow a neighbour.
+- **Different secrets at the same line stay separate.**
 - A field is marked *unavailable* only if **no** reporting engine supplied it.
+
+On a real scan of this repository the three engines produced 78 raw detections, which
+collapse to 54 distinct findings — the difference is entirely repeats of the same secret
+across commits, passes, rules and engines. Every sighting is still recorded in
+`occurrences` and in the JSON export.
 
 ## Field parity
 

@@ -2608,6 +2608,21 @@ class LeakLockPanel {
                     parts.push(`<span title="Commit date" style="color: var(--vscode-descriptionForeground);">${escapeHtml(commitDateFormatted)}</span>`);
                     tooltipParts.push('Date: ' + commitDateFormatted);
                 }
+                // The same secret at one line often appears in several commits, and in
+                // the working tree as well as in history. Those are one problem, so
+                // they are one row — but the count and the commit list stay visible,
+                // because the rewrite has to cover all of them.
+                const occurrences = Array.isArray(result.occurrences) ? result.occurrences : [];
+                const commits = occurrences.map(o => o.commitHash).filter(Boolean);
+                const uniqueCommits = Array.from(new Set(commits));
+                if (uniqueCommits.length > 1) {
+                    parts.push(`<span title="${escapeHtml(uniqueCommits.join('\n'))}" style="color: var(--vscode-descriptionForeground); font-size: 0.85em;">in ${uniqueCommits.length} commits</span>`);
+                    tooltipParts.push(`Commits (${uniqueCommits.length}): ` + uniqueCommits.join(', '));
+                }
+                if (occurrences.some(o => !o.commitHash)) {
+                    parts.push('<span title="Also present in the working tree, not only in history." style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.85em;">+ working tree</span>');
+                    tooltipParts.push('Also present in the working tree.');
+                }
                 gitInfoHtml = parts.join('<br>');
                 gitInfoTooltip = tooltipParts.join('\n');
             } else {
@@ -2651,6 +2666,9 @@ class LeakLockPanel {
                             </span>
                             <span style="font-size: 0.9em;">
                                 ${escapeHtml(result.description)}
+                                ${Array.isArray(result.ruleNames) && result.ruleNames.length > 1
+                                    ? ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.85em;" title="Every rule that matched this secret">— also matched: ${escapeHtml(result.ruleNames.filter(r => r !== result.ruleName).join(', '))}</span>`
+                                    : ''}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">— in a third-party dependency, not your code (not selectable)</span>' : ''}
                                 ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
                                 ${!includeInCleanup ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(excluded from cleanup)</span>' : ''}
@@ -3446,61 +3464,39 @@ class LeakLockPanel {
     /**
      * Collapse duplicates without losing information.
      *
-     * Two passes with different intent:
+     * The unit a user acts on is **one secret in one place**, not one detection event.
+     * A single credential routinely produces several rows otherwise:
      *
-     *  - An exact repeat (same engine, rule, location and secret) is a duplicate and is
-     *    dropped.
-     *  - The same secret at the same location reported by a *different* engine is not a
-     *    duplicate finding, it is corroboration. Those merge into one row whose
-     *    `engines` list names every engine that found it — and, by omission, every
-     *    enabled engine that did not. That attribution is the diagnostic that turns an
-     *    unexplained gap against another tool into a checkable fact.
+     *  - the same secret at the same line in two different commits, because it was
+     *    touched twice;
+     *  - the same secret from an engine's history pass and its working-tree pass, one
+     *    with a commit and one without;
+     *  - the same secret matched by two rules of one engine (`github-pat` and
+     *    `generic-api-key` both fire on a GitHub token);
+     *  - the same secret found by two engines, each capturing a slightly different span.
      *
-     * Two rules from the same engine at one location stay separate, as before: they are
-     * genuinely different detections.
+     * None of those are separate problems, and a rewrite removes the value everywhere
+     * regardless. So findings are grouped by file, line and secret, and everything that
+     * differs — commits, dates, engines, rules — is aggregated onto the surviving row
+     * as `occurrences` rather than being duplicated into extra rows or dropped.
      */
     _deduplicateScanResults(results) {
-        const seen = new Set();
         const byLocation = new Map();
         const merged = [];
 
         for (const result of results) {
-            const engine = result.engine || '';
-            const exactKey = [
-                result.file,
-                result.line,
-                result.fullSecret,
-                result.commitHash || "",
-                result.ruleName || "",
-                engine
-            ].join("\0");
-            if (seen.has(exactKey)) {
-                continue;
-            }
-            seen.add(exactKey);
-
-            // Keyed on position only. Engines rarely capture byte-identical spans of
-            // the same credential — Nosey Parker reported
-            // `mongodb://admin:password@localhost:27017/` where TruffleHog reported the
-            // same secret with `/mydb` on the end — so requiring the exact string here
-            // meant corroboration almost never registered on real repositories.
-            const locationKey = [
-                result.file,
-                result.line,
-                result.commitHash || ""
-            ].join("\0");
+            const locationKey = [result.file, result.line].join("\0");
             const candidates = byLocation.get(locationKey);
-
-            const existing = candidates && candidates.find(other =>
-                other.engine && engine && other.engine !== engine
-                && this._sameSecret(other.fullSecret, result.fullSecret)
+            const existing = candidates && candidates.find(
+                other => this._sameSecret(other.fullSecret, result.fullSecret)
             );
 
             if (existing) {
-                this._mergeCrossEngineResult(existing, result);
+                this._mergeOccurrence(existing, result);
                 continue;
             }
 
+            this._seedOccurrences(result);
             merged.push(result);
             if (candidates) {
                 candidates.push(result);
@@ -3510,6 +3506,116 @@ class LeakLockPanel {
         }
 
         return merged;
+    }
+
+    /** Give a surviving row its first occurrence, so the list is never partial. */
+    _seedOccurrences(result) {
+        if (!Array.isArray(result.occurrences)) {
+            result.occurrences = [{
+                commitHash: result.commitHash || null,
+                commitDate: result.commitDate || null,
+                engine: result.engine || null,
+                ruleName: result.ruleName || null,
+                isGitHistory: Boolean(result.isGitHistory)
+            }];
+        }
+        if (!Array.isArray(result.ruleNames)) {
+            result.ruleNames = result.ruleName ? [result.ruleName] : [];
+        }
+        return result;
+    }
+
+    /**
+     * Fold another sighting of the same secret into the surviving row.
+     *
+     * Fields are only filled in, never overwritten, so a merge can add detail but never
+     * subtract it.
+     */
+    _mergeOccurrence(target, incoming) {
+        this._seedOccurrences(target);
+
+        const engines = new Set(target.engines || (target.engine ? [target.engine] : []));
+        for (const id of incoming.engines || (incoming.engine ? [incoming.engine] : [])) {
+            engines.add(id);
+        }
+        target.engines = Array.from(engines);
+
+        // Every rule that matched this secret, so a merge does not hide that two
+        // detectors agreed.
+        const rules = new Set(target.ruleNames);
+        if (incoming.ruleName) {
+            rules.add(incoming.ruleName);
+        }
+        for (const rule of incoming.ruleNames || []) {
+            rules.add(rule);
+        }
+        target.ruleNames = Array.from(rules);
+
+        // One entry per distinct commit, so "which commits carry this" survives.
+        const seen = new Set(target.occurrences.map(o => `${o.commitHash || ''}\0${o.engine || ''}`));
+        for (const occurrence of (incoming.occurrences || [{
+            commitHash: incoming.commitHash || null,
+            commitDate: incoming.commitDate || null,
+            engine: incoming.engine || null,
+            ruleName: incoming.ruleName || null,
+            isGitHistory: Boolean(incoming.isGitHistory)
+        }])) {
+            const key = `${occurrence.commitHash || ''}\0${occurrence.engine || ''}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                target.occurrences.push(occurrence);
+            }
+        }
+
+        for (const [key, value] of Object.entries(incoming)) {
+            if (value === null || value === undefined || value === '') {
+                continue;
+            }
+            if (['engines', 'engine', 'unavailableFields', 'occurrences', 'ruleNames'].includes(key)) {
+                continue;
+            }
+            if (target[key] === null || target[key] === undefined || target[key] === '') {
+                target[key] = value;
+            }
+        }
+
+        // Merge the branch lists: a secret in two commits can be on different branches,
+        // and the rewrite has to cover all of them.
+        if (Array.isArray(incoming.commitBranches) && incoming.commitBranches.length) {
+            const branches = new Set(target.commitBranches || []);
+            for (const branch of incoming.commitBranches) {
+                branches.add(branch);
+            }
+            target.commitBranches = Array.from(branches);
+        }
+
+        // Keep the longest capture of the secret. A rewrite replaces what it is given,
+        // so redacting the shorter span would leave the remainder in history.
+        if (incoming.fullSecret && target.fullSecret
+            && incoming.fullSecret.length > target.fullSecret.length) {
+            target.fullSecret = incoming.fullSecret;
+            target.secret = this._truncateSecret(incoming.fullSecret);
+            target.isSecretTruncated = target.secret !== incoming.fullSecret;
+        }
+
+        // Present in history anywhere means a history rewrite is required.
+        if (incoming.isGitHistory) {
+            target.isGitHistory = true;
+        }
+
+        // A live-credential confirmation from any engine wins.
+        if (incoming.verified === true) {
+            target.verified = true;
+            target.severity = target.isDependency || target.isUntracked ? target.severity : 'high';
+        }
+
+        // A field is only unavailable if it was unavailable from every engine that
+        // reported this finding.
+        const targetUnavailable = new Set(target.unavailableFields || []);
+        const incomingUnavailable = new Set(incoming.unavailableFields || []);
+        target.unavailableFields = Array.from(targetUnavailable).filter(f => incomingUnavailable.has(f));
+
+        return target;
     }
 
     /**
@@ -3529,54 +3635,6 @@ class LeakLockPanel {
         }
         const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
         return shorter.length >= 8 && longer.includes(shorter);
-    }
-
-    /**
-     * Fold a second engine's view of the same secret into the surviving row.
-     * Fields are only filled in, never overwritten — the merged record is the union of
-     * what the engines supplied, so corroboration can never subtract detail.
-     */
-    _mergeCrossEngineResult(target, incoming) {
-        const engines = new Set(target.engines || (target.engine ? [target.engine] : []));
-        for (const id of incoming.engines || (incoming.engine ? [incoming.engine] : [])) {
-            engines.add(id);
-        }
-        target.engines = Array.from(engines);
-
-        for (const [key, value] of Object.entries(incoming)) {
-            if (value === null || value === undefined || value === '') {
-                continue;
-            }
-            if (key === 'engines' || key === 'engine' || key === 'unavailableFields') {
-                continue;
-            }
-            if (target[key] === null || target[key] === undefined || target[key] === '') {
-                target[key] = value;
-            }
-        }
-
-        // Keep the longest capture of the secret. A rewrite replaces what it is given,
-        // so redacting the shorter span would leave the remainder in history.
-        if (incoming.fullSecret && target.fullSecret
-            && incoming.fullSecret.length > target.fullSecret.length) {
-            target.fullSecret = incoming.fullSecret;
-            target.secret = this._truncateSecret(incoming.fullSecret);
-            target.isSecretTruncated = target.secret !== incoming.fullSecret;
-        }
-
-        // A live-credential confirmation from any engine wins.
-        if (incoming.verified === true) {
-            target.verified = true;
-            target.severity = target.isDependency || target.isUntracked ? target.severity : 'high';
-        }
-
-        // A field is only unavailable if it was unavailable from every engine that
-        // reported this finding.
-        const targetUnavailable = new Set(target.unavailableFields || []);
-        const incomingUnavailable = new Set(incoming.unavailableFields || []);
-        target.unavailableFields = Array.from(targetUnavailable).filter(f => incomingUnavailable.has(f));
-
-        return target;
     }
 
     _stableHash(input) {
@@ -6708,7 +6766,17 @@ class LeakLockPanel {
                 author: redactSensitive ? null : (result.author || null),
                 authorEmail: redactSensitive ? null : (result.authorEmail || null),
                 commitMessage: redactSensitive ? null : (result.commitMessage || null),
-                unavailableFields: result.unavailableFields || []
+                unavailableFields: result.unavailableFields || [],
+                // Every commit this secret was seen in at this location, plus a
+                // working-tree entry (null commit) when it is still on disk.
+                ruleNames: result.ruleNames || (result.ruleName ? [result.ruleName] : []),
+                occurrences: (result.occurrences || []).map(o => ({
+                    commitHash: o.commitHash || null,
+                    commitDate: o.commitDate || null,
+                    engine: o.engine || null,
+                    ruleName: o.ruleName || null,
+                    isGitHistory: Boolean(o.isGitHistory)
+                }))
             }))
         };
     }

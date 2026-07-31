@@ -157,7 +157,7 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 > Gitleaks, TruffleHog and Nosey Parker together, rendered from the extension's own
 > webview. The full run found 59 findings; the table shows six of them, chosen to span
 > the three engines. Every secret shown is a synthetic fixture from `test-secrets.js`
-> (AWS's published `AKIAIOSFODNN7EXAMPLE`, `mongodb://admin:password@localhost`), not a
+> (AWS's published `AKIAIOSFODNN7EXAMPLE`, `mongodb://user:REDACTED@localhost`), not a
 > real credential — which is also why nothing carries a `VERIFIED LIVE` badge: TruffleHog
 > ran with verification enabled and, correctly, verified none of them.
 > Regenerate with `tools/real-scan.js` and `tools/render-screenshots.js`.
