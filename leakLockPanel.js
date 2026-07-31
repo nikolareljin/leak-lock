@@ -3020,6 +3020,25 @@ class LeakLockPanel {
                 </div>
             `;
         }
+        // "could not check" and "checked, and it is still there" are different claims.
+        // Rendering the first as the second sends the user hunting for a leak that may
+        // not exist; rendering it as clean would be worse still. Report it as its own
+        // outcome: unverified.
+        const unverified = offenders.filter(o => o.notVerified);
+        if (unverified.length > 0) {
+            const why = unverified
+                .map(o => `<li>${escapeHtml(o.reason.replace(/^not verified: /, ''))}</li>`)
+                .join('');
+            return `
+                <div class="rewrite-blocked">
+                    <strong>⚠️ Not verified — this is not a clean result</strong>
+                    <p style="margin:6px 0;">The rewrite ran, but Leak Lock could not check the remote refs,
+                    so it cannot tell you whether the secret is gone:</p>
+                    <ul style="margin: 6px 0 6px 18px;">${why}</ul>
+                    <p style="margin:6px 0;">Check the remote yourself before treating this as done.</p>
+                </div>
+            `;
+        }
         const rows = offenders
             .map(o => `<li><code>${escapeHtml(o.ref)}</code> — ${escapeHtml(o.reason)}: <code>${escapeHtml(o.match)}</code></li>`)
             .join('');
@@ -6650,7 +6669,17 @@ class LeakLockPanel {
             this._scanCleanup.verifyResult = offenders;
             this._scanCleanup.pendingPush = null;
 
-            if (offenders && offenders.length > 0) {
+            if (offenders && offenders.some(o => o.notVerified)) {
+                // The push succeeded, but nothing was actually checked. Saying "still
+                // present" would be a different — and unsupported — claim, and saying
+                // "verified clean" would be a lie, so say exactly what happened.
+                const reasons = offenders.filter(o => o.notVerified).map(o => o.reason).join('; ');
+                vscode.window.showWarningMessage(
+                    `⚠️ ${pending.label}: the force-push completed, but Leak Lock could NOT verify the result — ${reasons}. ` +
+                    'Treat this as unverified: check the remote yourself before assuming the secret is gone.'
+                );
+                this._updateWebviewContent();
+            } else if (offenders && offenders.length > 0) {
                 const refs = offenders.map(o => `${o.ref} (${o.reason})`).join(', ');
                 vscode.window.showErrorMessage(
                     `⚠️ ${pending.label}: force-push done but the target is STILL PRESENT on: ${refs}`
@@ -6703,6 +6732,14 @@ class LeakLockPanel {
             );
         }
         const refCount = (report.materialized || []).length;
+        if (report.offenders && report.offenders.some(o => o.notVerified)) {
+            const reasons = report.offenders.filter(o => o.notVerified).map(o => o.reason).join('; ');
+            vscode.window.showWarningMessage(
+                `⚠️ ${label} finished, but Leak Lock could NOT verify the remote — ${reasons}. ` +
+                'Treat this as unverified: check the remote yourself before assuming the target is gone.'
+            );
+            return;
+        }
         if (report.offenders && report.offenders.length > 0) {
             const refs = report.offenders.map(o => `${o.ref} (${o.reason})`).join(', ');
             vscode.window.showErrorMessage(

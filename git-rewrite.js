@@ -282,17 +282,10 @@ async function pushRewritten(repoDir, remote = DEFAULT_REMOTE) {
  * Re-fetch and confirm the leak is gone from every remote ref, not just the
  * one that happened to be checked out.
  * @param {object} criteria { pathPattern?: RegExp source string, literals?: string[], patterns?: string[] }
- * @returns {Promise<Array<{ref: string, reason: string, match: string}>>} offending refs
+ * @returns {Promise<Array<{ref: string, reason: string, match: string, notVerified?: boolean}>>}
+ *          offending refs; a single `notVerified` entry when nothing could be checked
  */
 async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {}) {
-    await fetchAllRefs(repoDir, remote);
-    const refs = await gitLines(repoDir, [
-        'for-each-ref',
-        '--format=%(refname)',
-        `refs/remotes/${remote}`,
-        'refs/tags'
-    ]);
-    const offenders = [];
     const pathRegex = criteria.pathPattern ? new RegExp(criteria.pathPattern) : null;
     const literals = Array.isArray(criteria.literals) ? criteria.literals : [];
     // Regex redaction rules cannot be verified with --fixed-strings: the rewrite would
@@ -305,10 +298,30 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
         ...patterns.map(value => ({ value, args: ['--extended-regexp'] }))
     ];
 
+    // An empty result means "clean" to every caller, and the panel turns that into
+    // "verified clean on every remote ref" and then discards the findings. So a
+    // verification that examined *nothing* must never return an empty array — that
+    // is a false all-clear on the one screen where the user decides the leak is gone.
+    // `_confirmScanPush` passes `pending.verify || {}`, so empty criteria is reachable.
+    if (!pathRegex && searches.length === 0) {
+        return [notVerified(remote, 'no search criteria were supplied, so nothing was checked')];
+    }
+
+    await fetchAllRefs(repoDir, remote);
+    const refs = await gitLines(repoDir, [
+        'for-each-ref',
+        '--format=%(refname)',
+        `refs/remotes/${remote}`,
+        'refs/tags'
+    ]);
+    const offenders = [];
+    let examined = 0;
+
     for (const ref of refs) {
         if (ref.endsWith('/HEAD')) {
             continue;
         }
+        examined++;
         if (pathRegex) {
             const files = await gitLines(repoDir, ['ls-tree', '-r', '--name-only', ref]);
             const hit = files.find(file => pathRegex.test(file));
@@ -339,7 +352,31 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
         }
     }
 
+    // Zero refs examined is not a clean bill of health either — it means the fetch
+    // produced nothing under refs/remotes/<remote>, so no ref was ever looked at.
+    if (examined === 0) {
+        return [notVerified(remote, `no refs were found under refs/remotes/${remote}, so no ref was checked`)];
+    }
+
     return offenders;
+}
+
+/**
+ * The marker returned when verification could not examine anything.
+ *
+ * It rides the offenders channel deliberately: every caller already treats a non-empty
+ * result as "do not tell the user this is clean", so an unverifiable outcome inherits
+ * that safety automatically rather than depending on each call site to remember it.
+ * `notVerified` lets callers word the message accurately — "could not verify" is not
+ * the same claim as "the secret is still there".
+ */
+function notVerified(remote, reason) {
+    return {
+        ref: `refs/remotes/${remote}/*`,
+        reason: `not verified: ${reason}`,
+        match: '',
+        notVerified: true
+    };
 }
 
 /**
