@@ -2877,3 +2877,71 @@ suite('Untracked working-tree findings', () => {
 		assert.strictEqual(panel._isUntrackedWorkingTreeFile('nested/local.env', 'x/nested/local.env', true), false);
 	});
 });
+
+suite('Second review round', () => {
+	const host = require('../host-capacity');
+	const rules = require('../redaction-rules');
+	const fs = require('fs');
+	const path = require('path');
+
+	const BIG = { cpus: 16, totalMemGb: 32, memorySource: 'os', platform: 'linux', loadPerCore: 0.1 };
+	const TINY = { cpus: 2, totalMemGb: 3, memorySource: 'os', platform: 'linux', loadPerCore: 0.1 };
+
+	test('the configured engine order is respected', () => {
+		// The setting says "Detection engines to run, in order". Sorting by weight here
+		// silently contradicted it.
+		const configured = ['noseyparker', 'trufflehog', 'gitleaks'];
+		for (const mode of ['auto', 'parallel', 'sequential']) {
+			assert.deepStrictEqual(
+				host.chooseScanStrategy({ engines: configured, host: BIG, mode }).engines,
+				configured,
+				`${mode} must not reorder the configured list`
+			);
+		}
+	});
+
+	test('engine weight still decides which one survives a constrained host', () => {
+		// That is the question ENGINE_WEIGHT exists to answer — not the run order.
+		assert.deepStrictEqual(
+			host.chooseScanStrategy({ engines: ['noseyparker', 'trufflehog', 'gitleaks'], host: TINY }).engines,
+			['gitleaks'],
+			'the lightest, maintained engine is kept'
+		);
+		assert.deepStrictEqual(
+			host.chooseScanStrategy({ engines: ['noseyparker', 'trufflehog'], host: TINY }).engines,
+			['trufflehog'],
+			'without gitleaks, the lightest configured engine is kept'
+		);
+	});
+
+	test('a pickaxe pattern containing spaces is passed intact', () => {
+		// Reported as a defect; verified not to be one. execFile passes an argv array
+		// with no shell, and -S consumes the remainder of its own argument.
+		const args = rules.buildPreviewArgs({ source: 'internal build server', mode: 'literal' });
+		assert.ok(args.includes('-Sinternal build server'));
+		const regex = rules.buildPreviewArgs({ source: 'ACME [0-9]+', mode: 'regex' });
+		assert.ok(regex.includes('-GACME [0-9]+'));
+	});
+
+	test('the dev helpers honour config.get(key, default)', () => {
+		// The panel and sidebar use the two-argument form in ten places. A stub that
+		// ignores the fallback silently diverges from a real VS Code host.
+		for (const tool of ['tools/real-scan.js', 'tools/render-screenshots.js']) {
+			const src = fs.readFileSync(path.join(__dirname, '..', tool), 'utf8');
+			assert.match(src, /get: \(key, fallback\)/, `${tool} must accept a fallback`);
+			assert.match(src, /key in settings \? settings\[key\] : fallback/,
+				`${tool} must return the fallback only when the key is absent`);
+		}
+	});
+
+	test('the fixture generator uses no GNU-only shell', () => {
+		// It is documented as cross-platform. `sed -i` reads the next argument as a
+		// backup suffix on BSD/macOS, and BSD sed rejects labels separated by ';'.
+		const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'seed-fake-leaks.sh'), 'utf8');
+		const code = src.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+		assert.ok(!/sed -i /.test(code), 'sed -i is GNU-only');
+		assert.ok(!/sed ':a/.test(code), "sed ':a;N;...' is GNU-only");
+		assert.match(code, /drop_blank_lines/);
+		assert.match(code, /escape_newlines/);
+	});
+});

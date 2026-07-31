@@ -153,9 +153,11 @@ const FALLBACK_ENGINE = 'gitleaks';
  */
 function chooseScanStrategy({ engines = [], host = describeHost(), mode = 'auto' } = {}) {
     const tier = classifyHost(host);
-    const ordered = engines
-        .slice()
-        .sort((a, b) => (ENGINE_WEIGHT[a] || 9) - (ENGINE_WEIGHT[b] || 9));
+    // The configured order is preserved: the setting says "engines to run, in order",
+    // and sorting by weight here silently contradicted it. ENGINE_WEIGHT answers a
+    // different question — which single engine survives on a constrained host — and is
+    // used only for that, below.
+    const ordered = engines.slice();
 
     const hostSummary =
         `${host.cpus} core(s), ${host.totalMemGb.toFixed(1)} GB` +
@@ -224,11 +226,22 @@ function chooseScanStrategy({ engines = [], host = describeHost(), mode = 'auto'
     };
 }
 
+/**
+ * Which engine to keep when only one can run.
+ *
+ * Gitleaks if it is enabled — a static binary with no container runtime or JVM, and
+ * the only maintained engine with a full ruleset, so the one left standing is also the
+ * one most likely to find something. Otherwise the lightest of what is configured,
+ * which is what ENGINE_WEIGHT is for.
+ */
 function pickSingleEngine(ordered) {
     if (ordered.includes(FALLBACK_ENGINE)) {
         return [FALLBACK_ENGINE];
     }
-    return ordered.slice(0, 1);
+    const lightest = ordered
+        .slice()
+        .sort((a, b) => (ENGINE_WEIGHT[a] || 9) - (ENGINE_WEIGHT[b] || 9))[0];
+    return lightest ? [lightest] : [];
 }
 
 /**

@@ -39,7 +39,13 @@ const settings = {
 const vscodeStub = {
     workspace: {
         workspaceFolders: [{ uri: { fsPath: REPO } }],
-        getConfiguration: () => ({ get: (key) => settings[key], update: async () => {} })
+        getConfiguration: () => ({
+            // Honour the two-argument form. LeakLockPanel and the sidebar call
+            // config.get(key, fallback) in ten places; ignoring the fallback made this
+            // stub diverge from a real host for any key not hand-seeded below.
+            get: (key, fallback) => (key in settings ? settings[key] : fallback),
+            update: async () => {}
+        })
     },
     window: {
         showErrorMessage: () => {}, showWarningMessage: () => {},
