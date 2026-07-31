@@ -83,7 +83,7 @@ Installs required dependencies with progress tracking.
 Complete cleanup of all extension dependencies.
 
 **Responsibilities:**
-- Remove Docker images: `ghcr.io/praetorian-inc/noseyparker:latest`
+- Remove Docker images: `ghcr.io/praetorian-inc/noseyparker:v0.24.0`
 - Delete BFG jar file
 - Remove temporary directories
 - Clean up Docker volumes
@@ -177,28 +177,55 @@ Executes repository scanning workflow.
 - `useWorkspace` - Use current workspace instead of selected directory
 
 **Workflow:**
-1. Validate scan directory
-2. Initialize Nosey Parker datastore
-3. Execute Docker scan command
-4. Parse JSON results
-5. Update UI with results
+1. Validate the scan directory
+2. Refresh every ref (`git fetch --prune --tags`) so remote-only history is not skipped
+3. Run each enabled engine; a missing engine disables that engine, not the scan
+4. Map every engine's output through the same post-processing
+5. Merge and attribute results, then record what was covered
+6. Update the UI
+
+See [SCANNING_ENGINES.md](SCANNING_ENGINES.md) for the engine comparison. Argument
+construction lives in `scan-engine-config.js` and `scan-engines.js`, neither of which
+imports `vscode`, so the flags below are unit-testable.
 
 **Commands Generated:**
 ```bash
-# Initialize datastore
-docker run --rm -v "${datastorePath}:/datastore" \
-  ghcr.io/praetorian-inc/noseyparker:latest \
-  datastore init --datastore /datastore
+# --- Gitleaks (default engine) -------------------------------------------------
+# History across every ref. Without --all only the current branch is covered.
+gitleaks git --log-opts=--all --report-format json --report-path "${report}" \
+  --exit-code 0 --no-banner "${scanPath}"
 
-# Scan directory
+# Working tree, including untracked and .gitignore'd files.
+gitleaks dir --report-format json --report-path "${report}" \
+  --exit-code 0 --no-banner "${scanPath}"
+
+# Pre-8.19 builds (probed from --help, since many builds report no version):
+#   gitleaks detect --source "${scanPath}" --log-opts=--all ...
+#   gitleaks detect --source "${scanPath}" --no-git ...
+
+# --- TruffleHog (optional; verification is opt-in) -----------------------------
+trufflehog git "file://${scanPath}" --json --no-update --results=verified,unknown
+trufflehog git "file://${scanPath}" --json --no-update --no-verification
+
+# --- Nosey Parker (optional, legacy; image pinned, archived upstream) ----------
+# The datastore lives in the OS temp directory, never inside the scanned tree.
+docker run --rm -v "${datastoreParent}:/workspace" \
+  ghcr.io/praetorian-inc/noseyparker:v0.24.0 \
+  datastore init --datastore /workspace/noseyparker.np
+
 docker run --rm -v "${scanPath}:/scan" -v "${datastorePath}:/datastore" \
-  ghcr.io/praetorian-inc/noseyparker:latest \
-  scan --datastore /datastore /scan
+  ghcr.io/praetorian-inc/noseyparker:v0.24.0 \
+  scan --datastore /datastore --git-history full \
+       --ruleset "${ruleset}" --max-file-size "${maxFileSizeMb}" /scan
 
-# Generate report
+# The three no-limit flags are load-bearing: the upstream defaults are
+# --max-matches 3, --max-provenance 3 and --min-score 0.05, which discard
+# findings before Leak Lock ever parses them.
 docker run --rm -v "${datastorePath}:/datastore" \
-  ghcr.io/praetorian-inc/noseyparker:latest \
-  report --datastore /datastore --format json
+  ghcr.io/praetorian-inc/noseyparker:v0.24.0 \
+  report --datastore /datastore --format json \
+         --max-matches -1 --max-provenance -1 --min-score 0 \
+         --suppress-redundant true
 ```
 
 ##### **_fixSecrets(replacements: Object): Promise<void>**

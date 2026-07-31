@@ -221,13 +221,14 @@ footer .credit{margin-left:auto}
 
   <section class="band">
    <div class="hero wrap">
-    <span class="eyebrow">VS Code &amp; OpenVSX extension · scans with Nosey Parker · rewrites with BFG or git</span>
+    <span class="eyebrow">VS Code &amp; OpenVSX extension · scans with Gitleaks, TruffleHog &amp; Nosey Parker · rewrites with BFG or git</span>
     <h1>Find the secrets in your git history — then <span class="turn">actually remove them.</span></h1>
     <p class="lede">
-      Leak Lock scans a repository for <strong>credentials, files, and keywords</strong>, shows every
-      finding, and rewrites them out of <strong>every branch and tag</strong> — including the refs that
-      only exist on the remote. It writes the cleanup as a bash script you can read, run from the panel,
-      and verify.
+      Leak Lock scans a repository for <strong>credentials, files, and keywords</strong> using
+      <strong>several detection engines at once</strong>, shows every finding — and which engine found
+      it — and rewrites them out of <strong>every branch and tag</strong>, including the refs that only
+      exist on the remote. It also removes <strong>any text you specify</strong>, not just what a
+      scanner flagged. The cleanup is a bash script you can read, run from the panel, and verify.
     </p>
     <div class="cta-row">
       <a class="btn btn-primary" href="#install">Install the extension</a>
@@ -247,16 +248,16 @@ footer .credit{margin-left:auto}
 
     <div class="steps">
       <div class="step">
-        <h3>Find secrets, files, and keywords</h3>
-        <p>Nosey Parker scans your working tree and full git history for 100+ credential types. On top of that: a path scan for files that shouldn't be there, and an opt-in keyword pass over commit messages, historical contents, and filenames for terms you choose — like <code>id_rsa</code> or an internal project name.</p>
+        <h3>Find secrets with more than one engine</h3>
+        <p><strong>Gitleaks</strong>, <strong>TruffleHog</strong> and <strong>Nosey Parker</strong> can run together over your working tree and full git history, and their results are merged into one list. They disagree more than you would expect — on a test repository one engine found seven secrets where another found two — so every finding names the engines that found it <em>and</em> the ones that missed it. TruffleHog can go further and check whether a key <strong>still works</strong>. On top of that: a path scan for files that shouldn't be there, and an opt-in keyword pass over commit messages, historical contents, and filenames for terms you choose — like <code>id_rsa</code> or an internal project name.</p>
       </div>
       <div class="step">
-        <h3>Review every finding</h3>
-        <p>Findings land in a table in the main panel — each credential with its file and line, each history hit with the branch, commit, and date. Select exactly what you want to act on. Export the list to JSON or print it to PDF for a ticket or audit.</p>
+        <h3>Review every finding — and what was actually scanned</h3>
+        <p>Findings land in a table in the main panel — each credential with its file and line, each history hit with the branch, commit, and date, and a live credential flagged <code>VERIFIED LIVE</code>. Alongside them sits a <strong>coverage panel</strong>: which engines ran, how many refs were scanned, which branches exist only on the remote, and whether the scan finished. A clean result is only worth as much as the scope behind it. Export the list — and the coverage — to JSON or PDF.</p>
       </div>
       <div class="step">
-        <h3>Replace strings or remove files</h3>
-        <p>Two remediation modes: replace a secret string with a placeholder everywhere it appears, or delete a file or path outright. Path removal targets <em>exact</em> paths across branches, remotes, and tags, and shows you the matching refs before anything is touched.</p>
+        <h3>Replace strings, remove files — or redact anything you choose</h3>
+        <p>Three remediation modes: replace a detected secret with a placeholder everywhere it appears, delete a file or path outright, or write your own <strong>source text → replace with</strong> rule for content no scanner flags — an internal hostname, a private repository name, a customer identifier. Manual rules match literally or by regex, and a <strong>dry run</strong> shows exactly which commits, files and branches each one touches before anything is rewritten.</p>
       </div>
       <div class="step pivot">
         <h3>Get a bash script for the cleanup</h3>
@@ -334,7 +335,7 @@ footer .credit{margin-left:auto}
 
   <!-- ============ UNDER THE HOOD (short) ============ -->
   <section class="section wrap" id="hood">
-    <span class="section-label">under the hood · v0.6.0</span>
+    <span class="section-label">under the hood · v0.7.0</span>
     <h2>What the script actually does</h2>
     <p class="intro">The generated script runs the same ordered sequence whether you press the button or run it yourself. In brief:</p>
 
@@ -347,7 +348,8 @@ footer .credit{margin-left:auto}
         <li><b>Drop backup refs, expire the reflog, repack</b> — so the old objects are actually gone.</li>
         <li><b>Atomic force-push, then re-fetch and verify</b> — all refs in one transaction; then confirm each is clean on the server.</li>
       </ol>
-      <p class="note">Rewriting history changes every commit hash — teammates re-clone afterward, and the leaked credential should be rotated regardless. It's a destructive operation, run with review.</p>
+      <p class="note">The replacement rules live in one owner-only temporary file that the script's exit trap deletes. Verification re-reads that same file, so each secret appears exactly once in the script rather than being repeated in every check — one list, one place, and no drift between what was rewritten and what is verified. The script targets bash 3.2 and runs on Linux, macOS, and Windows under Git Bash or WSL, checking its required tools up front rather than failing halfway through a rewrite.</p>
+      <p class="note">Rewriting history changes every commit hash — teammates re-clone afterward, and the leaked credential should be rotated regardless. It's a destructive operation, run with review. If TruffleHog flagged a key as <code>VERIFIED LIVE</code>, rotate it <em>first</em>: rewriting history does not revoke a working credential.</p>
     </div>
   </section>
 
@@ -404,7 +406,7 @@ codium  --install-extension nikolareljin.leak-lock</code></pre>
     <div class="steps">
       <div class="step">
         <h3>Install dependencies</h3>
-        <p>First run only. One click installs the tooling behind the scans and rewrites — the Nosey Parker Docker image, Java, and BFG — with progress shown inline. Docker itself must already be running.</p>
+        <p>First run only. <strong>Gitleaks</strong> is the default engine and is a single binary — no Docker, no JVM. Add <strong>TruffleHog</strong> if you want live credential verification. Docker is needed only if you also enable the legacy Nosey Parker engine, and Java only for BFG-based cleanup. A missing engine disables that engine, never the whole scan.</p>
       </div>
       <div class="step">
         <h3>Scan for issues</h3>
@@ -417,6 +419,10 @@ codium  --install-extension nikolareljin.leak-lock</code></pre>
       <div class="step">
         <h3>Remove files &amp; directories</h3>
         <p>The <strong>Remove Files</strong> button opens the guided removal UI. Choose paths to delete or strings to replace, preview the exact matches across every ref, then generate and run the cleanup.</p>
+      </div>
+      <div class="step">
+        <h3>Add your own redaction rules</h3>
+        <p>Under the results, a <strong>source text → replace with</strong> editor removes content no scanner flags — internal hostnames, private repository names, customer identifiers. Literal or regex, validated as you type, previewed against real history, and cleaned through the same verified pipeline as a detected secret.</p>
       </div>
     </div>
   </section>

@@ -348,7 +348,10 @@ class LeakLockPanel {
             // After the LOCAL rewrite runs, this holds everything needed to
             // force-push. The panel shows a persistent confirmation and the push
             // only happens once the user confirms it here. null = nothing staged.
-            pendingPush: null // { repoDir, remote, verify, label, refCount }
+            pendingPush: null, // { repoDir, remote, verify, label, refCount }
+            // Set when Nosey Parker is enabled but Docker is missing, so the scan
+            // degrades to the remaining engines instead of failing outright.
+            noseyParkerUnavailable: null
         };
         // What the last scan actually covered. "No findings" is only meaningful
         // alongside this, so it is rendered with the results rather than logged.
@@ -2809,6 +2812,7 @@ class LeakLockPanel {
             this._scanCleanup.blockedReason = null;
             this._scanCleanup.verifyResult = null;
             this._scanCleanup.pendingPush = null;
+            this._scanCleanup.noseyParkerUnavailable = null;
             // Indices from the previous scan no longer refer to the same findings.
             this._resetScanSelection();
             this._updateWebviewContent();
@@ -2847,17 +2851,33 @@ class LeakLockPanel {
 
             const engineSettings = this._getScanEngineSettings();
 
-            // Update progress: Checking Docker
-            this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
-            this._updateWebviewContent();
-
-            // Check if Docker is available
-            const dockerCheck = await this._checkDockerAvailability();
-            if (!dockerCheck.available) {
-                vscode.window.showErrorMessage(`Docker not available: ${dockerCheck.error}`);
-                this._isScanning = false;
+            // Docker is only required by the Nosey Parker engine. Demanding it when
+            // the user runs Gitleaks alone — a single binary with no runtime — would
+            // block a scan that has no need of it.
+            const engineIds = this._getEnabledEngineIds();
+            if (engineIds.includes('noseyparker')) {
+                this._scanProgress = { stage: 'docker', message: 'Checking Docker availability...' };
                 this._updateWebviewContent();
-                return;
+
+                const dockerCheck = await this._checkDockerAvailability();
+                if (!dockerCheck.available) {
+                    const others = engineIds.filter(id => id !== 'noseyparker');
+                    if (others.length === 0) {
+                        vscode.window.showErrorMessage(
+                            `Docker not available: ${dockerCheck.error}. Nosey Parker is the only enabled engine and it requires Docker. ` +
+                            'Enable Gitleaks in leakLock.scan.engines to scan without Docker.'
+                        );
+                        this._isScanning = false;
+                        this._updateWebviewContent();
+                        return;
+                    }
+                    // Degrade to the engines that can still run rather than failing the
+                    // whole scan.
+                    vscode.window.showWarningMessage(
+                        `Docker not available (${dockerCheck.error}); skipping Nosey Parker. Scanning with: ${others.join(', ')}.`
+                    );
+                    this._scanCleanup.noseyParkerUnavailable = dockerCheck.error;
+                }
             }
 
             // Refresh refs before scanning. A branch that exists only as an unfetched
@@ -2871,8 +2891,8 @@ class LeakLockPanel {
             this._scanProgress = { stage: 'pull', message: `Pulling ${engineSettings.image}...` };
             this._updateWebviewContent();
 
-            const enabledEngines = this._getEnabledEngineIds();
-            const useNoseyParker = enabledEngines.includes('noseyparker');
+            const useNoseyParker = engineIds.includes('noseyparker')
+                && !this._scanCleanup.noseyParkerUnavailable;
 
             let pullResult = null;
             let engineVersion = null;
@@ -2915,6 +2935,17 @@ class LeakLockPanel {
                     ok: !scanRun.incomplete,
                     findings: scanRun.results.length,
                     note: scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE
+                });
+            }
+
+            if (engineIds.includes('noseyparker') && this._scanCleanup.noseyParkerUnavailable) {
+                engineReports.push({
+                    id: 'noseyparker',
+                    displayName: 'Nosey Parker',
+                    version: null,
+                    ok: false,
+                    findings: 0,
+                    note: `Skipped — Docker not available: ${this._scanCleanup.noseyParkerUnavailable}`
                 });
             }
 
@@ -4493,7 +4524,7 @@ class LeakLockPanel {
                 if (engine.id === 'trufflehog') {
                     // Verification makes read-only calls to third-party providers using
                     // the discovered credential. Off unless the user asked for it.
-                    scanOptions.verify = config.get('truffleHog.verify') === true;
+                    scanOptions.verify = config.get('trufflehog.verify') === true;
                 }
 
                 const outcome = await engine.scan(scanOptions);
@@ -5228,7 +5259,8 @@ class LeakLockPanel {
                     author: finding.author,
                     authorEmail: finding.authorEmail,
                     commitMessage: finding.commitMessage,
-                    verified: finding.verified
+                    verified: finding.verified,
+                    verifiedAt: finding.verifiedAt
                 }
             }
         );
@@ -6168,6 +6200,7 @@ class LeakLockPanel {
                 engineVersion: result.engineVersion || null,
                 ruleName: result.ruleName || null,
                 verified: typeof result.verified === 'boolean' ? result.verified : null,
+                verifiedAt: result.verifiedAt || null,
                 endLine: Number.isFinite(result.endLine) ? result.endLine : null,
                 startColumn: Number.isFinite(result.startColumn) ? result.startColumn : null,
                 endColumn: Number.isFinite(result.endColumn) ? result.endColumn : null,
