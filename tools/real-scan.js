@@ -37,9 +37,11 @@ const settings = {
     'noseyParker.ruleset': 'default',
     'noseyParker.suppressRedundant': true,
     'noseyParker.maxFileSizeMb': 100,
-    // Verification is opt-in in the product and opt-in here: the values in this
-    // repository are synthetic fixtures, so nothing valid is ever sent anywhere.
-    'trufflehog.verify': true,
+    // Verification is opt-in in the product, and opt-in here too. This script accepts
+    // an arbitrary target repository, so defaulting it on would send credentials
+    // discovered in someone's real repo to their providers without them asking.
+    //   LEAKLOCK_VERIFY=1 node tools/real-scan.js <repo> out.json
+    'trufflehog.verify': process.env.LEAKLOCK_VERIFY === '1',
     'gitHistoryKeywordSearch.enabled': false,
     'gitHistoryKeywordSearch.keywords': []
 };

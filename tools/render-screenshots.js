@@ -20,6 +20,7 @@
  */
 const Module = require('module');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const REPO = path.resolve(__dirname, '..');
@@ -67,10 +68,13 @@ panel._selectedDirectory = REPO;
 // Real scan output, produced by tools/real-scan.js. Nothing here is hand-written:
 // the findings, engine attribution, versions and coverage are whatever the engines
 // actually reported.
-const SCAN = process.argv[4] || path.join(__dirname, '..', 'scan.json');
+// Defaults outside the repository: a scan report contains real secrets when it was
+// produced from a real repository, and a default inside the working tree is one
+// `git add -A` away from being committed.
+const SCAN = process.argv[4] || path.join(os.tmpdir(), 'leaklock-scan.json');
 if (!fs.existsSync(SCAN)) {
     console.error(`No scan data at ${SCAN}. Produce it first:\n` +
-        '  node tools/real-scan.js <repo-to-scan> scan.json');
+        `  node tools/real-scan.js <repo-to-scan> ${path.join(os.tmpdir(), 'leaklock-scan.json')}`);
     process.exit(1);
 }
 const scan = JSON.parse(fs.readFileSync(SCAN, 'utf8'));
