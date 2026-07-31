@@ -286,14 +286,56 @@ footer .credit{margin-left:auto}
     <div class="shots">
       <figure class="shot lead">
         <a class="frame" href="img/scan-results-table.png">
-          <img src="img/scan-results-table.png" width="1322" height="1246" loading="lazy" decoding="async"
-               alt="The Leak Lock scanner showing six potential secrets in a table — each row lists the file, line number, the matched secret, a replacement value, the branch, commit hash and date it was found in, and a LOW or HIGH severity label. Below the table are buttons to prepare and run a BFG-based or git-only cleanup.">
+          <img src="img/scan-results-table.png" width="1322" height="1826" loading="lazy" decoding="async"
+               alt="The Leak Lock scanner showing five findings in a table — each row lists the file, line number, the matched secret, a replacement value, which engines found it and which missed it, the branch, commit hash and date, and a severity label. One row is badged VERIFIED LIVE and another is badged Dependency, not your code. Above the table are the scan coverage summary and the manual redaction rules editor; below it are buttons to prepare and run a BFG-based or git-only cleanup.">
         </a>
         <figcaption>
           <b>Review every finding, then generate the cleanup</b>
-          One row per secret, with the file and line, the commit and branch it lives in, and a severity
-          label. Tick the ones you want cleaned, set what each is replaced with, then prepare a BFG or
-          git-only script — nothing is rewritten until you have read it.
+          One row per secret, with the file and line, the commit and branch it lives in, a severity
+          label — and <b>which engines found it, and which missed it</b>. A credential confirmed to
+          still work is badged <code>VERIFIED LIVE</code>. Tick what you want cleaned, set the
+          replacement, then prepare a BFG or git-only script — nothing is rewritten until you have
+          read it.
+        </figcaption>
+      </figure>
+    </div>
+
+    <div class="shots shots-3">
+      <figure class="shot">
+        <a class="frame" href="img/scan-coverage.png">
+          <img src="img/scan-coverage.png" width="1172" height="362" loading="lazy" decoding="async"
+               alt="The Scan coverage panel expanded, listing each engine with its version and finding count, the execution mode and the host it was chosen for, the number of local branches, remote branches, tags and stash entries scanned, whether refs were refreshed, a collapsed list of branches that exist only on the remote, and the ruleset, file-size limit, timeout and dependency handling in effect.">
+        </a>
+        <figcaption>
+          <b>What was actually scanned</b>
+          A clean result is only worth what was examined, so every scan says so: which engines ran and
+          at which versions, how many refs were covered, and whether anything was skipped. Collapsed to
+          one line by default — but a warning is never hidden by collapsing it.
+        </figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a class="frame" href="img/manual-redaction.png">
+          <img src="img/manual-redaction.png" width="1230" height="370" loading="lazy" decoding="async"
+               alt="The Manual redaction rules editor, with fields for source text, a literal or regex match mode and a replacement value, and a table of two rules: an internal hostname matched literally, showing a preview of the twelve commits and two files it touches across two branches, and a customer identifier matched by regular expression.">
+        </a>
+        <figcaption>
+          <b>Remove anything, not just what a scanner flagged</b>
+          Type the text yourself — an internal hostname, a private repository name, a customer
+          identifier. Literal or regex, and a dry run shows exactly which commits, files and branches
+          each rule touches before anything is rewritten.
+        </figcaption>
+      </figure>
+
+      <figure class="shot">
+        <a class="frame" href="img/no-findings.png">
+          <img src="img/no-findings.png" width="1200" height="1488" loading="lazy" decoding="async"
+               alt="The no-findings view: a shield icon, the heading No Security Issues Found, four green confirmations that no API keys, passwords, private keys or database credentials were detected, and below them the scan coverage panel listing the three engines that ran and the refs they covered.">
+        </a>
+        <figcaption>
+          <b>A clean result you can check</b>
+          "No findings" means nothing on its own, so the coverage panel sits right underneath it —
+          which engines ran, how many refs they covered, and whether the scan finished.
         </figcaption>
       </figure>
     </div>

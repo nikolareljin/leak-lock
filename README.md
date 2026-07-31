@@ -153,6 +153,42 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 
 ## 📸 Screenshots
 
+> Captured from Leak Lock scanning **its own repository** — the secrets shown are the
+> synthetic fixtures in `test/test-secrets.js` (AWS's published `AKIAIOSFODNN7EXAMPLE`,
+> `sk_test_…`, `ghp_1234…`), not real credentials.
+
+### Scan results — multi-engine, with attribution
+
+![Scan results](docs/website/img/scan-results-table.png)
+
+One row per finding, with the file and line, the commit and branches it lives in, and a
+severity label — plus **which engines found it and which missed it**. A credential
+TruffleHog confirmed still works is badged `VERIFIED LIVE`; findings inside third-party
+dependencies are badged and excluded from cleanup.
+
+### Scan coverage — what was actually examined
+
+![Scan coverage](docs/website/img/scan-coverage.png)
+
+Collapsed to one line by default. Expanded, it reports the engines and versions that ran,
+the execution mode and the host it was sized for, the refs covered, and the settings in
+effect. Warnings are promoted into the collapsed summary, so collapsing hides volume and
+never a caveat.
+
+### Manual redaction rules
+
+![Manual redaction rules](docs/website/img/manual-redaction.png)
+
+Remove text no scanner flagged. Literal or regex, and a dry run reports the commits, files
+and branches a rule touches before anything is rewritten.
+
+### A clean result you can check
+
+![No findings](docs/website/img/no-findings.png)
+
+"No findings" means nothing without its scope, so the coverage panel sits directly beneath
+it.
+
 ### Activity Bar Integration
 The extension adds a shield icon to the activity bar for easy access.
 
