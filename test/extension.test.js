@@ -2699,3 +2699,48 @@ suite('Containing-branch parsing', () => {
 		assert.deepStrictEqual(parse(null), []);
 	});
 });
+
+suite('Website image dimensions', () => {
+	const fs = require('fs');
+	const path = require('path');
+
+	test('every declared width/height matches the file on disk', () => {
+		// Both attributes are declared so the browser can reserve space before the
+		// image loads. When they drift from the real size the browser stretches the
+		// image instead, which is worse than declaring nothing — and it drifts every
+		// time a screenshot is recaptured at a slightly different height.
+		const root = path.join(__dirname, '..', 'docs', 'website');
+		const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+		const problems = [];
+
+		for (const match of html.matchAll(/<img src="(img\/[^"]+)" width="(\d+)" height="(\d+)"/g)) {
+			const [, src, width, height] = match;
+			const file = path.join(root, src);
+			assert.ok(fs.existsSync(file), `${src} is referenced but missing`);
+
+			// PNG header: width and height are big-endian 32-bit at offsets 16 and 20.
+			const header = Buffer.alloc(24);
+			const fd = fs.openSync(file, 'r');
+			try {
+				fs.readSync(fd, header, 0, 24, 0);
+			} finally {
+				fs.closeSync(fd);
+			}
+			const actual = { w: header.readUInt32BE(16), h: header.readUInt32BE(20) };
+			if (actual.w !== Number(width) || actual.h !== Number(height)) {
+				problems.push(`${src}: declared ${width}x${height}, actual ${actual.w}x${actual.h}`);
+			}
+		}
+
+		assert.ok(problems.length > 0 === false, problems.join('; '));
+	});
+
+	test('every referenced image exists', () => {
+		const root = path.join(__dirname, '..', 'docs', 'website');
+		const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+		const missing = Array.from(html.matchAll(/src="(img\/[^"]+)"/g))
+			.map(m => m[1])
+			.filter(src => !fs.existsSync(path.join(root, src)));
+		assert.deepStrictEqual(missing, []);
+	});
+});
