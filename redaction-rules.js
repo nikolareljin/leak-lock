@@ -22,6 +22,13 @@
 // failure this feature could have, so it is rejected at entry.
 const RULE_SEPARATOR = '==>';
 
+// `git filter-repo --replace-text` and BFG both treat a leading `regex:` (and, for
+// filter-repo, `glob:` / `literal:`) as a mode prefix. A *literal* rule whose source
+// begins with one of those would therefore be parsed as a different kind of rule and
+// rewrite something other than what the UI displayed — the same failure the `==>`
+// guard exists to prevent.
+const RULE_MODE_PREFIXES = Object.freeze(['regex:', 'glob:', 'literal:']);
+
 // One owner for the default replacement. It was previously duplicated in three places
 // that had to agree by convention.
 const DEFAULT_REPLACEMENT = '*****';
@@ -103,6 +110,16 @@ function validateRule(rule) {
     }
     if (/[\r\n]/.test(source)) {
         errors.push('Source text cannot span multiple lines; the rule file is line-based.');
+    }
+    if (mode === 'literal') {
+        const prefix = RULE_MODE_PREFIXES.find(p => source.startsWith(p));
+        if (prefix) {
+            errors.push(
+                `A literal source cannot start with "${prefix}" — the rewrite tools read that as a mode ` +
+                'prefix, so this rule would be applied as a different kind of match than the one shown here. ' +
+                'Switch to regex mode if you need to match text that begins with it.'
+            );
+        }
     }
     if (/[\r\n]/.test(replaceWith)) {
         errors.push('Replacement text cannot span multiple lines.');
@@ -237,6 +254,7 @@ function parsePreviewOutput(stdout) {
 
 module.exports = {
     RULE_SEPARATOR,
+    RULE_MODE_PREFIXES,
     DEFAULT_REPLACEMENT,
     SHORT_SOURCE_THRESHOLD,
     MODES,
