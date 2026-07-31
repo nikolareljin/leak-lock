@@ -768,3 +768,345 @@ suite('Two-phase cleanup: local rewrite, then confirmed force-push', () => {
 		assert.strictEqual(panel._scanCleanup.pendingPush, null, 'cancel clears the pending push');
 	});
 });
+
+suite('Scan engine configuration', () => {
+	const engineConfig = require('../scan-engine-config');
+
+	test('report never inherits the truncating defaults', () => {
+		const args = engineConfig.buildNoseyParkerReportArgs({ datastoreMount: '/ds' });
+		const flag = (name) => args[args.indexOf(name) + 1];
+		// Upstream defaults are 3 / 3 / 0.05 and discard findings before Leak Lock
+		// parses them. -1 and 0 are the documented "no limit" values.
+		assert.ok(args.includes('--max-matches'), 'report caps matches per finding unless told not to');
+		assert.strictEqual(flag('--max-matches'), '-1');
+		assert.strictEqual(flag('--max-provenance'), '-1');
+		assert.strictEqual(flag('--min-score'), '0');
+		assert.strictEqual(flag('--format'), 'json');
+	});
+
+	test('suppress-redundant is explicit and configurable', () => {
+		const on = engineConfig.buildNoseyParkerReportArgs({ datastoreMount: '/ds' });
+		assert.strictEqual(on[on.indexOf('--suppress-redundant') + 1], 'true');
+		const off = engineConfig.buildNoseyParkerReportArgs({
+			datastoreMount: '/ds',
+			settings: engineConfig.normalizeScanSettings({ suppressRedundant: false })
+		});
+		assert.strictEqual(off[off.indexOf('--suppress-redundant') + 1], 'false');
+	});
+
+	test('the scanner image is pinned rather than :latest', () => {
+		assert.ok(!engineConfig.NOSEYPARKER_IMAGE.endsWith(':latest'), 'a floating tag drifts silently between machines');
+		assert.strictEqual(engineConfig.NOSEYPARKER_IMAGE, 'ghcr.io/praetorian-inc/noseyparker:v0.24.0');
+		const args = engineConfig.buildNoseyParkerReportArgs({ datastoreMount: '/ds' });
+		assert.ok(args.includes(engineConfig.NOSEYPARKER_IMAGE));
+	});
+
+	test('scan args always request full git history and a ruleset', () => {
+		const args = engineConfig.buildNoseyParkerScanArgs({ scanMount: '/src', datastoreMount: '/ds' });
+		assert.strictEqual(args[args.indexOf('--git-history') + 1], 'full');
+		assert.strictEqual(args[args.indexOf('--ruleset') + 1], 'default');
+		assert.strictEqual(args[args.length - 1], '/scan', 'the mounted path is the final positional argument');
+	});
+
+	test('ruleset modes expand to the repeated flags upstream requires', () => {
+		assert.deepStrictEqual(engineConfig.resolveRulesetIds('default'), ['default']);
+		assert.deepStrictEqual(engineConfig.resolveRulesetIds('default+assets'), ['default', 'np.assets']);
+		assert.deepStrictEqual(engineConfig.resolveRulesetIds('all'), ['all']);
+		// An unknown value must fall back, never produce an invalid flag.
+		assert.deepStrictEqual(engineConfig.resolveRulesetIds('nonsense'), ['default']);
+
+		const args = engineConfig.buildNoseyParkerScanArgs({
+			scanMount: '/src',
+			datastoreMount: '/ds',
+			settings: engineConfig.normalizeScanSettings({ rulesetMode: 'default+assets' })
+		});
+		const rulesets = args.reduce((acc, arg, i) => (arg === '--ruleset' ? acc.concat(args[i + 1]) : acc), []);
+		assert.deepStrictEqual(rulesets, ['default', 'np.assets']);
+	});
+
+	test('settings are clamped so an out-of-range value cannot reach the engine', () => {
+		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 5 }).timeoutMs, 30000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 99999 }).timeoutMs, 7200000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 'abc' }).timeoutMs, 300000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ maxFileSizeMb: -4 }).maxFileSizeMb, 0);
+	});
+
+	test('the exclude list refuses directories that can hold first-party source', () => {
+		const dirs = engineConfig.EXCLUDABLE_DEPENDENCY_DIRS;
+		assert.ok(dirs.includes('node_modules'));
+		assert.ok(dirs.includes('vendor'));
+		// Excluding these from a security scan would hide real secrets: they routinely
+		// hold the project's own code.
+		for (const unsafe of ['lib', 'bin', 'dist', 'build', 'out', 'packages', 'src']) {
+			assert.ok(!dirs.includes(unsafe), `${unsafe} must never be excluded from scanning`);
+		}
+		const file = engineConfig.buildDependencyIgnoreFile();
+		assert.ok(file.includes('node_modules/'));
+		assert.ok(!/^lib\/$/m.test(file));
+	});
+
+	test('an ignore file is wired into the scan only when one is supplied', () => {
+		const without = engineConfig.buildNoseyParkerScanArgs({ scanMount: '/src', datastoreMount: '/ds' });
+		assert.ok(!without.includes('--ignore'));
+		const with_ = engineConfig.buildNoseyParkerScanArgs({
+			scanMount: '/src',
+			datastoreMount: '/ds',
+			ignoreFileMount: '/tmp/ignore'
+		});
+		assert.strictEqual(with_[with_.indexOf('--ignore') + 1], '/leaklock-ignore');
+		assert.ok(with_.includes('/tmp/ignore:/leaklock-ignore:ro'), 'the ignore file is mounted read-only');
+	});
+});
+
+suite('Gitleaks engine adapter', () => {
+	const engines = require('../scan-engines');
+
+	test('the CLI dialect is probed from --help, not from a version number', () => {
+		// Distribution builds print "version is set by build process", so version
+		// parsing cannot decide this.
+		const modern = 'Available Commands:\n  git         scan git repositories\n  dir         scan directories\n';
+		const legacy = 'Available Commands:\n  detect      detect secrets in code\n  protect     protect secrets\n';
+		assert.strictEqual(engines.detectGitleaksDialect(modern), 'modern');
+		assert.strictEqual(engines.detectGitleaksDialect(legacy), 'legacy');
+		assert.strictEqual(engines.detectGitleaksDialect('nothing useful'), null);
+		assert.strictEqual(engines.detectGitleaksDialect(null), null);
+	});
+
+	test('the history pass covers every ref in both dialects', () => {
+		const opts = { repoDir: '/repo', reportPath: '/tmp/r.json' };
+		const modern = engines.buildGitleaksArgs('modern', 'history', opts);
+		const legacy = engines.buildGitleaksArgs('legacy', 'history', opts);
+		// Without --all the scan only covers the current branch, which is the same
+		// class of miss that #71 fixes on the Nosey Parker side.
+		assert.ok(modern.includes('--log-opts=--all'));
+		assert.ok(legacy.includes('--log-opts=--all'));
+		assert.strictEqual(modern[0], 'git');
+		assert.strictEqual(legacy[0], 'detect');
+	});
+
+	test('the working-tree pass disables git in both dialects', () => {
+		const opts = { repoDir: '/repo', reportPath: '/tmp/r.json' };
+		assert.strictEqual(engines.buildGitleaksArgs('modern', 'worktree', opts)[0], 'dir');
+		assert.ok(engines.buildGitleaksArgs('legacy', 'worktree', opts).includes('--no-git'));
+	});
+
+	test('findings are an expected outcome, not a failure exit', () => {
+		const args = engines.buildGitleaksArgs('modern', 'history', { repoDir: '/repo', reportPath: '/tmp/r.json' });
+		assert.strictEqual(args[args.indexOf('--exit-code') + 1], '0');
+		assert.strictEqual(args[args.indexOf('--report-format') + 1], 'json');
+	});
+
+	test('optional config, baseline and size limit are passed only when set', () => {
+		const bare = engines.buildGitleaksArgs('modern', 'history', { repoDir: '/repo', reportPath: '/r' });
+		assert.ok(!bare.includes('--config'));
+		assert.ok(!bare.includes('--baseline-path'));
+		assert.ok(!bare.includes('--max-target-megabytes'));
+		const full = engines.buildGitleaksArgs('modern', 'history', {
+			repoDir: '/repo', reportPath: '/r',
+			configPath: '/c.toml', baselinePath: '/b.json', maxTargetMegabytes: 25
+		});
+		assert.strictEqual(full[full.indexOf('--config') + 1], '/c.toml');
+		assert.strictEqual(full[full.indexOf('--baseline-path') + 1], '/b.json');
+		assert.strictEqual(full[full.indexOf('--max-target-megabytes') + 1], '25');
+	});
+
+	test('a finding carries every field Nosey Parker supplies, and more', () => {
+		const mapped = engines.mapGitleaksFinding({
+			RuleID: 'aws-access-token', Description: 'AWS Access Token',
+			File: 'app.py', StartLine: 3, EndLine: 3, StartColumn: 11, EndColumn: 30,
+			Secret: 'AKIAIOSFODNN7EXAMPLE', Match: 'KEY = "AKIAIOSFODNN7EXAMPLE"',
+			Commit: 'abc123', Date: '2026-07-31T04:57:01Z', Author: 'Fixture',
+			Email: 'f@example.invalid', Message: 'add app', Entropy: 3.5,
+			Fingerprint: 'abc123:app.py:aws-access-token:3'
+		}, 'history', '/repo');
+
+		assert.strictEqual(mapped.file, 'app.py');
+		assert.strictEqual(mapped.line, 3);
+		assert.strictEqual(mapped.secret, 'AKIAIOSFODNN7EXAMPLE');
+		assert.strictEqual(mapped.ruleId, 'aws-access-token');
+		assert.strictEqual(mapped.commitHash, 'abc123');
+		assert.strictEqual(mapped.isGitHistory, true);
+		// Additive over Nosey Parker: columns, entropy, author, fingerprint.
+		assert.strictEqual(mapped.endColumn, 30);
+		assert.strictEqual(mapped.entropy, 3.5);
+		assert.strictEqual(mapped.author, 'Fixture');
+		assert.ok(mapped.fingerprint);
+		// Gitleaks does not verify credentials; null means "not applicable", and the
+		// engine declares it so the UI can say so rather than showing a blank.
+		assert.strictEqual(mapped.verified, null);
+		assert.ok(engines.gitleaksEngine.capabilities.unavailable.includes('verified'));
+	});
+
+	test('working-tree paths are relativized so one file is not two rows', () => {
+		// The `dir` pass echoes the absolute path it was given; the history pass emits
+		// a repo-relative one. Left alone they dedup as different files.
+		const abs = engines.mapGitleaksFinding({ File: '/repo/app.py', StartLine: 1, Secret: 's' }, 'worktree', '/repo');
+		assert.strictEqual(abs.file, 'app.py');
+		assert.strictEqual(abs.isGitHistory, false, 'a working-tree hit is not history');
+		assert.strictEqual(engines.relativizePath('/elsewhere/x.py', '/repo'), '/elsewhere/x.py');
+	});
+});
+
+suite('TruffleHog engine adapter', () => {
+	const engines = require('../scan-engines');
+
+	test('verification is opt-out in the args and off by default in settings', () => {
+		const verifying = engines.buildTruffleHogArgs({ repoDir: '/repo', verify: true });
+		assert.ok(verifying.includes('--results=verified,unknown'));
+		assert.ok(!verifying.includes('--no-verification'));
+		// Verification makes read-only calls to third-party providers using the
+		// discovered credential, so the caller must be able to refuse it.
+		const quiet = engines.buildTruffleHogArgs({ repoDir: '/repo', verify: false });
+		assert.ok(quiet.includes('--no-verification'));
+		assert.ok(verifying.includes('git') && verifying.includes('file:///repo'));
+	});
+
+	test('JSONL output is parsed and progress records are ignored', () => {
+		const stdout = [
+			'{"level":"info","msg":"scanning"}',
+			'',
+			'not json at all',
+			'{"DetectorName":"AWS","Verified":true,"Raw":"AKIAIOSFODNN7EXAMPLE",' +
+				'"SourceMetadata":{"Data":{"Git":{"commit":"c1","file":"a.py","line":4,"email":"f@example.invalid"}}}}'
+		].join('\n');
+		const parsed = engines.parseTruffleHogJsonl(stdout);
+		assert.strictEqual(parsed.length, 1, 'only records with a DetectorName are findings');
+		const mapped = engines.mapTruffleHogFinding(parsed[0]);
+		assert.strictEqual(mapped.file, 'a.py');
+		assert.strictEqual(mapped.line, 4);
+		assert.strictEqual(mapped.commitHash, 'c1');
+		assert.strictEqual(mapped.verified, true);
+		assert.strictEqual(mapped.ruleId, 'AWS');
+		assert.ok(mapped.description, 'a description is derived, not left blank');
+	});
+
+	test('the pre-v3 SourceMetadata shape is still understood', () => {
+		// Older builds put Git directly under SourceMetadata; accepting only the newer
+		// shape would silently lose the commit and file.
+		const mapped = engines.mapTruffleHogFinding({
+			DetectorName: 'Stripe', Verified: false, Raw: 'sk_live_x',
+			SourceMetadata: { Git: { commit: 'c2', file: 'b.py', line: 9 } }
+		});
+		assert.strictEqual(mapped.commitHash, 'c2');
+		assert.strictEqual(mapped.file, 'b.py');
+		assert.strictEqual(mapped.verified, false);
+	});
+
+	test('fields TruffleHog cannot supply are declared, not silently blank', () => {
+		const unavailable = engines.truffleHogEngine.capabilities.unavailable;
+		for (const field of ['endLine', 'startColumn', 'endColumn', 'entropy', 'fingerprint']) {
+			assert.ok(unavailable.includes(field), `${field} must be declared unavailable`);
+		}
+		assert.strictEqual(engines.truffleHogEngine.capabilities.verification, true);
+	});
+});
+
+suite('Cross-engine field parity and attribution', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const engines = require('../scan-engines');
+
+	// The floor: every field a Nosey Parker finding carries. A new engine may add
+	// fields but must never render fewer.
+	const NOSEY_PARKER_FIELDS = [
+		'file', 'line', 'secret', 'fullSecret', 'isSecretTruncated', 'description',
+		'severity', 'isDependency', 'includeInCleanup', 'originalSeverity', 'ruleName',
+		'isGitHistory', 'isUntracked', 'commitHash', 'commitBranches', 'commitDate'
+	];
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		p._updateWebviewContent = () => {};
+		return p;
+	}
+
+	test('a Nosey Parker finding defines the field floor', () => {
+		const result = panel()._createResult('app.py', 1, 'secret-value', 'API key', 'api_key');
+		for (const field of NOSEY_PARKER_FIELDS) {
+			assert.ok(field in result, `baseline finding is missing ${field}`);
+		}
+	});
+
+	test('a Gitleaks finding carries the full floor plus its extra detail', () => {
+		const finding = engines.mapGitleaksFinding({
+			RuleID: 'aws-access-token', Description: 'AWS Access Token', File: 'app.py',
+			StartLine: 3, EndLine: 3, StartColumn: 11, EndColumn: 30,
+			Secret: 'AKIAIOSFODNN7EXAMPLE', Commit: 'abc123', Date: '2026-07-31T04:57:01Z',
+			Author: 'Fixture', Email: 'f@example.invalid', Entropy: 3.5, Fingerprint: 'fp1'
+		}, 'history', '/repo');
+
+		const result = panel()._createResultFromEngineFinding(
+			finding, 'gitleaks', 'v8.30.1', engines.gitleaksEngine.capabilities
+		);
+
+		for (const field of NOSEY_PARKER_FIELDS) {
+			assert.ok(field in result, `gitleaks finding is missing ${field}`);
+		}
+		assert.strictEqual(result.engine, 'gitleaks');
+		assert.strictEqual(result.engineVersion, 'v8.30.1');
+		assert.strictEqual(result.commitHash, 'abc123', 'provenance survives the mapping');
+		assert.strictEqual(result.commitDate, '2026-07-31T04:57:01Z');
+		assert.strictEqual(result.isGitHistory, true);
+		assert.strictEqual(result.entropy, 3.5);
+		assert.strictEqual(result.fingerprint, 'fp1');
+		assert.strictEqual(result.fullSecret, 'AKIAIOSFODNN7EXAMPLE', 'the value remediation needs is preserved');
+		assert.deepStrictEqual(result.unavailableFields, ['verified']);
+	});
+
+	test('a TruffleHog finding carries the full floor and declares what it cannot supply', () => {
+		const finding = engines.mapTruffleHogFinding({
+			DetectorName: 'AWS', Verified: true, Raw: 'AKIAIOSFODNN7EXAMPLE',
+			SourceMetadata: { Data: { Git: { commit: 'c1', file: 'a.py', line: 4 } } }
+		});
+		const result = panel()._createResultFromEngineFinding(
+			finding, 'trufflehog', 'v3.96.0', engines.truffleHogEngine.capabilities
+		);
+		for (const field of NOSEY_PARKER_FIELDS) {
+			assert.ok(field in result, `trufflehog finding is missing ${field}`);
+		}
+		assert.ok(result.description, 'the description column is populated, not blank');
+		assert.ok(result.unavailableFields.includes('entropy'));
+	});
+
+	test('a verified live credential outranks every rule-name heuristic', () => {
+		// 'url' scores medium by rule name alone. A key confirmed to still work is the
+		// most urgent thing in the repository regardless of what matched it.
+		const finding = engines.mapTruffleHogFinding({
+			DetectorName: 'url', Verified: true, Raw: 'https://user:pw@host/x',
+			SourceMetadata: { Data: { Git: { commit: 'c1', file: 'a.py', line: 1 } } }
+		});
+		const result = panel()._createResultFromEngineFinding(
+			finding, 'trufflehog', 'v3.96.0', engines.truffleHogEngine.capabilities
+		);
+		assert.strictEqual(result.verified, true);
+		assert.strictEqual(result.severity, 'high');
+		assert.ok(/VERIFIED LIVE/.test(result.description));
+	});
+
+	test('the same secret found by two engines merges into one attributed row', () => {
+		const p = panel();
+		const base = { file: 'app.py', line: 3, fullSecret: 'AKIA', commitHash: 'abc123' };
+		const merged = p._deduplicateScanResults([
+			{ ...base, ruleName: 'aws-access-token', engine: 'gitleaks', engines: ['gitleaks'], entropy: 3.5, unavailableFields: ['verified'] },
+			{ ...base, ruleName: 'AWS', engine: 'trufflehog', engines: ['trufflehog'], verified: true, unavailableFields: ['entropy', 'verified'] }
+		]);
+		assert.strictEqual(merged.length, 1, 'corroboration is not two findings');
+		assert.deepStrictEqual(merged[0].engines.sort(), ['gitleaks', 'trufflehog']);
+		// The merged record is the union of what the engines supplied: entropy from
+		// one, verification from the other. Corroboration must never subtract detail.
+		assert.strictEqual(merged[0].entropy, 3.5);
+		assert.strictEqual(merged[0].verified, true);
+		// A field is only unavailable if every reporting engine lacked it.
+		assert.deepStrictEqual(merged[0].unavailableFields, ['verified']);
+	});
+
+	test('two rules from the same engine at one location stay separate', () => {
+		const p = panel();
+		const base = { file: 'app.py', line: 3, fullSecret: 'AKIA', commitHash: 'abc123', engine: 'gitleaks' };
+		const merged = p._deduplicateScanResults([
+			{ ...base, ruleName: 'aws-access-token', engines: ['gitleaks'] },
+			{ ...base, ruleName: 'generic-api-key', engines: ['gitleaks'] },
+			{ ...base, ruleName: 'aws-access-token', engines: ['gitleaks'] }
+		]);
+		assert.strictEqual(merged.length, 2, 'different rules are different detections; the exact repeat is dropped');
+	});
+});
