@@ -2630,6 +2630,20 @@ suite('Fourth review pass', () => {
 			assert.match(offenders[0].reason, /no refs were found/);
 		});
 
+		test('the scan-complete toast does not celebrate when no engine ran', () => {
+			// The panel already renders "Nothing was scanned" for this state, but the
+			// toast is what actually pops up. `incomplete` only covers the Nosey Parker
+			// timeout and parse paths, so it does not catch every-engine-failed.
+			const src = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+			const guard = src.indexOf('engineReports.every(engine => !engine.ok)');
+			const celebration = src.indexOf('🎉 Scan complete! No findings');
+			assert.ok(guard > -1, 'the every-engine-failed case is handled');
+			assert.ok(celebration > guard,
+				'and the guard is evaluated before the no-findings celebration');
+			assert.match(src.slice(guard, celebration), /NOT a clean result/,
+				'the branch says plainly that this is not clean');
+		});
+
 		test('verifiedAt is present on every finding, so the export schema does not vary by engine', () => {
 			// Only TruffleHog sets verifiedAt. Without a null default the key is absent
 			// on findings from the other engines, and JSON.stringify drops absent keys

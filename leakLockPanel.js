@@ -3311,6 +3311,18 @@ class LeakLockPanel {
                 );
             } else if (allResults.length > 0) {
                 vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} findings (potential secrets or policy references). Review them in the main panel.`);
+            } else if (engineReports.length > 0 && engineReports.every(engine => !engine.ok)) {
+                // Zero findings because no engine ran is not the same as zero findings
+                // because nothing is there. `incomplete` above only covers the Nosey
+                // Parker timeout and parse paths, so it does not catch this. The panel
+                // renders "Nothing was scanned" here — the toast is what the user
+                // actually sees pop up, so it must not contradict it with a party emoji.
+                const failed = engineReports
+                    .map(engine => `${engine.displayName || engine.id}: ${engine.note || 'did not run'}`)
+                    .join('; ');
+                vscode.window.showWarningMessage(
+                    `Nothing was scanned — no detection engine ran, so this is NOT a clean result. ${failed}`
+                );
             } else {
                 vscode.window.showInformationMessage('🎉 Scan complete! No findings (potential secrets or policy references) were found in your repository.');
             }
