@@ -165,9 +165,27 @@ afterwards. See [docs/REMOVE_FILES.md](docs/REMOVE_FILES.md#ref-complete-rewrite
 > Nothing carries a `VERIFIED LIVE` badge because there is nothing live to verify.
 > See [docs/TEST_FIXTURE.md](docs/TEST_FIXTURE.md).
 >
-> Regenerate with `tools/real-scan.js` and `tools/render-screenshots.js`. Scan a clone
-> under `/tmp/repos` rather than your home directory — the paths are visible in the
-> images.
+> Regenerate the webview images with `tools/real-scan.js` and
+> `tools/render-screenshots.js` (views: `results`, `empty`, `sidebar`, `keywords`,
+> `removeFiles`, `prepared`, `pushPlan`, `protected`, `verified`). The two full-editor shots are taken
+> from a live VS Code window, since the sidebar and activity bar are editor chrome the
+> renderer cannot produce — and they come from a separate run against the same fixture,
+> which is why the finding count differs from the figures above. Either way, scan a clone
+> under `/tmp/repos` rather than your home directory — the paths are visible in the images.
+
+### The whole thing, in one window
+
+![The full Leak Lock interface](docs/website/img/full-interface.png)
+
+Two surfaces: the **Control Panel** in the sidebar is where setup and scanning live, and
+the **scanner** in the main editor area is where findings are reviewed and cleaned up. The
+sidebar starts things; nothing there rewrites history on its own.
+
+Visible here: the findings count broken down by severity, select-all and per-row
+checkboxes, `Export JSON` and `Print / Save as PDF`, a search box over the results, the
+refs-status line — `Last fetched never (stale)`, with `Refetch now` beside it, because a
+scan is only as complete as the refs it covered — and the banner that marks a finding as
+living in a third-party dependency and therefore not selectable for cleanup.
 
 ### Scan results — multi-engine, with attribution
 
@@ -207,6 +225,31 @@ and branches a rule touches before anything is rewritten.
 "No findings" means nothing without its scope, so the coverage panel sits directly beneath
 it.
 
+### Opening it — the Control Panel
+
+![Activity bar icon and the Control Panel](docs/website/img/activity-bar-control-panel.png)
+
+**The shield icon in the activity bar opens it.** Everything starts from this sidebar:
+dependency status (Docker and the Nosey Parker image, Java and BFG — all optional, and
+installed on first run from the `Details` pane), the auto-detected target repository, the
+scan trigger, and the entry points to keyword history search and Remove Files.
+
+### Keyword history search
+
+![Keyword history search](docs/website/img/keyword-history-search.png)
+
+Opt-in, and separate from the credential detectors: commit messages, historical file
+contents and filenames are searched for terms you choose — useful for finding what a
+pattern-based scanner has no signature for.
+
+### Remove Unwanted Files
+
+![Remove Unwanted Files](docs/website/img/remove-files.png)
+
+Pick files or directories, then choose BFG (fast, name-based across all history) or
+path-based git (exact paths across branches, remotes and tags, with a match preview).
+Either way the rewrite sits behind a clearly marked final step.
+
 ### The cleanup, step by step
 
 Every destructive step sits behind something you have to read first.
@@ -236,66 +279,6 @@ protection back on afterwards.
 **3. Verified, not assumed.** After the push, every remote branch and tag is re-fetched and
 re-checked. If nothing could be examined, it says so rather than reporting a clean result
 it never tested.
-
-### Activity Bar Integration
-The extension adds a shield icon to the activity bar for easy access.
-
-### Welcome View
-Simple welcome interface in the sidebar with a "Open Scanner" button.
-
-<img width="47" height="331" alt="image" src="https://github.com/user-attachments/assets/b0ff943c-bf64-4b61-a5f9-ff83ba83bd11" />
-
-"Leak-Lock" scanner button:
-
-<img width="119" height="128" alt="image" src="https://github.com/user-attachments/assets/4b98cea4-f793-4294-9ab0-adf96611e023" />
-
-
-### Main Scanner Interface
-
-<img width="354" height="573" alt="image" src="https://github.com/user-attachments/assets/c8199804-290a-4797-930e-8e8c3f7cc7c2" />
-
-Full-width main area interface showing:
-- Dependency installation status
-
-<img width="422" height="1009" alt="image" src="https://github.com/user-attachments/assets/e1da44be-e827-4006-bada-ebb2095b2127" />
-
-- Directory selection with auto-detection
-- Scanning controls and progress
-- Results display in wide table format
-
-## Search Git Commit messages
-
-This allows searching Git Commit history for messages with certain content. It could be useful when determining if any credentials or keywords unwillingly went out.
-
-<img width="299" height="373" alt="image" src="https://github.com/user-attachments/assets/7f526020-8803-4279-8163-ce14f9ea700c" />
-
-
-### Scanning Process
-
-<img width="1701" height="859" alt="image" src="https://github.com/user-attachments/assets/dd8af4e9-c873-4435-9bd5-cbc60584ee73" />
-
-Real-time progress indication during repository scanning with Nosey Parker.
-
-### Results Display
-
-<img width="2340" height="1215" alt="image" src="https://github.com/user-attachments/assets/bc057139-d659-49f0-b81c-4d76dbe54dba" />
-
-In case of found issues - like with these demo files: 
-
-<img width="1322" height="1246" alt="image" src="https://github.com/user-attachments/assets/54e9d84f-8a63-46ef-8b66-972e1488e826" />
-
-Detailed table showing:
-- Secret type and severity
-- File location and line number
-- Preview of detected content
-- Action buttons for remediation
-
-### Remediation Interface
-Step-by-step process for removing secrets:
-- Secret selection checkboxes
-- Replacement value input
-- BFG command generation
-- Git cleanup execution
 
 ---
 
