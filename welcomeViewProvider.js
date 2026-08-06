@@ -1,12 +1,11 @@
 // Welcome view provider for the activity bar that launches the main panel
-const vscode = require('vscode');
 
 class WelcomeViewProvider {
     constructor(extensionUri) {
         this._extensionUri = extensionUri;
     }
 
-    resolveWebviewView(webviewView, context, _token) {
+    resolveWebviewView(webviewView, _context, _token) {
         this._view = webviewView;
         webviewView.webview.options = {
             enableScripts: true,

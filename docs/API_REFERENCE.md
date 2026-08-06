@@ -548,10 +548,14 @@ const sanitizePath = (inputPath: string): string => {
     return path.resolve(inputPath);  // Prevents directory traversal
 };
 
-// Command injection prevention
-const escapeShellArg = (arg: string): string => {
-    return `"${arg.replace(/"/g, '\\"')}"`;
-};
+// Command injection prevention: commands are never assembled as shell strings,
+// so there is nothing to escape. execFile and spawn take the program and an
+// argument array, no shell parses the result, and a path containing a quote,
+// a space or a $ is passed through as one literal argument.
+const { execFile } = require('child_process');
+execFile('git', ['log', '--all', '--', userSuppliedPath], (error, stdout) => {
+    // ...
+});
 ```
 
 ### **Secure Temporary Files**

@@ -1,6 +1,5 @@
 // Sidebar provider for dependency installation and directory selection
 const vscode = require('vscode');
-const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 // The pinned Nosey Parker image. Checking or pulling `:latest` here while the scanner
@@ -25,7 +24,7 @@ class LeakLockSidebarProvider {
         this._showGitHistorySection = false;
     }
 
-    resolveWebviewView(webviewView, context, _token) {
+    resolveWebviewView(webviewView, _context, _token) {
         this._view = webviewView;
 
         webviewView.webview.options = {
@@ -983,11 +982,11 @@ class LeakLockSidebarProvider {
             // Check if Docker daemon is running
             try {
                 await execAsync('docker info');
-            } catch (daemonError) {
+            } catch {
                 this._dependencyStatus.docker.error = 'Docker daemon not running';
                 this._dependencyStatus.docker.installed = false;
             }
-        } catch (error) {
+        } catch {
             this._dependencyStatus.docker.error = 'Docker not installed or not in PATH';
         }
 
@@ -995,7 +994,7 @@ class LeakLockSidebarProvider {
         try {
             await execAsync(`docker images ${scanEngineConfig.NOSEYPARKER_IMAGE} --format "table {{.Repository}}"`);
             this._dependencyStatus.noseyparker.installed = true;
-        } catch (error) {
+        } catch {
             this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not available';
         }
 
@@ -1004,7 +1003,7 @@ class LeakLockSidebarProvider {
             const javaVersion = await execAsync('java -version 2>&1');
             this._dependencyStatus.java.installed = true;
             this._dependencyStatus.java.version = javaVersion.stderr.split('\n')[0];
-        } catch (error) {
+        } catch {
             this._dependencyStatus.java.error = 'Java not installed or not in PATH';
         }
 
@@ -1054,7 +1053,7 @@ class LeakLockSidebarProvider {
                             return;
                         }
                     }
-                } catch (error) {
+                } catch {
                     // Continue checking other folders
                     continue;
                 }
@@ -1091,7 +1090,7 @@ class LeakLockSidebarProvider {
 
                 try {
                     await execAsync('docker --version');
-                } catch (error) {
+                } catch {
                     throw new Error('Docker is not installed or not accessible. Please install Docker first.');
                 }
 
