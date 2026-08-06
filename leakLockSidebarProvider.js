@@ -395,6 +395,12 @@ class LeakLockSidebarProvider {
                     line-height: 1;
                 }
 
+                .keyword-remove:focus-visible {
+                    outline: 1px solid var(--vscode-focusBorder);
+                    outline-offset: 1px;
+                    border-radius: 2px;
+                }
+
                 .keyword-add-row {
                     display: flex;
                     gap: 4px;
@@ -515,10 +521,55 @@ class LeakLockSidebarProvider {
                     }
                 }
 
+                // Every keyword edit round-trips through the extension and comes back as
+                // _updateView(), which replaces the whole document — scroll position and
+                // focus do not survive that. vscode.setState() does, so an edit is flagged
+                // before the message goes out and the next document restores the view.
+                function markKeywordEdit(edit) {
+                    const list = document.querySelector('.keyword-list');
+                    vscode.setState({
+                        ...(vscode.getState() || {}),
+                        keywordEdit: { ...edit, scrollTop: list ? list.scrollTop : 0 }
+                    });
+                }
+
+                function restoreKeywordFocus() {
+                    const state = vscode.getState() || {};
+                    const edit = state.keywordEdit;
+                    if (!edit) return;
+                    vscode.setState({ ...state, keywordEdit: null });
+
+                    const list = document.querySelector('.keyword-list');
+                    const input = document.getElementById('keyword-input');
+
+                    // A removal leaves the list where it was: the item that shifted into
+                    // the freed slot takes focus, so removing a run of keywords from the
+                    // middle does not throw the list back to the top or the bottom.
+                    if (edit.type === 'remove') {
+                        if (list) list.scrollTop = edit.scrollTop;
+                        const buttons = document.querySelectorAll('.keyword-remove');
+                        if (buttons.length) {
+                            const target = buttons[Math.min(edit.index, buttons.length - 1)];
+                            target.focus({ preventScroll: true });
+                            target.scrollIntoView({ block: 'nearest' });
+                            return;
+                        }
+                    } else if (list) {
+                        // Keywords are appended, so an addition lands at the end.
+                        list.scrollTop = list.scrollHeight;
+                    }
+
+                    if (input) {
+                        input.focus();
+                        input.scrollIntoView({ block: 'nearest' });
+                    }
+                }
+
                 function addKeyword() {
                     const input = document.getElementById('keyword-input');
                     const keyword = (input?.value || '').trim();
                     if (!keyword) return;
+                    markKeywordEdit({ type: 'add' });
                     vscode.postMessage({ command: 'addGitHistoryKeyword', keyword });
                     if (input) input.value = '';
                 }
@@ -531,6 +582,8 @@ class LeakLockSidebarProvider {
                         ? e.target.closest('.keyword-remove')
                         : null;
                     if (!btn) return;
+                    const buttons = Array.from(document.querySelectorAll('.keyword-remove'));
+                    markKeywordEdit({ type: 'remove', index: buttons.indexOf(btn) });
                     vscode.postMessage({
                         command: 'removeGitHistoryKeyword',
                         keyword: btn.dataset.keyword
@@ -542,6 +595,8 @@ class LeakLockSidebarProvider {
                         addKeyword();
                     }
                 });
+
+                restoreKeywordFocus();
             </script>
         </body>
         </html>`;
