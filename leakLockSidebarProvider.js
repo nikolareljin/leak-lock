@@ -6,17 +6,10 @@ const fs = require('fs');
 // The pinned Nosey Parker image. Checking or pulling `:latest` here while the scanner
 // runs the pinned tag meant these two disagreed about which image mattered.
 const scanEngineConfig = require('./scan-engine-config');
-
-// Keywords are user-supplied and land in both element text and an attribute value,
-// so they must be escaped before interpolation into the webview HTML.
-function escapeHtml(value) {
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
+// Keywords are user-supplied and land in both element text and attribute values,
+// so they must be escaped before interpolation into the webview HTML. Shared with
+// leakLockPanel.js so both webviews escape identically.
+const { escapeHtml } = require('./html-escape');
 
 class LeakLockSidebarProvider {
     constructor(extensionUri) {
@@ -886,7 +879,8 @@ class LeakLockSidebarProvider {
         const keywordItems = keywords.map(k =>
             `<div class="keyword-item">
                 <span>${escapeHtml(k)}</span>
-                <button class="keyword-remove" data-keyword="${escapeHtml(k)}" title="Remove">✕</button>
+                <button class="keyword-remove" data-keyword="${escapeHtml(k)}"
+                    aria-label="Remove keyword ${escapeHtml(k)}" title="Remove keyword ${escapeHtml(k)}">✕</button>
             </div>`
         ).join('');
 
