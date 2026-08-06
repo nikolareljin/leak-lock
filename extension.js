@@ -38,7 +38,7 @@ async function checkDependencies() {
 		// Check Nosey Parker image
 		await execAsync(`docker image inspect ${dockerImage}`);
 		dependencies.noseyparker = true;
-	} catch (error) {
+	} catch {
 		console.log('Docker or Nosey Parker not available');
 	}
 	
@@ -46,7 +46,7 @@ async function checkDependencies() {
 		// Check Java
 		await execAsync('java -version');
 		dependencies.java = true;
-	} catch (error) {
+	} catch {
 		console.log('Java not available');
 	}
 	
@@ -72,7 +72,7 @@ async function installDependencies(forceReinstall = false) {
 		// Check existing dependencies first
 		if (!forceReinstall) {
 			const deps = await checkDependencies();
-			const missing = Object.entries(deps).filter(([key, value]) => !value).map(([key]) => key);
+			const missing = Object.entries(deps).filter(([, value]) => !value).map(([key]) => key);
 			
 			if (missing.length === 0) {
 				console.log('All dependencies already installed');
@@ -95,7 +95,7 @@ async function installDependencies(forceReinstall = false) {
 				await execAsync('docker --version');
 				// await execAsync('docker info');
 				progress.report({ increment: 20, message: "Docker is available ✓" });
-			} catch (error) {
+			} catch {
 				throw new Error('Docker is not installed or not running. Please install Docker and start the daemon.');
 			}
 			
@@ -103,7 +103,7 @@ async function installDependencies(forceReinstall = false) {
 			try {
 				await execAsync('java -version');
 				progress.report({ increment: 10, message: "Java is available ✓" });
-			} catch (error) {
+			} catch {
 				vscode.window.showWarningMessage('Java is not installed. BFG tool may not work properly. Please install Java.');
 			}
 			
@@ -326,7 +326,7 @@ async function cleanupDependencies() {
 			console.log('Removing Nosey Parker Docker image...');
 			await execAsync(`docker rmi ${dockerImage}`);
 			console.log('✓ Nosey Parker Docker image removed');
-		} catch (error) {
+		} catch {
 			console.log('Nosey Parker Docker image not found or already removed');
 		}
 		
@@ -378,7 +378,7 @@ async function cleanupDependencies() {
 					}
 				}
 			}
-		} catch (error) {
+		} catch {
 			console.log('No Docker volumes to clean up or Docker not available');
 		}
 		
