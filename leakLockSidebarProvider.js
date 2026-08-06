@@ -6,6 +6,10 @@ const fs = require('fs');
 // The pinned Nosey Parker image. Checking or pulling `:latest` here while the scanner
 // runs the pinned tag meant these two disagreed about which image mattered.
 const scanEngineConfig = require('./scan-engine-config');
+// Keywords are user-supplied and land in both element text and attribute values,
+// so they must be escaped before interpolation into the webview HTML. Shared with
+// leakLockPanel.js so both webviews escape identically.
+const { escapeHtml } = require('./html-escape');
 
 class LeakLockSidebarProvider {
     constructor(extensionUri) {
@@ -104,11 +108,13 @@ class LeakLockSidebarProvider {
                         break;
                     }
                     case 'removeGitHistoryKeyword': {
+                        const keyword = (message.keyword || '').trim();
+                        if (!keyword) break;
                         const cfg = vscode.workspace.getConfiguration('leakLock');
                         const current = cfg.get('gitHistoryKeywordSearch.keywords') || [];
                         await cfg.update(
                             'gitHistoryKeywordSearch.keywords',
-                            current.filter(k => k !== message.keyword),
+                            current.filter(k => k !== keyword),
                             vscode.ConfigurationTarget.Global
                         );
                         this._updateView();
@@ -382,6 +388,12 @@ class LeakLockSidebarProvider {
                     line-height: 1;
                 }
 
+                .keyword-remove:focus-visible {
+                    outline: 1px solid var(--vscode-focusBorder);
+                    outline-offset: 1px;
+                    border-radius: 2px;
+                }
+
                 .keyword-add-row {
                     display: flex;
                     gap: 4px;
@@ -502,23 +514,82 @@ class LeakLockSidebarProvider {
                     }
                 }
 
+                // Every keyword edit round-trips through the extension and comes back as
+                // _updateView(), which replaces the whole document — scroll position and
+                // focus do not survive that. vscode.setState() does, so an edit is flagged
+                // before the message goes out and the next document restores the view.
+                function markKeywordEdit(edit) {
+                    const list = document.querySelector('.keyword-list');
+                    vscode.setState({
+                        ...(vscode.getState() || {}),
+                        keywordEdit: { ...edit, scrollTop: list ? list.scrollTop : 0 }
+                    });
+                }
+
+                function restoreKeywordFocus() {
+                    const state = vscode.getState() || {};
+                    const edit = state.keywordEdit;
+                    if (!edit) return;
+                    vscode.setState({ ...state, keywordEdit: null });
+
+                    const list = document.querySelector('.keyword-list');
+                    const input = document.getElementById('keyword-input');
+
+                    // A removal leaves the list where it was: the item that shifted into
+                    // the freed slot takes focus, so removing a run of keywords from the
+                    // middle does not throw the list back to the top or the bottom.
+                    if (edit.type === 'remove') {
+                        if (list) list.scrollTop = edit.scrollTop;
+                        const buttons = document.querySelectorAll('.keyword-remove');
+                        if (buttons.length) {
+                            const target = buttons[Math.min(edit.index, buttons.length - 1)];
+                            target.focus({ preventScroll: true });
+                            target.scrollIntoView({ block: 'nearest' });
+                            return;
+                        }
+                    } else if (list) {
+                        // Keywords are appended, so an addition lands at the end.
+                        list.scrollTop = list.scrollHeight;
+                    }
+
+                    if (input) {
+                        input.focus();
+                        input.scrollIntoView({ block: 'nearest' });
+                    }
+                }
+
                 function addKeyword() {
                     const input = document.getElementById('keyword-input');
                     const keyword = (input?.value || '').trim();
                     if (!keyword) return;
+                    markKeywordEdit({ type: 'add' });
                     vscode.postMessage({ command: 'addGitHistoryKeyword', keyword });
                     if (input) input.value = '';
                 }
 
-                function removeKeyword(keyword) {
-                    vscode.postMessage({ command: 'removeGitHistoryKeyword', keyword });
-                }
+                // Delegated: the keyword list is re-rendered on every _updateView(),
+                // and passing the keyword through a data attribute avoids quoting it
+                // into an inline onclick.
+                document.addEventListener('click', (e) => {
+                    const btn = e.target instanceof Element
+                        ? e.target.closest('.keyword-remove')
+                        : null;
+                    if (!btn) return;
+                    const buttons = Array.from(document.querySelectorAll('.keyword-remove'));
+                    markKeywordEdit({ type: 'remove', index: buttons.indexOf(btn) });
+                    vscode.postMessage({
+                        command: 'removeGitHistoryKeyword',
+                        keyword: btn.dataset.keyword
+                    });
+                });
 
                 document.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter' && document.activeElement?.id === 'keyword-input') {
                         addKeyword();
                     }
                 });
+
+                restoreKeywordFocus();
             </script>
         </body>
         </html>`;
@@ -541,17 +612,17 @@ class LeakLockSidebarProvider {
                 </div>
             `;
         }
-        
+
         // Show detailed dependency information when not all are met or installing
         const installButtonText = this._isInstalling ? 'Installing...' : 'Install Dependencies';
         const showSpinner = this._isInstalling;
-        
+
         // Get status for each dependency
         const dockerStatus = this._dependencyStatus?.docker?.installed ? '✅' : '❌';
         const noseyparkerStatus = this._dependencyStatus?.noseyparker?.installed ? '✅' : '❌';
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
         const bfgStatus = this._dependencyStatus?.bfg?.installed ? '✅' : '⚠️';
-        
+
         return `
             <div class="section">
                 <h3>🔧 Dependencies Setup</h3>
@@ -719,14 +790,14 @@ class LeakLockSidebarProvider {
     _getDirectorySection() {
         const hasDirectory = this._selectedDirectory !== null;
         const isGitRepo = this._workspaceGitRepo && this._selectedDirectory === this._workspaceGitRepo;
-        
+
         let directoryDisplay = '';
         let statusInfo = '';
-        
+
         if (hasDirectory) {
             // Show the selected path
             directoryDisplay = `<div class="selected-path">${this._selectedDirectory}</div>`;
-            
+
             // Add status information
             if (isGitRepo) {
                 statusInfo = '<div style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 11px; margin-top: 5px;">📦 Git repository detected</div>';
@@ -753,7 +824,7 @@ class LeakLockSidebarProvider {
                 directoryDisplay = '<div class="warning-text">No directory selected</div>';
             }
         }
-            
+
         return `
             <div class="section">
                 <h3>📁 Target Directory</h3>
@@ -770,7 +841,7 @@ class LeakLockSidebarProvider {
         const canScan = this._dependenciesInstalled && this._selectedDirectory;
         const buttonText = canScan ? '🔍 Start Scan' : '🔍 Setup Required';
         const isGitRepo = this._workspaceGitRepo && this._selectedDirectory === this._workspaceGitRepo;
-        
+
         let scanInfo = '';
         if (canScan) {
             const directoryName = path.basename(this._selectedDirectory);
@@ -780,7 +851,7 @@ class LeakLockSidebarProvider {
                 scanInfo = `<div style="color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 5px;">📁 Will scan directory: <strong>${directoryName}</strong></div>`;
             }
         }
-        
+
         return `
             <div class="section">
                 <h3>🚀 Scan Control</h3>
@@ -807,8 +878,9 @@ class LeakLockSidebarProvider {
 
         const keywordItems = keywords.map(k =>
             `<div class="keyword-item">
-                <span>${k}</span>
-                <button class="keyword-remove" onclick="removeKeyword(${JSON.stringify(k)})" title="Remove">✕</button>
+                <span>${escapeHtml(k)}</span>
+                <button class="keyword-remove" data-keyword="${escapeHtml(k)}"
+                    aria-label="Remove keyword ${escapeHtml(k)}" title="Remove keyword ${escapeHtml(k)}">✕</button>
             </div>`
         ).join('');
 
@@ -894,20 +966,20 @@ class LeakLockSidebarProvider {
         const { exec } = require('child_process');
         const util = require('util');
         const execAsync = util.promisify(exec);
-        
+
         this._dependencyStatus = {
             docker: { installed: false, version: null, error: null },
             noseyparker: { installed: false, error: null },
             java: { installed: false, version: null, error: null },
             bfg: { installed: false, path: null, error: null }
         };
-        
+
         // Check Docker
         try {
             const dockerVersion = await execAsync('docker --version');
             this._dependencyStatus.docker.installed = true;
             this._dependencyStatus.docker.version = dockerVersion.stdout.trim();
-            
+
             // Check if Docker daemon is running
             try {
                 await execAsync('docker info');
@@ -918,7 +990,7 @@ class LeakLockSidebarProvider {
         } catch (error) {
             this._dependencyStatus.docker.error = 'Docker not installed or not in PATH';
         }
-        
+
         // Check Nosey Parker image
         try {
             await execAsync(`docker images ${scanEngineConfig.NOSEYPARKER_IMAGE} --format "table {{.Repository}}"`);
@@ -926,7 +998,7 @@ class LeakLockSidebarProvider {
         } catch (error) {
             this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not available';
         }
-        
+
         // Check Java
         try {
             const javaVersion = await execAsync('java -version 2>&1');
@@ -935,7 +1007,7 @@ class LeakLockSidebarProvider {
         } catch (error) {
             this._dependencyStatus.java.error = 'Java not installed or not in PATH';
         }
-        
+
         // Check BFG tool
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
         if (fs.existsSync(bfgPath)) {
@@ -944,11 +1016,11 @@ class LeakLockSidebarProvider {
         } else {
             this._dependencyStatus.bfg.error = 'BFG tool not downloaded';
         }
-        
+
         // Overall status - all core dependencies must be met
-        this._dependenciesInstalled = this._dependencyStatus.docker.installed && 
-                                      this._dependencyStatus.noseyparker.installed;
-        
+        this._dependenciesInstalled = this._dependencyStatus.docker.installed &&
+            this._dependencyStatus.noseyparker.installed;
+
         this._updateView();
     }
 
@@ -964,7 +1036,7 @@ class LeakLockSidebarProvider {
             for (const folder of workspaceFolders) {
                 const folderPath = folder.uri.fsPath;
                 const gitPath = path.join(folderPath, '.git');
-                
+
                 try {
                     // Check if .git directory or file exists
                     if (fs.existsSync(gitPath)) {
@@ -972,12 +1044,12 @@ class LeakLockSidebarProvider {
                         if (stat.isDirectory() || stat.isFile()) {
                             // This is a git repository
                             this._workspaceGitRepo = folderPath;
-                            
+
                             // Auto-select if no directory is currently selected
                             if (!this._selectedDirectory) {
                                 this._selectedDirectory = folderPath;
                             }
-                            
+
                             this._updateView();
                             return;
                         }
@@ -987,13 +1059,13 @@ class LeakLockSidebarProvider {
                     continue;
                 }
             }
-            
+
             // If no git repo found but workspace exists, offer first workspace folder
             if (!this._selectedDirectory && workspaceFolders.length > 0) {
                 this._selectedDirectory = workspaceFolders[0].uri.fsPath;
                 this._updateView();
             }
-            
+
         } catch (error) {
             console.warn('Failed to detect git repository:', error.message);
         }
@@ -1011,12 +1083,12 @@ class LeakLockSidebarProvider {
                 cancellable: false
             }, async (progress) => {
                 progress.report({ increment: 20, message: "Checking Docker..." });
-                
+
                 // Check if Docker is available
                 const { exec } = require('child_process');
                 const util = require('util');
                 const execAsync = util.promisify(exec);
-                
+
                 try {
                     await execAsync('docker --version');
                 } catch (error) {
@@ -1024,12 +1096,12 @@ class LeakLockSidebarProvider {
                 }
 
                 progress.report({ increment: 30, message: "Pulling Nosey Parker image..." });
-                
+
                 // Pull the Nosey Parker Docker image
                 await execAsync(`docker pull ${scanEngineConfig.NOSEYPARKER_IMAGE}`, { timeout: 300000 });
-                
+
                 progress.report({ increment: 30, message: "Downloading BFG tool..." });
-                
+
                 // Download BFG tool
                 try {
                     const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
@@ -1039,9 +1111,9 @@ class LeakLockSidebarProvider {
                     console.warn('Failed to download BFG tool:', bfgError.message);
                     // Continue without BFG - it's optional
                 }
-                
+
                 progress.report({ increment: 20, message: "Verifying installation..." });
-                
+
                 // Recheck all dependencies
                 await this._checkDependencies();
             });
@@ -1083,10 +1155,10 @@ class LeakLockSidebarProvider {
             vscode.commands.executeCommand('leak-lock.updateRemoveFilesRepo', {
                 directory: this._selectedDirectory
             });
-            
+
             // Show confirmation message
             const isGitRepo = this._workspaceGitRepo === result[0].fsPath;
-            const message = isGitRepo 
+            const message = isGitRepo
                 ? `Selected git repository: ${path.basename(result[0].fsPath)}`
                 : `Selected directory: ${path.basename(result[0].fsPath)}`;
             vscode.window.showInformationMessage(message);
