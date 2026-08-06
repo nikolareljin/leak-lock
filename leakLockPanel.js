@@ -11,6 +11,8 @@ const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
 const redactionRules = require('./redaction-rules');
 const hostCapacity = require('./host-capacity');
+// Shared with leakLockSidebarProvider.js so the two webviews escape identically.
+const { escapeHtml } = require('./html-escape');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -207,24 +209,6 @@ function parseContainingBranches(stdout) {
             !name.includes('HEAD detached') &&
             !REMOTE_HEAD_FILTER_PATTERN.test(name)
         );
-}
-
-// HTML escaping function to prevent XSS
-function escapeHtml(unsafe) {
-    if (typeof unsafe !== 'string') {
-        return String(unsafe);
-    }
-    return unsafe
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
-
-// JSON escaping for data attributes
-function escapeJsonAttribute(obj) {
-    return escapeHtml(JSON.stringify(obj));
 }
 
 // Get platform-appropriate sensitive directories
@@ -1750,7 +1734,9 @@ class LeakLockPanel {
                 ${targets.map(t => `<li style="margin: 4px 0;">
                     <code>${escapeHtml(t.path)}</code>
                     <span style=\"background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding: 0 6px; border-radius: 10px; font-size: 0.8em;\">${t.type}</span>
-                    <button class="button" style="margin-left: 8px; padding: 2px 8px;" onclick="removeTarget('${escapeHtml(t.path)}')">Remove</button>
+                    <button class="button" style="margin-left: 8px; padding: 2px 8px;"
+                        data-remove-target="${escapeHtml(t.path)}"
+                        aria-label="Remove ${escapeHtml(t.path)} from the removal list">Remove</button>
                 </li>`).join('')}
             </ul>
         ` : '<div style="color: var(--vscode-descriptionForeground);">No files or directories selected.</div>';
@@ -1888,7 +1874,17 @@ class LeakLockPanel {
                     const vscode = acquireVsCodeApi();
                     // Repo selection is managed from the sidebar; no selection here
                     function selectTargets(kind) { vscode.postMessage({ command: 'removeFiles.selectTargets', kind }); }
-                    function removeTarget(path) { vscode.postMessage({ command: 'removeFiles.removeTarget', path }); }
+                    // A target path is user-controlled and may contain a quote, which
+                    // would close an inline onclick string literal early and leave the
+                    // button dead. The path rides in a data attribute instead, read by
+                    // a delegated listener, so nothing is interpolated into JS source.
+                    document.addEventListener('click', (e) => {
+                        const btn = e.target instanceof Element
+                            ? e.target.closest('[data-remove-target]')
+                            : null;
+                        if (!btn) return;
+                        vscode.postMessage({ command: 'removeFiles.removeTarget', path: btn.dataset.removeTarget });
+                    });
                     function clearTargets() { vscode.postMessage({ command: 'removeFiles.clearTargets' }); }
                     function prepareCommand() { vscode.postMessage({ command: 'removeFiles.prepare' }); }
                     function setCombineMode(mode) { vscode.postMessage({ command: 'removeFiles.setCombineMode', mode }); }
