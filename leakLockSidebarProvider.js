@@ -104,11 +104,13 @@ class LeakLockSidebarProvider {
                         break;
                     }
                     case 'removeGitHistoryKeyword': {
+                        const keyword = (message.keyword || '').trim();
+                        if (!keyword) break;
                         const cfg = vscode.workspace.getConfiguration('leakLock');
                         const current = cfg.get('gitHistoryKeywordSearch.keywords') || [];
                         await cfg.update(
                             'gitHistoryKeywordSearch.keywords',
-                            current.filter(k => k !== message.keyword),
+                            current.filter(k => k !== keyword),
                             vscode.ConfigurationTarget.Global
                         );
                         this._updateView();
@@ -541,17 +543,17 @@ class LeakLockSidebarProvider {
                 </div>
             `;
         }
-        
+
         // Show detailed dependency information when not all are met or installing
         const installButtonText = this._isInstalling ? 'Installing...' : 'Install Dependencies';
         const showSpinner = this._isInstalling;
-        
+
         // Get status for each dependency
         const dockerStatus = this._dependencyStatus?.docker?.installed ? '✅' : '❌';
         const noseyparkerStatus = this._dependencyStatus?.noseyparker?.installed ? '✅' : '❌';
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
         const bfgStatus = this._dependencyStatus?.bfg?.installed ? '✅' : '⚠️';
-        
+
         return `
             <div class="section">
                 <h3>🔧 Dependencies Setup</h3>
@@ -719,14 +721,14 @@ class LeakLockSidebarProvider {
     _getDirectorySection() {
         const hasDirectory = this._selectedDirectory !== null;
         const isGitRepo = this._workspaceGitRepo && this._selectedDirectory === this._workspaceGitRepo;
-        
+
         let directoryDisplay = '';
         let statusInfo = '';
-        
+
         if (hasDirectory) {
             // Show the selected path
             directoryDisplay = `<div class="selected-path">${this._selectedDirectory}</div>`;
-            
+
             // Add status information
             if (isGitRepo) {
                 statusInfo = '<div style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 11px; margin-top: 5px;">📦 Git repository detected</div>';
@@ -753,7 +755,7 @@ class LeakLockSidebarProvider {
                 directoryDisplay = '<div class="warning-text">No directory selected</div>';
             }
         }
-            
+
         return `
             <div class="section">
                 <h3>📁 Target Directory</h3>
@@ -770,7 +772,7 @@ class LeakLockSidebarProvider {
         const canScan = this._dependenciesInstalled && this._selectedDirectory;
         const buttonText = canScan ? '🔍 Start Scan' : '🔍 Setup Required';
         const isGitRepo = this._workspaceGitRepo && this._selectedDirectory === this._workspaceGitRepo;
-        
+
         let scanInfo = '';
         if (canScan) {
             const directoryName = path.basename(this._selectedDirectory);
@@ -780,7 +782,7 @@ class LeakLockSidebarProvider {
                 scanInfo = `<div style="color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 5px;">📁 Will scan directory: <strong>${directoryName}</strong></div>`;
             }
         }
-        
+
         return `
             <div class="section">
                 <h3>🚀 Scan Control</h3>
@@ -894,20 +896,20 @@ class LeakLockSidebarProvider {
         const { exec } = require('child_process');
         const util = require('util');
         const execAsync = util.promisify(exec);
-        
+
         this._dependencyStatus = {
             docker: { installed: false, version: null, error: null },
             noseyparker: { installed: false, error: null },
             java: { installed: false, version: null, error: null },
             bfg: { installed: false, path: null, error: null }
         };
-        
+
         // Check Docker
         try {
             const dockerVersion = await execAsync('docker --version');
             this._dependencyStatus.docker.installed = true;
             this._dependencyStatus.docker.version = dockerVersion.stdout.trim();
-            
+
             // Check if Docker daemon is running
             try {
                 await execAsync('docker info');
@@ -918,7 +920,7 @@ class LeakLockSidebarProvider {
         } catch (error) {
             this._dependencyStatus.docker.error = 'Docker not installed or not in PATH';
         }
-        
+
         // Check Nosey Parker image
         try {
             await execAsync(`docker images ${scanEngineConfig.NOSEYPARKER_IMAGE} --format "table {{.Repository}}"`);
@@ -926,7 +928,7 @@ class LeakLockSidebarProvider {
         } catch (error) {
             this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not available';
         }
-        
+
         // Check Java
         try {
             const javaVersion = await execAsync('java -version 2>&1');
@@ -935,7 +937,7 @@ class LeakLockSidebarProvider {
         } catch (error) {
             this._dependencyStatus.java.error = 'Java not installed or not in PATH';
         }
-        
+
         // Check BFG tool
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
         if (fs.existsSync(bfgPath)) {
@@ -944,11 +946,11 @@ class LeakLockSidebarProvider {
         } else {
             this._dependencyStatus.bfg.error = 'BFG tool not downloaded';
         }
-        
+
         // Overall status - all core dependencies must be met
-        this._dependenciesInstalled = this._dependencyStatus.docker.installed && 
-                                      this._dependencyStatus.noseyparker.installed;
-        
+        this._dependenciesInstalled = this._dependencyStatus.docker.installed &&
+            this._dependencyStatus.noseyparker.installed;
+
         this._updateView();
     }
 
@@ -964,7 +966,7 @@ class LeakLockSidebarProvider {
             for (const folder of workspaceFolders) {
                 const folderPath = folder.uri.fsPath;
                 const gitPath = path.join(folderPath, '.git');
-                
+
                 try {
                     // Check if .git directory or file exists
                     if (fs.existsSync(gitPath)) {
@@ -972,12 +974,12 @@ class LeakLockSidebarProvider {
                         if (stat.isDirectory() || stat.isFile()) {
                             // This is a git repository
                             this._workspaceGitRepo = folderPath;
-                            
+
                             // Auto-select if no directory is currently selected
                             if (!this._selectedDirectory) {
                                 this._selectedDirectory = folderPath;
                             }
-                            
+
                             this._updateView();
                             return;
                         }
@@ -987,13 +989,13 @@ class LeakLockSidebarProvider {
                     continue;
                 }
             }
-            
+
             // If no git repo found but workspace exists, offer first workspace folder
             if (!this._selectedDirectory && workspaceFolders.length > 0) {
                 this._selectedDirectory = workspaceFolders[0].uri.fsPath;
                 this._updateView();
             }
-            
+
         } catch (error) {
             console.warn('Failed to detect git repository:', error.message);
         }
@@ -1011,12 +1013,12 @@ class LeakLockSidebarProvider {
                 cancellable: false
             }, async (progress) => {
                 progress.report({ increment: 20, message: "Checking Docker..." });
-                
+
                 // Check if Docker is available
                 const { exec } = require('child_process');
                 const util = require('util');
                 const execAsync = util.promisify(exec);
-                
+
                 try {
                     await execAsync('docker --version');
                 } catch (error) {
@@ -1024,12 +1026,12 @@ class LeakLockSidebarProvider {
                 }
 
                 progress.report({ increment: 30, message: "Pulling Nosey Parker image..." });
-                
+
                 // Pull the Nosey Parker Docker image
                 await execAsync(`docker pull ${scanEngineConfig.NOSEYPARKER_IMAGE}`, { timeout: 300000 });
-                
+
                 progress.report({ increment: 30, message: "Downloading BFG tool..." });
-                
+
                 // Download BFG tool
                 try {
                     const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
@@ -1039,9 +1041,9 @@ class LeakLockSidebarProvider {
                     console.warn('Failed to download BFG tool:', bfgError.message);
                     // Continue without BFG - it's optional
                 }
-                
+
                 progress.report({ increment: 20, message: "Verifying installation..." });
-                
+
                 // Recheck all dependencies
                 await this._checkDependencies();
             });
@@ -1083,10 +1085,10 @@ class LeakLockSidebarProvider {
             vscode.commands.executeCommand('leak-lock.updateRemoveFilesRepo', {
                 directory: this._selectedDirectory
             });
-            
+
             // Show confirmation message
             const isGitRepo = this._workspaceGitRepo === result[0].fsPath;
-            const message = isGitRepo 
+            const message = isGitRepo
                 ? `Selected git repository: ${path.basename(result[0].fsPath)}`
                 : `Selected directory: ${path.basename(result[0].fsPath)}`;
             vscode.window.showInformationMessage(message);

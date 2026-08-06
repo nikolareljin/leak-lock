@@ -1,5 +1,9 @@
 # Change Log
 
+## 0.7.1
+### Fixed
+- **Git History keyword removal never worked**: the `removeGitHistoryKeyword` handler declared a trimmed `keyword` variable but then filtered against the raw `message.keyword`, so the filter never matched and the keyword list was always written back unchanged. The fix uses the trimmed variable consistently.
+
 ## 0.7.0
 ### Added
 - **Multiple Detection Engines**: Leak Lock no longer depends on a single scanner. **Gitleaks** (MIT, actively maintained, no Docker or JVM required), **TruffleHog** (live credential verification) and **Nosey Parker** (legacy, archived upstream) are **all enabled by default** and run together, their findings merged into one attributed list. A missing engine binary disables that engine, never the whole scan, and is reported in the coverage panel so an engine you have not installed is visible rather than silently absent. Enabling TruffleHog makes no network call on its own — verification is the separate `leakLock.trufflehog.verify` setting, off by default. Configure with `leakLock.scan.engines`. See [docs/SCANNING_ENGINES.md](docs/SCANNING_ENGINES.md).
