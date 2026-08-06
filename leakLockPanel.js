@@ -57,15 +57,6 @@ const SENSITIVE_DIRECTORIES = {
     ]
 };
 
-// Helper function to safely escape shell arguments
-function escapeShellArg(arg) {
-    if (typeof arg !== 'string') {
-        throw new Error('Shell argument must be a string');
-    }
-    // Escape single quotes by ending the current quote, adding an escaped quote, and starting a new quote
-    return "'" + arg.replace(/'/g, "'\\''") + "'";
-}
-
 // Helper function to safely construct Docker commands using spawn instead of exec
 //
 // `timeout` terminates the container rather than only abandoning the promise. The
@@ -330,7 +321,7 @@ function validateDockerPath(inputPath, allowedBasePaths = []) {
                 // If it doesn't start with .., it's within the base path (allowed)
                 // If it starts with .., it's outside the base path (not allowed)
                 return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
-            } catch (error) {
+            } catch {
                 // If path resolution fails, deny access
                 return false;
             }
@@ -633,7 +624,6 @@ class LeakLockPanel {
     }
 
     _getHtmlForWebview() {
-        const hasResults = this._scanResults.length > 0;
 
         // If in Remove Files mode, render that UI instead
         if (this._viewMode === 'removeFiles') {
@@ -2230,7 +2220,7 @@ class LeakLockPanel {
                     const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', br, '--', ...pathspecs], { cwd: repo });
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     results.push({ name: br, files });
-                } catch (e) {
+                } catch {
                     results.push({ name: br, files: [] });
                 }
             }
@@ -2240,7 +2230,7 @@ class LeakLockPanel {
                     const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', rb, '--', ...pathspecs], { cwd: repo });
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     remoteResults.push({ name: rb, files });
-                } catch (e) {
+                } catch {
                     remoteResults.push({ name: rb, files: [] });
                 }
             }
@@ -2250,7 +2240,7 @@ class LeakLockPanel {
                     const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', `${tag}^{}`, '--', ...pathspecs], { cwd: repo });
                     const files = stdout.split('\n').map(s => s.trim()).filter(Boolean);
                     tagResults.push({ name: tag, files });
-                } catch (e) {
+                } catch {
                     tagResults.push({ name: tag, files: [] });
                 }
             }
@@ -2738,7 +2728,6 @@ class LeakLockPanel {
             `).join('');
 
         // Separate regular findings from dependency warnings
-        const regularFindings = this._scanResults.filter(r => !r.isDependency);
         const dependencyWarnings = this._scanResults.filter(r => r.isDependency);
         const prepared = this._scanCleanup.preparedCommand;
         const bfgCommandText = prepared && this._scanCleanup.preparedMode === 'bfg'
@@ -3372,7 +3361,7 @@ class LeakLockPanel {
             const tracked = filesOut.split('\0').filter(Boolean);
             this._scanRepoRoot = repoRoot;
             this._trackedFiles = new Set(tracked);
-        } catch (e) {
+        } catch {
             this._scanRepoRoot = null;
             this._trackedFiles = null;
         }
@@ -4953,7 +4942,7 @@ class LeakLockPanel {
     // Essential utility methods for scanning functionality
     async _checkDockerAvailability() {
         return new Promise((resolve) => {
-            exec('docker --version', (error, stdout, stderr) => {
+            exec('docker --version', (error, stdout) => {
                 if (error) {
                     resolve({ available: false, error: 'Docker not installed or not in PATH' });
                 } else {
@@ -5579,8 +5568,8 @@ class LeakLockPanel {
             console.log(`Found ${Array.isArray(jsonFindings) ? jsonFindings.length : 0} findings`);
 
             if (Array.isArray(jsonFindings)) {
-                jsonFindings.forEach((finding, findingIndex) => {
-                    finding.matches?.forEach((match, matchIndex) => {
+                jsonFindings.forEach((finding) => {
+                    finding.matches?.forEach((match) => {
                         let filePath = this._extractFilePathFromMatch(match);
 
                         const line = match.location?.source_span?.start?.line ||

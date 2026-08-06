@@ -24,16 +24,6 @@ function activate(context) {
 }
 
 /**
- * Legacy showSidebar function - now redirects to the main sidebar
- * This maintains backward compatibility
- */
-function showSidebar() {
-    // Redirect to the new sidebar functionality
-    vscode.commands.executeCommand('workbench.view.extension.leak-lock');
-    return null; // Legacy return for compatibility
-}
-
-/**
  * Legacy deactivate method
  */
 function deactivate() {
