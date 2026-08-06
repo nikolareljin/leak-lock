@@ -2,7 +2,7 @@ import { defineConfig } from '@vscode/test-cli';
 
 export default defineConfig({
 	files: 'test/**/*.test.js',
-	version: '1.96.0',
+	version: '1.125.0',
 	// Configure for CI environments
 	mocha: {
 		ui: 'tdd',

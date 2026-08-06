@@ -3404,3 +3404,85 @@ suite('The scan records the fetch it performed', () => {
 			'a scan that fetched must record that it fetched');
 	});
 });
+
+suite('User text never reaches a webview event handler', () => {
+	const fs = require('fs');
+	const path = require('path');
+
+	// Both dead buttons had the same shape: a user-controlled string interpolated
+	// into an inline handler inside a quoted HTML attribute. A quote in the value
+	// closed the attribute (or the JS string literal) early, so the parsed handler
+	// was a fragment and every click raised a syntax error in the webview. The
+	// button looked normal and did nothing.
+
+	test('a keyword containing a quote still renders a working remove button', () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+		const provider = new LeakLockSidebarProvider(vscode.Uri.file(__dirname));
+		provider._showGitHistorySection = true;
+
+		const originalGet = vscode.workspace.getConfiguration;
+		vscode.workspace.getConfiguration = () => ({
+			get: (key, fallback) => (key === 'gitHistoryKeywordSearch.keywords' ? ["it's"] : fallback)
+		});
+		let html;
+		try {
+			html = provider._getGitHistorySection();
+		} finally {
+			vscode.workspace.getConfiguration = originalGet;
+		}
+
+		assert.ok(
+			html.includes('data-keyword="it&#039;s"'),
+			'the keyword must travel in a data attribute, escaped'
+		);
+		assert.ok(
+			!/removeKeyword\(/.test(html),
+			'no keyword may be interpolated into an inline handler'
+		);
+		assert.ok(
+			html.includes('aria-label="Remove keyword it&#039;s"'),
+			'an icon-only button needs an accessible name naming the keyword'
+		);
+	});
+
+	test('a target path containing a quote still renders a working remove button', () => {
+		const LeakLockPanel = require('../leakLockPanel');
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._removalState.targets = [{ path: "/tmp/John's notes.txt", type: 'file' }];
+
+		const html = panel._getRemoveFilesHtml();
+
+		assert.ok(
+			html.includes('data-remove-target="/tmp/John&#039;s notes.txt"'),
+			'the path must travel in a data attribute, escaped'
+		);
+		assert.ok(
+			!/removeTarget\('/.test(html),
+			'no path may be interpolated into an inline handler'
+		);
+	});
+
+	test('escaping lives in one module, not one copy per webview', () => {
+		// The two copies had already drifted - &#39; against &#039;, one coercing
+		// non-strings and one not. Whichever copy receives the next fix, the other
+		// surface silently keeps the bug.
+		for (const file of ['leakLockPanel.js', 'leakLockSidebarProvider.js']) {
+			const src = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+			assert.ok(
+				!/function escapeHtml\b/.test(src),
+				file + ' must not define its own escapeHtml'
+			);
+			assert.ok(
+				/require\('\.\/html-escape'\)/.test(src),
+				file + ' must use the shared html-escape module'
+			);
+		}
+	});
+
+	test('escapeHtml neutralises both quote characters', () => {
+		// A single quote matters as much as a double quote here: it is what breaks
+		// a handler written with single-quoted arguments.
+		const { escapeHtml } = require('../html-escape');
+		assert.strictEqual(escapeHtml('a"b\'c&d<e>'), 'a&quot;b&#039;c&amp;d&lt;e&gt;');
+	});
+});

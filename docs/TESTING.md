@@ -15,7 +15,7 @@ The GitHub Actions workflow automatically runs tests in a headless environment u
 - Ubuntu latest
 - Node.js 22.13.0 or newer
 - Xvfb (X Virtual Framebuffer) for headless display
-- VS Code 1.96.0
+- VS Code 1.125.0
 
 ### Test Files
 - `test/extension.test.js` - Main extension tests
@@ -25,7 +25,7 @@ The GitHub Actions workflow automatically runs tests in a headless environment u
 ### Configuration Details
 
 The `.vscode-test.mjs` file configures:
-- VS Code version: 1.96.0
+- VS Code version: 1.125.0
 - Test files pattern: `test/**/*.test.js`
 - Mocha UI: TDD style
 - Timeout: 20 seconds
