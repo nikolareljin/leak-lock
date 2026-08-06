@@ -3,6 +3,7 @@
 ## 0.7.1
 ### Fixed
 - **Git History keyword removal never worked**: the ✕ next to a keyword did nothing. The keyword was quoted into an inline `onclick`, which broke the HTML attribute and made every click a syntax error, so the remove message was never sent. The button now passes the keyword via a `data-keyword` attribute and a delegated click listener.
+- **Keyword list keeps its place after an edit**: the sidebar re-renders on every add or remove, which dropped the list back to the first keyword. Removing now holds the scroll position and focuses the keyword that took the freed slot; adding scrolls to the new entry and returns focus to the input.
 - **Keywords are HTML-escaped in the sidebar**: a keyword containing `<`, `>`, `&` or a quote corrupted the list, and one containing markup ran in the sidebar webview.
 
 ## 0.7.0
