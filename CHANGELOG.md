@@ -2,9 +2,8 @@
 
 ## 0.7.1
 ### Fixed
-- **Git History keyword removal never worked**: the ✕ next to a keyword did nothing at all. Each remove button was rendered as `onclick="removeKeyword(${JSON.stringify(k)})"`, which places a double-quoted JavaScript string literal inside a double-quoted HTML attribute — the attribute ended at the first inner quote, so the handler the browser actually parsed was the fragment `removeKeyword(` and every click raised a syntax error in the webview instead of posting a message. The extension-side `removeGitHistoryKeyword` handler was never reached, which is why the keyword list never changed. The button now carries its keyword in a `data-keyword` attribute read by a delegated click listener, so no user input is interpolated into JavaScript source. Adding a keyword was never affected, because `addKeyword()` takes no arguments.
-- **Keywords are HTML-escaped in the sidebar**: keyword text is user input and was interpolated raw into both the visible label and the button attribute. A keyword containing `<`, `>`, `&` or a quote corrupted the rendered list, and one containing markup such as `<img onerror=…>` executed inside the sidebar webview. Both interpolation points are now escaped.
-- **`removeGitHistoryKeyword` message handling**: the handler declared a trimmed `keyword` variable but filtered against the raw `message.keyword`, so even once a message arrived the filter would not have matched. It now uses the trimmed value consistently, ignores empty input, and no longer emits leftover debug logging.
+- **Git History keyword removal never worked**: the ✕ next to a keyword did nothing. The keyword was quoted into an inline `onclick`, which broke the HTML attribute and made every click a syntax error, so the remove message was never sent. The button now passes the keyword via a `data-keyword` attribute and a delegated click listener.
+- **Keywords are HTML-escaped in the sidebar**: a keyword containing `<`, `>`, `&` or a quote corrupted the list, and one containing markup ran in the sidebar webview.
 
 ## 0.7.0
 ### Added
