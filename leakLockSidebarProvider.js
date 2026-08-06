@@ -7,6 +7,17 @@ const fs = require('fs');
 // runs the pinned tag meant these two disagreed about which image mattered.
 const scanEngineConfig = require('./scan-engine-config');
 
+// Keywords are user-supplied and land in both element text and an attribute value,
+// so they must be escaped before interpolation into the webview HTML.
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 class LeakLockSidebarProvider {
     constructor(extensionUri) {
         this._extensionUri = extensionUri;
@@ -512,9 +523,19 @@ class LeakLockSidebarProvider {
                     if (input) input.value = '';
                 }
 
-                function removeKeyword(keyword) {
-                    vscode.postMessage({ command: 'removeGitHistoryKeyword', keyword });
-                }
+                // Delegated: the keyword list is re-rendered on every _updateView(),
+                // and passing the keyword through a data attribute avoids quoting it
+                // into an inline onclick.
+                document.addEventListener('click', (e) => {
+                    const btn = e.target instanceof Element
+                        ? e.target.closest('.keyword-remove')
+                        : null;
+                    if (!btn) return;
+                    vscode.postMessage({
+                        command: 'removeGitHistoryKeyword',
+                        keyword: btn.dataset.keyword
+                    });
+                });
 
                 document.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter' && document.activeElement?.id === 'keyword-input') {
@@ -809,8 +830,8 @@ class LeakLockSidebarProvider {
 
         const keywordItems = keywords.map(k =>
             `<div class="keyword-item">
-                <span>${k}</span>
-                <button class="keyword-remove" onclick="removeKeyword(${JSON.stringify(k)})" title="Remove">✕</button>
+                <span>${escapeHtml(k)}</span>
+                <button class="keyword-remove" data-keyword="${escapeHtml(k)}" title="Remove">✕</button>
             </div>`
         ).join('');
 
