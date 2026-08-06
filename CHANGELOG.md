@@ -6,6 +6,13 @@
 - **Keyword list keeps its place after an edit**: the sidebar re-renders on every add or remove, which dropped the list back to the first keyword. Removing now holds the scroll position and focuses the keyword that took the freed slot; adding scrolls to the new entry and returns focus to the input.
 - **Keywords are HTML-escaped in the sidebar**: a keyword containing `<`, `>`, `&` or a quote corrupted the list, and one containing markup ran in the sidebar webview.
 
+### Changed
+- **Minimum VS Code is now 1.125.0** (was 1.96.0): `engines.vscode`, `@types/vscode` and the test target move together, because `vsce package` refuses a `@types/vscode` newer than `engines.vscode`. Also picks up `@types/node` 26.1.2 and `globals` 17.9.0.
+- **CI packages the extension**: `vsce package` is the only step that checks `@types/vscode` against `engines.vscode`, and it ran only in `publish.yml` — after merge. It now runs on pull requests, where a dependency bump that breaks packaging is still cheap to fix.
+
+### Security
+- **brace-expansion DoS (GHSA-rgw5-rvv9-x895)**: the advisory defeats the mitigation the previous pin relied on, and the pin was scoped to mocha, leaving `@vscode/test-cli`'s own branch uncovered. A top-level override on 5.0.9 clears all four findings.
+
 ## 0.7.0
 ### Added
 - **Multiple Detection Engines**: Leak Lock no longer depends on a single scanner. **Gitleaks** (MIT, actively maintained, no Docker or JVM required), **TruffleHog** (live credential verification) and **Nosey Parker** (legacy, archived upstream) are **all enabled by default** and run together, their findings merged into one attributed list. A missing engine binary disables that engine, never the whole scan, and is reported in the coverage panel so an engine you have not installed is visible rather than silently absent. Enabling TruffleHog makes no network call on its own — verification is the separate `leakLock.trufflehog.verify` setting, off by default. Configure with `leakLock.scan.engines`. See [docs/SCANNING_ENGINES.md](docs/SCANNING_ENGINES.md).
