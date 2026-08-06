@@ -11,6 +11,12 @@ on:
     branches: [ main ]
     types: [ closed ]
 
+  # A merge to main is the normal trigger, but a push event that never arrives
+  # leaves a merged version silently unreleased - as happened to 0.7.2 during the
+  # Actions incident on 2026-08-06, when webhook triggers were throttled and
+  # dropped events were never replayed. This is the manual lever for that case.
+  workflow_dispatch:
+
   # default permissions remain minimal; elevate per-job
 
 jobs:
@@ -47,7 +53,7 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'nikolareljin' && endsWith(github.repository, '/leak-lock')
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.repository_owner == 'nikolareljin' && endsWith(github.repository, '/leak-lock')
     permissions:
       contents: write
     
@@ -162,7 +168,7 @@ jobs:
           vsce ls || echo "vsce ls command not available, skipping content listing"
 
       - name: Publish to VS Code Marketplace
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
           # Set NODE_OPTIONS for publishing
           export NODE_OPTIONS="--max-old-space-size=4096"
@@ -194,7 +200,7 @@ jobs:
           NODE_ENV: production
 
       - name: Publish to Open VSX Registry
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
           export NODE_OPTIONS="--max-old-space-size=4096"
           if [ -z "${{ secrets.OVSX_PAT }}" ]; then
@@ -226,7 +232,7 @@ jobs:
           NODE_ENV: production
 
       - name: Create Git Tag
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
           FINAL_VERSION=${{ steps.new_version.outputs.version || steps.version.outputs.version }}
           echo "Creating git tag v${FINAL_VERSION}"
@@ -238,7 +244,7 @@ jobs:
           git push origin "v${FINAL_VERSION}"
 
       - name: Create GitHub Release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
@@ -283,7 +289,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Extension Package
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: leak-lock-extension-v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
