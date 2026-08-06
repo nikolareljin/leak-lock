@@ -277,7 +277,7 @@
   },
   "scripts": {
     "bfg": "java -jar bfg.jar",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "test": "vscode-test",
     "build": "babel src --out-dir dist"
   },

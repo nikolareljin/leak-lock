@@ -22,7 +22,6 @@ function activate(context) {
         // Replace any spaces with underscores, forward slashes with underscores, dots with underscores, and colons with underscores.
         const key = filename.replace(/\s/g, '_').replace(/\//g, '_').replace(/\./g, '_').replace(/:/g, '_');
         const spawn = require('child_process').spawn;
-        const date = new Date().toISOString().replace(/[:.]/g, '-');
         const args = ['run', '--rm', '-v', `${filename}:/scan/${key}`, dockerImage, 'report', '--datastore', `np.${key}`, '--format', 'json'];
         const docker = spawn('docker', args);
         docker.stdout.on('data', (data) => {

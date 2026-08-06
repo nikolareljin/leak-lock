@@ -1,5 +1,9 @@
 # Change Log
 
+## Unreleased
+### Changed
+- **The lint run is silent, and stays that way**: 36 unused-symbol warnings were annotating every CI run, which made the real signal easy to miss. Dead code is gone, unused catch bindings use `catch {}`, and parameters kept to document an API signature are named with a leading underscore. `npm run lint` now fails on any new warning, so the count cannot creep back.
+
 ## 0.7.1
 ### Fixed
 - **Git History keyword removal never worked**: the ✕ next to a keyword did nothing. The keyword was quoted into an inline `onclick`, which broke the HTML attribute and made every click a syntax error, so the remove message was never sent. The button now passes the keyword via a `data-keyword` attribute and a delegated click listener.
