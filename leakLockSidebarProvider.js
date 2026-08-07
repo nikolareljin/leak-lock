@@ -5,6 +5,9 @@ const fs = require('fs');
 // The pinned Nosey Parker image. Checking or pulling `:latest` here while the scanner
 // runs the pinned tag meant these two disagreed about which image mattered.
 const scanEngineConfig = require('./scan-engine-config');
+// The native engines answer "installed?" and "which version?" themselves, so the
+// panel asks them rather than carrying a second detection path that can disagree.
+const scanEngines = require('./scan-engines');
 // Keywords are user-supplied and land in both element text and attribute values,
 // so they must be escaped before interpolation into the webview HTML. Shared with
 // leakLockPanel.js so both webviews escape identically.
@@ -22,6 +25,10 @@ class LeakLockSidebarProvider {
         this._workspaceGitRepo = null;
         this._showDependencyDetails = false;
         this._showGitHistorySection = false;
+        // Native engine probe results. null until the details are opened, because
+        // probing spawns a subprocess per engine and the compact view never shows it.
+        this._engineStatus = null;
+        this._engineProbeInFlight = false;
     }
 
     resolveWebviewView(webviewView, _context, _token) {
@@ -57,6 +64,9 @@ class LeakLockSidebarProvider {
                     case 'showDependencyDetails':
                         this._showDependencyDetails = true;
                         this._updateView();
+                        // Probing costs a subprocess per engine, so it happens on expand
+                        // rather than on every render. _refreshEngineStatus never rejects.
+                        this._refreshEngineStatus();
                         break;
                     case 'hideDependencyDetails':
                         this._showDependencyDetails = false;
@@ -594,6 +604,81 @@ class LeakLockSidebarProvider {
         </html>`;
     }
 
+    /**
+     * Which Leak Lock is running.
+     *
+     * Read from the loaded extension rather than the checked-out package.json, so a
+     * development host and an installed build cannot report the same number while
+     * running different code. Falls back to the manifest when the extension host is
+     * not available, which is the case in unit tests.
+     *
+     * Only rendered in the expanded block: the compact view is a status line, and a
+     * version number there is noise until someone is actually diagnosing something.
+     */
+    _getInstalledVersionHtml() {
+        let version;
+        try {
+            version = vscode.extensions.getExtension('nikolareljin.leak-lock')?.packageJSON?.version;
+        } catch {
+            version = undefined;
+        }
+        if (!version) {
+            version = require('./package.json').version;
+        }
+        return `
+            <div style="font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 12px;">
+                <strong>Leak Lock</strong> v${escapeHtml(version)}
+            </div>`;
+    }
+
+    /**
+     * The engines that actually scan, with their installed versions.
+     *
+     * Rendered only inside the expanded block: the compact view is a one-line "ready"
+     * summary, and probing three binaries to fill a line nobody opened is work for
+     * nothing.
+     */
+    _getEngineStatusHtml() {
+        const label = (text) =>
+            `<div style="margin: 0 0 6px 0; font-size: 11px; color: var(--vscode-descriptionForeground);"><strong>${text}</strong></div>`;
+        const note = (text, colour = 'var(--vscode-descriptionForeground)') =>
+            `<div style="font-size: 10px; color: ${colour}; margin-left: 20px; margin-bottom: 5px;">${text}</div>`;
+
+        if (this._engineProbeInFlight && !this._engineStatus) {
+            return label('Scan engines:') + note('Checking installed engines…');
+        }
+        if (!this._engineStatus) {
+            return '';
+        }
+
+        const rows = this._engineStatus.map(engine => {
+            // An engine that is enabled but missing is the case worth flagging: the scan
+            // still runs, reports fewer findings, and looks identical to a clean result.
+            const icon = engine.installed ? '✅' : (engine.enabled ? '⚠️' : '➖');
+            const name = escapeHtml(engine.displayName);
+            let detail;
+            if (engine.installed) {
+                detail = note(escapeHtml(engine.version || 'installed, version not reported')
+                    + (engine.enabled ? '' : ' — disabled in leakLock.scan.engines'));
+            } else if (engine.enabled) {
+                detail = note(
+                    `Not installed, but enabled in leakLock.scan.engines — scans run without it. `
+                    + `<a href="${escapeHtml(engine.installHint)}">Install ${name}</a>`,
+                    'var(--vscode-inputValidation-warningForeground)'
+                );
+            } else {
+                detail = note('Not installed, not enabled');
+            }
+            return `
+                <div class="status-item">
+                    <span><span class="status-icon">${icon}</span>${name}</span>
+                </div>
+                ${detail}`;
+        }).join('');
+
+        return label('Scan engines:') + rows;
+    }
+
     _getDependenciesSection() {
         // If all dependencies are met and details not requested, show compact status
         if (this._dependenciesInstalled && !this._isInstalling && !this._showDependencyDetails) {
@@ -625,8 +710,12 @@ class LeakLockSidebarProvider {
         return `
             <div class="section">
                 <h3>🔧 Dependencies Setup</h3>
-                
-                <div style="margin-bottom: 15px; font-size: 11px; color: var(--vscode-descriptionForeground);">
+
+                ${this._getInstalledVersionHtml()}
+
+                ${this._getEngineStatusHtml()}
+
+                <div style="margin: 15px 0 10px 0; font-size: 11px; color: var(--vscode-descriptionForeground);">
                     <!-- Docker is not required to scan any more: Gitleaks and TruffleHog are
                          native binaries. It is needed only by the optional Nosey Parker
                          engine, whose upstream is archived. Labelling it "required" told
@@ -687,6 +776,11 @@ class LeakLockSidebarProvider {
                     <span><span class="status-icon">${noseyparkerStatus}</span>Nosey Parker Image</span>
                     ${showSpinner && this._dependencyStatus?.docker?.installed && !this._dependencyStatus?.noseyparker?.installed ? '<div class="spinner"></div>' : ''}
                 </div>
+                ${this._dependencyStatus?.noseyparker?.installed ? `
+                    <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                        ${escapeHtml(scanEngineConfig.NOSEYPARKER_PINNED_VERSION)} (pinned image)
+                    </div>
+                ` : ''}
                 ${this._dependencyStatus?.noseyparker?.error ? `
                     <div style="font-size: 10px; color: var(--vscode-inputValidation-errorForeground); margin-left: 20px; margin-bottom: 5px;">
                         ${this._dependencyStatus.noseyparker.error}
@@ -1021,6 +1115,71 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.noseyparker.installed;
 
         this._updateView();
+
+        // When Docker or the image is missing the detailed view renders anyway, so the
+        // engine rows are on screen and should carry real answers rather than a prompt.
+        if (!this._dependenciesInstalled) {
+            this._refreshEngineStatus();
+        }
+    }
+
+    /**
+     * Probe the native scan engines for presence and version.
+     *
+     * Gitleaks and TruffleHog are the engines that actually run by default; Docker and
+     * the Nosey Parker image are optional and belong to an archived upstream. The panel
+     * described only the optional pair, so a user whose Gitleaks binary was missing had
+     * nowhere to see it — which is the same silence the coverage panel exists to break.
+     *
+     * The engines already know how to answer both questions, so this asks them rather
+     * than reimplementing detection. Deliberately lazy: one subprocess per engine, run
+     * only when the block is expanded.
+     */
+    async _refreshEngineStatus() {
+        if (this._engineProbeInFlight) {
+            return;
+        }
+        this._engineProbeInFlight = true;
+        this._updateView();
+
+        try {
+            const config = vscode.workspace.getConfiguration('leakLock');
+            const configured = config.get('scan.engines');
+            const enabled = new Set(
+                Array.isArray(configured) && configured.length
+                    ? configured
+                    : ['gitleaks', 'trufflehog', 'noseyparker']
+            );
+
+            this._engineStatus = await Promise.all(
+                Object.values(scanEngines.ENGINES).map(async engine => {
+                    // Honours leakLock.<engine>.binaryPath, so a binary outside PATH
+                    // reports as present here exactly as it does during a scan.
+                    const binary = config.get(`${engine.id}.binaryPath`) || undefined;
+                    let installed = false;
+                    let version = null;
+                    try {
+                        installed = await engine.isAvailable({ binary });
+                        if (installed) {
+                            version = await engine.version({ binary });
+                        }
+                    } catch {
+                        installed = false;
+                    }
+                    return {
+                        id: engine.id,
+                        displayName: engine.displayName,
+                        installHint: engine.installHint,
+                        enabled: enabled.has(engine.id),
+                        installed,
+                        version
+                    };
+                })
+            );
+        } finally {
+            this._engineProbeInFlight = false;
+            this._updateView();
+        }
     }
 
     async _detectGitRepository() {

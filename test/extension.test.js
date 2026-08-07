@@ -3486,3 +3486,117 @@ suite('User text never reaches a webview event handler', () => {
 		assert.strictEqual(escapeHtml('a"b\'c&d<e>'), 'a&quot;b&#039;c&amp;d&lt;e&gt;');
 	});
 });
+
+suite('The dependency panel accounts for every scan engine', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const scanEngines = require('../scan-engines');
+
+	// The panel described Docker, the Nosey Parker image, Java and BFG — none of
+	// which the default scan uses. Gitleaks and TruffleHog do the scanning and had
+	// no row at all, so a missing Gitleaks binary was invisible in the one place a
+	// user goes to check their setup.
+
+	function provider() {
+		return new LeakLockSidebarProvider(vscode.Uri.file(__dirname));
+	}
+
+	test('nothing is rendered until the block is expanded', () => {
+		// Probing spawns a subprocess per engine. The compact "Dependencies ready"
+		// line does not show the result, so it must not pay for one.
+		const p = provider();
+		assert.strictEqual(p._engineStatus, null, 'engines must not be probed on construction');
+		assert.strictEqual(p._getEngineStatusHtml(), '', 'unprobed engines render nothing');
+	});
+
+	test('an expanded block lists every engine with its installed version', () => {
+		const p = provider();
+		p._engineStatus = [
+			{ id: 'gitleaks', displayName: 'Gitleaks', installHint: 'https://example.invalid/gl', enabled: true, installed: true, version: 'v8.28.0' },
+			{ id: 'trufflehog', displayName: 'TruffleHog', installHint: 'https://example.invalid/th', enabled: true, installed: true, version: 'v3.90.10' }
+		];
+		const html = p._getEngineStatusHtml();
+
+		assert.ok(html.includes('Gitleaks') && html.includes('v8.28.0'), 'Gitleaks and its version must appear');
+		assert.ok(html.includes('TruffleHog') && html.includes('v3.90.10'), 'TruffleHog and its version must appear');
+	});
+
+	test('an engine that is enabled but missing is flagged, not quietly omitted', () => {
+		// This is the case that matters: the scan still runs, finds less, and looks
+		// exactly like a clean result.
+		const p = provider();
+		p._engineStatus = [
+			{ id: 'gitleaks', displayName: 'Gitleaks', installHint: 'https://example.invalid/gl', enabled: true, installed: false, version: null }
+		];
+		const html = p._getEngineStatusHtml();
+
+		assert.ok(html.includes('Gitleaks'), 'a missing engine still gets a row');
+		assert.ok(/scans run without it/.test(html), 'the consequence must be stated');
+		assert.ok(html.includes('https://example.invalid/gl'), 'the install hint must be offered');
+	});
+
+	test('an installed engine that is switched off says so rather than looking broken', () => {
+		const p = provider();
+		p._engineStatus = [
+			{ id: 'trufflehog', displayName: 'TruffleHog', installHint: 'https://example.invalid/th', enabled: false, installed: true, version: 'v3.90.10' }
+		];
+		const html = p._getEngineStatusHtml();
+
+		assert.ok(html.includes('v3.90.10'), 'the version is still reported');
+		assert.ok(/disabled in leakLock\.scan\.engines/.test(html), 'and the reason it will not run');
+	});
+
+	test('the expanded block reports which Leak Lock is running', () => {
+		// The version a user reports in a bug is the one the panel showed them, so it
+		// has to come from the loaded extension rather than a hardcoded string.
+		const p = provider();
+		const html = p._getInstalledVersionHtml();
+		const manifest = require('../package.json').version;
+		const loaded = vscode.extensions.getExtension('nikolareljin.leak-lock')?.packageJSON?.version;
+
+		assert.ok(html.includes('Leak Lock'), 'the product is named');
+		assert.ok(
+			html.includes('v' + (loaded || manifest)),
+			'the running version must be shown, not omitted'
+		);
+	});
+
+	test('probing asks the engines themselves, honouring a configured binary path', async () => {
+		// A second detection path would be free to disagree with the one the scan
+		// uses. This asserts the panel calls the engine, with the same binaryPath
+		// override a scan would apply.
+		const p = provider();
+		const gitleaks = scanEngines.ENGINES.gitleaks;
+		const truffle = scanEngines.ENGINES.trufflehog;
+		const originals = [gitleaks.isAvailable, gitleaks.version, truffle.isAvailable, truffle.version];
+		const originalGet = vscode.workspace.getConfiguration;
+		const seen = {};
+
+		vscode.workspace.getConfiguration = () => ({
+			get: (key) => {
+				if (key === 'scan.engines') { return ['gitleaks']; }
+				if (key === 'gitleaks.binaryPath') { return '/opt/custom/gitleaks'; }
+				return undefined;
+			}
+		});
+		gitleaks.isAvailable = async (opts) => { seen.gitleaksBinary = opts?.binary; return true; };
+		gitleaks.version = async () => 'v8.28.0';
+		truffle.isAvailable = async () => false;
+		truffle.version = async () => null;
+
+		try {
+			await p._refreshEngineStatus();
+		} finally {
+			[gitleaks.isAvailable, gitleaks.version, truffle.isAvailable, truffle.version] = originals;
+			vscode.workspace.getConfiguration = originalGet;
+		}
+
+		assert.strictEqual(seen.gitleaksBinary, '/opt/custom/gitleaks', 'binaryPath must reach the engine');
+		const byId = Object.fromEntries(p._engineStatus.map(e => [e.id, e]));
+		assert.deepStrictEqual(
+			{ installed: byId.gitleaks.installed, version: byId.gitleaks.version, enabled: byId.gitleaks.enabled },
+			{ installed: true, version: 'v8.28.0', enabled: true }
+		);
+		assert.strictEqual(byId.trufflehog.installed, false);
+		assert.strictEqual(byId.trufflehog.enabled, false, 'not listed in scan.engines');
+	});
+});
