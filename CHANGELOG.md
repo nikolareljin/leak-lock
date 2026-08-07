@@ -1,5 +1,17 @@
 # Change Log
 
+## 0.7.4
+### Added
+- **The Dependencies panel accounts for every scan engine**: it described Docker, the Nosey Parker image, Java and BFG — none of which a default scan uses — while Gitleaks and TruffleHog, which do the scanning, had no row at all. A missing Gitleaks binary was therefore invisible in the one place a user checks their setup. Expanding the block now lists each engine with its installed version, and an engine that is enabled but not installed is called out with the consequence, because a scan that silently runs one engine short looks exactly like a clean result.
+- **The panel reports which Leak Lock is running**, read from the loaded extension, along with the pinned Nosey Parker image version. Both appear only when the block is expanded.
+
+### Fixed
+- **The repository version matches what is published**: `publish.yml` auto-bumps the patch version on the runner when a tag for the current version already exists, and never commits that bump back. 0.7.3 was published from a repository that still said 0.7.2, and the next merge would have tried to publish and tag 0.7.3 a second time and failed on both. Set to 0.7.4, which is unpublished, so the next release ships exactly what the repository claims to be.
+
+## 0.7.3
+### Security
+- **js-yaml advisory GHSA-5p4m-2wfm-xmqj** (quadratic CPU consumption in `!!omap` resolution): updated to 4.3.1 through `@vscode/test-cli` and mocha. Development dependency only; nothing in the packaged extension was affected.
+
 ## 0.7.2
 ### Changed
 - **The lint run is silent, and stays that way**: 36 unused-symbol warnings were annotating every CI run, which made the real signal easy to miss. Dead code is gone, unused catch bindings use `catch {}`, and parameters kept to document an API signature are named with a leading underscore. `npm run lint` now fails on any new warning, so the count cannot creep back.
