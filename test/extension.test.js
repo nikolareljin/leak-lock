@@ -4954,3 +4954,55 @@ suite('PR #105 ninth review pass', () => {
 		assert.match(code, /execFileAsync\('docker', \['--version'\]\)/);
 	});
 });
+
+suite('PR #105 tenth review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	function provider() {
+		return new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+	}
+
+	test('the image is not blamed for Docker being unavailable', async () => {
+		// `docker image inspect` fails for Docker reasons when there is no daemon, and
+		// reporting that as "image not pulled" sends the user pulling an image on a
+		// machine where no pull can work.
+		const p = provider();
+		const originalGet = vscode.workspace.getConfiguration;
+		vscode.workspace.getConfiguration = () => ({ get: () => ['noseyparker'] });
+		p._refreshEngineStatus = async () => { p._engineStatus = []; };
+		p._updateView = () => {};
+
+		const realExecFile = require('child_process').execFile;
+		// Every subprocess fails: this is a machine with no Docker and no Java.
+		require('child_process').execFile = (_cmd, _args, opts, cb) => {
+			const done = typeof opts === 'function' ? opts : cb;
+			process.nextTick(() => done(new Error('spawn docker ENOENT')));
+			return { on() {} };
+		};
+
+		try {
+			await p._checkDependencies();
+		} finally {
+			require('child_process').execFile = realExecFile;
+			vscode.workspace.getConfiguration = originalGet;
+		}
+
+		assert.strictEqual(p._dependencyStatus.docker.installed, false);
+		assert.strictEqual(p._dependencyStatus.noseyparker.installed, false);
+		assert.match(
+			p._dependencyStatus.noseyparker.error,
+			/Docker is unavailable/,
+			'the cause must be attributed to Docker, not to the image'
+		);
+		assert.ok(
+			!/not pulled/.test(p._dependencyStatus.noseyparker.error),
+			'and must not suggest a pull that cannot work'
+		);
+	});
+});

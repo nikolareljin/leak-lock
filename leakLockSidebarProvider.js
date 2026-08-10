@@ -1231,11 +1231,19 @@ class LeakLockSidebarProvider {
         // all, and the panel showed a ✅ beside an image that was never pulled. That is
         // the same defect as the rest of this release, one layer down. `image inspect`
         // exits non-zero when the image is absent, which is the question being asked.
-        try {
-            await execFileAsync('docker', engineDocker.buildImageInspectArgs(scanEngineConfig.NOSEYPARKER_IMAGE));
-            this._dependencyStatus.noseyparker.installed = true;
-        } catch {
-            this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not pulled';
+        //
+        // Not asked at all when Docker itself is unavailable: `image inspect` would then
+        // fail for Docker reasons, and reporting that as "image not pulled" sends the
+        // user pulling an image on a machine where no pull can work.
+        if (!this._dependencyStatus.docker.installed) {
+            this._dependencyStatus.noseyparker.error = 'Cannot tell — Docker is unavailable, so the image cannot be checked or pulled';
+        } else {
+            try {
+                await execFileAsync('docker', engineDocker.buildImageInspectArgs(scanEngineConfig.NOSEYPARKER_IMAGE));
+                this._dependencyStatus.noseyparker.installed = true;
+            } catch {
+                this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not pulled';
+            }
         }
 
         // Check Java. Same banner reader the BFG step uses, so the two cannot disagree
