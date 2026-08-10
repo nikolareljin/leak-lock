@@ -1435,38 +1435,44 @@ class LeakLockSidebarProvider {
         let dockerError = null;
         const engineResults = [];
 
-        try {
-            // Show progress notification
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: "Installing dependencies...",
-                cancellable: false
-            }, async (progress) => {
-                progress.report({ increment: 20, message: "Checking Docker..." });
+        // Only when something needs it. Nosey Parker is the sole component that does,
+        // and pulling a several-hundred-megabyte image — or reporting a Docker error —
+        // for an engine the user switched off is exactly the kind of unrelated failure
+        // this release exists to stop. The same condition already governs whether Docker
+        // counts as a missing dependency.
+        if (this._isNoseyParkerEnabled()) {
+            try {
+                await vscode.window.withProgress({
+                    location: vscode.ProgressLocation.Notification,
+                    title: "Installing dependencies...",
+                    cancellable: false
+                }, async (progress) => {
+                    progress.report({ increment: 20, message: "Checking Docker..." });
 
-                // Check if Docker is available
-                const { exec } = require('child_process');
-                const util = require('util');
-                const execAsync = util.promisify(exec);
+                    // Check if Docker is available
+                    const { exec } = require('child_process');
+                    const util = require('util');
+                    const execAsync = util.promisify(exec);
 
-                try {
-                    await execAsync('docker --version');
-                } catch {
-                    throw new Error('Docker is not installed or not accessible. Please install Docker first.');
-                }
+                    try {
+                        await execAsync('docker --version');
+                    } catch {
+                        throw new Error('Docker is not installed or not accessible. Please install Docker first.');
+                    }
 
-                progress.report({ increment: 30, message: "Pulling Nosey Parker image..." });
+                    progress.report({ increment: 30, message: "Pulling Nosey Parker image..." });
 
-                // Pull the Nosey Parker Docker image
-                await execAsync(`docker pull ${scanEngineConfig.NOSEYPARKER_IMAGE}`, { timeout: 300000 });
+                    // Pull the Nosey Parker Docker image
+                    await execAsync(`docker pull ${scanEngineConfig.NOSEYPARKER_IMAGE}`, { timeout: 300000 });
 
-                progress.report({ increment: 20, message: "Docker components ready." });
-            });
-        } catch (error) {
-            // Docker's absence is no longer fatal to setup: it belongs to the optional
-            // Nosey Parker engine only. Record it and carry on to the native engines,
-            // which is the whole point of installing them per tool.
-            dockerError = error.message;
+                    progress.report({ increment: 20, message: "Docker components ready." });
+                });
+            } catch (error) {
+                // Docker's absence is no longer fatal to setup: it belongs to the
+                // optional Nosey Parker engine only. Record it and carry on to the
+                // native engines, which is the whole point of installing them per tool.
+                dockerError = error.message;
+            }
         }
 
         // BFG depends on Java and on nothing else. Downloading it inside the Docker

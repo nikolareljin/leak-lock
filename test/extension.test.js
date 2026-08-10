@@ -4642,7 +4642,11 @@ suite('PR #105 fourth review pass', () => {
 		// someone pulling an image they already have.
 		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
 		assert.ok(!/and no Docker image is pulled/.test(src), 'that phrasing asserts a cause it cannot know');
-		assert.match(src, /Docker runtime is unavailable/);
+		// Nor any other single cause: the container route also fails when the image is
+		// present and the probe run itself does not work.
+		assert.ok(!/Docker runtime is unavailable/.test(src), 'still too definite about why');
+		assert.match(src, /Could not start .* from its Docker image/);
+		assert.match(src, /install it as a native binary/);
 	});
 });
 
@@ -4775,5 +4779,87 @@ suite('PR #105 seventh review pass', () => {
 		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'scan-engines.js'), 'utf8');
 		const body = src.slice(src.indexOf('async function invoke('), src.indexOf('async function invoke(') + 900);
 		assert.match(body, /execution\.command \|\| 'docker'/);
+	});
+});
+
+suite('PR #105 eighth review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('the Nosey Parker image is not pulled for an engine nobody enabled', async () => {
+		// A several-hundred-megabyte pull, or a noisy Docker error, for an engine the
+		// user switched off is exactly the unrelated failure this release removes. The
+		// same condition already decides whether Docker counts as a missing dependency.
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'))),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._engineStatus = [
+			{ id: 'gitleaks', displayName: 'Gitleaks', enabled: true, installed: true, runtime: 'binary', version: 'v8.30.1' },
+			{ id: 'trufflehog', displayName: 'TruffleHog', enabled: true, installed: true, runtime: 'binary', version: 'v3.96.0' }
+		];
+		p._dependencyStatus = { docker: {}, noseyparker: {}, java: { installed: false }, bfg: {}, missing: [] };
+
+		const withProgress = vscode.window.withProgress;
+		const showInfo = vscode.window.showInformationMessage;
+		const showWarn = vscode.window.showWarningMessage;
+		const getConfiguration = vscode.workspace.getConfiguration;
+		let progressRan = false;
+
+		vscode.window.withProgress = async (_opts, task) => { progressRan = true; return task({ report() {} }); };
+		vscode.window.showInformationMessage = async () => undefined;
+		vscode.window.showWarningMessage = async () => undefined;
+		// Nosey Parker deliberately absent from the enabled set.
+		vscode.workspace.getConfiguration = () => ({ get: (key) => (key === 'scan.engines' ? ['gitleaks', 'trufflehog'] : undefined) });
+		p._checkDependencies = async () => {};
+
+		try {
+			await p._installDependencies();
+		} finally {
+			vscode.window.withProgress = withProgress;
+			vscode.window.showInformationMessage = showInfo;
+			vscode.window.showWarningMessage = showWarn;
+			vscode.workspace.getConfiguration = getConfiguration;
+		}
+
+		assert.strictEqual(progressRan, false, 'no Docker work may run when nothing needs Docker');
+	});
+
+	test('the Docker step still runs when Nosey Parker is enabled', async () => {
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'))),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._engineStatus = [
+			{ id: 'gitleaks', displayName: 'Gitleaks', enabled: false, installed: true, runtime: 'binary', version: 'v8.30.1' },
+			{ id: 'trufflehog', displayName: 'TruffleHog', enabled: false, installed: true, runtime: 'binary', version: 'v3.96.0' }
+		];
+		p._dependencyStatus = { docker: {}, noseyparker: {}, java: { installed: false }, bfg: {}, missing: [] };
+
+		const withProgress = vscode.window.withProgress;
+		const showInfo = vscode.window.showInformationMessage;
+		const showWarn = vscode.window.showWarningMessage;
+		const getConfiguration = vscode.workspace.getConfiguration;
+		let progressRan = false;
+
+		// Fails immediately: this asserts the step is attempted, not that Docker exists.
+		vscode.window.withProgress = async () => { progressRan = true; throw new Error('docker unavailable in test'); };
+		vscode.window.showInformationMessage = async () => undefined;
+		vscode.window.showWarningMessage = async () => undefined;
+		vscode.workspace.getConfiguration = () => ({ get: (key) => (key === 'scan.engines' ? ['noseyparker'] : undefined) });
+		p._checkDependencies = async () => {};
+
+		try {
+			await p._installDependencies();
+		} finally {
+			vscode.window.withProgress = withProgress;
+			vscode.window.showInformationMessage = showInfo;
+			vscode.window.showWarningMessage = showWarn;
+			vscode.workspace.getConfiguration = getConfiguration;
+		}
+
+		assert.strictEqual(progressRan, true, 'an enabled Nosey Parker still needs its image');
 	});
 });
