@@ -275,10 +275,18 @@ function findUnsafeArchiveEntry(entries) {
     return (entries || []).find(entry => !isSafeArchiveEntry(entry)) || null;
 }
 
-/** Is `candidate` genuinely inside `root`? Guards against archive path traversal. */
-function isInsideDirectory(root, candidate) {
-    const resolvedRoot = path.resolve(root);
-    const resolved = path.resolve(candidate);
+/**
+ * Is `candidate` genuinely inside `root`? Guards against archive path traversal.
+ *
+ * Case-folded on Windows, where `C:\Temp\x` and `c:\temp\x` are the same location but
+ * not the same string. The failure that would cause is the safe direction — a legitimate
+ * path judged to be outside, so the install refuses — but an install that fails because
+ * of drive-letter casing is impossible to diagnose from the message it produces.
+ */
+function isInsideDirectory(root, candidate, platform = process.platform) {
+    const fold = value => (platform === 'win32' ? value.toLowerCase() : value);
+    const resolvedRoot = fold(path.resolve(root));
+    const resolved = fold(path.resolve(candidate));
     return resolved === resolvedRoot || resolved.startsWith(resolvedRoot + path.sep);
 }
 

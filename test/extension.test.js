@@ -5104,3 +5104,22 @@ suite('PR #105 twelfth review pass', () => {
 		}
 	});
 });
+
+suite('PR #105 thirteenth review pass', () => {
+	const engineInstall = require('../engine-install');
+
+	test('Windows path containment ignores drive-letter and directory casing', () => {
+		// C:\Temp\x and c:\temp\x are one location and two strings. Judging the second
+		// "outside" fails safe - the install refuses - but for a reason no message it
+		// prints could explain.
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/A', '/tmp/a/gitleaks.exe', 'win32'), true);
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/A', 'win32'), true);
+
+		// Case still matters where the filesystem says it does.
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/A', '/tmp/a/gitleaks', 'linux'), false);
+
+		// And folding must not turn an escape into a containment.
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/ab/x', 'win32'), false);
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/a/../b/x', 'win32'), false);
+	});
+});
