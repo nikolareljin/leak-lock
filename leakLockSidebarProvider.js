@@ -1533,8 +1533,20 @@ class LeakLockSidebarProvider {
         if (!await this._hasJavaRuntime()) {
             return { ok: false, skipped: true, error: 'No Java runtime; BFG cannot run.' };
         }
+        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        // Already there: re-downloading on every setup run costs a fetch to overwrite a
+        // known-good copy with an identical one, and turns a working offline setup into
+        // a failing one. A zero-length file is a previous download that died mid-flight,
+        // so that is retried rather than trusted.
         try {
-            const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+            if (fs.statSync(bfgPath).size > 0) {
+                return { ok: true, skipped: false, error: null, alreadyPresent: true };
+            }
+        } catch {
+            // Not present; fall through and fetch it.
+        }
+
+        try {
             const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
             // fetch, not a shelled-out curl: the destination is an installation path
             // that can contain spaces or quotes, and interpolating it into a command

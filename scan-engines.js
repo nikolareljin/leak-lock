@@ -229,8 +229,12 @@ async function resolveExecution(engine, options = {}) {
  */
 async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform } = {}) {
     if (execution.mode === 'docker') {
+        // The resolved execution carries the command for both modes, so it is used for
+        // both. Hard-coding 'docker' here would make `execution.command` a field that
+        // means something in one branch and is ignored in the other — and would leave
+        // no way to point at an alternate client (a podman shim, a sandbox wrapper).
         return runTool(
-            'docker',
+            execution.command || 'docker',
             engineDocker.buildDockerRunArgs({ image: execution.image, mounts, args: engineArgs, platform }),
             { timeoutMs }
         );
