@@ -285,6 +285,31 @@ function engineInstallDir(storageRoot) {
     return path.join(storageRoot, 'engines');
 }
 
+/**
+ * Move a verified staging file onto the final name.
+ *
+ * `rename` is the atomic form and the one to prefer, but Windows refuses it when the
+ * destination exists, so an existing copy is removed first — and if that fails too
+ * (the old binary is running, most likely), a copy is attempted before giving up. The
+ * staging file is removed either way: leaving a `.installing` file in a directory that
+ * is searched for executables is its own small mess.
+ */
+async function promoteInstalledFile(staging, target) {
+    try {
+        await fs.promises.rm(target, { force: true });
+        await fs.promises.rename(staging, target);
+        return;
+    } catch {
+        // Fall through to a copy: on Windows the target can be locked by a running
+        // process, which rename cannot work around but a copy sometimes can.
+    }
+    try {
+        await fs.promises.copyFile(staging, target);
+    } finally {
+        await fs.promises.rm(staging, { force: true });
+    }
+}
+
 async function sha256File(filePath) {
     const hash = crypto.createHash('sha256');
     await new Promise((resolve, reject) => {
@@ -460,22 +485,37 @@ async function installEngine({
 
             await fs.promises.mkdir(installDir, { recursive: true });
             const target = path.join(installDir, executableName(engineId, platform));
-            await fs.promises.copyFile(extracted, target);
+            // Staged beside the target, then promoted only once it has proved it runs.
+            // Copying to the final name first would leave a broken binary behind on a
+            // failed verify — and the install directory is searched ahead of every other
+            // location, so that file would be picked up by the next probe and the next
+            // scan. A failed install must leave nothing for anything else to find.
+            const staging = `${target}.installing`;
+            await fs.promises.rm(staging, { force: true });
+            await fs.promises.copyFile(extracted, staging);
             if (platform !== 'win32') {
-                await fs.promises.chmod(target, 0o755);
+                await fs.promises.chmod(staging, 0o755);
             }
 
-            // Verify by running it. A file of the right name that will not execute —
-            // wrong architecture, blocked by policy — is the failure this catches, and
-            // it is exactly the failure a "downloaded successfully" message would hide.
-            const reportedVersion = verifyVersion
-                ? await verifyVersion(engineId, target)
-                : await defaultVerifyVersion(engineId, target, run);
-            if (!reportedVersion) {
-                throw new Error(
-                    `${target} was installed but reported no version when run; it is present but not executable here`
-                );
+            let reportedVersion;
+            try {
+                // Verify by running it. A file of the right name that will not execute —
+                // wrong architecture, blocked by policy — is the failure this catches,
+                // and it is exactly what a "downloaded successfully" message would hide.
+                reportedVersion = verifyVersion
+                    ? await verifyVersion(engineId, staging)
+                    : await defaultVerifyVersion(engineId, staging, run);
+                if (!reportedVersion) {
+                    throw new Error(
+                        `${assetName} was downloaded but reported no version when run; it is present but not executable here`
+                    );
+                }
+            } catch (verifyError) {
+                await fs.promises.rm(staging, { force: true });
+                throw verifyError;
             }
+
+            await promoteInstalledFile(staging, target);
 
             result.ok = true;
             result.version = reportedVersion;
@@ -566,6 +606,7 @@ module.exports = {
     isRegularFile,
     resolveExtractedExecutable,
     engineInstallDir,
+    promoteInstalledFile,
     sha256File,
     // The one download implementation. Exported so nothing else in the extension grows
     // a second one — a shelled-out `curl` interpolates paths into a command line and

@@ -4548,3 +4548,89 @@ suite('PR #105 third review pass', () => {
 		}
 	});
 });
+
+suite('PR #105 fourth review pass', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('a binary that fails verification leaves nothing behind', async () => {
+		// The install directory is searched ahead of every other location, so a broken
+		// binary left there would be picked up by the next probe and the next scan.
+		const installDir = nodePath.join(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-atomic-')), 'engines');
+		const result = await engineInstall.installEngine({
+			engineId: 'gitleaks',
+			installDir,
+			platform: 'linux',
+			arch: 'x64',
+			allowLatestFallback: false,
+			download: async (_url, destPath) => nodeFs.writeFileSync(destPath, 'ok'),
+			fetchText: async () => { throw new Error('HTTP 404'); },
+			run: async (_command, args) => {
+				const dest = args[args.indexOf('-C') + 1];
+				nodeFs.writeFileSync(nodePath.join(dest, 'gitleaks'), 'not a real binary');
+				return { stdout: '', stderr: '' };
+			},
+			verifyVersion: async () => null
+		});
+
+		assert.strictEqual(result.ok, false);
+		assert.ok(!nodeFs.existsSync(nodePath.join(installDir, 'gitleaks')), 'no broken binary may survive');
+		assert.ok(!nodeFs.existsSync(nodePath.join(installDir, 'gitleaks.installing')), 'and no staging file either');
+	});
+
+	test('a successful install replaces an older copy in place', async () => {
+		const installDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-promote-'));
+		const target = nodePath.join(installDir, 'gitleaks');
+		nodeFs.writeFileSync(target, 'old version');
+		const staging = `${target}.installing`;
+		nodeFs.writeFileSync(staging, 'new version');
+
+		await engineInstall.promoteInstalledFile(staging, target);
+
+		assert.strictEqual(nodeFs.readFileSync(target, 'utf8'), 'new version');
+		assert.ok(!nodeFs.existsSync(staging), 'the staging file must not be left in an executable search path');
+	});
+
+	test('the Java banner is read from whichever stream it lands on', async () => {
+		// `java -version` prints to stderr; the shell form `2>&1` moves it to stdout.
+		// Code that ran the redirected form and read stderr stored a blank version
+		// beside a tick. This is the pre-existing defect, not only the new caller.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		// Comments stripped first: the fix is explained in prose right above the code,
+		// so a raw match would assert against the explanation of the bug.
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+		assert.ok(!/java -version 2>&1/.test(code), 'no shell redirection');
+		assert.ok(!/javaVersion\.stderr/.test(code), 'and no single-stream read');
+		assert.match(code, /execFileAsync\('java', \['-version'\]/);
+
+		// And it actually produces a banner on a machine that has Java.
+		let systemJava = true;
+		try {
+			await require('util').promisify(require('child_process').execFile)('java', ['-version']);
+		} catch {
+			systemJava = false;
+		}
+		if (systemJava) {
+			const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+			const p = new LeakLockSidebarProvider(
+				vscode.Uri.file(__dirname),
+				vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			);
+			p._dependencyStatus = { java: { installed: false, version: null, error: null } };
+			assert.strictEqual(await p._hasJavaRuntime(), true);
+			assert.match(p._dependencyStatus.java.version, /\S/, 'the banner must not be blank');
+			assert.notStrictEqual(p._dependencyStatus.java.version, 'installed, version not reported');
+		}
+	});
+
+	test('an unavailable engine does not guess which runtime failed', () => {
+		// In auto mode the container route can be ruled out because the daemon is not
+		// running, not only because the image is missing. Naming the wrong cause sends
+		// someone pulling an image they already have.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		assert.ok(!/and no Docker image is pulled/.test(src), 'that phrasing asserts a cause it cannot know');
+		assert.match(src, /Docker runtime is unavailable/);
+	});
+});

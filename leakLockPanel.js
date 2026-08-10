@@ -5210,9 +5210,13 @@ class LeakLockPanel {
                     version: null,
                     ok: false,
                     findings: 0,
+                    // "No image pulled" would be a guess: in auto mode the container
+                    // route can equally have been ruled out because the daemon is not
+                    // running or not reachable. Naming the wrong cause sends someone
+                    // pulling an image they already have.
                     note: runtime === 'docker'
-                        ? `Docker image not pulled or Docker not running. Install: ${engine.installHint}`
-                        : `Not installed as a binary${runtime === 'auto' ? ', and no Docker image is pulled' : ''}. Install: ${engine.installHint}`
+                        ? `The Docker runtime is unavailable — the image is not pulled, or Docker is not running or not reachable. Install: ${engine.installHint}`
+                        : `Not installed as a binary${runtime === 'auto' ? ', and the Docker runtime is unavailable (image not pulled, or Docker not running)' : ''}. Install: ${engine.installHint}`
                 }
             };
         }

@@ -20,6 +20,23 @@ const engineDocker = require('./engine-docker');
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 
+/**
+ * Java's version banner, from whichever stream it lands on.
+ *
+ * `java -version` prints to stderr, and the shell form `java -version 2>&1` redirects
+ * it to stdout — so code that runs the redirected form and then reads `stderr` gets an
+ * empty string and stores a blank version beside a ✅. Reading both streams makes the
+ * answer independent of which one it arrived on, and execFile drops the shell entirely.
+ *
+ * @returns {Promise<string>} the first line of the banner
+ * @throws if no JVM is present
+ */
+async function readJavaVersionBanner() {
+    const execFileAsync = require('util').promisify(require('child_process').execFile);
+    const { stdout, stderr } = await execFileAsync('java', ['-version'], { timeout: 15000 });
+    return `${stderr || ''}${stdout || ''}`.trim().split('\n')[0] || 'installed, version not reported';
+}
+
 class LeakLockSidebarProvider {
     /**
      * @param {vscode.Uri} extensionUri
@@ -1214,11 +1231,12 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not available';
         }
 
-        // Check Java
+        // Check Java. Same banner reader the BFG step uses, so the two cannot disagree
+        // about whether a JVM exists — and so neither stores a blank version because it
+        // read the stream Java did not print to.
         try {
-            const javaVersion = await execAsync('java -version 2>&1');
+            this._dependencyStatus.java.version = await readJavaVersionBanner();
             this._dependencyStatus.java.installed = true;
-            this._dependencyStatus.java.version = javaVersion.stderr.split('\n')[0];
         } catch {
             this._dependencyStatus.java.error = 'Java not installed or not in PATH';
         }
@@ -1489,11 +1507,10 @@ class LeakLockSidebarProvider {
             return true;
         }
         try {
-            const execAsync = require('util').promisify(require('child_process').exec);
-            const { stderr } = await execAsync('java -version 2>&1');
+            const banner = await readJavaVersionBanner();
             if (this._dependencyStatus?.java) {
                 this._dependencyStatus.java.installed = true;
-                this._dependencyStatus.java.version = String(stderr || '').split('\n')[0];
+                this._dependencyStatus.java.version = banner;
                 this._dependencyStatus.java.error = null;
             }
             return true;
