@@ -1628,7 +1628,10 @@ class LeakLockSidebarProvider {
             parts.push(`Could not install ${failed.join(' and ')}.`);
         }
         if (dockerError) {
-            parts.push(`Docker step skipped: ${dockerError}`);
+            // "Skipped" would be wrong: dockerError is only set when the Docker work was
+            // attempted and failed. The step that is genuinely skipped — Nosey Parker
+            // not being enabled — never sets it, and says nothing at all.
+            parts.push(`The Docker step for Nosey Parker failed: ${dockerError}`);
         }
 
         if (!missing.length) {

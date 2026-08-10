@@ -5123,3 +5123,52 @@ suite('PR #105 thirteenth review pass', () => {
 		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/a/../b/x', 'win32'), false);
 	});
 });
+
+suite('PR #105 fourteenth review pass', () => {
+	const engines = require('../scan-engines');
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('the image probe uses the same client as the run', async () => {
+		// Otherwise `docker run` could be pointed at an alternate client while the image
+		// probe kept asking the default one, and the two would disagree about whether
+		// the image exists.
+		const present = await engines.isDockerImagePresent('leaklock/definitely-absent:0', {
+			command: 'leaklock-definitely-not-a-command',
+			timeoutMs: 5000
+		});
+		assert.strictEqual(present, false, 'a client that cannot run means the image cannot be confirmed');
+
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'scan-engines.js'), 'utf8');
+		assert.match(src, /isDockerImagePresent\(image, \{ command: dockerExecution\.command \}\)/);
+	});
+
+	test('a Docker step that ran and failed is not reported as skipped', () => {
+		// dockerError is only set when the work was attempted. The genuinely skipped
+		// case - Nosey Parker not enabled - never sets it and says nothing at all.
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._dependencyStatus = { missing: ['Nosey Parker image'] };
+
+		const shown = [];
+		const showWarn = vscode.window.showWarningMessage;
+		const showInfo = vscode.window.showInformationMessage;
+		vscode.window.showWarningMessage = (text) => { shown.push(text); };
+		vscode.window.showInformationMessage = (text) => { shown.push(text); };
+		try {
+			p._reportSetupOutcome('docker pull failed: no space left on device', []);
+		} finally {
+			vscode.window.showWarningMessage = showWarn;
+			vscode.window.showInformationMessage = showInfo;
+		}
+
+		assert.strictEqual(shown.length, 1);
+		assert.match(shown[0], /The Docker step for Nosey Parker failed/);
+		assert.ok(!/skipped/.test(shown[0]), 'it was attempted, not skipped');
+		assert.match(shown[0], /no space left on device/, 'the real cause must survive');
+	});
+});
