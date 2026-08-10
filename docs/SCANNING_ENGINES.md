@@ -122,8 +122,9 @@ leaving the column blank). All of these are declared as unavailable for this eng
 
 **Licensing.** TruffleHog is AGPL-3.0 and Leak Lock is MIT. Leak Lock invokes it as an
 external process — no bundling, no linking, no derived work — so the licences do not
-interact. Nothing is downloaded automatically: the binary arrives only when you press
-**Install TruffleHog** in Dependencies Setup, or you install it yourself.
+interact. Nothing is downloaded automatically: it arrives only when you press
+**Install Dependencies**, or **Install binary** / **Use Docker image** on the TruffleHog
+row in Dependencies Setup — or you install it yourself.
 
 ---
 

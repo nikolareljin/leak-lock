@@ -4634,3 +4634,22 @@ suite('PR #105 fourth review pass', () => {
 		assert.match(src, /Docker runtime is unavailable/);
 	});
 });
+
+suite('PR #105 fifth review pass', () => {
+	const nodeFs = require('fs');
+	const nodePath = require('path');
+
+	test('the docs only name buttons the UI actually renders', () => {
+		// Documentation that names a control which does not exist sends the reader
+		// hunting for it and then doubting the rest of the page.
+		const doc = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'docs', 'SCANNING_ENGINES.md'), 'utf8');
+		const ui = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+
+		for (const label of ['Install Dependencies', 'Install binary', 'Use Docker image']) {
+			assert.ok(ui.includes(label), `${label} must exist in the sidebar to be documented`);
+		}
+		for (const ghost of ['Install TruffleHog', 'Install Gitleaks']) {
+			assert.ok(!doc.includes(`**${ghost}**`), `${ghost} is not a button this UI renders`);
+		}
+	});
+});
