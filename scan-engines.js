@@ -28,6 +28,11 @@ const os = require('os');
 const path = require('path');
 const util = require('util');
 
+// The container fallback. An engine that cannot be installed as a binary — blocked
+// executable policy, no published build for the architecture — is still runnable on a
+// machine that has Docker, and a working scanner beats an accurate excuse.
+const engineDocker = require('./engine-docker');
+
 const execFileAsync = util.promisify(execFile);
 
 const DEFAULT_TIMEOUT_MS = 300000;
@@ -142,6 +147,97 @@ async function runTool(command, args, options = {}) {
     });
 }
 
+/* ------------------------------------------------------------------------- *
+ * How an engine is invoked: native binary, or the project's container image.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Choose a runtime from what is actually available.
+ *
+ * Pure, and separated from the probing, because the policy is the part worth asserting:
+ * `auto` prefers the binary and falls back to the image, an explicit preference is
+ * honoured even when the other runtime would work, and "neither" is a distinct answer
+ * from "binary" so the caller can say which of the two ways to fix it applies.
+ *
+ * @returns {'binary'|'docker'|null}
+ */
+function chooseRuntime({ preference = 'auto', binaryAvailable = false, dockerAvailable = false } = {}) {
+    if (preference === 'binary') {
+        return binaryAvailable ? 'binary' : null;
+    }
+    if (preference === 'docker') {
+        return dockerAvailable ? 'docker' : null;
+    }
+    if (binaryAvailable) {
+        return 'binary';
+    }
+    return dockerAvailable ? 'docker' : null;
+}
+
+/**
+ * Is the image already on this machine?
+ *
+ * Deliberately `image inspect` and never `run`: `docker run` silently pulls a missing
+ * image, which would turn "check whether the fallback is available" into a multi-hundred
+ * megabyte download in the middle of a scan the user thought had started.
+ */
+async function isDockerImagePresent(image, timeoutMs = 20000) {
+    if (!image) {
+        return false;
+    }
+    try {
+        await runTool('docker', engineDocker.buildImageInspectArgs(image), { timeoutMs });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Resolve one engine to a concrete way of running it, or null if there is none.
+ *
+ * @returns {Promise<{mode: 'binary'|'docker', command: string, image: ?string}|null>}
+ */
+async function resolveExecution(engine, options = {}) {
+    const binaryExecution = { mode: 'binary', command: resolveBinary(engine.binary, options.binary), image: null };
+    const image = engineDocker.engineImage(engine.id, options.image);
+    const dockerExecution = { mode: 'docker', command: 'docker', image };
+    const preference = options.runtime || 'auto';
+
+    // Probe only what the preference could select: an explicit `binary` must not pay
+    // for a Docker round trip, and `docker` must not shell out to a binary probe.
+    const binaryAvailable = preference === 'docker'
+        ? false
+        : await engine.probeExecution(binaryExecution);
+    const dockerAvailable = (preference === 'binary' || (preference === 'auto' && binaryAvailable))
+        ? false
+        : (await isDockerImagePresent(image) && await engine.probeExecution(dockerExecution));
+
+    const mode = chooseRuntime({ preference, binaryAvailable, dockerAvailable });
+    if (mode === 'binary') {
+        return binaryExecution;
+    }
+    return mode === 'docker' ? dockerExecution : null;
+}
+
+/**
+ * Run engine arguments through whichever runtime was resolved.
+ *
+ * Adapters below build one argument list and hand it here; only the paths inside it
+ * differ per runtime, and those come from `buildScanMounts` so a mount and its rewritten
+ * path cannot drift apart.
+ */
+async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform } = {}) {
+    if (execution.mode === 'docker') {
+        return runTool(
+            'docker',
+            engineDocker.buildDockerRunArgs({ image: execution.image, mounts, args: engineArgs, platform }),
+            { timeoutMs }
+        );
+    }
+    return runTool(execution.command, engineArgs, { timeoutMs });
+}
+
 /**
  * Read a report file an engine wrote, tolerating "no findings, no file".
  */
@@ -245,9 +341,14 @@ function relativizePath(filePath, repoDir) {
     if (!filePath || !repoDir) {
         return filePath || null;
     }
-    const normalisedRepo = repoDir.endsWith(path.sep) ? repoDir : repoDir + path.sep;
-    if (filePath.startsWith(normalisedRepo)) {
-        return filePath.slice(normalisedRepo.length);
+    // Both separators, always. Under the container runtime the scan root is a POSIX
+    // path (`/repo`) even when the host is Windows, so keying off path.sep alone would
+    // leave every containerised working-tree finding showing as `/repo/src/...`.
+    for (const separator of new Set([path.sep, '/'])) {
+        const prefix = repoDir.endsWith(separator) ? repoDir : repoDir + separator;
+        if (filePath.startsWith(prefix)) {
+            return filePath.slice(prefix.length);
+        }
     }
     return filePath;
 }
@@ -293,18 +394,27 @@ const gitleaksEngine = {
         unavailable: ['verified']
     },
 
-    async isAvailable(options = {}) {
+    /** Does this specific runtime yield a usable Gitleaks? */
+    async probeExecution(execution) {
         try {
-            const { stdout } = await runTool(resolveBinary(this.binary, options.binary), ['--help'], { timeoutMs: 15000 });
+            const { stdout } = await invoke(execution, ['--help'], { timeoutMs: 30000 });
             return detectGitleaksDialect(stdout) !== null;
         } catch {
             return false;
         }
     },
 
+    async isAvailable(options = {}) {
+        return await resolveExecution(this, options) !== null;
+    },
+
     async version(options = {}) {
         try {
-            const { stdout } = await runTool(resolveBinary(this.binary, options.binary), ['version'], { timeoutMs: 15000 });
+            const execution = options.execution || await resolveExecution(this, options);
+            if (!execution) {
+                return null;
+            }
+            const { stdout } = await invoke(execution, ['version'], { timeoutMs: 30000 });
             const text = String(stdout || '').trim();
             // Distribution builds print a placeholder — Ubuntu's package emits
             // "version is set by build process". Rendering that where a version
@@ -319,9 +429,12 @@ const gitleaksEngine = {
     /**
      * @returns {Promise<{findings: Array, surfaces: object, warnings: string[]}>}
      */
-    async scan({ repoDir, binary, timeoutMs, configPath, baselinePath, maxTargetMegabytes, includeWorkingTree = true } = {}) {
-        const bin = resolveBinary(this.binary, binary);
-        const { stdout: helpText } = await runTool(bin, ['--help'], { timeoutMs: 15000 });
+    async scan({ repoDir, binary, runtime, image, timeoutMs, configPath, baselinePath, maxTargetMegabytes, includeWorkingTree = true } = {}) {
+        const execution = await resolveExecution(this, { binary, runtime, image });
+        if (!execution) {
+            throw new Error('Gitleaks is available neither as a binary nor as a pulled Docker image.');
+        }
+        const { stdout: helpText } = await invoke(execution, ['--help'], { timeoutMs: 30000 });
         const dialect = detectGitleaksDialect(helpText);
         if (!dialect) {
             throw new Error('Could not determine the Gitleaks CLI dialect from --help output.');
@@ -332,22 +445,34 @@ const gitleaksEngine = {
         const findings = [];
 
         await withTempDir('leaklock-gitleaks-', async (dir) => {
+            const containerised = execution.mode === 'docker';
+            // The mounts and the paths written into the arguments come from one call:
+            // a mount whose rewritten path drifted would scan an empty directory and
+            // report zero findings, which is indistinguishable from a clean repository.
+            const { mounts, paths } = containerised
+                ? engineDocker.buildScanMounts({ repoDir, reportDir: dir, configPath, baselinePath })
+                : { mounts: [], paths: { repoDir, reportDir: dir, configPath, baselinePath } };
+            // Paths in the report are relative to whatever Gitleaks was pointed at, so
+            // findings are relativised against that, not against the host path.
+            const scanRoot = paths.repoDir;
+
             const passes = includeWorkingTree ? ['history', 'worktree'] : ['history'];
             for (const surface of passes) {
-                const reportPath = path.join(dir, `${surface}.json`);
+                const hostReportPath = path.join(dir, `${surface}.json`);
+                const reportPath = containerised ? `${paths.reportDir}/${surface}.json` : hostReportPath;
                 const args = buildGitleaksArgs(dialect, surface, {
-                    repoDir,
+                    repoDir: scanRoot,
                     reportPath,
-                    configPath,
-                    baselinePath,
+                    configPath: paths.configPath,
+                    baselinePath: paths.baselinePath,
                     maxTargetMegabytes
                 });
                 try {
-                    await runTool(bin, args, { timeoutMs });
-                    const raw = readJsonReport(reportPath);
+                    await invoke(execution, args, { mounts, timeoutMs });
+                    const raw = readJsonReport(hostReportPath);
                     surfaces[surface] = raw.length;
                     for (const item of raw) {
-                        findings.push(mapGitleaksFinding(item, surface, repoDir));
+                        findings.push(mapGitleaksFinding(item, surface, scanRoot));
                     }
                 } catch (error) {
                     // One failing pass must not discard the other's results — the same
@@ -359,8 +484,8 @@ const gitleaksEngine = {
                     // timeout used to make.
                     let recovered = 0;
                     try {
-                        for (const item of readJsonReport(reportPath)) {
-                            findings.push(mapGitleaksFinding(item, surface, repoDir));
+                        for (const item of readJsonReport(hostReportPath)) {
+                            findings.push(mapGitleaksFinding(item, surface, scanRoot));
                             recovered += 1;
                         }
                     } catch {
@@ -377,7 +502,7 @@ const gitleaksEngine = {
             }
         });
 
-        return { findings, surfaces, warnings, dialect };
+        return { findings, surfaces, warnings, dialect, runtime: execution.mode };
     }
 };
 
@@ -390,11 +515,13 @@ const gitleaksEngine = {
  * Verification makes read-only API calls to third-party providers using the discovered
  * credential, so it is opt-in and must never be enabled silently.
  */
-function buildTruffleHogArgs({ repoDir, verify, results }) {
+function buildTruffleHogArgs({ repoDir, repoUrl, verify, results }) {
     // `file://` + a raw path is not a URL on Windows: drive letters and backslashes
     // produce something TruffleHog cannot open, so scanning failed outright there.
-    const repoUrl = pathToFileURL(repoDir).href;
-    const args = ['git', repoUrl, '--json', '--no-update'];
+    // Under the container runtime the caller supplies the in-container URL instead,
+    // because converting the host path would name a directory the container cannot see.
+    const url = repoUrl || pathToFileURL(repoDir).href;
+    const args = ['git', url, '--json', '--no-update'];
     if (verify === false) {
         args.push('--no-verification');
     } else {
@@ -489,19 +616,27 @@ const truffleHogEngine = {
         unavailable: ['endLine', 'startColumn', 'endColumn', 'entropy', 'fingerprint', 'commitMessage', 'author']
     },
 
-    async isAvailable(options = {}) {
+    async probeExecution(execution) {
         try {
-            await runTool(resolveBinary(this.binary, options.binary), ['--version'], { timeoutMs: 15000 });
+            await invoke(execution, ['--version'], { timeoutMs: 30000 });
             return true;
         } catch {
             return false;
         }
     },
 
+    async isAvailable(options = {}) {
+        return await resolveExecution(this, options) !== null;
+    },
+
     async version(options = {}) {
         try {
+            const execution = options.execution || await resolveExecution(this, options);
+            if (!execution) {
+                return null;
+            }
             // TruffleHog prints its version banner on stderr.
-            const { stdout, stderr } = await runTool(resolveBinary(this.binary, options.binary), ['--version'], { timeoutMs: 15000 });
+            const { stdout, stderr } = await invoke(execution, ['--version'], { timeoutMs: 30000 });
             const text = `${stdout || ''}${stderr || ''}`.trim();
             const match = text.match(/\d+\.\d+\.\d+/);
             return match ? `v${match[0]}` : (text.split('\n')[0] || null);
@@ -510,13 +645,27 @@ const truffleHogEngine = {
         }
     },
 
-    async scan({ repoDir, binary, timeoutMs, verify = true, results = 'verified,unknown' } = {}) {
-        const bin = resolveBinary(this.binary, binary);
-        const args = buildTruffleHogArgs({ repoDir, verify, results });
+    async scan({ repoDir, binary, runtime, image, timeoutMs, verify = true, results = 'verified,unknown' } = {}) {
+        const execution = await resolveExecution(this, { binary, runtime, image });
+        if (!execution) {
+            throw new Error('TruffleHog is available neither as a binary nor as a pulled Docker image.');
+        }
+        const containerised = execution.mode === 'docker';
+        const { mounts } = containerised
+            ? engineDocker.buildScanMounts({ repoDir })
+            : { mounts: [] };
+        const args = buildTruffleHogArgs({
+            repoDir,
+            // The container sees the repository at its mount point; the host path would
+            // name a directory that does not exist inside it.
+            repoUrl: containerised ? `file://${engineDocker.CONTAINER_REPO}` : undefined,
+            verify,
+            results
+        });
         const warnings = [];
         let stdout = '';
         try {
-            const output = await runTool(bin, args, { timeoutMs });
+            const output = await invoke(execution, args, { mounts, timeoutMs });
             stdout = output.stdout;
         } catch (error) {
             // TruffleHog exits non-zero when it finds secrets with --fail, and some
@@ -549,7 +698,12 @@ const truffleHogEngine = {
             }
             return finding;
         });
-        return { findings, warnings, verified: findings.filter(f => f.verified === true).length };
+        return {
+            findings,
+            warnings,
+            verified: findings.filter(f => f.verified === true).length,
+            runtime: execution.mode
+        };
     }
 };
 
@@ -570,6 +724,10 @@ module.exports = {
     addBinarySearchDir,
     resolveBinary,
     resetBinaryCache,
+    chooseRuntime,
+    isDockerImagePresent,
+    resolveExecution,
+    invoke,
     detectGitleaksDialect,
     buildGitleaksArgs,
     mapGitleaksFinding,

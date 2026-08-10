@@ -220,6 +220,42 @@ engine**, with its own button on each engine's row — no Docker involved for ei
 Engines land in the extension's global storage — not the extension directory, which is
 replaced on every update — and that directory is searched ahead of the usual locations.
 
+### Or run them from a container
+
+Some machines will not run a downloaded executable at all — policy blocks it, the
+architecture has no published build, a musl host was handed a glibc binary. Each engine
+row therefore offers **Use Docker image** as well, and **Install Dependencies** falls back
+to it automatically when the binary install fails.
+
+| Engine | Image |
+|---|---|
+| Gitleaks | `ghcr.io/gitleaks/gitleaks:v8.30.1` |
+| TruffleHog | `trufflesecurity/trufflehog:3.96.0` |
+
+Both are the projects' own publications, pinned to match the binary versions so the two
+runtimes cannot report different rulesets for one Leak Lock release. Override with
+`leakLock.gitleaks.image` / `leakLock.trufflehog.image` — a mirror, or a different tag.
+
+`leakLock.<engine>.runtime` decides which is used:
+
+- `auto` (default) — native binary, falling back to the image **only if it is already
+  pulled**. Availability is checked with `docker image inspect`, never `docker run`,
+  because `run` pulls silently and would turn a check into a large download mid-scan.
+- `binary` — native only. The engine reports unavailable if it is not installed, rather
+  than quietly switching runtime.
+- `docker` — image only.
+
+The panel names the runtime each engine will use, so a fallback that took over is
+visible rather than merely working. **No Docker on the machine is not a problem**: `auto`
+simply uses the binaries, and Docker is never required to scan.
+
+Two details the container runtime handles for you, both of which otherwise look like the
+tool being broken: git's `safe.directory` check (a bind-mounted repository is owned by a
+different user from the container's point of view, and both engines read git history),
+and the container user (left as root, Gitleaks' report file lands on your disk owned by
+root). Neither writes anything to your git config — a scanner must not modify what it
+audits.
+
 Installs are **per engine and independent**: one failing never blocks the other, and
 never blocks a scan with the engine you do have. Setup no longer reports success while a
 default engine is missing; the panel names what is still absent.
