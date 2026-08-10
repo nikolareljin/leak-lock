@@ -139,6 +139,13 @@ function buildScanMounts({ repoDir, reportDir, configPath, baselinePath } = {}) 
  */
 function describeDockerFailure(message = '') {
     const text = String(message);
+    // Docker missing entirely surfaces as a spawn failure, not as a Docker message —
+    // "spawn docker ENOENT" on posix, "'docker' is not recognized…" on Windows. Left
+    // untranslated it is the least actionable string in the whole flow.
+    if (/enoent/i.test(text) || /is not recognized as an internal or external command/i.test(text)
+        || /command not found/i.test(text)) {
+        return 'Docker is not installed, or is not on the PATH this editor inherited. Install Docker Desktop (Windows/macOS) or the Docker Engine (Linux) and reopen VS Code — or install this engine as a native binary instead, which needs no Docker.';
+    }
     if (/permission denied/i.test(text) && /docker\.sock/i.test(text)) {
         return 'Docker is installed but this user cannot reach it. On Linux: `sudo usermod -aG docker $USER`, then log out and back in.';
     }

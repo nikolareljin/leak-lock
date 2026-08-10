@@ -240,8 +240,11 @@ runtimes cannot report different rulesets for one Leak Lock release. Override wi
 `leakLock.<engine>.runtime` decides which is used:
 
 - `auto` (default) — native binary, falling back to the image **only if it is already
-  pulled**. Availability is checked with `docker image inspect`, never `docker run`,
-  because `run` pulls silently and would turn a check into a large download mid-scan.
+  pulled**. Presence is established with `docker image inspect`, never with a pull:
+  `docker run` fetches a missing image silently, which would turn a check into a large
+  download mid-scan. Once the image is confirmed present, it *is* run once (`--help` or
+  `--version`) to confirm it works here — so a container invocation in the logs before a
+  scan starts is that check, not a pull.
 - `binary` — native only. The engine reports unavailable if it is not installed, rather
   than quietly switching runtime.
 - `docker` — image only.
