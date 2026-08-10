@@ -86,12 +86,31 @@ class LeakLockSidebarProvider {
             async message => {
                 switch (message.command) {
                     case 'installDependencies':
-                        this._installDependencies();
+                        // Same reasoning as installEngine below: nothing consumes this
+                        // promise, so a rejection would vanish and the button would look
+                        // like it did nothing.
+                        this._installDependencies()
+                            .catch(error => {
+                                console.error('Dependency setup failed:', error);
+                                vscode.window.showErrorMessage(`Dependency setup failed: ${error.message}`);
+                            });
                         break;
                     case 'installEngine':
                         // Per-tool, per-method and user-initiated: one engine failing
                         // must never stop another being installed or from scanning.
-                        this._installEngine(message.engineId, { method: message.method });
+                        //
+                        // Awaiting alone would not help — nothing consumes this
+                        // handler's promise — so an unexpected rejection is caught and
+                        // shown. A button that silently does nothing is the worst of the
+                        // available outcomes, and the whole point of this release is
+                        // that setup does not fail quietly.
+                        this._installEngine(message.engineId, { method: message.method })
+                            .catch(error => {
+                                console.error('Engine installation failed:', error);
+                                vscode.window.showErrorMessage(
+                                    `Could not install ${message.engineId}: ${error.message}`
+                                );
+                            });
                         break;
                     case 'selectDirectory':
                         this._selectDirectory();
@@ -110,8 +129,12 @@ class LeakLockSidebarProvider {
                         this._showDependencyDetails = true;
                         this._updateView();
                         // Probing costs a subprocess per engine, so it happens on expand
-                        // rather than on every render. _refreshEngineStatus never rejects.
-                        this._refreshEngineStatus();
+                        // rather than on every render. The engine probes swallow their
+                        // own errors, but the surrounding work does not, so the promise
+                        // is still guarded — an unhandled rejection here would leave the
+                        // block stuck on "Checking installed engines…" with no reason.
+                        this._refreshEngineStatus()
+                            .catch(error => console.error('Engine probe failed:', error));
                         break;
                     case 'hideDependencyDetails':
                         this._showDependencyDetails = false;

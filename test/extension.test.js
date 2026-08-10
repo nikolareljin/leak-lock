@@ -5069,3 +5069,38 @@ suite('PR #105 eleventh review pass', () => {
 		);
 	});
 });
+
+suite('PR #105 twelfth review pass', () => {
+	const nodeFs = require('fs');
+	const nodePath = require('path');
+
+	test('no webview handler drops a rejection on the floor', () => {
+		// Nothing consumes these promises, so awaiting alone would not help: an
+		// unexpected rejection would vanish and the button would look like it did
+		// nothing — the exact silence this release exists to remove.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const handler = src.slice(src.indexOf('onDidReceiveMessage'), src.indexOf('// Check dependencies and git repository'));
+
+		for (const call of ['this._installDependencies()', 'this._installEngine(', 'this._refreshEngineStatus()']) {
+			const at = handler.indexOf(call);
+			assert.ok(at > -1, `${call} must still be dispatched from the handler`);
+			assert.match(
+				handler.slice(at, at + 400),
+				/\.catch\(/,
+				`${call} must guard its promise`
+			);
+		}
+	});
+
+	test('the runtime setting says that auto never pulls an image', () => {
+		// "Falls back to Docker" without that qualifier reads as a promise the code does
+		// not make, and leaves someone unable to explain why auto reports unavailable.
+		const pkg = require('../package.json');
+		for (const engine of ['gitleaks', 'trufflehog']) {
+			const property = pkg.contributes.configuration.properties[`leakLock.${engine}.runtime`];
+			assert.match(property.description, /never pulls one itself/, engine);
+			assert.match(property.description, /Dependencies Setup/, `${engine} must say where to pull it`);
+			assert.match(property.enumDescriptions[0], /already been pulled/, `${engine} auto description`);
+		}
+	});
+});

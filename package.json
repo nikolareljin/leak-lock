@@ -154,11 +154,11 @@
             "docker"
           ],
           "enumDescriptions": [
-            "Use the native binary; fall back to the Docker image only if no binary is available.",
+            "Use the native binary. Fall back to the Docker image only when no binary is available AND the image has already been pulled - a scan never pulls one.",
             "Use the native binary only. Gitleaks is reported unavailable if it is not installed.",
             "Use the pinned Docker image only. Requires a running Docker Engine and the image already pulled."
           ],
-          "description": "How to run Gitleaks. 'auto' prefers the native binary and falls back to the pulled Docker image."
+          "description": "How to run Gitleaks. 'auto' prefers the native binary and falls back to an already-pulled Docker image; it never pulls one itself, so 'auto' still reports unavailable if neither is present. Pull the image from Dependencies Setup."
         },
         "leakLock.gitleaks.image": {
           "type": "string",
@@ -189,11 +189,11 @@
             "docker"
           ],
           "enumDescriptions": [
-            "Use the native binary; fall back to the Docker image only if no binary is available.",
+            "Use the native binary. Fall back to the Docker image only when no binary is available AND the image has already been pulled - a scan never pulls one.",
             "Use the native binary only. TruffleHog is reported unavailable if it is not installed.",
             "Use the pinned Docker image only. Requires a running Docker Engine and the image already pulled."
           ],
-          "description": "How to run TruffleHog. 'auto' prefers the native binary and falls back to the pulled Docker image."
+          "description": "How to run TruffleHog. 'auto' prefers the native binary and falls back to an already-pulled Docker image; it never pulls one itself, so 'auto' still reports unavailable if neither is present. Pull the image from Dependencies Setup."
         },
         "leakLock.trufflehog.image": {
           "type": "string",
