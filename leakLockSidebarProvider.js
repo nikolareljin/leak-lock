@@ -92,6 +92,12 @@ class LeakLockSidebarProvider {
                         this._installDependencies()
                             .catch(error => {
                                 console.error('Dependency setup failed:', error);
+                                // Belt and braces with the finally inside
+                                // _installDependencies: whichever path a failure takes,
+                                // the panel must not be left showing an install that is
+                                // no longer running.
+                                this._isInstalling = false;
+                                this._updateView();
                                 vscode.window.showErrorMessage(`Dependency setup failed: ${error.message}`);
                             });
                         break;
@@ -1516,24 +1522,32 @@ class LeakLockSidebarProvider {
             }
         }
 
-        // BFG depends on Java and on nothing else. Downloading it inside the Docker
-        // block meant a missing Docker skipped it, which is the same "one component
-        // failing cancels an unrelated one" defect this release exists to remove.
-        await this._installBfg();
+        // Everything after the Docker step runs under a finally that clears the
+        // installing flag. Without it, an unexpected throw anywhere below leaves the
+        // panel permanently mid-install — spinner up, every button disabled — and only
+        // a window reload recovers it. The failure is unlikely; the state it leaves is
+        // unrecoverable, which is the combination worth guarding.
+        try {
+            // BFG depends on Java and on nothing else. Downloading it inside the Docker
+            // block meant a missing Docker skipped it, which is the same "one component
+            // failing cancels an unrelated one" defect this release exists to remove.
+            await this._installBfg();
 
-        // The native engines, each on its own. Reported per engine below rather than
-        // rolled into one verdict — a run where Gitleaks installs and TruffleHog does
-        // not is a partial success, and calling it either "installed" or "failed" is a
-        // lie in one direction or the other.
-        for (const engineId of engineInstall.INSTALLABLE_ENGINE_IDS) {
-            const already = (this._engineStatus || []).find(e => e.id === engineId);
-            if (already?.installed) {
-                continue;
+            // The native engines, each on its own. Reported per engine below rather than
+            // rolled into one verdict — a run where Gitleaks installs and TruffleHog
+            // does not is a partial success, and calling it either "installed" or
+            // "failed" is a lie in one direction or the other.
+            for (const engineId of engineInstall.INSTALLABLE_ENGINE_IDS) {
+                const already = (this._engineStatus || []).find(e => e.id === engineId);
+                if (already?.installed) {
+                    continue;
+                }
+                engineResults.push(await this._installEngine(engineId, { silent: true }));
             }
-            engineResults.push(await this._installEngine(engineId, { silent: true }));
+        } finally {
+            this._isInstalling = false;
         }
 
-        this._isInstalling = false;
         await this._checkDependencies();
         this._reportSetupOutcome(dockerError, engineResults);
         this._updateView();

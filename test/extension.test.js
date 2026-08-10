@@ -5172,3 +5172,41 @@ suite('PR #105 fourteenth review pass', () => {
 		assert.match(shown[0], /no space left on device/, 'the real cause must survive');
 	});
 });
+
+suite('PR #105 fifteenth review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('a failure mid-setup does not leave the panel stuck installing', async () => {
+		// The failure is unlikely; the state it leaves is unrecoverable without a window
+		// reload - spinner up, every button disabled - which is the combination worth
+		// guarding rather than the probability.
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'))),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._engineStatus = [];
+		p._dependencyStatus = { docker: {}, noseyparker: {}, java: { installed: false }, bfg: {}, missing: [] };
+		p._updateView = () => {};
+		p._checkDependencies = async () => {};
+		// Something below the Docker step throws unexpectedly.
+		p._installBfg = async () => { throw new Error('unexpected'); };
+
+		const getConfiguration = vscode.workspace.getConfiguration;
+		vscode.workspace.getConfiguration = () => ({ get: () => ['gitleaks'] });
+
+		let rejected = false;
+		try {
+			await p._installDependencies();
+		} catch {
+			rejected = true;
+		} finally {
+			vscode.workspace.getConfiguration = getConfiguration;
+		}
+
+		assert.strictEqual(rejected, true, 'the error still propagates to the handler');
+		assert.strictEqual(p._isInstalling, false, 'but the panel is not left mid-install');
+	});
+});
