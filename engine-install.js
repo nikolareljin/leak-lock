@@ -288,20 +288,32 @@ function engineInstallDir(storageRoot) {
 /**
  * Move a verified staging file onto the final name.
  *
- * `rename` is the atomic form and the one to prefer, but Windows refuses it when the
- * destination exists, so an existing copy is removed first — and if that fails too
- * (the old binary is running, most likely), a copy is attempted before giving up. The
- * staging file is removed either way: leaving a `.installing` file in a directory that
- * is searched for executables is its own small mess.
+ * Plain `rename` first, and nothing before it: on POSIX rename replaces the destination
+ * atomically, so at no instant is the engine absent. Deleting the old copy first would
+ * throw that away — and would leave the user with no engine at all if the rename then
+ * failed, having destroyed a binary that was working.
+ *
+ * Windows is the reason the other branches exist: it refuses to rename onto an existing
+ * file, so there the old copy has to go first, and if even that fails (the old binary is
+ * running) a copy is the last resort. The staging file is removed on every path —
+ * leaving a `.installing` file in a directory that is searched for executables is its
+ * own small mess.
  */
 async function promoteInstalledFile(staging, target) {
+    try {
+        await fs.promises.rename(staging, target);
+        return;
+    } catch {
+        // Windows: EEXIST/EPERM onto an existing destination. Also covers a staging file
+        // that ended up on another device, where rename cannot work at all.
+    }
     try {
         await fs.promises.rm(target, { force: true });
         await fs.promises.rename(staging, target);
         return;
     } catch {
-        // Fall through to a copy: on Windows the target can be locked by a running
-        // process, which rename cannot work around but a copy sometimes can.
+        // The destination may be locked by a running process; a copy sometimes succeeds
+        // where a rename cannot.
     }
     try {
         await fs.promises.copyFile(staging, target);

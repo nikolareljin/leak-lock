@@ -4535,15 +4535,26 @@ suite('PR #105 third review pass', () => {
 
 		// It writes the body to the destination and rejects a non-OK response rather
 		// than leaving a truncated or HTML-error file where a JAR should be.
+		//
+		// fetch is stubbed rather than called for real: a unit test that depends on
+		// github.com being reachable fails for reasons that have nothing to do with the
+		// code, and a suite that is flaky offline stops being run.
 		const nodeOs = require('os');
 		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-dl-'));
+		const realFetch = globalThis.fetch;
 		try {
+			globalThis.fetch = async () => ({ ok: false, status: 404 });
 			await assert.rejects(
-				engineInstall.downloadFile('https://github.com/nikolareljin/leak-lock/releases/download/v0.0.0-does-not-exist/nothing.bin', nodePath.join(dir, 'out.bin')),
+				engineInstall.downloadFile('https://example.invalid/nothing.bin', nodePath.join(dir, 'out.bin')),
 				/HTTP 404/
 			);
 			assert.ok(!nodeFs.existsSync(nodePath.join(dir, 'out.bin')), 'a failed download leaves no file');
+
+			globalThis.fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode('jar bytes').buffer });
+			await engineInstall.downloadFile('https://example.invalid/bfg.jar', nodePath.join(dir, 'out.bin'));
+			assert.strictEqual(nodeFs.readFileSync(nodePath.join(dir, 'out.bin'), 'utf8'), 'jar bytes');
 		} finally {
+			globalThis.fetch = realFetch;
 			nodeFs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
@@ -4650,6 +4661,42 @@ suite('PR #105 fifth review pass', () => {
 		}
 		for (const ghost of ['Install TruffleHog', 'Install Gitleaks']) {
 			assert.ok(!doc.includes(`**${ghost}**`), `${ghost} is not a button this UI renders`);
+		}
+	});
+});
+
+suite('PR #105 sixth review pass', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('promotion replaces the old binary without a window where none exists', async () => {
+		// POSIX rename replaces atomically. Deleting the old copy first would throw that
+		// away and, if the rename then failed, would leave the user with no engine at
+		// all — having destroyed one that worked.
+		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-atomic2-'));
+		try {
+			const target = nodePath.join(dir, 'gitleaks');
+			nodeFs.writeFileSync(target, 'old');
+			nodeFs.writeFileSync(`${target}.installing`, 'new');
+
+			const realRm = nodeFs.promises.rm;
+			const rmTargets = [];
+			nodeFs.promises.rm = async (p, opts) => { rmTargets.push(p); return realRm(p, opts); };
+			try {
+				await engineInstall.promoteInstalledFile(`${target}.installing`, target);
+			} finally {
+				nodeFs.promises.rm = realRm;
+			}
+
+			assert.strictEqual(nodeFs.readFileSync(target, 'utf8'), 'new');
+			assert.ok(
+				!rmTargets.includes(target),
+				'the working binary must not be deleted before the replacement is in place'
+			);
+		} finally {
+			nodeFs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });
