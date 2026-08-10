@@ -1195,9 +1195,10 @@ class LeakLockSidebarProvider {
     }
 
     async _checkDependencies() {
-        const { exec } = require('child_process');
-        const util = require('util');
-        const execAsync = util.promisify(exec);
+        // execFile, not exec: no shell means no quoting rules to get wrong and no PATH
+        // resolution differences between platforms, and the image name travels as one
+        // argument however it is written.
+        const execFileAsync = require('util').promisify(require('child_process').execFile);
 
         this._dependencyStatus = {
             docker: { installed: false, version: null, error: null },
@@ -1208,13 +1209,13 @@ class LeakLockSidebarProvider {
 
         // Check Docker
         try {
-            const dockerVersion = await execAsync('docker --version');
+            const dockerVersion = await execFileAsync('docker', ['--version']);
             this._dependencyStatus.docker.installed = true;
             this._dependencyStatus.docker.version = dockerVersion.stdout.trim();
 
             // Check if Docker daemon is running
             try {
-                await execAsync('docker info');
+                await execFileAsync('docker', ['info']);
             } catch {
                 this._dependencyStatus.docker.error = 'Docker daemon not running';
                 this._dependencyStatus.docker.installed = false;
@@ -1223,12 +1224,18 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.docker.error = 'Docker not installed or not in PATH';
         }
 
-        // Check Nosey Parker image
+        // Check Nosey Parker image.
+        //
+        // `docker images <ref>` exits 0 whether or not the image exists — it prints a
+        // header and no rows — so this check passed on any machine that had Docker at
+        // all, and the panel showed a ✅ beside an image that was never pulled. That is
+        // the same defect as the rest of this release, one layer down. `image inspect`
+        // exits non-zero when the image is absent, which is the question being asked.
         try {
-            await execAsync(`docker images ${scanEngineConfig.NOSEYPARKER_IMAGE} --format "table {{.Repository}}"`);
+            await execFileAsync('docker', engineDocker.buildImageInspectArgs(scanEngineConfig.NOSEYPARKER_IMAGE));
             this._dependencyStatus.noseyparker.installed = true;
         } catch {
-            this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not available';
+            this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not pulled';
         }
 
         // Check Java. Same banner reader the BFG step uses, so the two cannot disagree
@@ -1449,13 +1456,12 @@ class LeakLockSidebarProvider {
                 }, async (progress) => {
                     progress.report({ increment: 20, message: "Checking Docker..." });
 
-                    // Check if Docker is available
-                    const { exec } = require('child_process');
-                    const util = require('util');
-                    const execAsync = util.promisify(exec);
+                    // execFile with an argument list, like every other subprocess in
+                    // this flow: no shell, so no quoting or PATH-resolution differences.
+                    const execFileAsync = require('util').promisify(require('child_process').execFile);
 
                     try {
-                        await execAsync('docker --version');
+                        await execFileAsync('docker', ['--version']);
                     } catch {
                         throw new Error('Docker is not installed or not accessible. Please install Docker first.');
                     }
@@ -1463,7 +1469,11 @@ class LeakLockSidebarProvider {
                     progress.report({ increment: 30, message: "Pulling Nosey Parker image..." });
 
                     // Pull the Nosey Parker Docker image
-                    await execAsync(`docker pull ${scanEngineConfig.NOSEYPARKER_IMAGE}`, { timeout: 300000 });
+                    await execFileAsync(
+                        'docker',
+                        engineDocker.buildImagePullArgs(scanEngineConfig.NOSEYPARKER_IMAGE),
+                        { timeout: 300000 }
+                    );
 
                     progress.report({ increment: 20, message: "Docker components ready." });
                 });
