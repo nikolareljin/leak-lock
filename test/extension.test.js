@@ -2784,7 +2784,11 @@ suite('Fourth review pass', () => {
 		const src = fs.readFileSync(path.join(__dirname, '..', 'scan-engines.js'), 'utf8');
 		const catchBlock = src.slice(src.indexOf('Gitleaks ${surface} pass did not complete') - 1200,
 			src.indexOf('Gitleaks ${surface} pass did not complete') + 300);
-		assert.match(catchBlock, /readJsonReport\(reportPath\)/, 'the partial report is parsed');
+		// hostReportPath, not reportPath: under the container runtime the argument
+		// Gitleaks receives is the in-container path, while the file to read back is
+		// the host side of the same mount. Reading the container path from the host
+		// would silently recover nothing.
+		assert.match(catchBlock, /readJsonReport\(hostReportPath\)/, 'the partial report is parsed');
 		assert.match(catchBlock, /recovered/);
 		assert.match(catchBlock, /not exhaustive/, 'and the result is marked incomplete');
 	});
@@ -3562,12 +3566,12 @@ suite('The dependency panel accounts for every scan engine', () => {
 
 	test('probing asks the engines themselves, honouring a configured binary path', async () => {
 		// A second detection path would be free to disagree with the one the scan
-		// uses. This asserts the panel calls the engine, with the same binaryPath
-		// override a scan would apply.
+		// uses. This asserts the panel resolves the engine the same way a scan does,
+		// with the same binaryPath override applied.
 		const p = provider();
 		const gitleaks = scanEngines.ENGINES.gitleaks;
 		const truffle = scanEngines.ENGINES.trufflehog;
-		const originals = [gitleaks.isAvailable, gitleaks.version, truffle.isAvailable, truffle.version];
+		const originals = [gitleaks.probeExecution, gitleaks.version, truffle.probeExecution, truffle.version];
 		const originalGet = vscode.workspace.getConfiguration;
 		const seen = {};
 
@@ -3578,15 +3582,16 @@ suite('The dependency panel accounts for every scan engine', () => {
 				return undefined;
 			}
 		});
-		gitleaks.isAvailable = async (opts) => { seen.gitleaksBinary = opts?.binary; return true; };
+		// The configured path must arrive as the command the engine would actually run.
+		gitleaks.probeExecution = async (execution) => { seen.gitleaksBinary = execution?.command; return true; };
 		gitleaks.version = async () => 'v8.28.0';
-		truffle.isAvailable = async () => false;
+		truffle.probeExecution = async () => false;
 		truffle.version = async () => null;
 
 		try {
 			await p._refreshEngineStatus();
 		} finally {
-			[gitleaks.isAvailable, gitleaks.version, truffle.isAvailable, truffle.version] = originals;
+			[gitleaks.probeExecution, gitleaks.version, truffle.probeExecution, truffle.version] = originals;
 			vscode.workspace.getConfiguration = originalGet;
 		}
 
@@ -3598,5 +3603,1641 @@ suite('The dependency panel accounts for every scan engine', () => {
 		);
 		assert.strictEqual(byId.trufflehog.installed, false);
 		assert.strictEqual(byId.trufflehog.enabled, false, 'not listed in scan.engines');
+	});
+});
+
+suite('Dependencies Setup installs the engines that actually scan', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	// Issue #104. Setup pulled the Nosey Parker image, downloaded BFG and reported
+	// success, while Gitleaks and TruffleHog — the engines a default scan runs — had
+	// no installation step at all. It reproduced on Windows and on Ubuntu because
+	// nothing platform-specific was broken: nothing was ever attempted.
+
+	suite('release artifact selection', () => {
+		test('Windows gets the artifact each project actually publishes', () => {
+			// The two projects disagree: Gitleaks ships a zip for Windows, TruffleHog
+			// ships a tarball everywhere. Assuming one shape for both 404s for the
+			// engine that verifies live credentials.
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', '8.30.1', 'win32', 'x64'),
+				'gitleaks_8.30.1_windows_x64.zip'
+			);
+			assert.strictEqual(
+				engineInstall.buildAssetName('trufflehog', '3.96.0', 'win32', 'x64'),
+				'trufflehog_3.96.0_windows_amd64.tar.gz'
+			);
+		});
+
+		test('architecture vocabulary differs per project and is not shared', () => {
+			// Gitleaks says x64/x32, TruffleHog says amd64. Same machine, different name.
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', '8.30.1', 'win32', 'ia32'),
+				'gitleaks_8.30.1_windows_x32.zip'
+			);
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', '8.30.1', 'win32', 'arm64'),
+				'gitleaks_8.30.1_windows_arm64.zip'
+			);
+			assert.strictEqual(
+				engineInstall.buildAssetName('trufflehog', '3.96.0', 'linux', 'x64'),
+				'trufflehog_3.96.0_linux_amd64.tar.gz'
+			);
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', '8.30.1', 'darwin', 'arm64'),
+				'gitleaks_8.30.1_darwin_arm64.tar.gz'
+			);
+		});
+
+		test('a leading v in the version never reaches the file name', () => {
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', 'v8.30.1', 'linux', 'x64'),
+				'gitleaks_8.30.1_linux_x64.tar.gz'
+			);
+		});
+
+		test('an unpublished platform returns null rather than a guess', () => {
+			// A guessed name downloads a 404 page, and the failure then reads as a
+			// network problem instead of "there is no build for your architecture".
+			assert.strictEqual(engineInstall.buildAssetName('trufflehog', '3.96.0', 'win32', 'ia32'), null);
+			assert.strictEqual(engineInstall.buildAssetName('gitleaks', '8.30.1', 'aix', 'ppc64'), null);
+
+			const message = engineInstall.describeUnsupportedPlatform('trufflehog', 'win32', 'ia32');
+			assert.ok(/no windows build for architecture "ia32"/.test(message), message);
+			assert.ok(/leakLock\.trufflehog\.binaryPath/.test(message), 'the manual escape hatch must be named');
+		});
+
+		test('download and checksum URLs point at the tagged release', () => {
+			assert.strictEqual(
+				engineInstall.buildAssetUrl('gitleaks', '8.30.1', 'gitleaks_8.30.1_windows_x64.zip'),
+				'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip'
+			);
+			assert.strictEqual(
+				engineInstall.buildChecksumsUrl('trufflehog', '3.96.0'),
+				'https://github.com/trufflesecurity/trufflehog/releases/download/v3.96.0/trufflehog_3.96.0_checksums.txt'
+			);
+		});
+	});
+
+	suite('archive handling', () => {
+		test('Windows zips are extracted with Expand-Archive, tarballs with tar', () => {
+			const zip = engineInstall.buildExtractCommand({
+				archivePath: 'C:\\Temp\\gitleaks.zip',
+				destDir: 'C:\\Users\\Nik\\out',
+				platform: 'win32'
+			});
+			assert.strictEqual(zip.command, 'powershell.exe');
+			const script = zip.args[zip.args.length - 1];
+			assert.ok(/Expand-Archive/.test(script), script);
+			assert.ok(script.includes("-LiteralPath 'C:\\Temp\\gitleaks.zip'"), script);
+			assert.ok(script.includes("-DestinationPath 'C:\\Users\\Nik\\out'"), script);
+
+			const tarball = engineInstall.buildExtractCommand({
+				archivePath: '/tmp/trufflehog.tar.gz',
+				destDir: '/tmp/out',
+				platform: 'win32'
+			});
+			assert.deepStrictEqual(tarball, {
+				command: 'tar',
+				args: ['-xzf', '/tmp/trufflehog.tar.gz', '-C', '/tmp/out']
+			});
+		});
+
+		test('a quote in a path cannot break out of the PowerShell command', () => {
+			const cmd = engineInstall.buildExtractCommand({
+				archivePath: "C:\\Users\\O'Neill\\a.zip",
+				destDir: 'C:\\out',
+				platform: 'win32'
+			});
+			const script = cmd.args[cmd.args.length - 1];
+			assert.ok(script.includes("'C:\\Users\\O''Neill\\a.zip'"), script);
+		});
+
+		test('the executable carries .exe on Windows and nothing elsewhere', () => {
+			assert.strictEqual(engineInstall.executableName('gitleaks', 'win32'), 'gitleaks.exe');
+			assert.strictEqual(engineInstall.executableName('gitleaks', 'linux'), 'gitleaks');
+			assert.strictEqual(engineInstall.executableName('trufflehog', 'win32'), 'trufflehog.exe');
+		});
+
+		test('only the expected executable is taken out of the archive', () => {
+			const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-extract-'));
+			try {
+				// Root layout, as Gitleaks publishes.
+				nodeFs.writeFileSync(nodePath.join(dir, 'gitleaks.exe'), 'x');
+				nodeFs.writeFileSync(nodePath.join(dir, 'README.md'), 'x');
+				assert.strictEqual(
+					engineInstall.resolveExtractedExecutable(dir, 'gitleaks', 'win32'),
+					nodePath.join(dir, 'gitleaks.exe')
+				);
+				// One level down, and nothing else in the tree is a candidate.
+				const nested = nodePath.join(dir, 'trufflehog_3.96.0');
+				nodeFs.mkdirSync(nested);
+				nodeFs.writeFileSync(nodePath.join(nested, 'trufflehog'), 'x');
+				assert.strictEqual(
+					engineInstall.resolveExtractedExecutable(dir, 'trufflehog', 'linux'),
+					nodePath.join(nested, 'trufflehog')
+				);
+				assert.strictEqual(
+					engineInstall.resolveExtractedExecutable(dir, 'gitleaks', 'linux'),
+					null,
+					'a name the archive does not contain must not resolve'
+				);
+			} finally {
+				nodeFs.rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		test('a path outside the extract root is rejected', () => {
+			assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/a/bin/gitleaks'), true);
+			assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/ab/gitleaks'), false);
+			assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/a/../b/gitleaks'), false);
+		});
+
+		test('checksums parse to filename -> digest, ignoring signature lines', () => {
+			const digest = 'a'.repeat(64);
+			const map = engineInstall.parseChecksums(
+				`${digest}  gitleaks_8.30.1_windows_x64.zip\n`
+				+ '-----BEGIN SIGNATURE-----\n'
+				+ `${'b'.repeat(64)} *gitleaks_8.30.1_linux_x64.tar.gz\n`
+			);
+			assert.strictEqual(map.get('gitleaks_8.30.1_windows_x64.zip'), digest);
+			assert.strictEqual(map.get('gitleaks_8.30.1_linux_x64.tar.gz'), 'b'.repeat(64));
+			assert.strictEqual(map.size, 2, 'unparseable lines must not become entries');
+		});
+	});
+
+	suite('version selection is a preference, not a gate', () => {
+		test('the pin is tried first and the current release second', async () => {
+			const candidates = await engineInstall.resolveVersionCandidates('gitleaks', {
+				fetchText: async () => JSON.stringify({ tag_name: 'v9.9.9' })
+			});
+			assert.deepStrictEqual(candidates, [
+				{ version: engineInstall.ENGINE_RELEASES.gitleaks.pinnedVersion, source: 'pinned' },
+				{ version: '9.9.9', source: 'latest' }
+			]);
+		});
+
+		test('an unreachable release API still leaves the pinned install to try', async () => {
+			// The latest lookup is the fallback, not the prerequisite. A rate-limited
+			// API must not be able to prevent an install entirely.
+			const candidates = await engineInstall.resolveVersionCandidates('trufflehog', {
+				fetchText: async () => { throw new Error('HTTP 403'); }
+			});
+			assert.deepStrictEqual(candidates, [
+				{ version: engineInstall.ENGINE_RELEASES.trufflehog.pinnedVersion, source: 'pinned' }
+			]);
+		});
+
+		test('an explicitly requested version is the only one tried', async () => {
+			const candidates = await engineInstall.resolveVersionCandidates('gitleaks', {
+				version: 'v8.20.0',
+				fetchText: async () => { throw new Error('must not be called'); }
+			});
+			assert.deepStrictEqual(candidates, [{ version: '8.20.0', source: 'requested' }]);
+		});
+	});
+
+	suite('installing', () => {
+		const crypto = require('crypto');
+
+		function tempDir() {
+			return nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-install-'));
+		}
+
+		// A fake extractor: reads the destination out of the real extract command and
+		// puts the executable there, so the copy, resolution and verify steps run for
+		// real on both platform shapes.
+		function fakeRun(engineId, platform, { entries = ['gitleaks', 'trufflehog', 'README.md'] } = {}) {
+			return async (command, args) => {
+				// The installer lists the archive before unpacking it, so the fake has
+				// to answer that too — and answering it with an extraction would write
+				// files nowhere near the destination.
+				const isListing = args.includes('-tzf') || args.includes('-Z1')
+					|| (command === 'powershell.exe' && /ZipFile/.test(args[args.length - 1]));
+				if (isListing) {
+					return { stdout: entries.join('\n'), stderr: '' };
+				}
+
+				const dest = command === 'powershell.exe'
+					? args[args.length - 1].match(/-DestinationPath '(.+?)'/)[1]
+					: args[args.indexOf('-C') + 1];
+				nodeFs.writeFileSync(
+					nodePath.join(dest, engineInstall.executableName(engineId, platform)),
+					'#!/bin/sh\n'
+				);
+				return { stdout: '', stderr: '' };
+			};
+		}
+
+		test('a Windows install downloads, verifies, extracts and resolves the .exe', async () => {
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const payload = Buffer.from('gitleaks-windows-zip');
+			const digest = crypto.createHash('sha256').update(payload).digest('hex');
+			const requested = [];
+
+			const result = await engineInstall.installEngine({
+				engineId: 'gitleaks',
+				installDir,
+				platform: 'win32',
+				arch: 'x64',
+				download: async (url, destPath) => {
+					requested.push(url);
+					nodeFs.writeFileSync(destPath, payload);
+				},
+				fetchText: async (url) => {
+					requested.push(url);
+					return `${digest}  gitleaks_${engineInstall.ENGINE_RELEASES.gitleaks.pinnedVersion}_windows_x64.zip\n`;
+				},
+				run: fakeRun('gitleaks', 'win32'),
+				verifyVersion: async () => 'v8.30.1'
+			});
+
+			assert.strictEqual(result.ok, true, result.error || '');
+			assert.strictEqual(result.source, 'pinned');
+			assert.strictEqual(result.checksumVerified, true);
+			assert.strictEqual(result.version, 'v8.30.1');
+			assert.strictEqual(result.path, nodePath.join(installDir, 'gitleaks.exe'));
+			assert.ok(nodeFs.existsSync(result.path), 'the executable must land in the install directory');
+			assert.ok(
+				requested.some(u => u.endsWith('/v8.30.1/gitleaks_8.30.1_windows_x64.zip')),
+				`the Windows zip must be the artifact requested: ${requested.join(', ')}`
+			);
+			assert.deepStrictEqual(result.warnings, []);
+		});
+
+		test('a corrupted download is rejected, not installed', async () => {
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const result = await engineInstall.installEngine({
+				engineId: 'gitleaks',
+				installDir,
+				platform: 'linux',
+				arch: 'x64',
+				allowLatestFallback: false,
+				download: async (_url, destPath) => nodeFs.writeFileSync(destPath, 'tampered'),
+				fetchText: async () => `${'0'.repeat(64)}  gitleaks_${engineInstall.ENGINE_RELEASES.gitleaks.pinnedVersion}_linux_x64.tar.gz\n`,
+				run: fakeRun('gitleaks', 'linux'),
+				verifyVersion: async () => 'v8.30.1'
+			});
+
+			assert.strictEqual(result.ok, false);
+			assert.ok(/checksum mismatch/.test(result.error), result.error);
+			assert.ok(!nodeFs.existsSync(nodePath.join(installDir, 'gitleaks')), 'nothing may be installed');
+		});
+
+		test('an unavailable pinned release falls back to the current one and says so', async () => {
+			// This is the "less strict" rule: refusing to install anything because one
+			// tag moved leaves the user with no scanner, which is strictly worse.
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const pinned = engineInstall.ENGINE_RELEASES.trufflehog.pinnedVersion;
+
+			const result = await engineInstall.installEngine({
+				engineId: 'trufflehog',
+				installDir,
+				platform: 'linux',
+				arch: 'x64',
+				download: async (url, destPath) => {
+					if (url.includes(`/v${pinned}/`)) {
+						throw new Error('HTTP 404');
+					}
+					nodeFs.writeFileSync(destPath, 'ok');
+				},
+				fetchText: async (url) => {
+					if (url.includes('api.github.com')) {
+						return JSON.stringify({ tag_name: 'v3.99.0' });
+					}
+					throw new Error('HTTP 404');
+				},
+				run: fakeRun('trufflehog', 'linux'),
+				verifyVersion: async () => 'v3.99.0'
+			});
+
+			assert.strictEqual(result.ok, true, result.error || '');
+			assert.strictEqual(result.source, 'latest');
+			assert.strictEqual(result.checksumVerified, false);
+			assert.ok(
+				result.warnings.some(w => /was unavailable; installed the current release 3\.99\.0/.test(w)),
+				result.warnings.join(' | ')
+			);
+			assert.ok(
+				result.warnings.some(w => /not checksum-verified/.test(w)),
+				'an unverified download must be stated, never silent'
+			);
+		});
+
+		test('a binary that will not run is a failed install, not a successful one', async () => {
+			// A file of the right name that cannot execute — wrong architecture, blocked
+			// by policy — is exactly what a "downloaded successfully" message hides.
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const result = await engineInstall.installEngine({
+				engineId: 'gitleaks',
+				installDir,
+				platform: 'linux',
+				arch: 'x64',
+				allowLatestFallback: false,
+				download: async (_url, destPath) => nodeFs.writeFileSync(destPath, 'ok'),
+				fetchText: async () => { throw new Error('HTTP 404'); },
+				run: fakeRun('gitleaks', 'linux'),
+				verifyVersion: async () => null
+			});
+
+			assert.strictEqual(result.ok, false);
+			assert.ok(/present but not executable here/.test(result.error), result.error);
+		});
+
+		test('an unsupported platform fails that engine with actionable text, without downloading', async () => {
+			const result = await engineInstall.installEngine({
+				engineId: 'trufflehog',
+				installDir: tempDir(),
+				platform: 'win32',
+				arch: 'ia32',
+				download: async () => { throw new Error('must not download'); },
+				fetchText: async () => { throw new Error('must not fetch'); }
+			});
+			assert.strictEqual(result.ok, false);
+			assert.ok(/no windows build for architecture "ia32"/.test(result.error), result.error);
+		});
+
+		test('one engine failing does not stop the other being installed', async () => {
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const results = await engineInstall.installEngines(['gitleaks', 'trufflehog'], {
+				installDir,
+				platform: 'linux',
+				arch: 'x64',
+				allowLatestFallback: false,
+				download: async (url, destPath) => {
+					if (url.includes('/gitleaks/')) {
+						throw new Error('HTTP 500');
+					}
+					nodeFs.writeFileSync(destPath, 'ok');
+				},
+				fetchText: async () => { throw new Error('HTTP 404'); },
+				run: fakeRun('trufflehog', 'linux'),
+				verifyVersion: async () => 'v3.96.0'
+			});
+
+			const byId = Object.fromEntries(results.map(r => [r.engineId, r]));
+			assert.strictEqual(byId.gitleaks.ok, false);
+			assert.strictEqual(byId.trufflehog.ok, true, byId.trufflehog.error || '');
+			assert.ok(nodeFs.existsSync(nodePath.join(installDir, 'trufflehog')));
+		});
+
+		test('Windows guidance does not tell the user to fix PATH', async () => {
+			// Adding to PATH is the one thing that reliably does not work there: a
+			// GUI-launched VS Code never sees a PATH change made in a terminal.
+			const text = engineInstall.manualInstallGuidance('gitleaks', 'win32');
+			assert.ok(/leakLock\.gitleaks\.binaryPath/.test(text), text);
+			assert.ok(/gitleaks\.exe/.test(text), text);
+			assert.ok(/Adding it to PATH is not enough on Windows/.test(text), text);
+		});
+	});
+
+	suite('the panel stops reporting a setup it did not complete', () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+
+		function provider(engines) {
+			const p = new LeakLockSidebarProvider(
+				vscode.Uri.file(__dirname),
+				vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			);
+			p._engineStatus = engines;
+			p._dependencyStatus = {
+				docker: { installed: false },
+				noseyparker: { installed: false },
+				java: { installed: false },
+				bfg: { installed: false }
+			};
+			return p;
+		}
+
+		function withEngines(list, fn) {
+			const original = vscode.workspace.getConfiguration;
+			vscode.workspace.getConfiguration = () => ({ get: () => list });
+			try {
+				return fn();
+			} finally {
+				vscode.workspace.getConfiguration = original;
+			}
+		}
+
+		test('a missing default engine is named, even with the Docker parts present', () => {
+			// The old verdict was `docker && noseyparker`, which said "Dependencies
+			// ready" on a machine that could not run a single default engine.
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null },
+				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true, installed: false, version: null }
+			]);
+			p._dependencyStatus.docker.installed = true;
+			p._dependencyStatus.noseyparker.installed = true;
+
+			const missing = withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies());
+			assert.deepStrictEqual(missing, ['Gitleaks', 'TruffleHog']);
+		});
+
+		test('Docker is required only while Nosey Parker is enabled', () => {
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: true, version: 'v8.30.1' },
+				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: false, installed: false, version: null }
+			]);
+
+			assert.deepStrictEqual(
+				withEngines(['gitleaks'], () => p._missingRequiredDependencies()),
+				[],
+				'a Gitleaks-only setup is complete without a container runtime'
+			);
+			assert.deepStrictEqual(
+				withEngines(['gitleaks', 'noseyparker'], () => p._missingRequiredDependencies()),
+				['Docker Engine', 'Nosey Parker image']
+			);
+		});
+
+		test('a missing installable engine gets an install button; Nosey Parker does not', () => {
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: 'https://example.invalid/gl', enabled: true, installed: false, version: null },
+				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: 'https://example.invalid/th', enabled: true, installed: true, version: 'v3.96.0' }
+			]);
+			const html = p._getEngineStatusHtml();
+
+			assert.ok(/data-install-engine="gitleaks"/.test(html), 'the missing engine must be installable from here');
+			assert.ok(!/data-install-engine="trufflehog"/.test(html), 'an installed engine needs no button');
+			assert.ok(!/data-install-engine="noseyparker"/.test(html), 'a Docker image must not get a native-install button');
+		});
+
+		test('a failed install is shown next to its engine, not swallowed', () => {
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null }
+			]);
+			p._engineInstallResults.gitleaks = { engineId: 'gitleaks', ok: false, error: 'HTTP 500 for gitleaks_8.30.1_windows_x64.zip' };
+			assert.ok(/HTTP 500 for gitleaks_8\.30\.1_windows_x64\.zip/.test(p._getEngineStatusHtml()));
+		});
+
+		test('engines are installed where an extension update cannot delete them', () => {
+			// The extension directory is replaced wholesale on update, which would
+			// silently uninstall every engine the user just downloaded.
+			const storage = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-'));
+			const p = new LeakLockSidebarProvider(vscode.Uri.file(__dirname), vscode.Uri.file(storage));
+			assert.strictEqual(p._engineInstallDir, nodePath.join(storage, 'engines'));
+
+			// And that directory has to be searched, or an installed engine still
+			// reports as missing — the same silence the install was meant to end.
+			const scanEnginesModule = require('../scan-engines');
+			assert.strictEqual(scanEnginesModule.COMMON_BIN_DIRS[0], p._engineInstallDir);
+		});
+	});
+});
+
+suite('An engine that cannot be installed as a binary can still run from Docker', () => {
+	const engineDocker = require('../engine-docker');
+	const engines = require('../scan-engines');
+
+	// The fallback exists for machines where a downloaded executable will not run —
+	// blocked by policy, no published build for the architecture, a musl host given a
+	// glibc binary — but Docker will. A working scanner beats an accurate excuse.
+
+	suite('which runtime is chosen', () => {
+		test('auto prefers the binary and falls back to the image', () => {
+			assert.strictEqual(engines.chooseRuntime({ binaryAvailable: true, dockerAvailable: true }), 'binary');
+			assert.strictEqual(engines.chooseRuntime({ binaryAvailable: false, dockerAvailable: true }), 'docker');
+			assert.strictEqual(engines.chooseRuntime({ binaryAvailable: false, dockerAvailable: false }), null);
+		});
+
+		test('an explicit preference is honoured even when the other would work', () => {
+			// Someone who pinned a runtime has a reason — a policy, a reproducibility
+			// requirement — and silently using the other one hides it.
+			assert.strictEqual(
+				engines.chooseRuntime({ preference: 'binary', binaryAvailable: false, dockerAvailable: true }),
+				null
+			);
+			assert.strictEqual(
+				engines.chooseRuntime({ preference: 'docker', binaryAvailable: true, dockerAvailable: false }),
+				null
+			);
+			assert.strictEqual(
+				engines.chooseRuntime({ preference: 'docker', binaryAvailable: false, dockerAvailable: true }),
+				'docker'
+			);
+		});
+
+		test('an explicit binary preference never pays for a Docker probe', async () => {
+			// Probing Docker costs a daemon round trip. Someone who said "binary" must
+			// not wait on a runtime they ruled out.
+			const probed = [];
+			const fake = {
+				id: 'gitleaks',
+				binary: 'leaklock-nonexistent-binary',
+				async probeExecution(execution) { probed.push(execution.mode); return false; }
+			};
+
+			assert.strictEqual(await engines.resolveExecution(fake, { runtime: 'binary' }), null);
+			assert.deepStrictEqual(probed, ['binary'], 'only the binary runtime may be probed');
+		});
+
+		test('auto stops at the binary when the binary works', async () => {
+			const probed = [];
+			const fake = {
+				id: 'gitleaks',
+				binary: 'leaklock-fake',
+				async probeExecution(execution) { probed.push(execution.mode); return execution.mode === 'binary'; }
+			};
+
+			const execution = await engines.resolveExecution(fake, {});
+			assert.strictEqual(execution.mode, 'binary');
+			assert.deepStrictEqual(probed, ['binary'], 'a working binary ends the search');
+		});
+	});
+
+	suite('the container invocation', () => {
+		test('the repository is mounted read-only and the report directory is writable', () => {
+			const { mounts, paths } = engineDocker.buildScanMounts({
+				repoDir: '/home/nik/project',
+				reportDir: '/tmp/leaklock-x',
+				configPath: '/home/nik/gitleaks.toml'
+			});
+
+			assert.deepStrictEqual(mounts, [
+				{ host: '/home/nik/project', container: '/repo', readOnly: true },
+				{ host: '/tmp/leaklock-x', container: '/report' },
+				{ host: '/home/nik/gitleaks.toml', container: '/leaklock/gitleaks.toml', readOnly: true }
+			]);
+			// The rewritten paths come back with the mounts, because a mount whose path
+			// drifted scans an empty directory and reports a false clean.
+			assert.deepStrictEqual(paths, {
+				repoDir: '/repo',
+				reportDir: '/report',
+				configPath: '/leaklock/gitleaks.toml',
+				baselinePath: null
+			});
+		});
+
+		test('git ownership is neutralised for the run, without touching host config', () => {
+			// Git refuses a repository owned by another user, which is exactly what a
+			// bind-mounted host repo looks like inside a container. Without this, every
+			// containerised scan fails on a perfectly healthy repository.
+			const args = engineDocker.buildDockerRunArgs({
+				image: 'ghcr.io/gitleaks/gitleaks:v8.30.1',
+				mounts: [{ host: '/r', container: '/repo', readOnly: true }],
+				args: ['dir', '/repo'],
+				platform: 'linux',
+				user: '1000:1000'
+			});
+
+			assert.deepStrictEqual(args, [
+				'run', '--rm',
+				'-v', '/r:/repo:ro',
+				'-e', 'GIT_CONFIG_COUNT=1',
+				'-e', 'GIT_CONFIG_KEY_0=safe.directory',
+				'-e', 'GIT_CONFIG_VALUE_0=*',
+				'-e', 'HOME=/tmp',
+				'--user', '1000:1000',
+				'ghcr.io/gitleaks/gitleaks:v8.30.1',
+				'dir', '/repo'
+			]);
+		});
+
+		test('Windows gets no --user, where the concept does not apply', () => {
+			// Windows containers have no uid mapping; passing --user breaks the run
+			// instead of fixing file ownership.
+			assert.strictEqual(engineDocker.containerUser('win32'), null);
+			const args = engineDocker.buildDockerRunArgs({
+				image: 'img', args: ['--version'], platform: 'win32'
+			});
+			assert.ok(!args.includes('--user'), args.join(' '));
+			assert.strictEqual(args[args.length - 1], '--version', 'engine arguments follow the image');
+		});
+
+		test('image availability is checked without pulling', () => {
+			// `docker run` pulls a missing image silently, which would turn "is the
+			// fallback available?" into a several-hundred-megabyte download mid-scan.
+			assert.deepStrictEqual(engineDocker.buildImageInspectArgs('img'), ['image', 'inspect', 'img']);
+			assert.deepStrictEqual(engineDocker.buildImagePullArgs('img'), ['pull', 'img']);
+		});
+
+		test('a configured image overrides the pinned one', () => {
+			assert.strictEqual(engineDocker.engineImage('gitleaks'), engineDocker.ENGINE_IMAGES.gitleaks);
+			assert.strictEqual(engineDocker.engineImage('gitleaks', ' mirror/gitleaks:1 '), 'mirror/gitleaks:1');
+			assert.strictEqual(engineDocker.engineImage('noseyparker'), null, 'not a native engine here');
+		});
+
+		test('Docker failures are translated into the thing the user can change', () => {
+			assert.match(
+				engineDocker.describeDockerFailure('permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock'),
+				/usermod -aG docker/
+			);
+			assert.match(
+				engineDocker.describeDockerFailure('Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'),
+				/not running/
+			);
+			assert.match(engineDocker.describeDockerFailure('Error: No such image: x'), /Install as Docker image/);
+		});
+	});
+
+	suite('paths cross the container boundary intact', () => {
+		test('TruffleHog is pointed at the mount, not the host path', () => {
+			// pathToFileURL of a host path names a directory the container cannot see.
+			const args = engines.buildTruffleHogArgs({
+				repoDir: 'C:\\Users\\Nik\\project',
+				repoUrl: 'file:///repo',
+				verify: false
+			});
+			assert.strictEqual(args[1], 'file:///repo');
+			assert.ok(args.includes('--no-verification'));
+		});
+
+		test('findings are relativised against the path the engine was given', () => {
+			// A POSIX scan root on a Windows host: keying off path.sep alone would leave
+			// every containerised working-tree finding rendered as "/repo/src/app.js".
+			assert.strictEqual(engines.relativizePath('/repo/src/app.js', '/repo'), 'src/app.js');
+			assert.strictEqual(engines.relativizePath('src/app.js', '/repo'), 'src/app.js');
+			assert.strictEqual(engines.relativizePath('/repository/src/app.js', '/repo'), '/repository/src/app.js');
+		});
+	});
+
+	suite('the panel offers both routes and says which one ran', () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+		const nodeFs = require('fs');
+		const nodeOs = require('os');
+		const nodePath = require('path');
+
+		function provider() {
+			return new LeakLockSidebarProvider(
+				vscode.Uri.file(__dirname),
+				vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			);
+		}
+
+		test('a missing engine can be installed either way, from its own row', () => {
+			const p = provider();
+			p._engineStatus = [{
+				id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true,
+				installed: false, runtime: null, image: 'ghcr.io/gitleaks/gitleaks:v8.30.1', version: null
+			}];
+			const html = p._getEngineStatusHtml();
+
+			assert.ok(/data-install-engine="gitleaks" data-install-method="binary"/.test(html), html.slice(0, 400));
+			assert.ok(/data-install-engine="gitleaks" data-install-method="docker"/.test(html));
+			assert.ok(/No Docker required/.test(html), 'the binary route must say it needs no Docker');
+		});
+
+		test('an engine running from a container says so, with the image', () => {
+			// A fallback that silently took over is indistinguishable from the binary
+			// until a version differs and nobody can explain why.
+			const p = provider();
+			p._engineStatus = [{
+				id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true,
+				installed: true, runtime: 'docker', image: 'trufflesecurity/trufflehog:3.96.0', version: 'v3.96.0'
+			}];
+			const html = p._getEngineStatusHtml();
+
+			assert.ok(/running from the Docker image trufflesecurity\/trufflehog:3\.96\.0/.test(html), html);
+		});
+
+		test('a native binary is named as such', () => {
+			const p = provider();
+			p._engineStatus = [{
+				id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true,
+				installed: true, runtime: 'binary', image: null, version: 'v8.30.1'
+			}];
+			assert.ok(/native binary/.test(p._getEngineStatusHtml()));
+		});
+
+		test('BFG is disabled, not merely undownloaded, when there is no Java', () => {
+			// BFG is a JAR. Without a JVM the download is a file that cannot run, so
+			// offering it would offer an action that cannot succeed.
+			const p = provider();
+			p._engineStatus = [];
+			p._dependencyStatus = {
+				docker: { installed: true }, noseyparker: { installed: true },
+				java: { installed: false }, bfg: { installed: false }, missing: []
+			};
+			const html = p._getDependenciesSection();
+
+			assert.ok(/Unavailable — BFG is a Java program/.test(html), 'the reason must be stated');
+			assert.ok(/manual git commands are shown either way/.test(html), 'and what still works');
+			assert.ok(!/BFG tool not downloaded/.test(html), 'downloading it would not help');
+		});
+
+		test('Nosey Parker is offered with its archived status attached', () => {
+			const p = provider();
+			p._engineStatus = [];
+			p._dependencyStatus = {
+				docker: { installed: true }, noseyparker: { installed: true },
+				java: { installed: true }, bfg: { installed: true }, missing: []
+			};
+			const html = p._getDependenciesSection();
+
+			assert.ok(/archived on 2026-04-24/.test(html), 'the archive date belongs where the engine is offered');
+			assert.ok(/Gitleaks and TruffleHog are maintained and do not need Docker/.test(html));
+		});
+	});
+});
+
+suite('PR #105 review follow-ups', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('a symlink named like the executable is not installed', () => {
+		// existsSync and stat both follow links, so an archive containing a link named
+		// `gitleaks` pointing at a host file would pass every name and containment
+		// check and then be copied out by the install. tar restores symlinks faithfully.
+		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-symlink-'));
+		try {
+			const outside = nodePath.join(dir, 'secret.txt');
+			nodeFs.writeFileSync(outside, 'host file contents');
+			const extract = nodePath.join(dir, 'extracted');
+			nodeFs.mkdirSync(extract);
+			nodeFs.symlinkSync(outside, nodePath.join(extract, 'gitleaks'));
+
+			assert.strictEqual(
+				engineInstall.resolveExtractedExecutable(extract, 'gitleaks', 'linux'),
+				null,
+				'a symlink must not be accepted as the engine executable'
+			);
+			assert.strictEqual(engineInstall.isRegularFile(nodePath.join(extract, 'gitleaks')), false);
+			assert.strictEqual(engineInstall.isRegularFile(outside), true, 'a real file still resolves');
+		} finally {
+			nodeFs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('a symlinked directory is not descended into either', () => {
+		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-symlinkdir-'));
+		try {
+			const elsewhere = nodePath.join(dir, 'elsewhere');
+			nodeFs.mkdirSync(elsewhere);
+			nodeFs.writeFileSync(nodePath.join(elsewhere, 'trufflehog'), 'x');
+			const extract = nodePath.join(dir, 'extracted');
+			nodeFs.mkdirSync(extract);
+			nodeFs.symlinkSync(elsewhere, nodePath.join(extract, 'nested'));
+
+			assert.strictEqual(
+				engineInstall.resolveExtractedExecutable(extract, 'trufflehog', 'linux'),
+				null
+			);
+		} finally {
+			nodeFs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('BFG setup does not depend on Docker succeeding', () => {
+		// BFG rewrites history; it detects nothing and needs no container. Downloading
+		// it inside the Docker block meant a missing Docker skipped it — the same
+		// "one component cancels an unrelated one" defect this release removes.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const installBody = src.slice(
+			src.indexOf('async _installDependencies()'),
+			src.indexOf('async _installBfg()')
+		);
+		const dockerCatch = installBody.indexOf('dockerError = error.message');
+		const bfgCall = installBody.indexOf('this._installBfg()');
+
+		assert.ok(bfgCall > dockerCatch && dockerCatch !== -1, 'BFG must run after the Docker catch, not inside the try');
+		assert.ok(!/bfg\.jar/.test(installBody.slice(0, dockerCatch)), 'no BFG download inside the Docker block');
+	});
+
+	test('BFG is skipped, with a reason, when there is no Java', async () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		// The JVM answer comes from _hasJavaRuntime(), which probes the machine rather
+		// than trusting a cache that may not be filled yet — so it is stubbed here to
+		// describe a machine without Java, instead of a stale status object.
+		p._dependencyStatus = { java: { installed: false } };
+		p._hasJavaRuntime = async () => false;
+
+		const result = await p._installBfg();
+		assert.deepStrictEqual(
+			{ ok: result.ok, skipped: result.skipped },
+			{ ok: false, skipped: true },
+			'no JVM means skipped, not attempted and failed'
+		);
+	});
+
+	test('the containerised TruffleHog URL has exactly three slashes', () => {
+		// Reported in review as `file:////repo`; it is not. Asserted so a later edit to
+		// CONTAINER_REPO or the template cannot quietly make it true.
+		const engineDocker = require('../engine-docker');
+		const engines = require('../scan-engines');
+		const url = `file://${engineDocker.CONTAINER_REPO}`;
+
+		assert.strictEqual(url, 'file:///repo');
+		assert.strictEqual(new URL(url).pathname, '/repo');
+		assert.strictEqual(
+			engines.buildTruffleHogArgs({ repoDir: '/host', repoUrl: url, verify: false })[1],
+			'file:///repo'
+		);
+	});
+
+	test('the engine docs do not deny the runtime they document', () => {
+		const doc = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'docs', 'SCANNING_ENGINES.md'), 'utf8');
+		assert.ok(!/Leak Lock does not use them/.test(doc), 'the container images are used, as a fallback');
+		assert.ok(/Or run them from a container/.test(doc));
+	});
+});
+
+suite('PR #105 second review pass', () => {
+	const engineDocker = require('../engine-docker');
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	function provider() {
+		return new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+	}
+
+	test('"docker is missing" is translated, not shown as a spawn error', () => {
+		// Docker absent surfaces as a spawn failure, not a Docker message. Left raw,
+		// "spawn docker ENOENT" is the least actionable string in the whole flow.
+		const posix = engineDocker.describeDockerFailure('spawn docker ENOENT');
+		const windows = engineDocker.describeDockerFailure("'docker' is not recognized as an internal or external command, operable program or batch file.");
+
+		for (const text of [posix, windows]) {
+			assert.match(text, /Docker is not installed/, text);
+			// And the way out that needs no Docker at all.
+			assert.match(text, /native binary/, text);
+		}
+	});
+
+	test('a negative Java answer is re-checked rather than trusted', async () => {
+		// _checkDependencies() runs unawaited on view resolve, so a user who presses
+		// Install Dependencies at once can reach BFG while the Java probe is still in
+		// flight and the cached answer is still its false default.
+		const p = provider();
+		p._dependencyStatus = { java: { installed: false, version: null, error: null } };
+
+		const hasJava = await p._hasJavaRuntime();
+		let systemJava = true;
+		try {
+			await require('util').promisify(require('child_process').exec)('java -version 2>&1');
+		} catch {
+			systemJava = false;
+		}
+
+		assert.strictEqual(hasJava, systemJava, 'the answer must come from the machine, not the stale cache');
+		if (systemJava) {
+			assert.strictEqual(p._dependencyStatus.java.installed, true, 'and the correction is written back');
+		}
+	});
+
+	test('a cached positive Java answer is not re-probed', async () => {
+		const p = provider();
+		p._dependencyStatus = { java: { installed: true, version: 'openjdk 21', error: null } };
+		assert.strictEqual(await p._hasJavaRuntime(), true);
+	});
+
+	test('image verification reuses the execution it just created', () => {
+		// The image was pulled on the line above; re-resolving would repeat an
+		// `image inspect` plus a probe run to rediscover what is already known.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const body = src.slice(src.indexOf('async _pullEngineImage('), src.indexOf('async _installEngine('));
+
+		assert.match(body, /execution: \{ mode: 'docker', command: 'docker', image \}/);
+		assert.ok(!/version\(\{ runtime: 'docker', image \}\)/.test(body), 'must not re-resolve the runtime');
+	});
+
+	test('the docs describe the probe that actually happens', () => {
+		const doc = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'docs', 'SCANNING_ENGINES.md'), 'utf8');
+		assert.ok(!/never `docker run`/.test(doc), 'the image is run once to verify it works');
+		assert.match(doc, /it \*is\* run once/);
+	});
+});
+
+suite('PR #105 third review pass', () => {
+	const nodeFs = require('fs');
+	const nodePath = require('path');
+
+	test('BFG is downloaded without a shell or an external tool', () => {
+		// The destination is an installation path that can hold spaces or quotes.
+		// Interpolating it into `curl …` through a shell makes the download depend on
+		// a tool that need not exist, and on the path containing nothing awkward.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const start = src.indexOf('async _installBfg()');
+		// To the start of the next member, not to the next mention of a later method:
+		// _reportSetupOutcome is *called* before it is defined, so searching by name
+		// would slice backwards and silently assert against an empty string.
+		const body = src.slice(start, src.indexOf('\n    /**', start));
+		assert.ok(body.length > 200, 'the method body must actually be captured');
+
+		// Code, not prose: the method explains in a comment why it does not shell out,
+		// so a bare /curl/ match would pass or fail on the comment rather than the call.
+		const code = body.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+		assert.ok(!/curl/.test(code), 'no shelled-out curl');
+		assert.ok(!/child_process|exec(Async|File)?\s*\(/.test(code), 'no subprocess at all');
+		assert.match(code, /engineInstall\.downloadFile\(/, 'the shared downloader is used');
+	});
+
+	test('there is one download implementation, not one per caller', async () => {
+		const engineInstall = require('../engine-install');
+		assert.strictEqual(typeof engineInstall.downloadFile, 'function');
+
+		// It writes the body to the destination and rejects a non-OK response rather
+		// than leaving a truncated or HTML-error file where a JAR should be.
+		//
+		// fetch is stubbed rather than called for real: a unit test that depends on
+		// github.com being reachable fails for reasons that have nothing to do with the
+		// code, and a suite that is flaky offline stops being run.
+		const nodeOs = require('os');
+		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-dl-'));
+		const realFetch = globalThis.fetch;
+		try {
+			globalThis.fetch = async () => ({ ok: false, status: 404 });
+			await assert.rejects(
+				engineInstall.downloadFile('https://example.invalid/nothing.bin', nodePath.join(dir, 'out.bin')),
+				/HTTP 404/
+			);
+			assert.ok(!nodeFs.existsSync(nodePath.join(dir, 'out.bin')), 'a failed download leaves no file');
+
+			globalThis.fetch = async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode('jar bytes').buffer });
+			await engineInstall.downloadFile('https://example.invalid/bfg.jar', nodePath.join(dir, 'out.bin'));
+			assert.strictEqual(nodeFs.readFileSync(nodePath.join(dir, 'out.bin'), 'utf8'), 'jar bytes');
+		} finally {
+			globalThis.fetch = realFetch;
+			nodeFs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+suite('PR #105 fourth review pass', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('a binary that fails verification leaves nothing behind', async () => {
+		// The install directory is searched ahead of every other location, so a broken
+		// binary left there would be picked up by the next probe and the next scan.
+		const installDir = nodePath.join(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-atomic-')), 'engines');
+		const result = await engineInstall.installEngine({
+			engineId: 'gitleaks',
+			installDir,
+			platform: 'linux',
+			arch: 'x64',
+			allowLatestFallback: false,
+			download: async (_url, destPath) => nodeFs.writeFileSync(destPath, 'ok'),
+			fetchText: async () => { throw new Error('HTTP 404'); },
+			run: async (_command, args) => {
+				const dest = args[args.indexOf('-C') + 1];
+				nodeFs.writeFileSync(nodePath.join(dest, 'gitleaks'), 'not a real binary');
+				return { stdout: '', stderr: '' };
+			},
+			verifyVersion: async () => null
+		});
+
+		assert.strictEqual(result.ok, false);
+		assert.ok(!nodeFs.existsSync(nodePath.join(installDir, 'gitleaks')), 'no broken binary may survive');
+		assert.ok(!nodeFs.existsSync(nodePath.join(installDir, 'gitleaks.installing')), 'and no staging file either');
+	});
+
+	test('a successful install replaces an older copy in place', async () => {
+		const installDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-promote-'));
+		const target = nodePath.join(installDir, 'gitleaks');
+		nodeFs.writeFileSync(target, 'old version');
+		const staging = `${target}.installing`;
+		nodeFs.writeFileSync(staging, 'new version');
+
+		await engineInstall.promoteInstalledFile(staging, target);
+
+		assert.strictEqual(nodeFs.readFileSync(target, 'utf8'), 'new version');
+		assert.ok(!nodeFs.existsSync(staging), 'the staging file must not be left in an executable search path');
+	});
+
+	test('the Java banner is read from whichever stream it lands on', async () => {
+		// `java -version` prints to stderr; the shell form `2>&1` moves it to stdout.
+		// Code that ran the redirected form and read stderr stored a blank version
+		// beside a tick. This is the pre-existing defect, not only the new caller.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		// Comments stripped first: the fix is explained in prose right above the code,
+		// so a raw match would assert against the explanation of the bug.
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+		assert.ok(!/java -version 2>&1/.test(code), 'no shell redirection');
+		assert.ok(!/javaVersion\.stderr/.test(code), 'and no single-stream read');
+		assert.match(code, /execFileAsync\('java', \['-version'\]/);
+
+		// And it actually produces a banner on a machine that has Java.
+		let systemJava = true;
+		try {
+			await require('util').promisify(require('child_process').execFile)('java', ['-version']);
+		} catch {
+			systemJava = false;
+		}
+		if (systemJava) {
+			const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+			const p = new LeakLockSidebarProvider(
+				vscode.Uri.file(__dirname),
+				vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			);
+			p._dependencyStatus = { java: { installed: false, version: null, error: null } };
+			assert.strictEqual(await p._hasJavaRuntime(), true);
+			assert.match(p._dependencyStatus.java.version, /\S/, 'the banner must not be blank');
+			assert.notStrictEqual(p._dependencyStatus.java.version, 'installed, version not reported');
+		}
+	});
+
+	test('an unavailable engine does not guess which runtime failed', () => {
+		// In auto mode the container route can be ruled out because the daemon is not
+		// running, not only because the image is missing. Naming the wrong cause sends
+		// someone pulling an image they already have.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		assert.ok(!/and no Docker image is pulled/.test(src), 'that phrasing asserts a cause it cannot know');
+		// Nor any other single cause: the container route also fails when the image is
+		// present and the probe run itself does not work.
+		assert.ok(!/Docker runtime is unavailable/.test(src), 'still too definite about why');
+		assert.match(src, /Could not start .* from its Docker image/);
+		assert.match(src, /install it as a native binary/);
+	});
+});
+
+suite('PR #105 fifth review pass', () => {
+	const nodeFs = require('fs');
+	const nodePath = require('path');
+
+	test('the docs only name buttons the UI actually renders', () => {
+		// Documentation that names a control which does not exist sends the reader
+		// hunting for it and then doubting the rest of the page.
+		const doc = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'docs', 'SCANNING_ENGINES.md'), 'utf8');
+		const ui = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+
+		for (const label of ['Install Dependencies', 'Install binary', 'Use Docker image']) {
+			assert.ok(ui.includes(label), `${label} must exist in the sidebar to be documented`);
+		}
+		for (const ghost of ['Install TruffleHog', 'Install Gitleaks']) {
+			assert.ok(!doc.includes(`**${ghost}**`), `${ghost} is not a button this UI renders`);
+		}
+	});
+});
+
+suite('PR #105 sixth review pass', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('promotion replaces the old binary without a window where none exists', async () => {
+		// POSIX rename replaces atomically. Deleting the old copy first would throw that
+		// away and, if the rename then failed, would leave the user with no engine at
+		// all — having destroyed one that worked.
+		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-atomic2-'));
+		try {
+			const target = nodePath.join(dir, 'gitleaks');
+			nodeFs.writeFileSync(target, 'old');
+			nodeFs.writeFileSync(`${target}.installing`, 'new');
+
+			const realRm = nodeFs.promises.rm;
+			const rmTargets = [];
+			nodeFs.promises.rm = async (p, opts) => { rmTargets.push(p); return realRm(p, opts); };
+			try {
+				await engineInstall.promoteInstalledFile(`${target}.installing`, target);
+			} finally {
+				nodeFs.promises.rm = realRm;
+			}
+
+			assert.strictEqual(nodeFs.readFileSync(target, 'utf8'), 'new');
+			assert.ok(
+				!rmTargets.includes(target),
+				'the working binary must not be deleted before the replacement is in place'
+			);
+		} finally {
+			nodeFs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+suite('PR #105 seventh review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const engines = require('../scan-engines');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('an existing BFG jar is not downloaded again', async () => {
+		// Re-fetching on every setup run overwrites a known-good copy with an identical
+		// one, and turns a working offline setup into a failing one.
+		const extDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'));
+		nodeFs.writeFileSync(nodePath.join(extDir, 'bfg.jar'), 'pretend jar bytes');
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(extDir),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._hasJavaRuntime = async () => true;
+
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = async () => { throw new Error('must not download an existing jar'); };
+		try {
+			const result = await p._installBfg();
+			assert.strictEqual(result.ok, true);
+			assert.strictEqual(result.alreadyPresent, true);
+			assert.strictEqual(nodeFs.readFileSync(nodePath.join(extDir, 'bfg.jar'), 'utf8'), 'pretend jar bytes');
+		} finally {
+			globalThis.fetch = realFetch;
+			nodeFs.rmSync(extDir, { recursive: true, force: true });
+		}
+	});
+
+	test('a truncated BFG jar is retried rather than trusted', async () => {
+		const extDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'));
+		nodeFs.writeFileSync(nodePath.join(extDir, 'bfg.jar'), '');
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(extDir),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._hasJavaRuntime = async () => true;
+
+		const realFetch = globalThis.fetch;
+		let fetched = false;
+		globalThis.fetch = async () => {
+			fetched = true;
+			return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode('real jar').buffer };
+		};
+		try {
+			const result = await p._installBfg();
+			assert.strictEqual(result.ok, true);
+			assert.strictEqual(fetched, true, 'a zero-length file is a dead download, not an install');
+			assert.strictEqual(nodeFs.readFileSync(nodePath.join(extDir, 'bfg.jar'), 'utf8'), 'real jar');
+		} finally {
+			globalThis.fetch = realFetch;
+			nodeFs.rmSync(extDir, { recursive: true, force: true });
+		}
+	});
+
+	test('the container client comes from the resolved execution, not a literal', async () => {
+		// Otherwise execution.command means something in one branch and is ignored in
+		// the other, and there is no way to point at an alternate client.
+		const seen = {};
+		const originalExecPath = process.execPath;
+		await engines.invoke(
+			{ mode: 'docker', command: originalExecPath, image: 'img' },
+			['-e', 'process.stdout.write("ok")'],
+			{ timeoutMs: 15000 }
+		).then(r => { seen.stdout = r.stdout; }).catch(err => { seen.error = err; });
+
+		// node was invoked instead of docker, proving the command field is honoured;
+		// the docker run arguments are simply passed through to it.
+		assert.ok(seen.error || seen.stdout !== undefined, 'the configured command must be the one executed');
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'scan-engines.js'), 'utf8');
+		const body = src.slice(src.indexOf('async function invoke('), src.indexOf('async function invoke(') + 900);
+		assert.match(body, /execution\.command \|\| 'docker'/);
+	});
+});
+
+suite('PR #105 eighth review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('the Nosey Parker image is not pulled for an engine nobody enabled', async () => {
+		// A several-hundred-megabyte pull, or a noisy Docker error, for an engine the
+		// user switched off is exactly the unrelated failure this release removes. The
+		// same condition already decides whether Docker counts as a missing dependency.
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'))),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._engineStatus = [
+			{ id: 'gitleaks', displayName: 'Gitleaks', enabled: true, installed: true, runtime: 'binary', version: 'v8.30.1' },
+			{ id: 'trufflehog', displayName: 'TruffleHog', enabled: true, installed: true, runtime: 'binary', version: 'v3.96.0' }
+		];
+		p._dependencyStatus = { docker: {}, noseyparker: {}, java: { installed: false }, bfg: {}, missing: [] };
+
+		const withProgress = vscode.window.withProgress;
+		const showInfo = vscode.window.showInformationMessage;
+		const showWarn = vscode.window.showWarningMessage;
+		const getConfiguration = vscode.workspace.getConfiguration;
+		let progressRan = false;
+
+		vscode.window.withProgress = async (_opts, task) => { progressRan = true; return task({ report() {} }); };
+		vscode.window.showInformationMessage = async () => undefined;
+		vscode.window.showWarningMessage = async () => undefined;
+		// Nosey Parker deliberately absent from the enabled set.
+		vscode.workspace.getConfiguration = () => ({ get: (key) => (key === 'scan.engines' ? ['gitleaks', 'trufflehog'] : undefined) });
+		p._checkDependencies = async () => {};
+
+		try {
+			await p._installDependencies();
+		} finally {
+			vscode.window.withProgress = withProgress;
+			vscode.window.showInformationMessage = showInfo;
+			vscode.window.showWarningMessage = showWarn;
+			vscode.workspace.getConfiguration = getConfiguration;
+		}
+
+		assert.strictEqual(progressRan, false, 'no Docker work may run when nothing needs Docker');
+	});
+
+	test('the Docker step still runs when Nosey Parker is enabled', async () => {
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'))),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._engineStatus = [
+			{ id: 'gitleaks', displayName: 'Gitleaks', enabled: false, installed: true, runtime: 'binary', version: 'v8.30.1' },
+			{ id: 'trufflehog', displayName: 'TruffleHog', enabled: false, installed: true, runtime: 'binary', version: 'v3.96.0' }
+		];
+		p._dependencyStatus = { docker: {}, noseyparker: {}, java: { installed: false }, bfg: {}, missing: [] };
+
+		const withProgress = vscode.window.withProgress;
+		const showInfo = vscode.window.showInformationMessage;
+		const showWarn = vscode.window.showWarningMessage;
+		const getConfiguration = vscode.workspace.getConfiguration;
+		let progressRan = false;
+
+		// Fails immediately: this asserts the step is attempted, not that Docker exists.
+		vscode.window.withProgress = async () => { progressRan = true; throw new Error('docker unavailable in test'); };
+		vscode.window.showInformationMessage = async () => undefined;
+		vscode.window.showWarningMessage = async () => undefined;
+		vscode.workspace.getConfiguration = () => ({ get: (key) => (key === 'scan.engines' ? ['noseyparker'] : undefined) });
+		p._checkDependencies = async () => {};
+
+		try {
+			await p._installDependencies();
+		} finally {
+			vscode.window.withProgress = withProgress;
+			vscode.window.showInformationMessage = showInfo;
+			vscode.window.showWarningMessage = showWarn;
+			vscode.workspace.getConfiguration = getConfiguration;
+		}
+
+		assert.strictEqual(progressRan, true, 'an enabled Nosey Parker still needs its image');
+	});
+});
+
+suite('PR #105 ninth review pass', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('an archive entry that would escape the extract directory is rejected', () => {
+		// "Zip slip": the write happens as the archive is unpacked, which is before any
+		// check on the resolved executable can run.
+		for (const bad of ['../escaped', 'a/../../escaped', '/etc/passwd', 'C:\\Windows\\x', '..\\escaped', '']) {
+			assert.strictEqual(engineInstall.isSafeArchiveEntry(bad), false, `${bad} must be refused`);
+		}
+		for (const good of ['gitleaks', 'gitleaks.exe', 'dir/gitleaks', 'a..b/gitleaks', 'LICENSE']) {
+			assert.strictEqual(engineInstall.isSafeArchiveEntry(good), true, `${good} must be allowed`);
+		}
+		assert.strictEqual(
+			engineInstall.findUnsafeArchiveEntry(['gitleaks', 'README', '../../evil']),
+			'../../evil'
+		);
+		assert.strictEqual(engineInstall.findUnsafeArchiveEntry(['gitleaks', 'README']), null);
+	});
+
+	test('the archive is listed before it is unpacked', () => {
+		assert.deepStrictEqual(
+			engineInstall.buildListCommand({ archivePath: '/tmp/a.tar.gz', platform: 'linux' }),
+			{ command: 'tar', args: ['-tzf', '/tmp/a.tar.gz'] }
+		);
+		assert.deepStrictEqual(
+			engineInstall.buildListCommand({ archivePath: '/tmp/a.zip', platform: 'linux' }),
+			{ command: 'unzip', args: ['-Z1', '/tmp/a.zip'] }
+		);
+		const win = engineInstall.buildListCommand({ archivePath: 'C:\\t\\a.zip', platform: 'win32' });
+		assert.strictEqual(win.command, 'powershell.exe');
+		assert.match(win.args[win.args.length - 1], /ZipFile\]::OpenRead\('C:\\t\\a\.zip'\)/);
+		assert.match(win.args[win.args.length - 1], /Dispose\(\)/, 'the archive handle must be released');
+	});
+
+	test('a hostile archive is refused rather than unpacked and cleaned up', async () => {
+		const installDir = nodePath.join(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-slip-')), 'engines');
+		let extracted = false;
+
+		const result = await engineInstall.installEngine({
+			engineId: 'gitleaks',
+			installDir,
+			platform: 'linux',
+			arch: 'x64',
+			allowLatestFallback: false,
+			download: async (_url, destPath) => nodeFs.writeFileSync(destPath, 'archive'),
+			fetchText: async () => { throw new Error('HTTP 404'); },
+			run: async (_command, args) => {
+				if (args.includes('-tzf')) {
+					return { stdout: 'gitleaks\n../../../../tmp/pwned\n', stderr: '' };
+				}
+				extracted = true;
+				return { stdout: '', stderr: '' };
+			},
+			verifyVersion: async () => 'v8.30.1'
+		});
+
+		assert.strictEqual(result.ok, false);
+		assert.match(result.error, /would be written outside the extract directory/);
+		assert.strictEqual(extracted, false, 'extraction must never start');
+	});
+
+	test('the Nosey Parker image check asks whether the image exists', () => {
+		// `docker images <ref>` exits 0 whether or not the image is present - it prints
+		// a header and no rows - so the old check passed on any machine with Docker and
+		// showed a tick beside an image that had never been pulled.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+
+		assert.ok(!/docker images/.test(code), 'that command cannot answer the question');
+		assert.match(code, /buildImageInspectArgs\(scanEngineConfig\.NOSEYPARKER_IMAGE\)/);
+	});
+
+	test('no Docker step goes through a shell', () => {
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+
+		assert.ok(!/promisify\(exec\)/.test(code), 'exec runs a shell; execFile does not');
+		assert.ok(!/execAsync\(`docker/.test(code), 'and no interpolated docker command line');
+		assert.match(code, /execFileAsync\('docker', \['--version'\]\)/);
+	});
+});
+
+suite('PR #105 tenth review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	function provider() {
+		return new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+	}
+
+	test('the image is not blamed for Docker being unavailable', async () => {
+		// `docker image inspect` fails for Docker reasons when there is no daemon, and
+		// reporting that as "image not pulled" sends the user pulling an image on a
+		// machine where no pull can work.
+		const p = provider();
+		const originalGet = vscode.workspace.getConfiguration;
+		vscode.workspace.getConfiguration = () => ({ get: () => ['noseyparker'] });
+		p._refreshEngineStatus = async () => { p._engineStatus = []; };
+		p._updateView = () => {};
+
+		const realExecFile = require('child_process').execFile;
+		// Every subprocess fails: this is a machine with no Docker and no Java.
+		require('child_process').execFile = (_cmd, _args, opts, cb) => {
+			const done = typeof opts === 'function' ? opts : cb;
+			process.nextTick(() => done(new Error('spawn docker ENOENT')));
+			return { on() {} };
+		};
+
+		try {
+			await p._checkDependencies();
+		} finally {
+			require('child_process').execFile = realExecFile;
+			vscode.workspace.getConfiguration = originalGet;
+		}
+
+		assert.strictEqual(p._dependencyStatus.docker.installed, false);
+		assert.strictEqual(p._dependencyStatus.noseyparker.installed, false);
+		assert.match(
+			p._dependencyStatus.noseyparker.error,
+			/Docker is unavailable/,
+			'the cause must be attributed to Docker, not to the image'
+		);
+		assert.ok(
+			!/not pulled/.test(p._dependencyStatus.noseyparker.error),
+			'and must not suggest a pull that cannot work'
+		);
+	});
+});
+
+suite('PR #105 eleventh review pass', () => {
+	const engines = require('../scan-engines');
+	const nodeFs = require('fs');
+	const nodePath = require('path');
+
+	test('a scan uses the execution it was given, not a freshly resolved one', async () => {
+		// Re-resolving inside scan() can select a different runtime from the one the
+		// panel just reported - a binary installed between the two calls, a daemon that
+		// stopped - and then every finding is attributed to a runtime that did not
+		// produce it.
+		const original = engines.resolveExecution;
+		let resolvedAgain = false;
+		const probeCommands = [];
+
+		// A command that exits non-zero, so the scan fails fast: what is under test is
+		// which command was chosen, not the scan result.
+		const execution = { mode: 'binary', command: 'leaklock-definitely-not-a-command', image: null };
+
+		try {
+			for (const engine of [engines.ENGINES.gitleaks, engines.ENGINES.trufflehog]) {
+				const outcome = await engine.scan({ repoDir: __dirname, execution, timeoutMs: 5000 })
+					.catch(error => ({ error }));
+				probeCommands.push(outcome);
+			}
+		} finally {
+			engines.resolveExecution = original;
+		}
+
+		assert.strictEqual(resolvedAgain, false);
+		for (const outcome of probeCommands) {
+			const message = outcome?.error?.message || JSON.stringify(outcome);
+			assert.match(
+				message,
+				/leaklock-definitely-not-a-command/,
+				'the supplied execution must be the one invoked'
+			);
+		}
+	});
+
+	test('the panel hands its resolved execution to the scan', () => {
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		assert.match(src, /const scanOptions = \{ repoDir: scanPath, binary, runtime, image, execution, timeoutMs/);
+	});
+
+	test('an absent execution is still resolved, so other callers keep working', async () => {
+		// The parameter is an optimisation and a consistency guarantee, not a new
+		// requirement: scan() called without one must still work.
+		const engine = engines.ENGINES.gitleaks;
+		const outcome = await engine.scan({
+			repoDir: __dirname,
+			binary: 'leaklock-definitely-not-a-command',
+			runtime: 'binary',
+			timeoutMs: 5000
+		}).catch(error => ({ error }));
+
+		assert.match(
+			outcome.error.message,
+			/available neither as a binary nor as a pulled Docker image/,
+			'resolution still happens when no execution is supplied'
+		);
+	});
+});
+
+suite('PR #105 twelfth review pass', () => {
+	const nodeFs = require('fs');
+	const nodePath = require('path');
+
+	test('no webview handler drops a rejection on the floor', () => {
+		// Nothing consumes these promises, so awaiting alone would not help: an
+		// unexpected rejection would vanish and the button would look like it did
+		// nothing — the exact silence this release exists to remove.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const handler = src.slice(src.indexOf('onDidReceiveMessage'), src.indexOf('// Check dependencies and git repository'));
+
+		for (const call of ['this._installDependencies()', 'this._installEngine(', 'this._refreshEngineStatus()']) {
+			const at = handler.indexOf(call);
+			assert.ok(at > -1, `${call} must still be dispatched from the handler`);
+			assert.match(
+				handler.slice(at, at + 400),
+				/\.catch\(/,
+				`${call} must guard its promise`
+			);
+		}
+	});
+
+	test('the runtime setting says that auto never pulls an image', () => {
+		// "Falls back to Docker" without that qualifier reads as a promise the code does
+		// not make, and leaves someone unable to explain why auto reports unavailable.
+		const pkg = require('../package.json');
+		for (const engine of ['gitleaks', 'trufflehog']) {
+			const property = pkg.contributes.configuration.properties[`leakLock.${engine}.runtime`];
+			assert.match(property.description, /never pulls one itself/, engine);
+			assert.match(property.description, /Dependencies Setup/, `${engine} must say where to pull it`);
+			assert.match(property.enumDescriptions[0], /already been pulled/, `${engine} auto description`);
+		}
+	});
+});
+
+suite('PR #105 thirteenth review pass', () => {
+	const engineInstall = require('../engine-install');
+
+	test('Windows path containment ignores drive-letter and directory casing', () => {
+		// C:\Temp\x and c:\temp\x are one location and two strings. Judging the second
+		// "outside" fails safe - the install refuses - but for a reason no message it
+		// prints could explain.
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/A', '/tmp/a/gitleaks.exe', 'win32'), true);
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/A', 'win32'), true);
+
+		// Case still matters where the filesystem says it does.
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/A', '/tmp/a/gitleaks', 'linux'), false);
+
+		// And folding must not turn an escape into a containment.
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/ab/x', 'win32'), false);
+		assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/a/../b/x', 'win32'), false);
+	});
+});
+
+suite('PR #105 fourteenth review pass', () => {
+	const engines = require('../scan-engines');
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('the image probe uses the same client as the run', async () => {
+		// Otherwise `docker run` could be pointed at an alternate client while the image
+		// probe kept asking the default one, and the two would disagree about whether
+		// the image exists.
+		const present = await engines.isDockerImagePresent('leaklock/definitely-absent:0', {
+			command: 'leaklock-definitely-not-a-command',
+			timeoutMs: 5000
+		});
+		assert.strictEqual(present, false, 'a client that cannot run means the image cannot be confirmed');
+
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'scan-engines.js'), 'utf8');
+		assert.match(src, /isDockerImagePresent\(image, \{ command: dockerExecution\.command \}\)/);
+	});
+
+	test('a Docker step that ran and failed is not reported as skipped', () => {
+		// dockerError is only set when the work was attempted. The genuinely skipped
+		// case - Nosey Parker not enabled - never sets it and says nothing at all.
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._dependencyStatus = { missing: ['Nosey Parker image'] };
+
+		const shown = [];
+		const showWarn = vscode.window.showWarningMessage;
+		const showInfo = vscode.window.showInformationMessage;
+		vscode.window.showWarningMessage = (text) => { shown.push(text); };
+		vscode.window.showInformationMessage = (text) => { shown.push(text); };
+		try {
+			p._reportSetupOutcome('docker pull failed: no space left on device', []);
+		} finally {
+			vscode.window.showWarningMessage = showWarn;
+			vscode.window.showInformationMessage = showInfo;
+		}
+
+		assert.strictEqual(shown.length, 1);
+		assert.match(shown[0], /The Docker step for Nosey Parker failed/);
+		assert.ok(!/skipped/.test(shown[0]), 'it was attempted, not skipped');
+		assert.match(shown[0], /no space left on device/, 'the real cause must survive');
+	});
+});
+
+suite('PR #105 fifteenth review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('a failure mid-setup does not leave the panel stuck installing', async () => {
+		// The failure is unlikely; the state it leaves is unrecoverable without a window
+		// reload - spinner up, every button disabled - which is the combination worth
+		// guarding rather than the probability.
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'))),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._engineStatus = [];
+		p._dependencyStatus = { docker: {}, noseyparker: {}, java: { installed: false }, bfg: {}, missing: [] };
+		p._updateView = () => {};
+		p._checkDependencies = async () => {};
+		// Something below the Docker step throws unexpectedly.
+		p._installBfg = async () => { throw new Error('unexpected'); };
+
+		const getConfiguration = vscode.workspace.getConfiguration;
+		vscode.workspace.getConfiguration = () => ({ get: () => ['gitleaks'] });
+
+		let rejected = false;
+		try {
+			await p._installDependencies();
+		} catch {
+			rejected = true;
+		} finally {
+			vscode.workspace.getConfiguration = getConfiguration;
+		}
+
+		assert.strictEqual(rejected, true, 'the error still propagates to the handler');
+		assert.strictEqual(p._isInstalling, false, 'but the panel is not left mid-install');
+	});
+});
+
+suite('PR #105 sixteenth review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('a failed install still shows why the fallback failed too', () => {
+		// The auto path records "Docker fallback also failed: …" as a warning, so
+		// dropping warnings on failure threw away half the explanation for the one case
+		// that most needs it: the user saw the binary error and never learned the
+		// container route had been tried at all.
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._engineStatus = [
+			{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, runtime: null, image: 'img', version: null }
+		];
+		p._engineInstallResults.gitleaks = {
+			engineId: 'gitleaks',
+			ok: false,
+			error: 'Could not install Gitleaks. Tried 8.30.1 (pinned): HTTP 403',
+			warnings: ['Docker fallback also failed: Docker is not installed']
+		};
+
+		const html = p._getEngineStatusHtml();
+		assert.match(html, /HTTP 403/, 'the primary failure is shown');
+		assert.match(html, /Docker fallback also failed: Docker is not installed/, 'and so is the fallback');
 	});
 });

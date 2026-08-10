@@ -122,7 +122,9 @@ leaving the column blank). All of these are declared as unavailable for this eng
 
 **Licensing.** TruffleHog is AGPL-3.0 and Leak Lock is MIT. Leak Lock invokes it as an
 external process — no bundling, no linking, no derived work — so the licences do not
-interact. Nothing is downloaded automatically; you install the binary yourself.
+interact. Nothing is downloaded automatically: it arrives only when you press
+**Install Dependencies**, or **Install binary** / **Use Docker image** on the TruffleHog
+row in Dependencies Setup — or you install it yourself.
 
 ---
 
@@ -197,6 +199,76 @@ no-limit values. If a cap is ever reintroduced, the results must say so.
   line tells you when one is falling behind.
 - Enabling TruffleHog does **not** on its own make any network call. Verification is a
   separate setting (`leakLock.trufflehog.verify`, off by default).
+
+### Installing Gitleaks and TruffleHog from Dependencies Setup
+
+**Dependencies Setup installs them per engine**, with its own row per engine offering two
+routes: the native binary (the default, no Docker involved) or the project's container
+image — see [Or run them from a container](#or-run-them-from-a-container) below. A
+binary install is:
+
+1. Picks the release artifact for your platform and architecture. The naming differs per
+   project (Gitleaks publishes `windows_x64.zip`, TruffleHog `windows_amd64.tar.gz`), so
+   an architecture with no published build is reported as such rather than attempted.
+2. Downloads a **pinned version first**, and falls back to the current upstream release
+   if that tag is unavailable. The fallback is stated in the panel, never silent.
+3. Verifies the download against the release's own `checksums.txt`. A mismatch aborts
+   that install. If the checksums file itself cannot be fetched, the install proceeds and
+   says it was not verified.
+4. Extracts to a temporary directory, copies out only the expected executable, and runs
+   it to confirm it works. A binary that will not execute is a failed install, not a
+   successful one.
+
+Engines land in the extension's global storage — not the extension directory, which is
+replaced on every update — and that directory is searched ahead of the usual locations.
+
+### Or run them from a container
+
+Some machines will not run a downloaded executable at all — policy blocks it, the
+architecture has no published build, a musl host was handed a glibc binary. Each engine
+row therefore offers **Use Docker image** as well, and **Install Dependencies** falls back
+to it automatically when the binary install fails.
+
+| Engine | Image |
+|---|---|
+| Gitleaks | `ghcr.io/gitleaks/gitleaks:v8.30.1` |
+| TruffleHog | `trufflesecurity/trufflehog:3.96.0` |
+
+Both are the projects' own publications, pinned to match the binary versions so the two
+runtimes cannot report different rulesets for one Leak Lock release. Override with
+`leakLock.gitleaks.image` / `leakLock.trufflehog.image` — a mirror, or a different tag.
+
+`leakLock.<engine>.runtime` decides which is used:
+
+- `auto` (default) — native binary, falling back to the image **only if it is already
+  pulled**. Presence is established with `docker image inspect`, never with a pull:
+  `docker run` fetches a missing image silently, which would turn a check into a large
+  download mid-scan. Once the image is confirmed present, it *is* run once (`--help` or
+  `--version`) to confirm it works here — so a container invocation in the logs before a
+  scan starts is that check, not a pull.
+- `binary` — native only. The engine reports unavailable if it is not installed, rather
+  than quietly switching runtime.
+- `docker` — image only.
+
+The panel names the runtime each engine will use, so a fallback that took over is
+visible rather than merely working. **No Docker on the machine is not a problem**: `auto`
+simply uses the binaries, and Docker is never required to scan.
+
+Two details the container runtime handles for you, both of which otherwise look like the
+tool being broken: git's `safe.directory` check (a bind-mounted repository is owned by a
+different user from the container's point of view, and both engines read git history),
+and the container user (left as root, Gitleaks' report file lands on your disk owned by
+root). Neither writes anything to your git config — a scanner must not modify what it
+audits.
+
+Installs are **per engine and independent**: one failing never blocks the other, and
+never blocks a scan with the engine you do have. Setup no longer reports success while a
+default engine is missing; the panel names what is still absent.
+
+On **Windows**, if the automated install fails, do not rely on adding the binary to
+`PATH`: a VS Code window launched from the Start Menu does not see a `PATH` change made
+in a terminal. Set `leakLock.gitleaks.binaryPath` / `leakLock.trufflehog.binaryPath` to
+the full path of the `.exe` instead. A path set there always wins over an installed copy.
 
 ### If an engine you installed is reported "not installed"
 

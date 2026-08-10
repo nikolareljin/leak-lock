@@ -1,5 +1,19 @@
 # Change Log
 
+## 2026-08-10 — v0.7.5
+### Fixed
+- **Dependencies Setup installs Gitleaks and TruffleHog** ([#104](https://github.com/nikolareljin/leak-lock/issues/104)). It never did: the flow pulled the Nosey Parker image, downloaded BFG and reported success, while the two engines a default scan runs had no install step at all. Windows and Ubuntu failed identically because nothing was ever attempted. Leak Lock now downloads the release binary for your platform, per engine — no Docker involved for either.
+- **Setup stops claiming success while a default engine is missing.** The panel names what is absent, and Docker plus the Nosey Parker image are required only while `noseyparker` is enabled in `leakLock.scan.engines`.
+
+### Added
+- **Per-engine install and per-engine result.** Each missing engine gets its own row with both routes — **Install binary** and **Use Docker image** — so a single engine, by a chosen method, can be installed on its own. One failing never blocks the other, or a scan with the engine you do have.
+- **Docker as the fallback, not the requirement.** "Install Dependencies" installs both engines as native binaries and falls back to the project's own image (`ghcr.io/gitleaks/gitleaks:v8.30.1`, `trufflesecurity/trufflehog:3.96.0`) when that fails — for machines that block downloaded executables or have no published build for their architecture. `leakLock.<engine>.runtime` (`auto` | `binary` | `docker`) makes the choice explicit, `leakLock.<engine>.image` overrides the image, and the panel names the runtime each engine will use. **No Docker on the machine simply means binaries**; the fallback is offered only when the image is already pulled, never pulled mid-scan.
+- **BFG is disabled when there is no Java**, with the reason, instead of being downloaded and shown as ready — it is a JAR, and without a JVM the file cannot run. The manual git commands are shown either way. Nosey Parker is offered as a Docker image with its archived status attached where it is offered, not only in the docs.
+- **Pinned version first, current release as fallback** (Gitleaks 8.30.1, TruffleHog 3.96.0). A pin that turns into an outage is worse than a slightly newer scanner, so an unreachable tag degrades instead of failing — and the panel says which was used.
+- **Downloads are checksum-verified** against the release's `checksums.txt`, extracted to a temporary directory, and confirmed by running the binary. A file that will not execute is a failed install, not a successful one.
+- **Engines install into global storage**, which an extension update does not replace, and that directory is searched first. `leakLock.gitleaks.binaryPath` / `leakLock.trufflehog.binaryPath` still win over it.
+- **Windows guidance that is true**: set `binaryPath`, not `PATH` — a VS Code window launched from the Start Menu never sees a `PATH` change made in a terminal.
+
 ## 0.7.4
 ### Added
 - **The Dependencies panel accounts for every scan engine**: it described Docker, the Nosey Parker image, Java and BFG — none of which a default scan uses — while Gitleaks and TruffleHog, which do the scanning, had no row at all. A missing Gitleaks binary was therefore invisible in the one place a user checks their setup. Expanding the block now lists each engine with its installed version, and an engine that is enabled but not installed is called out with the consequence, because a scan that silently runs one engine short looks exactly like a clean result.
