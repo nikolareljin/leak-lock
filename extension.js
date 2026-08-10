@@ -170,7 +170,10 @@ function activate(context) {
 
 	// Import and register the sidebar provider
 	const { LeakLockSidebarProvider } = require('./leakLockSidebarProvider');
-	const sidebarProvider = new LeakLockSidebarProvider(context.extensionUri);
+	// Global storage, not the extension directory: engines downloaded by Dependencies
+	// Setup have to survive an extension update, which replaces the extension directory
+	// wholesale and would otherwise silently uninstall them.
+	const sidebarProvider = new LeakLockSidebarProvider(context.extensionUri, context.globalStorageUri);
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('leak-lock.sidebarView', sidebarProvider)
 	);

@@ -80,6 +80,30 @@ const COMMON_BIN_DIRS = [
 
 const resolvedBinaries = new Map();
 
+/**
+ * Register a directory to search ahead of the common locations.
+ *
+ * Engines that Leak Lock installed itself land in extension storage, which is on no
+ * PATH anywhere. Without this the extension could download a binary and then report
+ * the engine as missing — the same silence the download was meant to end. Placed
+ * first because a Leak-Lock-managed install is the one whose version Leak Lock knows;
+ * an explicit `leakLock.<engine>.binaryPath` still wins over both, since `resolveBinary`
+ * returns it before consulting any directory.
+ */
+function addBinarySearchDir(dir) {
+    if (typeof dir !== 'string' || !dir) {
+        return;
+    }
+    const existing = COMMON_BIN_DIRS.indexOf(dir);
+    if (existing !== -1) {
+        COMMON_BIN_DIRS.splice(existing, 1);
+    }
+    COMMON_BIN_DIRS.unshift(dir);
+    // A new search location can change an answer already cached in this session —
+    // including the "not installed" the user just acted on.
+    resolvedBinaries.clear();
+}
+
 function resolveBinary(name, explicit) {
     if (explicit) {
         return explicit;
@@ -543,6 +567,7 @@ module.exports = {
     makeFinding,
     toLineNumber,
     COMMON_BIN_DIRS,
+    addBinarySearchDir,
     resolveBinary,
     resetBinaryCache,
     detectGitleaksDialect,
