@@ -4326,3 +4326,106 @@ suite('An engine that cannot be installed as a binary can still run from Docker'
 		});
 	});
 });
+
+suite('PR #105 review follow-ups', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('a symlink named like the executable is not installed', () => {
+		// existsSync and stat both follow links, so an archive containing a link named
+		// `gitleaks` pointing at a host file would pass every name and containment
+		// check and then be copied out by the install. tar restores symlinks faithfully.
+		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-symlink-'));
+		try {
+			const outside = nodePath.join(dir, 'secret.txt');
+			nodeFs.writeFileSync(outside, 'host file contents');
+			const extract = nodePath.join(dir, 'extracted');
+			nodeFs.mkdirSync(extract);
+			nodeFs.symlinkSync(outside, nodePath.join(extract, 'gitleaks'));
+
+			assert.strictEqual(
+				engineInstall.resolveExtractedExecutable(extract, 'gitleaks', 'linux'),
+				null,
+				'a symlink must not be accepted as the engine executable'
+			);
+			assert.strictEqual(engineInstall.isRegularFile(nodePath.join(extract, 'gitleaks')), false);
+			assert.strictEqual(engineInstall.isRegularFile(outside), true, 'a real file still resolves');
+		} finally {
+			nodeFs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('a symlinked directory is not descended into either', () => {
+		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-symlinkdir-'));
+		try {
+			const elsewhere = nodePath.join(dir, 'elsewhere');
+			nodeFs.mkdirSync(elsewhere);
+			nodeFs.writeFileSync(nodePath.join(elsewhere, 'trufflehog'), 'x');
+			const extract = nodePath.join(dir, 'extracted');
+			nodeFs.mkdirSync(extract);
+			nodeFs.symlinkSync(elsewhere, nodePath.join(extract, 'nested'));
+
+			assert.strictEqual(
+				engineInstall.resolveExtractedExecutable(extract, 'trufflehog', 'linux'),
+				null
+			);
+		} finally {
+			nodeFs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('BFG setup does not depend on Docker succeeding', () => {
+		// BFG rewrites history; it detects nothing and needs no container. Downloading
+		// it inside the Docker block meant a missing Docker skipped it — the same
+		// "one component cancels an unrelated one" defect this release removes.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const installBody = src.slice(
+			src.indexOf('async _installDependencies()'),
+			src.indexOf('async _installBfg()')
+		);
+		const dockerCatch = installBody.indexOf('dockerError = error.message');
+		const bfgCall = installBody.indexOf('this._installBfg()');
+
+		assert.ok(bfgCall > dockerCatch && dockerCatch !== -1, 'BFG must run after the Docker catch, not inside the try');
+		assert.ok(!/bfg\.jar/.test(installBody.slice(0, dockerCatch)), 'no BFG download inside the Docker block');
+	});
+
+	test('BFG is skipped, with a reason, when there is no Java', async () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._dependencyStatus = { java: { installed: false } };
+
+		const result = await p._installBfg();
+		assert.deepStrictEqual(
+			{ ok: result.ok, skipped: result.skipped },
+			{ ok: false, skipped: true },
+			'no JVM means skipped, not attempted and failed'
+		);
+	});
+
+	test('the containerised TruffleHog URL has exactly three slashes', () => {
+		// Reported in review as `file:////repo`; it is not. Asserted so a later edit to
+		// CONTAINER_REPO or the template cannot quietly make it true.
+		const engineDocker = require('../engine-docker');
+		const engines = require('../scan-engines');
+		const url = `file://${engineDocker.CONTAINER_REPO}`;
+
+		assert.strictEqual(url, 'file:///repo');
+		assert.strictEqual(new URL(url).pathname, '/repo');
+		assert.strictEqual(
+			engines.buildTruffleHogArgs({ repoDir: '/host', repoUrl: url, verify: false })[1],
+			'file:///repo'
+		);
+	});
+
+	test('the engine docs do not deny the runtime they document', () => {
+		const doc = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'docs', 'SCANNING_ENGINES.md'), 'utf8');
+		assert.ok(!/Leak Lock does not use them/.test(doc), 'the container images are used, as a fallback');
+		assert.ok(/Or run them from a container/.test(doc));
+	});
+});

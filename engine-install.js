@@ -222,11 +222,29 @@ function isInsideDirectory(root, candidate) {
 }
 
 /**
+ * Is this a real file, rather than a link pointing somewhere else?
+ *
+ * `lstat`, never `stat`, and never `existsSync`: both of those follow symlinks, so an
+ * archive containing a link named `gitleaks` and pointing at, say, `/etc/shadow` would
+ * satisfy every name and containment check and then be copied out of the extract
+ * directory by the install. tar restores symlinks faithfully, so this is a property of
+ * the archive, not a hypothetical.
+ */
+function isRegularFile(candidate, fsImpl = fs) {
+    try {
+        return fsImpl.lstatSync(candidate).isFile();
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Find the engine executable inside an extracted archive.
  *
- * Only the expected name is accepted, and only from the archive root or one directory
- * below it — the two layouts these projects actually publish. Anything else in the
- * tarball is ignored rather than executed.
+ * Only the expected name is accepted, only from the archive root or one directory below
+ * it — the two layouts these projects actually publish — and only if it is a regular
+ * file inside the extract directory. Anything else in the tarball is ignored rather
+ * than executed.
  */
 function resolveExtractedExecutable(extractDir, engineId, platform = process.platform, fsImpl = fs) {
     const wanted = executableName(engineId, platform);
@@ -234,7 +252,7 @@ function resolveExtractedExecutable(extractDir, engineId, platform = process.pla
         return null;
     }
     const direct = path.join(extractDir, wanted);
-    if (fsImpl.existsSync(direct) && isInsideDirectory(extractDir, direct)) {
+    if (isRegularFile(direct, fsImpl) && isInsideDirectory(extractDir, direct)) {
         return direct;
     }
     let entries = [];
@@ -244,11 +262,13 @@ function resolveExtractedExecutable(extractDir, engineId, platform = process.pla
         return null;
     }
     for (const entry of entries) {
+        // isDirectory() on a Dirent is already lstat-based, so a symlinked directory is
+        // not descended into either.
         if (!entry.isDirectory()) {
             continue;
         }
         const nested = path.join(extractDir, entry.name, wanted);
-        if (fsImpl.existsSync(nested) && isInsideDirectory(extractDir, nested)) {
+        if (isRegularFile(nested, fsImpl) && isInsideDirectory(extractDir, nested)) {
             return nested;
         }
     }
@@ -543,6 +563,7 @@ module.exports = {
     executableName,
     buildExtractCommand,
     isInsideDirectory,
+    isRegularFile,
     resolveExtractedExecutable,
     engineInstallDir,
     sha256File,

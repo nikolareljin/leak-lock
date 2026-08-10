@@ -201,9 +201,10 @@ no-limit values. If a cap is ever reintroduced, the results must say so.
 
 ### Installing Gitleaks and TruffleHog from Dependencies Setup
 
-Leak Lock runs both as local executables, so **Dependencies Setup installs them per
-engine**, with its own button on each engine's row — no Docker involved for either.
-(Both projects also publish container images; Leak Lock does not use them.) Each install:
+**Dependencies Setup installs them per engine**, with its own row per engine offering two
+routes: the native binary (the default, no Docker involved) or the project's container
+image — see [Or run them from a container](#or-run-them-from-a-container) below. A
+binary install is:
 
 1. Picks the release artifact for your platform and architecture. The naming differs per
    project (Gitleaks publishes `windows_x64.zip`, TruffleHog `windows_amd64.tar.gz`), so
