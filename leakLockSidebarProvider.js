@@ -813,13 +813,18 @@ class LeakLockSidebarProvider {
         if (!result) {
             return '';
         }
-        if (!result.ok) {
-            return note(escapeHtml(result.error || 'Installation failed.'),
-                'var(--vscode-inputValidation-errorForeground)');
-        }
+        // Warnings are rendered on both paths. A failed auto install carries
+        // "Docker fallback also failed: …" as a warning, so dropping them here threw
+        // away half the explanation for the case that most needs one — the user would
+        // see the binary error and never learn the container route was tried at all.
         const warnings = (result.warnings || [])
             .map(text => note(escapeHtml(text), 'var(--vscode-inputValidation-warningForeground)'))
             .join('');
+
+        if (!result.ok) {
+            return note(escapeHtml(result.error || 'Installation failed.'),
+                'var(--vscode-inputValidation-errorForeground)') + warnings;
+        }
         const where = result.source === 'docker'
             ? `ready via the Docker image ${escapeHtml(result.path || '')}`
             : `installed to ${escapeHtml(result.path || '')}`;
