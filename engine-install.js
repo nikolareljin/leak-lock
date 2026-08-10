@@ -214,6 +214,67 @@ function buildExtractCommand({ archivePath, destDir, platform = process.platform
     return { command: 'tar', args: ['-xzf', archivePath, '-C', destDir] };
 }
 
+/**
+ * List an archive's entries without extracting them.
+ *
+ * The counterpart to buildExtractCommand: the contents are inspected first so an
+ * archive that would write outside the extract directory is refused rather than
+ * unpacked and cleaned up afterwards.
+ */
+function buildListCommand({ archivePath, platform = process.platform } = {}) {
+    if (!archivePath) {
+        return null;
+    }
+    if (archivePath.endsWith('.zip')) {
+        if (platform === 'win32') {
+            const quote = value => `'${String(value).replace(/'/g, "''")}'`;
+            return {
+                command: 'powershell.exe',
+                args: [
+                    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+                    'Add-Type -AssemblyName System.IO.Compression.FileSystem; '
+                    + `$zip=[System.IO.Compression.ZipFile]::OpenRead(${quote(archivePath)}); `
+                    + 'try { $zip.Entries | ForEach-Object { $_.FullName } } finally { $zip.Dispose() }'
+                ]
+            };
+        }
+        return { command: 'unzip', args: ['-Z1', archivePath] };
+    }
+    return { command: 'tar', args: ['-tzf', archivePath] };
+}
+
+function parseArchiveEntries(stdout) {
+    return String(stdout || '')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+}
+
+/**
+ * Would extracting this entry stay inside the extract directory?
+ *
+ * "Zip slip": an entry named `../../x` or `/etc/x` writes outside the directory it was
+ * unpacked into, before any later check on the resolved executable can run. GNU tar
+ * happens to refuse both, but bsdtar, Info-ZIP and `Expand-Archive` are each a separate
+ * implementation with its own history here, and an installer that is safe only because
+ * of which tar the machine happens to ship is not safe on purpose.
+ */
+function isSafeArchiveEntry(name) {
+    if (typeof name !== 'string' || !name.trim()) {
+        return false;
+    }
+    const normalised = name.replace(/\\/g, '/');
+    if (normalised.startsWith('/') || /^[A-Za-z]:/.test(normalised)) {
+        return false;
+    }
+    return !normalised.split('/').includes('..');
+}
+
+/** The first entry that would escape, or null when every entry is contained. */
+function findUnsafeArchiveEntry(entries) {
+    return (entries || []).find(entry => !isSafeArchiveEntry(entry)) || null;
+}
+
 /** Is `candidate` genuinely inside `root`? Guards against archive path traversal. */
 function isInsideDirectory(root, candidate) {
     const resolvedRoot = path.resolve(root);
@@ -485,6 +546,18 @@ async function installEngine({
                 checksumVerified = true;
             }
 
+            // Inspect before unpacking. An entry named `../../x` or `/etc/x` writes
+            // outside the extract directory as it is unpacked, which is before any
+            // check on the resolved executable can possibly run.
+            const list = buildListCommand({ archivePath, platform });
+            const { stdout: listing } = await run(list.command, list.args);
+            const unsafe = findUnsafeArchiveEntry(parseArchiveEntries(listing));
+            if (unsafe) {
+                throw new Error(
+                    `refusing to extract ${assetName}: it contains an entry that would be written outside the extract directory (${unsafe})`
+                );
+            }
+
             const extractDir = path.join(workDir, 'extracted');
             await fs.promises.mkdir(extractDir, { recursive: true });
             const extract = buildExtractCommand({ archivePath, destDir: extractDir, platform });
@@ -614,6 +687,10 @@ module.exports = {
     parseChecksums,
     executableName,
     buildExtractCommand,
+    buildListCommand,
+    parseArchiveEntries,
+    isSafeArchiveEntry,
+    findUnsafeArchiveEntry,
     isInsideDirectory,
     isRegularFile,
     resolveExtractedExecutable,

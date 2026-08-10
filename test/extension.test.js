@@ -3810,14 +3810,20 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 		// A fake extractor: reads the destination out of the real extract command and
 		// puts the executable there, so the copy, resolution and verify steps run for
 		// real on both platform shapes.
-		function fakeRun(engineId, platform) {
+		function fakeRun(engineId, platform, { entries = ['gitleaks', 'trufflehog', 'README.md'] } = {}) {
 			return async (command, args) => {
-				let dest;
-				if (command === 'powershell.exe') {
-					dest = args[args.length - 1].match(/-DestinationPath '(.+?)'/)[1];
-				} else {
-					dest = args[args.indexOf('-C') + 1];
+				// The installer lists the archive before unpacking it, so the fake has
+				// to answer that too — and answering it with an extraction would write
+				// files nowhere near the destination.
+				const isListing = args.includes('-tzf') || args.includes('-Z1')
+					|| (command === 'powershell.exe' && /ZipFile/.test(args[args.length - 1]));
+				if (isListing) {
+					return { stdout: entries.join('\n'), stderr: '' };
 				}
+
+				const dest = command === 'powershell.exe'
+					? args[args.length - 1].match(/-DestinationPath '(.+?)'/)[1]
+					: args[args.indexOf('-C') + 1];
 				nodeFs.writeFileSync(
 					nodePath.join(dest, engineInstall.executableName(engineId, platform)),
 					'#!/bin/sh\n'
@@ -4861,5 +4867,90 @@ suite('PR #105 eighth review pass', () => {
 		}
 
 		assert.strictEqual(progressRan, true, 'an enabled Nosey Parker still needs its image');
+	});
+});
+
+suite('PR #105 ninth review pass', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('an archive entry that would escape the extract directory is rejected', () => {
+		// "Zip slip": the write happens as the archive is unpacked, which is before any
+		// check on the resolved executable can run.
+		for (const bad of ['../escaped', 'a/../../escaped', '/etc/passwd', 'C:\\Windows\\x', '..\\escaped', '']) {
+			assert.strictEqual(engineInstall.isSafeArchiveEntry(bad), false, `${bad} must be refused`);
+		}
+		for (const good of ['gitleaks', 'gitleaks.exe', 'dir/gitleaks', 'a..b/gitleaks', 'LICENSE']) {
+			assert.strictEqual(engineInstall.isSafeArchiveEntry(good), true, `${good} must be allowed`);
+		}
+		assert.strictEqual(
+			engineInstall.findUnsafeArchiveEntry(['gitleaks', 'README', '../../evil']),
+			'../../evil'
+		);
+		assert.strictEqual(engineInstall.findUnsafeArchiveEntry(['gitleaks', 'README']), null);
+	});
+
+	test('the archive is listed before it is unpacked', () => {
+		assert.deepStrictEqual(
+			engineInstall.buildListCommand({ archivePath: '/tmp/a.tar.gz', platform: 'linux' }),
+			{ command: 'tar', args: ['-tzf', '/tmp/a.tar.gz'] }
+		);
+		assert.deepStrictEqual(
+			engineInstall.buildListCommand({ archivePath: '/tmp/a.zip', platform: 'linux' }),
+			{ command: 'unzip', args: ['-Z1', '/tmp/a.zip'] }
+		);
+		const win = engineInstall.buildListCommand({ archivePath: 'C:\\t\\a.zip', platform: 'win32' });
+		assert.strictEqual(win.command, 'powershell.exe');
+		assert.match(win.args[win.args.length - 1], /ZipFile\]::OpenRead\('C:\\t\\a\.zip'\)/);
+		assert.match(win.args[win.args.length - 1], /Dispose\(\)/, 'the archive handle must be released');
+	});
+
+	test('a hostile archive is refused rather than unpacked and cleaned up', async () => {
+		const installDir = nodePath.join(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-slip-')), 'engines');
+		let extracted = false;
+
+		const result = await engineInstall.installEngine({
+			engineId: 'gitleaks',
+			installDir,
+			platform: 'linux',
+			arch: 'x64',
+			allowLatestFallback: false,
+			download: async (_url, destPath) => nodeFs.writeFileSync(destPath, 'archive'),
+			fetchText: async () => { throw new Error('HTTP 404'); },
+			run: async (_command, args) => {
+				if (args.includes('-tzf')) {
+					return { stdout: 'gitleaks\n../../../../tmp/pwned\n', stderr: '' };
+				}
+				extracted = true;
+				return { stdout: '', stderr: '' };
+			},
+			verifyVersion: async () => 'v8.30.1'
+		});
+
+		assert.strictEqual(result.ok, false);
+		assert.match(result.error, /would be written outside the extract directory/);
+		assert.strictEqual(extracted, false, 'extraction must never start');
+	});
+
+	test('the Nosey Parker image check asks whether the image exists', () => {
+		// `docker images <ref>` exits 0 whether or not the image is present - it prints
+		// a header and no rows - so the old check passed on any machine with Docker and
+		// showed a tick beside an image that had never been pulled.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+
+		assert.ok(!/docker images/.test(code), 'that command cannot answer the question');
+		assert.match(code, /buildImageInspectArgs\(scanEngineConfig\.NOSEYPARKER_IMAGE\)/);
+	});
+
+	test('no Docker step goes through a shell', () => {
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+
+		assert.ok(!/promisify\(exec\)/.test(code), 'exec runs a shell; execFile does not');
+		assert.ok(!/execAsync\(`docker/.test(code), 'and no interpolated docker command line');
+		assert.match(code, /execFileAsync\('docker', \['--version'\]\)/);
 	});
 });
