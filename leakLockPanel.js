@@ -5225,7 +5225,11 @@ class LeakLockPanel {
         const version = await engine.version({ binary, runtime, image, execution });
 
         try {
-            const scanOptions = { repoDir: scanPath, binary, runtime, image, timeoutMs: cfg.timeoutMs };
+            // The execution resolved above is handed to the scan, not re-derived inside
+            // it. Re-resolving could select a different runtime from the one this method
+            // just reported as the engine's version and availability, so every finding
+            // would be attributed to a runtime that did not produce it.
+            const scanOptions = { repoDir: scanPath, binary, runtime, image, execution, timeoutMs: cfg.timeoutMs };
             if (engine.id === 'gitleaks') {
                 scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
                 scanOptions.configPath = config.get('gitleaks.configPath') || undefined;
