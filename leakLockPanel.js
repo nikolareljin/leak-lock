@@ -5189,13 +5189,18 @@ class LeakLockPanel {
         }
 
         const binary = config.get(`${engineId}.binaryPath`) || undefined;
-        let available = false;
+        // How to run it: native binary, container image, or 'auto' — binary first, image
+        // as the fallback. Resolved once here and reused, so availability, version and
+        // the scan itself cannot disagree about which runtime is in play.
+        const runtime = config.get(`${engineId}.runtime`) || 'auto';
+        const image = config.get(`${engineId}.image`) || undefined;
+        let execution = null;
         try {
-            available = await engine.isAvailable({ binary });
+            execution = await scanEngines.resolveExecution(engine, { binary, runtime, image });
         } catch {
-            available = false;
+            execution = null;
         }
-        if (!available) {
+        if (!execution) {
             return {
                 id: engine.id,
                 results: [],
@@ -5205,15 +5210,26 @@ class LeakLockPanel {
                     version: null,
                     ok: false,
                     findings: 0,
-                    note: `Not installed or not on PATH. Install: ${engine.installHint}`
+                    // No cause is named. The container route can fail because the image
+                    // is absent, because the daemon is not running or not reachable, or
+                    // because the image is present and the probe run itself failed —
+                    // and picking one sends the reader to fix something that is not
+                    // broken. What is certain is which runtimes were tried.
+                    note: runtime === 'docker'
+                        ? `Could not start ${engine.displayName} from its Docker image. Check that Docker is running and the image is pulled — or install it as a native binary from Dependencies Setup. ${engine.installHint}`
+                        : `${engine.displayName} is not installed as a native binary${runtime === 'auto' ? ', and its Docker image could not be used either' : ''}. Install it from Dependencies Setup. ${engine.installHint}`
                 }
             };
         }
 
-        const version = await engine.version({ binary });
+        const version = await engine.version({ binary, runtime, image, execution });
 
         try {
-            const scanOptions = { repoDir: scanPath, binary, timeoutMs: cfg.timeoutMs };
+            // The execution resolved above is handed to the scan, not re-derived inside
+            // it. Re-resolving could select a different runtime from the one this method
+            // just reported as the engine's version and availability, so every finding
+            // would be attributed to a runtime that did not produce it.
+            const scanOptions = { repoDir: scanPath, binary, runtime, image, execution, timeoutMs: cfg.timeoutMs };
             if (engine.id === 'gitleaks') {
                 scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
                 scanOptions.configPath = config.get('gitleaks.configPath') || undefined;
@@ -5246,6 +5262,10 @@ class LeakLockPanel {
                     findings: results.length,
                     verified: outcome.verified || 0,
                     warnings: outcome.warnings || [],
+                    // Which runtime actually ran. A containerised engine can differ from
+                    // a local binary in version and in what it can reach, so attributing
+                    // findings to "Gitleaks" without saying which one is a half-answer.
+                    runtime: outcome.runtime || execution.mode,
                     note: engine.capabilities.verification && scanOptions.verify === false
                         ? 'Credential verification disabled; findings are unverified.'
                         : null
