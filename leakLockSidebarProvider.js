@@ -1517,11 +1517,13 @@ class LeakLockSidebarProvider {
             return { ok: false, skipped: true, error: 'No Java runtime; BFG cannot run.' };
         }
         try {
-            const { exec } = require('child_process');
-            const execAsync = require('util').promisify(exec);
             const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
             const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
-            await execAsync(`curl -L -o "${bfgPath}" "${bfgUrl}"`);
+            // fetch, not a shelled-out curl: the destination is an installation path
+            // that can contain spaces or quotes, and interpolating it into a command
+            // line makes the download depend both on a shell and on a tool that is not
+            // guaranteed to exist. Same downloader the engine installs use.
+            await engineInstall.downloadFile(bfgUrl, bfgPath);
             return { ok: true, skipped: false, error: null };
         } catch (error) {
             console.warn('Failed to download BFG tool:', error.message);

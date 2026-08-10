@@ -567,6 +567,10 @@ module.exports = {
     resolveExtractedExecutable,
     engineInstallDir,
     sha256File,
+    // The one download implementation. Exported so nothing else in the extension grows
+    // a second one — a shelled-out `curl` interpolates paths into a command line and
+    // depends on a tool that may not be there.
+    downloadFile: defaultDownload,
     manualInstallGuidance,
     resolveVersionCandidates,
     installEngine,

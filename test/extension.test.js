@@ -4504,3 +4504,47 @@ suite('PR #105 second review pass', () => {
 		assert.match(doc, /it \*is\* run once/);
 	});
 });
+
+suite('PR #105 third review pass', () => {
+	const nodeFs = require('fs');
+	const nodePath = require('path');
+
+	test('BFG is downloaded without a shell or an external tool', () => {
+		// The destination is an installation path that can hold spaces or quotes.
+		// Interpolating it into `curl …` through a shell makes the download depend on
+		// a tool that need not exist, and on the path containing nothing awkward.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const start = src.indexOf('async _installBfg()');
+		// To the start of the next member, not to the next mention of a later method:
+		// _reportSetupOutcome is *called* before it is defined, so searching by name
+		// would slice backwards and silently assert against an empty string.
+		const body = src.slice(start, src.indexOf('\n    /**', start));
+		assert.ok(body.length > 200, 'the method body must actually be captured');
+
+		// Code, not prose: the method explains in a comment why it does not shell out,
+		// so a bare /curl/ match would pass or fail on the comment rather than the call.
+		const code = body.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+		assert.ok(!/curl/.test(code), 'no shelled-out curl');
+		assert.ok(!/child_process|exec(Async|File)?\s*\(/.test(code), 'no subprocess at all');
+		assert.match(code, /engineInstall\.downloadFile\(/, 'the shared downloader is used');
+	});
+
+	test('there is one download implementation, not one per caller', async () => {
+		const engineInstall = require('../engine-install');
+		assert.strictEqual(typeof engineInstall.downloadFile, 'function');
+
+		// It writes the body to the destination and rejects a non-OK response rather
+		// than leaving a truncated or HTML-error file where a JAR should be.
+		const nodeOs = require('os');
+		const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-dl-'));
+		try {
+			await assert.rejects(
+				engineInstall.downloadFile('https://github.com/nikolareljin/leak-lock/releases/download/v0.0.0-does-not-exist/nothing.bin', nodePath.join(dir, 'out.bin')),
+				/HTTP 404/
+			);
+			assert.ok(!nodeFs.existsSync(nodePath.join(dir, 'out.bin')), 'a failed download leaves no file');
+		} finally {
+			nodeFs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
