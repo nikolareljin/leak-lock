@@ -5210,3 +5210,34 @@ suite('PR #105 fifteenth review pass', () => {
 		assert.strictEqual(p._isInstalling, false, 'but the panel is not left mid-install');
 	});
 });
+
+suite('PR #105 sixteenth review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('a failed install still shows why the fallback failed too', () => {
+		// The auto path records "Docker fallback also failed: …" as a warning, so
+		// dropping warnings on failure threw away half the explanation for the one case
+		// that most needs it: the user saw the binary error and never learned the
+		// container route had been tried at all.
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._engineStatus = [
+			{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, runtime: null, image: 'img', version: null }
+		];
+		p._engineInstallResults.gitleaks = {
+			engineId: 'gitleaks',
+			ok: false,
+			error: 'Could not install Gitleaks. Tried 8.30.1 (pinned): HTTP 403',
+			warnings: ['Docker fallback also failed: Docker is not installed']
+		};
+
+		const html = p._getEngineStatusHtml();
+		assert.match(html, /HTTP 403/, 'the primary failure is shown');
+		assert.match(html, /Docker fallback also failed: Docker is not installed/, 'and so is the fallback');
+	});
+});
