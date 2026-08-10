@@ -5189,13 +5189,18 @@ class LeakLockPanel {
         }
 
         const binary = config.get(`${engineId}.binaryPath`) || undefined;
-        let available = false;
+        // How to run it: native binary, container image, or 'auto' — binary first, image
+        // as the fallback. Resolved once here and reused, so availability, version and
+        // the scan itself cannot disagree about which runtime is in play.
+        const runtime = config.get(`${engineId}.runtime`) || 'auto';
+        const image = config.get(`${engineId}.image`) || undefined;
+        let execution = null;
         try {
-            available = await engine.isAvailable({ binary });
+            execution = await scanEngines.resolveExecution(engine, { binary, runtime, image });
         } catch {
-            available = false;
+            execution = null;
         }
-        if (!available) {
+        if (!execution) {
             return {
                 id: engine.id,
                 results: [],
@@ -5205,15 +5210,17 @@ class LeakLockPanel {
                     version: null,
                     ok: false,
                     findings: 0,
-                    note: `Not installed or not on PATH. Install: ${engine.installHint}`
+                    note: runtime === 'docker'
+                        ? `Docker image not pulled or Docker not running. Install: ${engine.installHint}`
+                        : `Not installed as a binary${runtime === 'auto' ? ', and no Docker image is pulled' : ''}. Install: ${engine.installHint}`
                 }
             };
         }
 
-        const version = await engine.version({ binary });
+        const version = await engine.version({ binary, runtime, image, execution });
 
         try {
-            const scanOptions = { repoDir: scanPath, binary, timeoutMs: cfg.timeoutMs };
+            const scanOptions = { repoDir: scanPath, binary, runtime, image, timeoutMs: cfg.timeoutMs };
             if (engine.id === 'gitleaks') {
                 scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
                 scanOptions.configPath = config.get('gitleaks.configPath') || undefined;
@@ -5246,6 +5253,10 @@ class LeakLockPanel {
                     findings: results.length,
                     verified: outcome.verified || 0,
                     warnings: outcome.warnings || [],
+                    // Which runtime actually ran. A containerised engine can differ from
+                    // a local binary in version and in what it can reach, so attributing
+                    // findings to "Gitleaks" without saying which one is a half-answer.
+                    runtime: outcome.runtime || execution.mode,
                     note: engine.capabilities.verification && scanOptions.verify === false
                         ? 'Credential verification disabled; findings are unverified.'
                         : null

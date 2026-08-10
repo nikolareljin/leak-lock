@@ -2784,7 +2784,11 @@ suite('Fourth review pass', () => {
 		const src = fs.readFileSync(path.join(__dirname, '..', 'scan-engines.js'), 'utf8');
 		const catchBlock = src.slice(src.indexOf('Gitleaks ${surface} pass did not complete') - 1200,
 			src.indexOf('Gitleaks ${surface} pass did not complete') + 300);
-		assert.match(catchBlock, /readJsonReport\(reportPath\)/, 'the partial report is parsed');
+		// hostReportPath, not reportPath: under the container runtime the argument
+		// Gitleaks receives is the in-container path, while the file to read back is
+		// the host side of the same mount. Reading the container path from the host
+		// would silently recover nothing.
+		assert.match(catchBlock, /readJsonReport\(hostReportPath\)/, 'the partial report is parsed');
 		assert.match(catchBlock, /recovered/);
 		assert.match(catchBlock, /not exhaustive/, 'and the result is marked incomplete');
 	});
@@ -3562,12 +3566,12 @@ suite('The dependency panel accounts for every scan engine', () => {
 
 	test('probing asks the engines themselves, honouring a configured binary path', async () => {
 		// A second detection path would be free to disagree with the one the scan
-		// uses. This asserts the panel calls the engine, with the same binaryPath
-		// override a scan would apply.
+		// uses. This asserts the panel resolves the engine the same way a scan does,
+		// with the same binaryPath override applied.
 		const p = provider();
 		const gitleaks = scanEngines.ENGINES.gitleaks;
 		const truffle = scanEngines.ENGINES.trufflehog;
-		const originals = [gitleaks.isAvailable, gitleaks.version, truffle.isAvailable, truffle.version];
+		const originals = [gitleaks.probeExecution, gitleaks.version, truffle.probeExecution, truffle.version];
 		const originalGet = vscode.workspace.getConfiguration;
 		const seen = {};
 
@@ -3578,15 +3582,16 @@ suite('The dependency panel accounts for every scan engine', () => {
 				return undefined;
 			}
 		});
-		gitleaks.isAvailable = async (opts) => { seen.gitleaksBinary = opts?.binary; return true; };
+		// The configured path must arrive as the command the engine would actually run.
+		gitleaks.probeExecution = async (execution) => { seen.gitleaksBinary = execution?.command; return true; };
 		gitleaks.version = async () => 'v8.28.0';
-		truffle.isAvailable = async () => false;
+		truffle.probeExecution = async () => false;
 		truffle.version = async () => null;
 
 		try {
 			await p._refreshEngineStatus();
 		} finally {
-			[gitleaks.isAvailable, gitleaks.version, truffle.isAvailable, truffle.version] = originals;
+			[gitleaks.probeExecution, gitleaks.version, truffle.probeExecution, truffle.version] = originals;
 			vscode.workspace.getConfiguration = originalGet;
 		}
 
@@ -4073,6 +4078,251 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			// reports as missing — the same silence the install was meant to end.
 			const scanEnginesModule = require('../scan-engines');
 			assert.strictEqual(scanEnginesModule.COMMON_BIN_DIRS[0], p._engineInstallDir);
+		});
+	});
+});
+
+suite('An engine that cannot be installed as a binary can still run from Docker', () => {
+	const engineDocker = require('../engine-docker');
+	const engines = require('../scan-engines');
+
+	// The fallback exists for machines where a downloaded executable will not run —
+	// blocked by policy, no published build for the architecture, a musl host given a
+	// glibc binary — but Docker will. A working scanner beats an accurate excuse.
+
+	suite('which runtime is chosen', () => {
+		test('auto prefers the binary and falls back to the image', () => {
+			assert.strictEqual(engines.chooseRuntime({ binaryAvailable: true, dockerAvailable: true }), 'binary');
+			assert.strictEqual(engines.chooseRuntime({ binaryAvailable: false, dockerAvailable: true }), 'docker');
+			assert.strictEqual(engines.chooseRuntime({ binaryAvailable: false, dockerAvailable: false }), null);
+		});
+
+		test('an explicit preference is honoured even when the other would work', () => {
+			// Someone who pinned a runtime has a reason — a policy, a reproducibility
+			// requirement — and silently using the other one hides it.
+			assert.strictEqual(
+				engines.chooseRuntime({ preference: 'binary', binaryAvailable: false, dockerAvailable: true }),
+				null
+			);
+			assert.strictEqual(
+				engines.chooseRuntime({ preference: 'docker', binaryAvailable: true, dockerAvailable: false }),
+				null
+			);
+			assert.strictEqual(
+				engines.chooseRuntime({ preference: 'docker', binaryAvailable: false, dockerAvailable: true }),
+				'docker'
+			);
+		});
+
+		test('an explicit binary preference never pays for a Docker probe', async () => {
+			// Probing Docker costs a daemon round trip. Someone who said "binary" must
+			// not wait on a runtime they ruled out.
+			const probed = [];
+			const fake = {
+				id: 'gitleaks',
+				binary: 'leaklock-nonexistent-binary',
+				async probeExecution(execution) { probed.push(execution.mode); return false; }
+			};
+
+			assert.strictEqual(await engines.resolveExecution(fake, { runtime: 'binary' }), null);
+			assert.deepStrictEqual(probed, ['binary'], 'only the binary runtime may be probed');
+		});
+
+		test('auto stops at the binary when the binary works', async () => {
+			const probed = [];
+			const fake = {
+				id: 'gitleaks',
+				binary: 'leaklock-fake',
+				async probeExecution(execution) { probed.push(execution.mode); return execution.mode === 'binary'; }
+			};
+
+			const execution = await engines.resolveExecution(fake, {});
+			assert.strictEqual(execution.mode, 'binary');
+			assert.deepStrictEqual(probed, ['binary'], 'a working binary ends the search');
+		});
+	});
+
+	suite('the container invocation', () => {
+		test('the repository is mounted read-only and the report directory is writable', () => {
+			const { mounts, paths } = engineDocker.buildScanMounts({
+				repoDir: '/home/nik/project',
+				reportDir: '/tmp/leaklock-x',
+				configPath: '/home/nik/gitleaks.toml'
+			});
+
+			assert.deepStrictEqual(mounts, [
+				{ host: '/home/nik/project', container: '/repo', readOnly: true },
+				{ host: '/tmp/leaklock-x', container: '/report' },
+				{ host: '/home/nik/gitleaks.toml', container: '/leaklock/gitleaks.toml', readOnly: true }
+			]);
+			// The rewritten paths come back with the mounts, because a mount whose path
+			// drifted scans an empty directory and reports a false clean.
+			assert.deepStrictEqual(paths, {
+				repoDir: '/repo',
+				reportDir: '/report',
+				configPath: '/leaklock/gitleaks.toml',
+				baselinePath: null
+			});
+		});
+
+		test('git ownership is neutralised for the run, without touching host config', () => {
+			// Git refuses a repository owned by another user, which is exactly what a
+			// bind-mounted host repo looks like inside a container. Without this, every
+			// containerised scan fails on a perfectly healthy repository.
+			const args = engineDocker.buildDockerRunArgs({
+				image: 'ghcr.io/gitleaks/gitleaks:v8.30.1',
+				mounts: [{ host: '/r', container: '/repo', readOnly: true }],
+				args: ['dir', '/repo'],
+				platform: 'linux',
+				user: '1000:1000'
+			});
+
+			assert.deepStrictEqual(args, [
+				'run', '--rm',
+				'-v', '/r:/repo:ro',
+				'-e', 'GIT_CONFIG_COUNT=1',
+				'-e', 'GIT_CONFIG_KEY_0=safe.directory',
+				'-e', 'GIT_CONFIG_VALUE_0=*',
+				'-e', 'HOME=/tmp',
+				'--user', '1000:1000',
+				'ghcr.io/gitleaks/gitleaks:v8.30.1',
+				'dir', '/repo'
+			]);
+		});
+
+		test('Windows gets no --user, where the concept does not apply', () => {
+			// Windows containers have no uid mapping; passing --user breaks the run
+			// instead of fixing file ownership.
+			assert.strictEqual(engineDocker.containerUser('win32'), null);
+			const args = engineDocker.buildDockerRunArgs({
+				image: 'img', args: ['--version'], platform: 'win32'
+			});
+			assert.ok(!args.includes('--user'), args.join(' '));
+			assert.strictEqual(args[args.length - 1], '--version', 'engine arguments follow the image');
+		});
+
+		test('image availability is checked without pulling', () => {
+			// `docker run` pulls a missing image silently, which would turn "is the
+			// fallback available?" into a several-hundred-megabyte download mid-scan.
+			assert.deepStrictEqual(engineDocker.buildImageInspectArgs('img'), ['image', 'inspect', 'img']);
+			assert.deepStrictEqual(engineDocker.buildImagePullArgs('img'), ['pull', 'img']);
+		});
+
+		test('a configured image overrides the pinned one', () => {
+			assert.strictEqual(engineDocker.engineImage('gitleaks'), engineDocker.ENGINE_IMAGES.gitleaks);
+			assert.strictEqual(engineDocker.engineImage('gitleaks', ' mirror/gitleaks:1 '), 'mirror/gitleaks:1');
+			assert.strictEqual(engineDocker.engineImage('noseyparker'), null, 'not a native engine here');
+		});
+
+		test('Docker failures are translated into the thing the user can change', () => {
+			assert.match(
+				engineDocker.describeDockerFailure('permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock'),
+				/usermod -aG docker/
+			);
+			assert.match(
+				engineDocker.describeDockerFailure('Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'),
+				/not running/
+			);
+			assert.match(engineDocker.describeDockerFailure('Error: No such image: x'), /Install as Docker image/);
+		});
+	});
+
+	suite('paths cross the container boundary intact', () => {
+		test('TruffleHog is pointed at the mount, not the host path', () => {
+			// pathToFileURL of a host path names a directory the container cannot see.
+			const args = engines.buildTruffleHogArgs({
+				repoDir: 'C:\\Users\\Nik\\project',
+				repoUrl: 'file:///repo',
+				verify: false
+			});
+			assert.strictEqual(args[1], 'file:///repo');
+			assert.ok(args.includes('--no-verification'));
+		});
+
+		test('findings are relativised against the path the engine was given', () => {
+			// A POSIX scan root on a Windows host: keying off path.sep alone would leave
+			// every containerised working-tree finding rendered as "/repo/src/app.js".
+			assert.strictEqual(engines.relativizePath('/repo/src/app.js', '/repo'), 'src/app.js');
+			assert.strictEqual(engines.relativizePath('src/app.js', '/repo'), 'src/app.js');
+			assert.strictEqual(engines.relativizePath('/repository/src/app.js', '/repo'), '/repository/src/app.js');
+		});
+	});
+
+	suite('the panel offers both routes and says which one ran', () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+		const nodeFs = require('fs');
+		const nodeOs = require('os');
+		const nodePath = require('path');
+
+		function provider() {
+			return new LeakLockSidebarProvider(
+				vscode.Uri.file(__dirname),
+				vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			);
+		}
+
+		test('a missing engine can be installed either way, from its own row', () => {
+			const p = provider();
+			p._engineStatus = [{
+				id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true,
+				installed: false, runtime: null, image: 'ghcr.io/gitleaks/gitleaks:v8.30.1', version: null
+			}];
+			const html = p._getEngineStatusHtml();
+
+			assert.ok(/data-install-engine="gitleaks" data-install-method="binary"/.test(html), html.slice(0, 400));
+			assert.ok(/data-install-engine="gitleaks" data-install-method="docker"/.test(html));
+			assert.ok(/No Docker required/.test(html), 'the binary route must say it needs no Docker');
+		});
+
+		test('an engine running from a container says so, with the image', () => {
+			// A fallback that silently took over is indistinguishable from the binary
+			// until a version differs and nobody can explain why.
+			const p = provider();
+			p._engineStatus = [{
+				id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true,
+				installed: true, runtime: 'docker', image: 'trufflesecurity/trufflehog:3.96.0', version: 'v3.96.0'
+			}];
+			const html = p._getEngineStatusHtml();
+
+			assert.ok(/running from the Docker image trufflesecurity\/trufflehog:3\.96\.0/.test(html), html);
+		});
+
+		test('a native binary is named as such', () => {
+			const p = provider();
+			p._engineStatus = [{
+				id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true,
+				installed: true, runtime: 'binary', image: null, version: 'v8.30.1'
+			}];
+			assert.ok(/native binary/.test(p._getEngineStatusHtml()));
+		});
+
+		test('BFG is disabled, not merely undownloaded, when there is no Java', () => {
+			// BFG is a JAR. Without a JVM the download is a file that cannot run, so
+			// offering it would offer an action that cannot succeed.
+			const p = provider();
+			p._engineStatus = [];
+			p._dependencyStatus = {
+				docker: { installed: true }, noseyparker: { installed: true },
+				java: { installed: false }, bfg: { installed: false }, missing: []
+			};
+			const html = p._getDependenciesSection();
+
+			assert.ok(/Unavailable — BFG is a Java program/.test(html), 'the reason must be stated');
+			assert.ok(/manual git commands are shown either way/.test(html), 'and what still works');
+			assert.ok(!/BFG tool not downloaded/.test(html), 'downloading it would not help');
+		});
+
+		test('Nosey Parker is offered with its archived status attached', () => {
+			const p = provider();
+			p._engineStatus = [];
+			p._dependencyStatus = {
+				docker: { installed: true }, noseyparker: { installed: true },
+				java: { installed: true }, bfg: { installed: true }, missing: []
+			};
+			const html = p._getDependenciesSection();
+
+			assert.ok(/archived on 2026-04-24/.test(html), 'the archive date belongs where the engine is offered');
+			assert.ok(/Gitleaks and TruffleHog are maintained and do not need Docker/.test(html));
 		});
 	});
 });

@@ -12,6 +12,9 @@ const scanEngines = require('./scan-engines');
 // release binary per platform rather than pulling an image. Kept in its own module with
 // no vscode import so the Windows naming, URLs and extraction are assertable anywhere.
 const engineInstall = require('./engine-install');
+// The container fallback, for a machine where a downloaded executable will not run but
+// Docker will.
+const engineDocker = require('./engine-docker');
 // Keywords are user-supplied and land in both element text and attribute values,
 // so they must be escaped before interpolation into the webview HTML. Shared with
 // leakLockPanel.js so both webviews escape identically.
@@ -69,9 +72,9 @@ class LeakLockSidebarProvider {
                         this._installDependencies();
                         break;
                     case 'installEngine':
-                        // Per-tool and user-initiated: one engine failing must never
-                        // stop another from being installed or from scanning.
-                        this._installEngine(message.engineId);
+                        // Per-tool, per-method and user-initiated: one engine failing
+                        // must never stop another being installed or from scanning.
+                        this._installEngine(message.engineId, { method: message.method });
                         break;
                     case 'selectDirectory':
                         this._selectDirectory();
@@ -514,7 +517,8 @@ class LeakLockSidebarProvider {
                     if (!btn) return;
                     vscode.postMessage({
                         command: 'installEngine',
-                        engineId: btn.dataset.installEngine
+                        engineId: btn.dataset.installEngine,
+                        method: btn.dataset.installMethod
                     });
                 });
                 
@@ -698,7 +702,13 @@ class LeakLockSidebarProvider {
             const installing = this._engineInstallInFlight.has(engine.id);
             let detail;
             if (engine.installed) {
+                // Name the runtime. A container fallback that silently took over is
+                // indistinguishable from the binary until a version differs.
+                const via = engine.runtime === 'docker'
+                    ? ` — running from the Docker image ${escapeHtml(engine.image || '')}`
+                    : ' — native binary';
                 detail = note(escapeHtml(engine.version || 'installed, version not reported')
+                    + via
                     + (engine.enabled ? '' : ' — disabled in leakLock.scan.engines'));
             } else if (engine.enabled) {
                 detail = note(
@@ -710,16 +720,26 @@ class LeakLockSidebarProvider {
                 detail = note('Not installed, not enabled');
             }
 
-            // Nosey Parker has no button here: Leak Lock runs it as a Docker image, so
-            // it is installed by the Docker section. Offering an identical-looking
-            // button for a different mechanism is how setup misled people to begin with.
-            const button = installable && !engine.installed
+            // Both ways of getting this engine, chosen per engine. "Install
+            // Dependencies" takes the native binary and falls back to the image on its
+            // own; these buttons are for picking one deliberately — a machine where
+            // downloaded executables are blocked by policy wants the image directly,
+            // and there is no way for Leak Lock to know that in advance.
+            //
+            // Nosey Parker has no buttons here: Leak Lock only ever runs it as an image,
+            // so it belongs to the Docker section below.
+            const method = (id, label, title) =>
+                `<button class="install-button" data-install-engine="${escapeHtml(engine.id)}" data-install-method="${id}"
+                         title="${escapeHtml(title)}"
+                         style="width: auto; padding: 4px 8px; font-size: 11px; margin: 0 6px 0 0;"
+                         ${installing ? 'disabled' : ''}>${label}</button>`;
+
+            const buttons = installable && !engine.installed
                 ? `<div style="margin-left: 20px; margin-bottom: 8px;">
-                        <button class="install-button" data-install-engine="${escapeHtml(engine.id)}"
-                                style="width: auto; padding: 4px 8px; font-size: 11px; margin: 0;"
-                                ${installing ? 'disabled' : ''}>
-                            ${installing ? `Installing ${name}…` : `Install ${name}`}
-                        </button>
+                        ${installing ? `<span style="font-size: 11px;">Installing ${name}…</span>` : `
+                            ${method('binary', 'Install binary', `Download the ${engine.displayName} release binary. No Docker required.`)}
+                            ${method('docker', 'Use Docker image', `Pull ${engine.image || 'the official image'} and run ${engine.displayName} in a container.`)}
+                        `}
                    </div>`
                 : '';
 
@@ -728,7 +748,7 @@ class LeakLockSidebarProvider {
                     <span><span class="status-icon">${icon}</span>${name}</span>
                 </div>
                 ${detail}
-                ${button}
+                ${buttons}
                 ${this._getEngineInstallResultHtml(engine.id, note)}`;
         }).join('');
 
@@ -754,9 +774,10 @@ class LeakLockSidebarProvider {
         const warnings = (result.warnings || [])
             .map(text => note(escapeHtml(text), 'var(--vscode-inputValidation-warningForeground)'))
             .join('');
-        return note(
-            `Installed ${escapeHtml(result.version || result.source || '')} to ${escapeHtml(result.path || '')}`
-        ) + warnings;
+        const where = result.source === 'docker'
+            ? `ready via the Docker image ${escapeHtml(result.path || '')}`
+            : `installed to ${escapeHtml(result.path || '')}`;
+        return note(`${escapeHtml(result.version || '')} ${where}`.trim()) + warnings;
     }
 
     _getDependenciesSection() {
@@ -785,7 +806,10 @@ class LeakLockSidebarProvider {
         const dockerStatus = this._dependencyStatus?.docker?.installed ? '✅' : '❌';
         const noseyparkerStatus = this._dependencyStatus?.noseyparker?.installed ? '✅' : '❌';
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
-        const bfgStatus = this._dependencyStatus?.bfg?.installed ? '✅' : '⚠️';
+        // BFG without a JVM is not a tool, it is a file. Marked unavailable rather than
+        // merely "not downloaded", which would suggest downloading it would help.
+        const javaMissing = !this._dependencyStatus?.java?.installed;
+        const bfgStatus = javaMissing ? '🚫' : (this._dependencyStatus?.bfg?.installed ? '✅' : '⚠️');
 
         return `
             <div class="section">
@@ -856,6 +880,12 @@ class LeakLockSidebarProvider {
                     <span><span class="status-icon">${noseyparkerStatus}</span>Nosey Parker Image</span>
                     ${showSpinner && this._dependencyStatus?.docker?.installed && !this._dependencyStatus?.noseyparker?.installed ? '<div class="spinner"></div>' : ''}
                 </div>
+                <div style="font-size: 10px; color: var(--vscode-inputValidation-warningForeground); margin-left: 20px; margin-bottom: 5px;">
+                    <!-- Stated wherever the engine is offered, not only in the docs: a
+                         frozen ruleset stops finding new classes of secret over time,
+                         and that is not visible from a scan that completes cleanly. -->
+                    ⚠️ ${escapeHtml(scanEngineConfig.NOSEYPARKER_ARCHIVED_NOTICE)} Runs as a Docker image only; Gitleaks and TruffleHog are maintained and do not need Docker.
+                </div>
                 ${this._dependencyStatus?.noseyparker?.installed ? `
                     <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
                         ${escapeHtml(scanEngineConfig.NOSEYPARKER_PINNED_VERSION)} (pinned image)
@@ -923,15 +953,22 @@ class LeakLockSidebarProvider {
                     </div>
                 ` : ''}
                 
-                <div class="status-item">
+                <div class="status-item" ${javaMissing ? 'style="opacity: 0.55;"' : ''}>
                     <span><span class="status-icon">${bfgStatus}</span>BFG Tool</span>
                     ${showSpinner && this._dependencyStatus?.java?.installed && !this._dependencyStatus?.bfg?.installed ? '<div class="spinner"></div>' : ''}
                 </div>
-                ${this._dependencyStatus?.bfg?.error ? `
+                ${javaMissing ? `
+                    <!-- BFG is a JAR. Without a JVM the downloaded file cannot run, so
+                         showing it as an available tool would offer an action that
+                         cannot succeed. Disabled and explained, rather than offered. -->
+                    <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                        Unavailable — BFG is a Java program and no Java runtime was found. Install Java to enable automated history rewriting; the manual git commands are shown either way.
+                    </div>
+                ` : (this._dependencyStatus?.bfg?.error ? `
                     <div style="font-size: 10px; color: var(--vscode-inputValidation-warningForeground); margin-left: 20px; margin-bottom: 5px;">
                         ${this._dependencyStatus.bfg.error} (manual commands available)
                     </div>
-                ` : ''}
+                ` : '')}
                 
                 <button class="install-button" onclick="installDependencies()" ${this._isInstalling ? 'disabled' : ''}>
                     ${installButtonText}
@@ -1280,22 +1317,31 @@ class LeakLockSidebarProvider {
                     // Honours leakLock.<engine>.binaryPath, so a binary outside PATH
                     // reports as present here exactly as it does during a scan.
                     const binary = config.get(`${engine.id}.binaryPath`) || undefined;
-                    let installed = false;
+                    const preference = config.get(`${engine.id}.runtime`) || 'auto';
+                    const image = config.get(`${engine.id}.image`) || undefined;
+                    let execution = null;
                     let version = null;
                     try {
-                        installed = await engine.isAvailable({ binary });
-                        if (installed) {
-                            version = await engine.version({ binary });
+                        // The same resolution a scan performs, so the panel cannot
+                        // promise a runtime the scan will not use.
+                        execution = await scanEngines.resolveExecution(engine, { binary, runtime: preference, image });
+                        if (execution) {
+                            version = await engine.version({ binary, execution });
                         }
                     } catch {
-                        installed = false;
+                        execution = null;
                     }
                     return {
                         id: engine.id,
                         displayName: engine.displayName,
                         installHint: engine.installHint,
                         enabled: enabled.has(engine.id),
-                        installed,
+                        installed: execution !== null,
+                        // Which of the two ways it will actually run, so a fallback to
+                        // the container image is visible rather than merely working.
+                        runtime: execution ? execution.mode : null,
+                        preference,
+                        image: engineDocker.engineImage(engine.id, image),
                         version
                     };
                 })
@@ -1396,16 +1442,21 @@ class LeakLockSidebarProvider {
                 // Pull the Nosey Parker Docker image
                 await execAsync(`docker pull ${scanEngineConfig.NOSEYPARKER_IMAGE}`, { timeout: 300000 });
 
-                progress.report({ increment: 30, message: "Downloading BFG tool..." });
-
-                // Download BFG tool
-                try {
-                    const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-                    const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
-                    await execAsync(`curl -L -o "${bfgPath}" "${bfgUrl}"`);
-                } catch (bfgError) {
-                    console.warn('Failed to download BFG tool:', bfgError.message);
-                    // Continue without BFG - it's optional
+                // BFG is a JAR: without a JVM the download is a file that cannot run.
+                // Fetching it anyway would put a ✅ next to a tool that will fail the
+                // moment it is used, so it is skipped and reported as unavailable.
+                if (this._dependencyStatus?.java?.installed) {
+                    progress.report({ increment: 30, message: "Downloading BFG tool..." });
+                    try {
+                        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+                        const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
+                        await execAsync(`curl -L -o "${bfgPath}" "${bfgUrl}"`);
+                    } catch (bfgError) {
+                        console.warn('Failed to download BFG tool:', bfgError.message);
+                        // Continue without BFG - it's optional
+                    }
+                } else {
+                    progress.report({ increment: 30, message: "Skipping BFG — no Java runtime found." });
                 }
 
                 progress.report({ increment: 20, message: "Docker components ready." });
@@ -1470,6 +1521,44 @@ class LeakLockSidebarProvider {
     }
 
     /**
+     * Pull the engine's container image.
+     *
+     * Same result shape as a binary install, so the panel renders one outcome per engine
+     * regardless of how it was obtained — and a Docker failure reads as a Docker failure
+     * rather than as `docker: command not found`.
+     */
+    async _pullEngineImage(engineId, progress) {
+        const displayName = engineInstall.ENGINE_RELEASES[engineId].displayName;
+        const config = vscode.workspace.getConfiguration('leakLock');
+        const image = engineDocker.engineImage(engineId, config.get(`${engineId}.image`) || undefined);
+        const result = {
+            engineId, displayName, ok: false, version: null, path: null,
+            source: 'docker', checksumVerified: false, warnings: [], error: null
+        };
+
+        try {
+            progress?.report({ message: `Pulling ${image}…` });
+            const { execFile } = require('child_process');
+            const execFileAsync = require('util').promisify(execFile);
+            await execFileAsync('docker', engineDocker.buildImagePullArgs(image), { timeout: 600000 });
+
+            // Verified the same way a binary install is: by running it. A pulled image
+            // that cannot execute here is not an installed engine.
+            const engine = scanEngines.getEngine(engineId);
+            const version = await engine.version({ runtime: 'docker', image });
+            if (!version) {
+                throw new Error(`${image} was pulled but did not report a version when run`);
+            }
+            result.ok = true;
+            result.version = version;
+            result.path = image;
+        } catch (error) {
+            result.error = `Could not set up ${displayName} from Docker: ${engineDocker.describeDockerFailure(error.message)}`;
+        }
+        return result;
+    }
+
+    /**
      * Install one native engine.
      *
      * Never throws and never touches another engine's state: this is the "a failure for
@@ -1478,7 +1567,7 @@ class LeakLockSidebarProvider {
      *
      * @returns {Promise<object|null>} the install result, or null if not installable
      */
-    async _installEngine(engineId, { silent = false } = {}) {
+    async _installEngine(engineId, { method = 'auto', silent = false } = {}) {
         if (!engineInstall.INSTALLABLE_ENGINE_IDS.includes(engineId)) {
             return null;
         }
@@ -1495,16 +1584,45 @@ class LeakLockSidebarProvider {
                 location: vscode.ProgressLocation.Notification,
                 title: `Installing ${displayName}…`,
                 cancellable: false
-            }, async () => engineInstall.installEngine({
-                engineId,
-                installDir: this._engineInstallDir,
-                // Ask the engine adapter for the version, so what setup reports is
-                // produced by the same code path a scan uses to decide it exists.
-                verifyVersion: async (id, exePath) => {
-                    const engine = scanEngines.getEngine(id);
-                    return engine ? engine.version({ binary: exePath }) : null;
+            }, async (progress) => {
+                if (method === 'docker') {
+                    return this._pullEngineImage(engineId, progress);
                 }
-            }));
+
+                const binaryResult = await engineInstall.installEngine({
+                    engineId,
+                    installDir: this._engineInstallDir,
+                    // Ask the engine adapter for the version, so what setup reports is
+                    // produced by the same code path a scan uses to decide it exists.
+                    verifyVersion: async (id, exePath) => {
+                        const engine = scanEngines.getEngine(id);
+                        return engine ? engine.version({ binary: exePath }) : null;
+                    }
+                });
+                if (binaryResult.ok || method === 'binary') {
+                    return binaryResult;
+                }
+
+                // The default: binary first, container image as the fallback. A machine
+                // that refuses to run a downloaded executable, or has no published build
+                // for its architecture, can still scan — and a working scanner is worth
+                // more than a precise account of why there is none.
+                progress.report({ message: 'Binary install failed; trying the Docker image…' });
+                const dockerResult = await this._pullEngineImage(engineId, progress);
+                if (dockerResult.ok) {
+                    dockerResult.warnings = [
+                        `The binary install failed (${binaryResult.error}); ${displayName} will run from its Docker image.`,
+                        ...(dockerResult.warnings || [])
+                    ];
+                    return dockerResult;
+                }
+                // Report the binary failure, not the Docker one: the binary is what was
+                // asked for, and its error is the actionable half.
+                return {
+                    ...binaryResult,
+                    warnings: [...(binaryResult.warnings || []), `Docker fallback also failed: ${dockerResult.error}`]
+                };
+            });
         } catch (error) {
             // installEngine is written not to throw; if it ever does, the engine is
             // still reported as failed rather than the whole setup collapsing.
