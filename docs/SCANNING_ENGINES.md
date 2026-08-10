@@ -122,7 +122,8 @@ leaving the column blank). All of these are declared as unavailable for this eng
 
 **Licensing.** TruffleHog is AGPL-3.0 and Leak Lock is MIT. Leak Lock invokes it as an
 external process — no bundling, no linking, no derived work — so the licences do not
-interact. Nothing is downloaded automatically; you install the binary yourself.
+interact. Nothing is downloaded automatically: the binary arrives only when you press
+**Install TruffleHog** in Dependencies Setup, or you install it yourself.
 
 ---
 
@@ -197,6 +198,36 @@ no-limit values. If a cap is ever reintroduced, the results must say so.
   line tells you when one is falling behind.
 - Enabling TruffleHog does **not** on its own make any network call. Verification is a
   separate setting (`leakLock.trufflehog.verify`, off by default).
+
+### Installing Gitleaks and TruffleHog from Dependencies Setup
+
+Leak Lock runs both as local executables, so **Dependencies Setup installs them per
+engine**, with its own button on each engine's row — no Docker involved for either.
+(Both projects also publish container images; Leak Lock does not use them.) Each install:
+
+1. Picks the release artifact for your platform and architecture. The naming differs per
+   project (Gitleaks publishes `windows_x64.zip`, TruffleHog `windows_amd64.tar.gz`), so
+   an architecture with no published build is reported as such rather than attempted.
+2. Downloads a **pinned version first**, and falls back to the current upstream release
+   if that tag is unavailable. The fallback is stated in the panel, never silent.
+3. Verifies the download against the release's own `checksums.txt`. A mismatch aborts
+   that install. If the checksums file itself cannot be fetched, the install proceeds and
+   says it was not verified.
+4. Extracts to a temporary directory, copies out only the expected executable, and runs
+   it to confirm it works. A binary that will not execute is a failed install, not a
+   successful one.
+
+Engines land in the extension's global storage — not the extension directory, which is
+replaced on every update — and that directory is searched ahead of the usual locations.
+
+Installs are **per engine and independent**: one failing never blocks the other, and
+never blocks a scan with the engine you do have. Setup no longer reports success while a
+default engine is missing; the panel names what is still absent.
+
+On **Windows**, if the automated install fails, do not rely on adding the binary to
+`PATH`: a VS Code window launched from the Start Menu does not see a `PATH` change made
+in a terminal. Set `leakLock.gitleaks.binaryPath` / `leakLock.trufflehog.binaryPath` to
+the full path of the `.exe` instead. A path set there always wins over an installed copy.
 
 ### If an engine you installed is reported "not installed"
 

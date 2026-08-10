@@ -3600,3 +3600,479 @@ suite('The dependency panel accounts for every scan engine', () => {
 		assert.strictEqual(byId.trufflehog.enabled, false, 'not listed in scan.engines');
 	});
 });
+
+suite('Dependencies Setup installs the engines that actually scan', () => {
+	const engineInstall = require('../engine-install');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	// Issue #104. Setup pulled the Nosey Parker image, downloaded BFG and reported
+	// success, while Gitleaks and TruffleHog — the engines a default scan runs — had
+	// no installation step at all. It reproduced on Windows and on Ubuntu because
+	// nothing platform-specific was broken: nothing was ever attempted.
+
+	suite('release artifact selection', () => {
+		test('Windows gets the artifact each project actually publishes', () => {
+			// The two projects disagree: Gitleaks ships a zip for Windows, TruffleHog
+			// ships a tarball everywhere. Assuming one shape for both 404s for the
+			// engine that verifies live credentials.
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', '8.30.1', 'win32', 'x64'),
+				'gitleaks_8.30.1_windows_x64.zip'
+			);
+			assert.strictEqual(
+				engineInstall.buildAssetName('trufflehog', '3.96.0', 'win32', 'x64'),
+				'trufflehog_3.96.0_windows_amd64.tar.gz'
+			);
+		});
+
+		test('architecture vocabulary differs per project and is not shared', () => {
+			// Gitleaks says x64/x32, TruffleHog says amd64. Same machine, different name.
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', '8.30.1', 'win32', 'ia32'),
+				'gitleaks_8.30.1_windows_x32.zip'
+			);
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', '8.30.1', 'win32', 'arm64'),
+				'gitleaks_8.30.1_windows_arm64.zip'
+			);
+			assert.strictEqual(
+				engineInstall.buildAssetName('trufflehog', '3.96.0', 'linux', 'x64'),
+				'trufflehog_3.96.0_linux_amd64.tar.gz'
+			);
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', '8.30.1', 'darwin', 'arm64'),
+				'gitleaks_8.30.1_darwin_arm64.tar.gz'
+			);
+		});
+
+		test('a leading v in the version never reaches the file name', () => {
+			assert.strictEqual(
+				engineInstall.buildAssetName('gitleaks', 'v8.30.1', 'linux', 'x64'),
+				'gitleaks_8.30.1_linux_x64.tar.gz'
+			);
+		});
+
+		test('an unpublished platform returns null rather than a guess', () => {
+			// A guessed name downloads a 404 page, and the failure then reads as a
+			// network problem instead of "there is no build for your architecture".
+			assert.strictEqual(engineInstall.buildAssetName('trufflehog', '3.96.0', 'win32', 'ia32'), null);
+			assert.strictEqual(engineInstall.buildAssetName('gitleaks', '8.30.1', 'aix', 'ppc64'), null);
+
+			const message = engineInstall.describeUnsupportedPlatform('trufflehog', 'win32', 'ia32');
+			assert.ok(/no windows build for architecture "ia32"/.test(message), message);
+			assert.ok(/leakLock\.trufflehog\.binaryPath/.test(message), 'the manual escape hatch must be named');
+		});
+
+		test('download and checksum URLs point at the tagged release', () => {
+			assert.strictEqual(
+				engineInstall.buildAssetUrl('gitleaks', '8.30.1', 'gitleaks_8.30.1_windows_x64.zip'),
+				'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip'
+			);
+			assert.strictEqual(
+				engineInstall.buildChecksumsUrl('trufflehog', '3.96.0'),
+				'https://github.com/trufflesecurity/trufflehog/releases/download/v3.96.0/trufflehog_3.96.0_checksums.txt'
+			);
+		});
+	});
+
+	suite('archive handling', () => {
+		test('Windows zips are extracted with Expand-Archive, tarballs with tar', () => {
+			const zip = engineInstall.buildExtractCommand({
+				archivePath: 'C:\\Temp\\gitleaks.zip',
+				destDir: 'C:\\Users\\Nik\\out',
+				platform: 'win32'
+			});
+			assert.strictEqual(zip.command, 'powershell.exe');
+			const script = zip.args[zip.args.length - 1];
+			assert.ok(/Expand-Archive/.test(script), script);
+			assert.ok(script.includes("-LiteralPath 'C:\\Temp\\gitleaks.zip'"), script);
+			assert.ok(script.includes("-DestinationPath 'C:\\Users\\Nik\\out'"), script);
+
+			const tarball = engineInstall.buildExtractCommand({
+				archivePath: '/tmp/trufflehog.tar.gz',
+				destDir: '/tmp/out',
+				platform: 'win32'
+			});
+			assert.deepStrictEqual(tarball, {
+				command: 'tar',
+				args: ['-xzf', '/tmp/trufflehog.tar.gz', '-C', '/tmp/out']
+			});
+		});
+
+		test('a quote in a path cannot break out of the PowerShell command', () => {
+			const cmd = engineInstall.buildExtractCommand({
+				archivePath: "C:\\Users\\O'Neill\\a.zip",
+				destDir: 'C:\\out',
+				platform: 'win32'
+			});
+			const script = cmd.args[cmd.args.length - 1];
+			assert.ok(script.includes("'C:\\Users\\O''Neill\\a.zip'"), script);
+		});
+
+		test('the executable carries .exe on Windows and nothing elsewhere', () => {
+			assert.strictEqual(engineInstall.executableName('gitleaks', 'win32'), 'gitleaks.exe');
+			assert.strictEqual(engineInstall.executableName('gitleaks', 'linux'), 'gitleaks');
+			assert.strictEqual(engineInstall.executableName('trufflehog', 'win32'), 'trufflehog.exe');
+		});
+
+		test('only the expected executable is taken out of the archive', () => {
+			const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-extract-'));
+			try {
+				// Root layout, as Gitleaks publishes.
+				nodeFs.writeFileSync(nodePath.join(dir, 'gitleaks.exe'), 'x');
+				nodeFs.writeFileSync(nodePath.join(dir, 'README.md'), 'x');
+				assert.strictEqual(
+					engineInstall.resolveExtractedExecutable(dir, 'gitleaks', 'win32'),
+					nodePath.join(dir, 'gitleaks.exe')
+				);
+				// One level down, and nothing else in the tree is a candidate.
+				const nested = nodePath.join(dir, 'trufflehog_3.96.0');
+				nodeFs.mkdirSync(nested);
+				nodeFs.writeFileSync(nodePath.join(nested, 'trufflehog'), 'x');
+				assert.strictEqual(
+					engineInstall.resolveExtractedExecutable(dir, 'trufflehog', 'linux'),
+					nodePath.join(nested, 'trufflehog')
+				);
+				assert.strictEqual(
+					engineInstall.resolveExtractedExecutable(dir, 'gitleaks', 'linux'),
+					null,
+					'a name the archive does not contain must not resolve'
+				);
+			} finally {
+				nodeFs.rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		test('a path outside the extract root is rejected', () => {
+			assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/a/bin/gitleaks'), true);
+			assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/ab/gitleaks'), false);
+			assert.strictEqual(engineInstall.isInsideDirectory('/tmp/a', '/tmp/a/../b/gitleaks'), false);
+		});
+
+		test('checksums parse to filename -> digest, ignoring signature lines', () => {
+			const digest = 'a'.repeat(64);
+			const map = engineInstall.parseChecksums(
+				`${digest}  gitleaks_8.30.1_windows_x64.zip\n`
+				+ '-----BEGIN SIGNATURE-----\n'
+				+ `${'b'.repeat(64)} *gitleaks_8.30.1_linux_x64.tar.gz\n`
+			);
+			assert.strictEqual(map.get('gitleaks_8.30.1_windows_x64.zip'), digest);
+			assert.strictEqual(map.get('gitleaks_8.30.1_linux_x64.tar.gz'), 'b'.repeat(64));
+			assert.strictEqual(map.size, 2, 'unparseable lines must not become entries');
+		});
+	});
+
+	suite('version selection is a preference, not a gate', () => {
+		test('the pin is tried first and the current release second', async () => {
+			const candidates = await engineInstall.resolveVersionCandidates('gitleaks', {
+				fetchText: async () => JSON.stringify({ tag_name: 'v9.9.9' })
+			});
+			assert.deepStrictEqual(candidates, [
+				{ version: engineInstall.ENGINE_RELEASES.gitleaks.pinnedVersion, source: 'pinned' },
+				{ version: '9.9.9', source: 'latest' }
+			]);
+		});
+
+		test('an unreachable release API still leaves the pinned install to try', async () => {
+			// The latest lookup is the fallback, not the prerequisite. A rate-limited
+			// API must not be able to prevent an install entirely.
+			const candidates = await engineInstall.resolveVersionCandidates('trufflehog', {
+				fetchText: async () => { throw new Error('HTTP 403'); }
+			});
+			assert.deepStrictEqual(candidates, [
+				{ version: engineInstall.ENGINE_RELEASES.trufflehog.pinnedVersion, source: 'pinned' }
+			]);
+		});
+
+		test('an explicitly requested version is the only one tried', async () => {
+			const candidates = await engineInstall.resolveVersionCandidates('gitleaks', {
+				version: 'v8.20.0',
+				fetchText: async () => { throw new Error('must not be called'); }
+			});
+			assert.deepStrictEqual(candidates, [{ version: '8.20.0', source: 'requested' }]);
+		});
+	});
+
+	suite('installing', () => {
+		const crypto = require('crypto');
+
+		function tempDir() {
+			return nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-install-'));
+		}
+
+		// A fake extractor: reads the destination out of the real extract command and
+		// puts the executable there, so the copy, resolution and verify steps run for
+		// real on both platform shapes.
+		function fakeRun(engineId, platform) {
+			return async (command, args) => {
+				let dest;
+				if (command === 'powershell.exe') {
+					dest = args[args.length - 1].match(/-DestinationPath '(.+?)'/)[1];
+				} else {
+					dest = args[args.indexOf('-C') + 1];
+				}
+				nodeFs.writeFileSync(
+					nodePath.join(dest, engineInstall.executableName(engineId, platform)),
+					'#!/bin/sh\n'
+				);
+				return { stdout: '', stderr: '' };
+			};
+		}
+
+		test('a Windows install downloads, verifies, extracts and resolves the .exe', async () => {
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const payload = Buffer.from('gitleaks-windows-zip');
+			const digest = crypto.createHash('sha256').update(payload).digest('hex');
+			const requested = [];
+
+			const result = await engineInstall.installEngine({
+				engineId: 'gitleaks',
+				installDir,
+				platform: 'win32',
+				arch: 'x64',
+				download: async (url, destPath) => {
+					requested.push(url);
+					nodeFs.writeFileSync(destPath, payload);
+				},
+				fetchText: async (url) => {
+					requested.push(url);
+					return `${digest}  gitleaks_${engineInstall.ENGINE_RELEASES.gitleaks.pinnedVersion}_windows_x64.zip\n`;
+				},
+				run: fakeRun('gitleaks', 'win32'),
+				verifyVersion: async () => 'v8.30.1'
+			});
+
+			assert.strictEqual(result.ok, true, result.error || '');
+			assert.strictEqual(result.source, 'pinned');
+			assert.strictEqual(result.checksumVerified, true);
+			assert.strictEqual(result.version, 'v8.30.1');
+			assert.strictEqual(result.path, nodePath.join(installDir, 'gitleaks.exe'));
+			assert.ok(nodeFs.existsSync(result.path), 'the executable must land in the install directory');
+			assert.ok(
+				requested.some(u => u.endsWith('/v8.30.1/gitleaks_8.30.1_windows_x64.zip')),
+				`the Windows zip must be the artifact requested: ${requested.join(', ')}`
+			);
+			assert.deepStrictEqual(result.warnings, []);
+		});
+
+		test('a corrupted download is rejected, not installed', async () => {
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const result = await engineInstall.installEngine({
+				engineId: 'gitleaks',
+				installDir,
+				platform: 'linux',
+				arch: 'x64',
+				allowLatestFallback: false,
+				download: async (_url, destPath) => nodeFs.writeFileSync(destPath, 'tampered'),
+				fetchText: async () => `${'0'.repeat(64)}  gitleaks_${engineInstall.ENGINE_RELEASES.gitleaks.pinnedVersion}_linux_x64.tar.gz\n`,
+				run: fakeRun('gitleaks', 'linux'),
+				verifyVersion: async () => 'v8.30.1'
+			});
+
+			assert.strictEqual(result.ok, false);
+			assert.ok(/checksum mismatch/.test(result.error), result.error);
+			assert.ok(!nodeFs.existsSync(nodePath.join(installDir, 'gitleaks')), 'nothing may be installed');
+		});
+
+		test('an unavailable pinned release falls back to the current one and says so', async () => {
+			// This is the "less strict" rule: refusing to install anything because one
+			// tag moved leaves the user with no scanner, which is strictly worse.
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const pinned = engineInstall.ENGINE_RELEASES.trufflehog.pinnedVersion;
+
+			const result = await engineInstall.installEngine({
+				engineId: 'trufflehog',
+				installDir,
+				platform: 'linux',
+				arch: 'x64',
+				download: async (url, destPath) => {
+					if (url.includes(`/v${pinned}/`)) {
+						throw new Error('HTTP 404');
+					}
+					nodeFs.writeFileSync(destPath, 'ok');
+				},
+				fetchText: async (url) => {
+					if (url.includes('api.github.com')) {
+						return JSON.stringify({ tag_name: 'v3.99.0' });
+					}
+					throw new Error('HTTP 404');
+				},
+				run: fakeRun('trufflehog', 'linux'),
+				verifyVersion: async () => 'v3.99.0'
+			});
+
+			assert.strictEqual(result.ok, true, result.error || '');
+			assert.strictEqual(result.source, 'latest');
+			assert.strictEqual(result.checksumVerified, false);
+			assert.ok(
+				result.warnings.some(w => /was unavailable; installed the current release 3\.99\.0/.test(w)),
+				result.warnings.join(' | ')
+			);
+			assert.ok(
+				result.warnings.some(w => /not checksum-verified/.test(w)),
+				'an unverified download must be stated, never silent'
+			);
+		});
+
+		test('a binary that will not run is a failed install, not a successful one', async () => {
+			// A file of the right name that cannot execute — wrong architecture, blocked
+			// by policy — is exactly what a "downloaded successfully" message hides.
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const result = await engineInstall.installEngine({
+				engineId: 'gitleaks',
+				installDir,
+				platform: 'linux',
+				arch: 'x64',
+				allowLatestFallback: false,
+				download: async (_url, destPath) => nodeFs.writeFileSync(destPath, 'ok'),
+				fetchText: async () => { throw new Error('HTTP 404'); },
+				run: fakeRun('gitleaks', 'linux'),
+				verifyVersion: async () => null
+			});
+
+			assert.strictEqual(result.ok, false);
+			assert.ok(/present but not executable here/.test(result.error), result.error);
+		});
+
+		test('an unsupported platform fails that engine with actionable text, without downloading', async () => {
+			const result = await engineInstall.installEngine({
+				engineId: 'trufflehog',
+				installDir: tempDir(),
+				platform: 'win32',
+				arch: 'ia32',
+				download: async () => { throw new Error('must not download'); },
+				fetchText: async () => { throw new Error('must not fetch'); }
+			});
+			assert.strictEqual(result.ok, false);
+			assert.ok(/no windows build for architecture "ia32"/.test(result.error), result.error);
+		});
+
+		test('one engine failing does not stop the other being installed', async () => {
+			const installDir = nodePath.join(tempDir(), 'engines');
+			const results = await engineInstall.installEngines(['gitleaks', 'trufflehog'], {
+				installDir,
+				platform: 'linux',
+				arch: 'x64',
+				allowLatestFallback: false,
+				download: async (url, destPath) => {
+					if (url.includes('/gitleaks/')) {
+						throw new Error('HTTP 500');
+					}
+					nodeFs.writeFileSync(destPath, 'ok');
+				},
+				fetchText: async () => { throw new Error('HTTP 404'); },
+				run: fakeRun('trufflehog', 'linux'),
+				verifyVersion: async () => 'v3.96.0'
+			});
+
+			const byId = Object.fromEntries(results.map(r => [r.engineId, r]));
+			assert.strictEqual(byId.gitleaks.ok, false);
+			assert.strictEqual(byId.trufflehog.ok, true, byId.trufflehog.error || '');
+			assert.ok(nodeFs.existsSync(nodePath.join(installDir, 'trufflehog')));
+		});
+
+		test('Windows guidance does not tell the user to fix PATH', async () => {
+			// Adding to PATH is the one thing that reliably does not work there: a
+			// GUI-launched VS Code never sees a PATH change made in a terminal.
+			const text = engineInstall.manualInstallGuidance('gitleaks', 'win32');
+			assert.ok(/leakLock\.gitleaks\.binaryPath/.test(text), text);
+			assert.ok(/gitleaks\.exe/.test(text), text);
+			assert.ok(/Adding it to PATH is not enough on Windows/.test(text), text);
+		});
+	});
+
+	suite('the panel stops reporting a setup it did not complete', () => {
+		const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+
+		function provider(engines) {
+			const p = new LeakLockSidebarProvider(
+				vscode.Uri.file(__dirname),
+				vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			);
+			p._engineStatus = engines;
+			p._dependencyStatus = {
+				docker: { installed: false },
+				noseyparker: { installed: false },
+				java: { installed: false },
+				bfg: { installed: false }
+			};
+			return p;
+		}
+
+		function withEngines(list, fn) {
+			const original = vscode.workspace.getConfiguration;
+			vscode.workspace.getConfiguration = () => ({ get: () => list });
+			try {
+				return fn();
+			} finally {
+				vscode.workspace.getConfiguration = original;
+			}
+		}
+
+		test('a missing default engine is named, even with the Docker parts present', () => {
+			// The old verdict was `docker && noseyparker`, which said "Dependencies
+			// ready" on a machine that could not run a single default engine.
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null },
+				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true, installed: false, version: null }
+			]);
+			p._dependencyStatus.docker.installed = true;
+			p._dependencyStatus.noseyparker.installed = true;
+
+			const missing = withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies());
+			assert.deepStrictEqual(missing, ['Gitleaks', 'TruffleHog']);
+		});
+
+		test('Docker is required only while Nosey Parker is enabled', () => {
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: true, version: 'v8.30.1' },
+				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: false, installed: false, version: null }
+			]);
+
+			assert.deepStrictEqual(
+				withEngines(['gitleaks'], () => p._missingRequiredDependencies()),
+				[],
+				'a Gitleaks-only setup is complete without a container runtime'
+			);
+			assert.deepStrictEqual(
+				withEngines(['gitleaks', 'noseyparker'], () => p._missingRequiredDependencies()),
+				['Docker Engine', 'Nosey Parker image']
+			);
+		});
+
+		test('a missing installable engine gets an install button; Nosey Parker does not', () => {
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: 'https://example.invalid/gl', enabled: true, installed: false, version: null },
+				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: 'https://example.invalid/th', enabled: true, installed: true, version: 'v3.96.0' }
+			]);
+			const html = p._getEngineStatusHtml();
+
+			assert.ok(/data-install-engine="gitleaks"/.test(html), 'the missing engine must be installable from here');
+			assert.ok(!/data-install-engine="trufflehog"/.test(html), 'an installed engine needs no button');
+			assert.ok(!/data-install-engine="noseyparker"/.test(html), 'a Docker image must not get a native-install button');
+		});
+
+		test('a failed install is shown next to its engine, not swallowed', () => {
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null }
+			]);
+			p._engineInstallResults.gitleaks = { engineId: 'gitleaks', ok: false, error: 'HTTP 500 for gitleaks_8.30.1_windows_x64.zip' };
+			assert.ok(/HTTP 500 for gitleaks_8\.30\.1_windows_x64\.zip/.test(p._getEngineStatusHtml()));
+		});
+
+		test('engines are installed where an extension update cannot delete them', () => {
+			// The extension directory is replaced wholesale on update, which would
+			// silently uninstall every engine the user just downloaded.
+			const storage = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-'));
+			const p = new LeakLockSidebarProvider(vscode.Uri.file(__dirname), vscode.Uri.file(storage));
+			assert.strictEqual(p._engineInstallDir, nodePath.join(storage, 'engines'));
+
+			// And that directory has to be searched, or an installed engine still
+			// reports as missing — the same silence the install was meant to end.
+			const scanEnginesModule = require('../scan-engines');
+			assert.strictEqual(scanEnginesModule.COMMON_BIN_DIRS[0], p._engineInstallDir);
+		});
+	});
+});

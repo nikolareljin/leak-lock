@@ -8,14 +8,34 @@ const scanEngineConfig = require('./scan-engine-config');
 // The native engines answer "installed?" and "which version?" themselves, so the
 // panel asks them rather than carrying a second detection path that can disagree.
 const scanEngines = require('./scan-engines');
+// Leak Lock runs Gitleaks and TruffleHog as local executables, so setup downloads the
+// release binary per platform rather than pulling an image. Kept in its own module with
+// no vscode import so the Windows naming, URLs and extraction are assertable anywhere.
+const engineInstall = require('./engine-install');
 // Keywords are user-supplied and land in both element text and attribute values,
 // so they must be escaped before interpolation into the webview HTML. Shared with
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 
 class LeakLockSidebarProvider {
-    constructor(extensionUri) {
+    /**
+     * @param {vscode.Uri} extensionUri
+     * @param {vscode.Uri} [storageUri] global storage; engines are installed here
+     *   rather than in the extension directory, which an update replaces wholesale.
+     */
+    constructor(extensionUri, storageUri) {
         this._extensionUri = extensionUri;
+        this._engineInstallDir = engineInstall.engineInstallDir(
+            (storageUri && storageUri.fsPath) || extensionUri.fsPath
+        );
+        // Register before any probe: a binary Leak Lock installed lives on no PATH, so
+        // without this the extension could download an engine and still call it missing.
+        scanEngines.addBinarySearchDir(this._engineInstallDir);
+        // Per-engine install outcomes, keyed by engine id. Rendered next to the engine
+        // rather than folded into one "dependencies installed" message, because a
+        // partial install is the normal outcome and has to be visible as one.
+        this._engineInstallResults = {};
+        this._engineInstallInFlight = new Set();
         this._view = undefined;
         this._dependenciesInstalled = false;
         this._dependencyStatus = null;
@@ -47,6 +67,11 @@ class LeakLockSidebarProvider {
                 switch (message.command) {
                     case 'installDependencies':
                         this._installDependencies();
+                        break;
+                    case 'installEngine':
+                        // Per-tool and user-initiated: one engine failing must never
+                        // stop another from being installed or from scanning.
+                        this._installEngine(message.engineId);
                         break;
                     case 'selectDirectory':
                         this._selectDirectory();
@@ -479,6 +504,19 @@ class LeakLockSidebarProvider {
                 function installDependencies() {
                     vscode.postMessage({ command: 'installDependencies' });
                 }
+
+                // Delegated, like every other button that carries data: the engine id
+                // travels in a data attribute rather than inside an inline handler.
+                document.addEventListener('click', (e) => {
+                    const btn = e.target instanceof Element
+                        ? e.target.closest('[data-install-engine]')
+                        : null;
+                    if (!btn) return;
+                    vscode.postMessage({
+                        command: 'installEngine',
+                        engineId: btn.dataset.installEngine
+                    });
+                });
                 
                 function selectDirectory() {
                     vscode.postMessage({ command: 'selectDirectory' });
@@ -656,6 +694,8 @@ class LeakLockSidebarProvider {
             // still runs, reports fewer findings, and looks identical to a clean result.
             const icon = engine.installed ? '✅' : (engine.enabled ? '⚠️' : '➖');
             const name = escapeHtml(engine.displayName);
+            const installable = engineInstall.INSTALLABLE_ENGINE_IDS.includes(engine.id);
+            const installing = this._engineInstallInFlight.has(engine.id);
             let detail;
             if (engine.installed) {
                 detail = note(escapeHtml(engine.version || 'installed, version not reported')
@@ -669,14 +709,54 @@ class LeakLockSidebarProvider {
             } else {
                 detail = note('Not installed, not enabled');
             }
+
+            // Nosey Parker has no button here: Leak Lock runs it as a Docker image, so
+            // it is installed by the Docker section. Offering an identical-looking
+            // button for a different mechanism is how setup misled people to begin with.
+            const button = installable && !engine.installed
+                ? `<div style="margin-left: 20px; margin-bottom: 8px;">
+                        <button class="install-button" data-install-engine="${escapeHtml(engine.id)}"
+                                style="width: auto; padding: 4px 8px; font-size: 11px; margin: 0;"
+                                ${installing ? 'disabled' : ''}>
+                            ${installing ? `Installing ${name}…` : `Install ${name}`}
+                        </button>
+                   </div>`
+                : '';
+
             return `
                 <div class="status-item">
                     <span><span class="status-icon">${icon}</span>${name}</span>
                 </div>
-                ${detail}`;
+                ${detail}
+                ${button}
+                ${this._getEngineInstallResultHtml(engine.id, note)}`;
         }).join('');
 
         return label('Scan engines:') + rows;
+    }
+
+    /**
+     * The outcome of the last install attempt for one engine.
+     *
+     * Kept per engine and shown next to it. A single "Dependencies installed
+     * successfully!" over a run where one of two engines failed is the exact defect
+     * this release fixes, so the failure has to have somewhere of its own to appear.
+     */
+    _getEngineInstallResultHtml(engineId, note) {
+        const result = this._engineInstallResults?.[engineId];
+        if (!result) {
+            return '';
+        }
+        if (!result.ok) {
+            return note(escapeHtml(result.error || 'Installation failed.'),
+                'var(--vscode-inputValidation-errorForeground)');
+        }
+        const warnings = (result.warnings || [])
+            .map(text => note(escapeHtml(text), 'var(--vscode-inputValidation-warningForeground)'))
+            .join('');
+        return note(
+            `Installed ${escapeHtml(result.version || result.source || '')} to ${escapeHtml(result.path || '')}`
+        ) + warnings;
     }
 
     _getDependenciesSection() {
@@ -866,14 +946,19 @@ class LeakLockSidebarProvider {
                 
                 ${!this._dependenciesInstalled ? `
                     <div class="warning-text">
-                        ⚠️ Docker and Nosey Parker are required for scanning
+                        <!-- Naming what is missing, rather than repeating a fixed list.
+                             "Docker and Nosey Parker are required for scanning" was
+                             wrong in both directions: neither is required when Gitleaks
+                             and TruffleHog are the enabled engines, and neither being
+                             present makes a scan possible when those two are absent. -->
+                        ⚠️ Not ready to scan — missing: ${escapeHtml((this._dependencyStatus?.missing || []).join(', ') || 'a scan engine')}
                     </div>
                 ` : ''}
-                
+
                 <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 10px; line-height: 1.3;">
                     <strong>Prerequisites:</strong><br>
-                    • Docker Engine must be running<br>
-                    • Internet connection for image downloads<br>
+                    • Internet connection to download the engine binaries<br>
+                    • Docker Engine running — only for the optional Nosey Parker engine<br>
                     • Java 8+ recommended for automated BFG execution
                 </div>
             </div>
@@ -1110,16 +1195,55 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.bfg.error = 'BFG tool not downloaded';
         }
 
-        // Overall status - all core dependencies must be met
-        this._dependenciesInstalled = this._dependencyStatus.docker.installed &&
-            this._dependencyStatus.noseyparker.installed;
+        // The engines that actually scan decide whether setup is complete.
+        //
+        // This used to be `docker && noseyparker`, which reported "Dependencies ready"
+        // on a machine with neither Gitleaks nor TruffleHog — the two engines a default
+        // scan runs — and reported "not ready" on a machine that had both but no Docker.
+        // Probing here costs two subprocesses and buys the guarantee this release is
+        // about: setup never claims success while a default engine is absent.
+        await this._refreshEngineStatus();
+        this._dependencyStatus.missing = this._missingRequiredDependencies();
+        this._dependenciesInstalled = this._dependencyStatus.missing.length === 0;
 
         this._updateView();
+    }
 
-        // When Docker or the image is missing the detailed view renders anyway, so the
-        // engine rows are on screen and should carry real answers rather than a prompt.
-        if (!this._dependenciesInstalled) {
-            this._refreshEngineStatus();
+    /**
+     * What is enabled but not usable, named.
+     *
+     * Docker and the Nosey Parker image count only when Nosey Parker is enabled: it is
+     * the sole component that needs them, its upstream is archived, and demanding a
+     * container runtime from someone who scans with Gitleaks alone is the same category
+     * of wrong answer as claiming a missing engine is fine.
+     */
+    _missingRequiredDependencies() {
+        const missing = [];
+        for (const engine of this._engineStatus || []) {
+            if (engine.enabled && !engine.installed) {
+                missing.push(engine.displayName);
+            }
+        }
+        if (this._isNoseyParkerEnabled()) {
+            if (!this._dependencyStatus?.docker?.installed) {
+                missing.push('Docker Engine');
+            }
+            if (!this._dependencyStatus?.noseyparker?.installed) {
+                missing.push('Nosey Parker image');
+            }
+        }
+        return missing;
+    }
+
+    _isNoseyParkerEnabled() {
+        try {
+            const configured = vscode.workspace.getConfiguration('leakLock').get('scan.engines');
+            const engines = Array.isArray(configured) && configured.length
+                ? configured
+                : ['gitleaks', 'trufflehog', 'noseyparker'];
+            return engines.includes('noseyparker');
+        } catch {
+            return true;
         }
     }
 
@@ -1229,9 +1353,23 @@ class LeakLockSidebarProvider {
         }
     }
 
+    /**
+     * Set up every dependency, per component.
+     *
+     * Previously this pulled the Nosey Parker image, downloaded BFG and announced
+     * success — while Gitleaks and TruffleHog, the engines a default scan actually
+     * runs, had no installation step whatsoever. That is issue #104: the message was
+     * true about what it did and silent about what it never attempted.
+     *
+     * Docker now fails soft. It serves only the optional, archived Nosey Parker engine,
+     * so its absence must not abort the installation of the two engines that scan.
+     */
     async _installDependencies() {
         this._isInstalling = true;
         this._updateView();
+
+        let dockerError = null;
+        const engineResults = [];
 
         try {
             // Show progress notification
@@ -1270,21 +1408,135 @@ class LeakLockSidebarProvider {
                     // Continue without BFG - it's optional
                 }
 
-                progress.report({ increment: 20, message: "Verifying installation..." });
-
-                // Recheck all dependencies
-                await this._checkDependencies();
+                progress.report({ increment: 20, message: "Docker components ready." });
             });
-
-            vscode.window.showInformationMessage('Dependencies installed successfully!');
         } catch (error) {
-            vscode.window.showErrorMessage(`Failed to install dependencies: ${error.message}`);
-            // Still recheck dependencies to get accurate status
-            await this._checkDependencies();
-        } finally {
-            this._isInstalling = false;
-            this._updateView();
+            // Docker's absence is no longer fatal to setup: it belongs to the optional
+            // Nosey Parker engine only. Record it and carry on to the native engines,
+            // which is the whole point of installing them per tool.
+            dockerError = error.message;
         }
+
+        // The native engines, each on its own. Reported per engine below rather than
+        // rolled into one verdict — a run where Gitleaks installs and TruffleHog does
+        // not is a partial success, and calling it either "installed" or "failed" is a
+        // lie in one direction or the other.
+        for (const engineId of engineInstall.INSTALLABLE_ENGINE_IDS) {
+            const already = (this._engineStatus || []).find(e => e.id === engineId);
+            if (already?.installed) {
+                continue;
+            }
+            engineResults.push(await this._installEngine(engineId, { silent: true }));
+        }
+
+        this._isInstalling = false;
+        await this._checkDependencies();
+        this._reportSetupOutcome(dockerError, engineResults);
+        this._updateView();
+    }
+
+    /**
+     * One notification that states what happened, component by component.
+     *
+     * The old flow showed "Dependencies installed successfully!" whenever the Docker
+     * steps completed, which is what let a setup with no scanning engine at all read as
+     * done. Anything still missing is named here, and named again in the panel.
+     */
+    _reportSetupOutcome(dockerError, engineResults) {
+        const installed = engineResults.filter(r => r?.ok).map(r => r.displayName);
+        const failed = engineResults.filter(r => r && !r.ok).map(r => r.displayName);
+        const missing = this._dependencyStatus?.missing || [];
+
+        const parts = [];
+        if (installed.length) {
+            parts.push(`Installed ${installed.join(' and ')}.`);
+        }
+        if (failed.length) {
+            parts.push(`Could not install ${failed.join(' and ')}.`);
+        }
+        if (dockerError) {
+            parts.push(`Docker step skipped: ${dockerError}`);
+        }
+
+        if (!missing.length) {
+            vscode.window.showInformationMessage(
+                parts.length ? `Dependencies ready. ${parts.join(' ')}` : 'Dependencies ready.'
+            );
+            return;
+        }
+        vscode.window.showWarningMessage(
+            `Dependency setup incomplete — still missing: ${missing.join(', ')}. ${parts.join(' ')}`.trim()
+        );
+    }
+
+    /**
+     * Install one native engine.
+     *
+     * Never throws and never touches another engine's state: this is the "a failure for
+     * one engine must not prevent another from scanning" rule, expressed as the shape of
+     * the function rather than as a promise in a comment.
+     *
+     * @returns {Promise<object|null>} the install result, or null if not installable
+     */
+    async _installEngine(engineId, { silent = false } = {}) {
+        if (!engineInstall.INSTALLABLE_ENGINE_IDS.includes(engineId)) {
+            return null;
+        }
+        if (this._engineInstallInFlight.has(engineId)) {
+            return null;
+        }
+        this._engineInstallInFlight.add(engineId);
+        this._updateView();
+
+        const displayName = engineInstall.ENGINE_RELEASES[engineId].displayName;
+        let result;
+        try {
+            result = await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: `Installing ${displayName}…`,
+                cancellable: false
+            }, async () => engineInstall.installEngine({
+                engineId,
+                installDir: this._engineInstallDir,
+                // Ask the engine adapter for the version, so what setup reports is
+                // produced by the same code path a scan uses to decide it exists.
+                verifyVersion: async (id, exePath) => {
+                    const engine = scanEngines.getEngine(id);
+                    return engine ? engine.version({ binary: exePath }) : null;
+                }
+            }));
+        } catch (error) {
+            // installEngine is written not to throw; if it ever does, the engine is
+            // still reported as failed rather than the whole setup collapsing.
+            result = {
+                engineId,
+                displayName,
+                ok: false,
+                warnings: [],
+                error: error.message
+            };
+        } finally {
+            this._engineInstallInFlight.delete(engineId);
+        }
+
+        this._engineInstallResults[engineId] = result;
+        // A newly installed binary must be findable immediately, not next session.
+        scanEngines.resetBinaryCache();
+
+        if (!silent) {
+            if (result.ok) {
+                vscode.window.showInformationMessage(
+                    `${displayName} ${result.version || ''} installed.`.replace('  ', ' ')
+                );
+            } else {
+                vscode.window.showErrorMessage(
+                    `${result.error} ${engineInstall.manualInstallGuidance(engineId)}`
+                );
+            }
+            await this._checkDependencies();
+        }
+        this._updateView();
+        return result;
     }
 
     async _selectDirectory() {
