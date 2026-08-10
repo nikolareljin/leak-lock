@@ -181,12 +181,16 @@ function chooseRuntime({ preference = 'auto', binaryAvailable = false, dockerAva
  * image, which would turn "check whether the fallback is available" into a multi-hundred
  * megabyte download in the middle of a scan the user thought had started.
  */
-async function isDockerImagePresent(image, timeoutMs = 20000) {
+async function isDockerImagePresent(image, { command = 'docker', timeoutMs = 20000 } = {}) {
     if (!image) {
         return false;
     }
     try {
-        await runTool('docker', engineDocker.buildImageInspectArgs(image), { timeoutMs });
+        // The client comes from the caller for the same reason `invoke()` takes it from
+        // the execution: otherwise `docker run` could be redirected at an alternate
+        // client while the image probe kept asking the default one, and the two would
+        // disagree about whether the image exists.
+        await runTool(command, engineDocker.buildImageInspectArgs(image), { timeoutMs });
         return true;
     } catch {
         return false;
@@ -211,7 +215,8 @@ async function resolveExecution(engine, options = {}) {
         : await engine.probeExecution(binaryExecution);
     const dockerAvailable = (preference === 'binary' || (preference === 'auto' && binaryAvailable))
         ? false
-        : (await isDockerImagePresent(image) && await engine.probeExecution(dockerExecution));
+        : (await isDockerImagePresent(image, { command: dockerExecution.command })
+            && await engine.probeExecution(dockerExecution));
 
     const mode = chooseRuntime({ preference, binaryAvailable, dockerAvailable });
     if (mode === 'binary') {
