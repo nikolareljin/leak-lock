@@ -4398,7 +4398,11 @@ suite('PR #105 review follow-ups', () => {
 			vscode.Uri.file(__dirname),
 			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
 		);
+		// The JVM answer comes from _hasJavaRuntime(), which probes the machine rather
+		// than trusting a cache that may not be filled yet — so it is stubbed here to
+		// describe a machine without Java, instead of a stale status object.
 		p._dependencyStatus = { java: { installed: false } };
+		p._hasJavaRuntime = async () => false;
 
 		const result = await p._installBfg();
 		assert.deepStrictEqual(
@@ -4427,5 +4431,76 @@ suite('PR #105 review follow-ups', () => {
 		const doc = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'docs', 'SCANNING_ENGINES.md'), 'utf8');
 		assert.ok(!/Leak Lock does not use them/.test(doc), 'the container images are used, as a fallback');
 		assert.ok(/Or run them from a container/.test(doc));
+	});
+});
+
+suite('PR #105 second review pass', () => {
+	const engineDocker = require('../engine-docker');
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	function provider() {
+		return new LeakLockSidebarProvider(
+			vscode.Uri.file(__dirname),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+	}
+
+	test('"docker is missing" is translated, not shown as a spawn error', () => {
+		// Docker absent surfaces as a spawn failure, not a Docker message. Left raw,
+		// "spawn docker ENOENT" is the least actionable string in the whole flow.
+		const posix = engineDocker.describeDockerFailure('spawn docker ENOENT');
+		const windows = engineDocker.describeDockerFailure("'docker' is not recognized as an internal or external command, operable program or batch file.");
+
+		for (const text of [posix, windows]) {
+			assert.match(text, /Docker is not installed/, text);
+			// And the way out that needs no Docker at all.
+			assert.match(text, /native binary/, text);
+		}
+	});
+
+	test('a negative Java answer is re-checked rather than trusted', async () => {
+		// _checkDependencies() runs unawaited on view resolve, so a user who presses
+		// Install Dependencies at once can reach BFG while the Java probe is still in
+		// flight and the cached answer is still its false default.
+		const p = provider();
+		p._dependencyStatus = { java: { installed: false, version: null, error: null } };
+
+		const hasJava = await p._hasJavaRuntime();
+		let systemJava = true;
+		try {
+			await require('util').promisify(require('child_process').exec)('java -version 2>&1');
+		} catch {
+			systemJava = false;
+		}
+
+		assert.strictEqual(hasJava, systemJava, 'the answer must come from the machine, not the stale cache');
+		if (systemJava) {
+			assert.strictEqual(p._dependencyStatus.java.installed, true, 'and the correction is written back');
+		}
+	});
+
+	test('a cached positive Java answer is not re-probed', async () => {
+		const p = provider();
+		p._dependencyStatus = { java: { installed: true, version: 'openjdk 21', error: null } };
+		assert.strictEqual(await p._hasJavaRuntime(), true);
+	});
+
+	test('image verification reuses the execution it just created', () => {
+		// The image was pulled on the line above; re-resolving would repeat an
+		// `image inspect` plus a probe run to rediscover what is already known.
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+		const body = src.slice(src.indexOf('async _pullEngineImage('), src.indexOf('async _installEngine('));
+
+		assert.match(body, /execution: \{ mode: 'docker', command: 'docker', image \}/);
+		assert.ok(!/version\(\{ runtime: 'docker', image \}\)/.test(body), 'must not re-resolve the runtime');
+	});
+
+	test('the docs describe the probe that actually happens', () => {
+		const doc = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'docs', 'SCANNING_ENGINES.md'), 'utf8');
+		assert.ok(!/never `docker run`/.test(doc), 'the image is run once to verify it works');
+		assert.match(doc, /it \*is\* run once/);
 	});
 });

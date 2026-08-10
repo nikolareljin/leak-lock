@@ -1475,6 +1475,34 @@ class LeakLockSidebarProvider {
     }
 
     /**
+     * Is there a JVM, asked rather than assumed?
+     *
+     * `_checkDependencies()` runs unawaited when the view resolves, so a user who presses
+     * Install Dependencies immediately can arrive here while the Java probe is still in
+     * flight and the cached answer is still its `false` default. Trusting that would skip
+     * BFG on a machine that has Java — a wrong answer produced by a race, which is the
+     * hardest kind to report as a bug. The cached true is honoured; only the negative is
+     * re-checked, and the result is written back so the panel agrees.
+     */
+    async _hasJavaRuntime() {
+        if (this._dependencyStatus?.java?.installed) {
+            return true;
+        }
+        try {
+            const execAsync = require('util').promisify(require('child_process').exec);
+            const { stderr } = await execAsync('java -version 2>&1');
+            if (this._dependencyStatus?.java) {
+                this._dependencyStatus.java.installed = true;
+                this._dependencyStatus.java.version = String(stderr || '').split('\n')[0];
+                this._dependencyStatus.java.error = null;
+            }
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
      * Download BFG, if a JVM exists to run it.
      *
      * Independent of Docker and of the scan engines: it rewrites history, it does not
@@ -1485,7 +1513,7 @@ class LeakLockSidebarProvider {
      * @returns {Promise<{ok: boolean, skipped: boolean, error: ?string}>}
      */
     async _installBfg() {
-        if (!this._dependencyStatus?.java?.installed) {
+        if (!await this._hasJavaRuntime()) {
             return { ok: false, skipped: true, error: 'No Java runtime; BFG cannot run.' };
         }
         try {
@@ -1560,8 +1588,12 @@ class LeakLockSidebarProvider {
 
             // Verified the same way a binary install is: by running it. A pulled image
             // that cannot execute here is not an installed engine.
+            //
+            // The execution is handed over concretely rather than as a preference: the
+            // image was just pulled, so re-resolving would repeat an `image inspect` and
+            // a probe run to rediscover what this line already knows.
             const engine = scanEngines.getEngine(engineId);
-            const version = await engine.version({ runtime: 'docker', image });
+            const version = await engine.version({ execution: { mode: 'docker', command: 'docker', image } });
             if (!version) {
                 throw new Error(`${image} was pulled but did not report a version when run`);
             }
