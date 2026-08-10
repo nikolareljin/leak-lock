@@ -1442,23 +1442,6 @@ class LeakLockSidebarProvider {
                 // Pull the Nosey Parker Docker image
                 await execAsync(`docker pull ${scanEngineConfig.NOSEYPARKER_IMAGE}`, { timeout: 300000 });
 
-                // BFG is a JAR: without a JVM the download is a file that cannot run.
-                // Fetching it anyway would put a ✅ next to a tool that will fail the
-                // moment it is used, so it is skipped and reported as unavailable.
-                if (this._dependencyStatus?.java?.installed) {
-                    progress.report({ increment: 30, message: "Downloading BFG tool..." });
-                    try {
-                        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-                        const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
-                        await execAsync(`curl -L -o "${bfgPath}" "${bfgUrl}"`);
-                    } catch (bfgError) {
-                        console.warn('Failed to download BFG tool:', bfgError.message);
-                        // Continue without BFG - it's optional
-                    }
-                } else {
-                    progress.report({ increment: 30, message: "Skipping BFG — no Java runtime found." });
-                }
-
                 progress.report({ increment: 20, message: "Docker components ready." });
             });
         } catch (error) {
@@ -1467,6 +1450,11 @@ class LeakLockSidebarProvider {
             // which is the whole point of installing them per tool.
             dockerError = error.message;
         }
+
+        // BFG depends on Java and on nothing else. Downloading it inside the Docker
+        // block meant a missing Docker skipped it, which is the same "one component
+        // failing cancels an unrelated one" defect this release exists to remove.
+        await this._installBfg();
 
         // The native engines, each on its own. Reported per engine below rather than
         // rolled into one verdict — a run where Gitleaks installs and TruffleHog does
@@ -1484,6 +1472,34 @@ class LeakLockSidebarProvider {
         await this._checkDependencies();
         this._reportSetupOutcome(dockerError, engineResults);
         this._updateView();
+    }
+
+    /**
+     * Download BFG, if a JVM exists to run it.
+     *
+     * Independent of Docker and of the scan engines: it rewrites history, it does not
+     * detect anything. Its only prerequisite is Java — without a JVM the download is a
+     * file that cannot run, so fetching it would put a tick beside a tool that fails the
+     * moment it is used.
+     *
+     * @returns {Promise<{ok: boolean, skipped: boolean, error: ?string}>}
+     */
+    async _installBfg() {
+        if (!this._dependencyStatus?.java?.installed) {
+            return { ok: false, skipped: true, error: 'No Java runtime; BFG cannot run.' };
+        }
+        try {
+            const { exec } = require('child_process');
+            const execAsync = require('util').promisify(exec);
+            const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+            const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
+            await execAsync(`curl -L -o "${bfgPath}" "${bfgUrl}"`);
+            return { ok: true, skipped: false, error: null };
+        } catch (error) {
+            console.warn('Failed to download BFG tool:', error.message);
+            // Optional: the manual git commands do the same work without it.
+            return { ok: false, skipped: false, error: error.message };
+        }
     }
 
     /**
