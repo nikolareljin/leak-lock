@@ -433,8 +433,13 @@ const gitleaksEngine = {
     /**
      * @returns {Promise<{findings: Array, surfaces: object, warnings: string[]}>}
      */
-    async scan({ repoDir, binary, runtime, image, timeoutMs, configPath, baselinePath, maxTargetMegabytes, includeWorkingTree = true } = {}) {
-        const execution = await resolveExecution(this, { binary, runtime, image });
+    async scan({ repoDir, binary, runtime, image, execution: resolved, timeoutMs, configPath, baselinePath, maxTargetMegabytes, includeWorkingTree = true } = {}) {
+        // A caller that has already resolved the runtime passes it in. That is not only
+        // two fewer subprocesses: re-resolving here could pick a *different* runtime
+        // from the one the panel just reported — a binary installed between the two
+        // calls, a daemon that stopped — and then the attribution on every finding names
+        // a runtime that did not produce it.
+        const execution = resolved || await resolveExecution(this, { binary, runtime, image });
         if (!execution) {
             throw new Error('Gitleaks is available neither as a binary nor as a pulled Docker image.');
         }
@@ -649,8 +654,10 @@ const truffleHogEngine = {
         }
     },
 
-    async scan({ repoDir, binary, runtime, image, timeoutMs, verify = true, results = 'verified,unknown' } = {}) {
-        const execution = await resolveExecution(this, { binary, runtime, image });
+    async scan({ repoDir, binary, runtime, image, execution: resolved, timeoutMs, verify = true, results = 'verified,unknown' } = {}) {
+        // Reuses an execution the caller already resolved — see the note on the Gitleaks
+        // adapter: this is about the scan and the panel agreeing, not only about cost.
+        const execution = resolved || await resolveExecution(this, { binary, runtime, image });
         if (!execution) {
             throw new Error('TruffleHog is available neither as a binary nor as a pulled Docker image.');
         }

@@ -5006,3 +5006,66 @@ suite('PR #105 tenth review pass', () => {
 		);
 	});
 });
+
+suite('PR #105 eleventh review pass', () => {
+	const engines = require('../scan-engines');
+	const nodeFs = require('fs');
+	const nodePath = require('path');
+
+	test('a scan uses the execution it was given, not a freshly resolved one', async () => {
+		// Re-resolving inside scan() can select a different runtime from the one the
+		// panel just reported - a binary installed between the two calls, a daemon that
+		// stopped - and then every finding is attributed to a runtime that did not
+		// produce it.
+		const original = engines.resolveExecution;
+		let resolvedAgain = false;
+		const probeCommands = [];
+
+		// A command that exits non-zero, so the scan fails fast: what is under test is
+		// which command was chosen, not the scan result.
+		const execution = { mode: 'binary', command: 'leaklock-definitely-not-a-command', image: null };
+
+		try {
+			for (const engine of [engines.ENGINES.gitleaks, engines.ENGINES.trufflehog]) {
+				const outcome = await engine.scan({ repoDir: __dirname, execution, timeoutMs: 5000 })
+					.catch(error => ({ error }));
+				probeCommands.push(outcome);
+			}
+		} finally {
+			engines.resolveExecution = original;
+		}
+
+		assert.strictEqual(resolvedAgain, false);
+		for (const outcome of probeCommands) {
+			const message = outcome?.error?.message || JSON.stringify(outcome);
+			assert.match(
+				message,
+				/leaklock-definitely-not-a-command/,
+				'the supplied execution must be the one invoked'
+			);
+		}
+	});
+
+	test('the panel hands its resolved execution to the scan', () => {
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		assert.match(src, /const scanOptions = \{ repoDir: scanPath, binary, runtime, image, execution, timeoutMs/);
+	});
+
+	test('an absent execution is still resolved, so other callers keep working', async () => {
+		// The parameter is an optimisation and a consistency guarantee, not a new
+		// requirement: scan() called without one must still work.
+		const engine = engines.ENGINES.gitleaks;
+		const outcome = await engine.scan({
+			repoDir: __dirname,
+			binary: 'leaklock-definitely-not-a-command',
+			runtime: 'binary',
+			timeoutMs: 5000
+		}).catch(error => ({ error }));
+
+		assert.match(
+			outcome.error.message,
+			/available neither as a binary nor as a pulled Docker image/,
+			'resolution still happens when no execution is supplied'
+		);
+	});
+});
