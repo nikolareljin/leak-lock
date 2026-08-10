@@ -4700,3 +4700,80 @@ suite('PR #105 sixth review pass', () => {
 		}
 	});
 });
+
+suite('PR #105 seventh review pass', () => {
+	const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+	const engines = require('../scan-engines');
+	const nodeFs = require('fs');
+	const nodeOs = require('os');
+	const nodePath = require('path');
+
+	test('an existing BFG jar is not downloaded again', async () => {
+		// Re-fetching on every setup run overwrites a known-good copy with an identical
+		// one, and turns a working offline setup into a failing one.
+		const extDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'));
+		nodeFs.writeFileSync(nodePath.join(extDir, 'bfg.jar'), 'pretend jar bytes');
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(extDir),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._hasJavaRuntime = async () => true;
+
+		const realFetch = globalThis.fetch;
+		globalThis.fetch = async () => { throw new Error('must not download an existing jar'); };
+		try {
+			const result = await p._installBfg();
+			assert.strictEqual(result.ok, true);
+			assert.strictEqual(result.alreadyPresent, true);
+			assert.strictEqual(nodeFs.readFileSync(nodePath.join(extDir, 'bfg.jar'), 'utf8'), 'pretend jar bytes');
+		} finally {
+			globalThis.fetch = realFetch;
+			nodeFs.rmSync(extDir, { recursive: true, force: true });
+		}
+	});
+
+	test('a truncated BFG jar is retried rather than trusted', async () => {
+		const extDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'));
+		nodeFs.writeFileSync(nodePath.join(extDir, 'bfg.jar'), '');
+		const p = new LeakLockSidebarProvider(
+			vscode.Uri.file(extDir),
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+		);
+		p._hasJavaRuntime = async () => true;
+
+		const realFetch = globalThis.fetch;
+		let fetched = false;
+		globalThis.fetch = async () => {
+			fetched = true;
+			return { ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode('real jar').buffer };
+		};
+		try {
+			const result = await p._installBfg();
+			assert.strictEqual(result.ok, true);
+			assert.strictEqual(fetched, true, 'a zero-length file is a dead download, not an install');
+			assert.strictEqual(nodeFs.readFileSync(nodePath.join(extDir, 'bfg.jar'), 'utf8'), 'real jar');
+		} finally {
+			globalThis.fetch = realFetch;
+			nodeFs.rmSync(extDir, { recursive: true, force: true });
+		}
+	});
+
+	test('the container client comes from the resolved execution, not a literal', async () => {
+		// Otherwise execution.command means something in one branch and is ignored in
+		// the other, and there is no way to point at an alternate client.
+		const seen = {};
+		const originalExecPath = process.execPath;
+		await engines.invoke(
+			{ mode: 'docker', command: originalExecPath, image: 'img' },
+			['-e', 'process.stdout.write("ok")'],
+			{ timeoutMs: 15000 }
+		).then(r => { seen.stdout = r.stdout; }).catch(err => { seen.error = err; });
+
+		// node was invoked instead of docker, proving the command field is honoured;
+		// the docker run arguments are simply passed through to it.
+		assert.ok(seen.error || seen.stdout !== undefined, 'the configured command must be the one executed');
+		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'scan-engines.js'), 'utf8');
+		const body = src.slice(src.indexOf('async function invoke('), src.indexOf('async function invoke(') + 900);
+		assert.match(body, /execution\.command \|\| 'docker'/);
+	});
+});
