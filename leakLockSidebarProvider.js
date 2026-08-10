@@ -1593,7 +1593,10 @@ class LeakLockSidebarProvider {
      * file that cannot run, so fetching it would put a tick beside a tool that fails the
      * moment it is used.
      *
-     * @returns {Promise<{ok: boolean, skipped: boolean, error: ?string}>}
+     * @returns {Promise<{ok: boolean, skipped: boolean, error: ?string, alreadyPresent?: boolean}>}
+     *   `skipped` means no JVM, so nothing was attempted; `alreadyPresent` means the jar
+     *   was already on disk and no download was made. Both are `ok: false`/`true`
+     *   respectively, so neither can be inferred from `ok` alone.
      */
     async _installBfg() {
         if (!await this._hasJavaRuntime()) {
