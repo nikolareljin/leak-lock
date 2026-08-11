@@ -32,4 +32,41 @@ function describeFindingPath(finding, scanPath) {
     return { absolutePath, tooltip };
 }
 
-module.exports = { describeFindingPath };
+/**
+ * The path to use when addressing a finding on a hosting provider.
+ *
+ * A finding's `file` is relative to the directory that was scanned; a permalink
+ * needs it relative to the git root. Scanning a folder that contains the
+ * repository makes those differ, and the difference is not cosmetic — every URL
+ * gains the repository's own directory name as a leading segment and 404s:
+ *
+ *     /blob/<sha>/leak-lock/test/a.js   404
+ *     /blob/<sha>/test/a.js             correct
+ *
+ * Resolving to absolute and re-relativizing against the git root is correct
+ * whatever base the scanner used, including when they are the same directory.
+ *
+ * @returns {string|null} a forward-slash repo-relative path, or null when the
+ *   file lies outside the repository
+ */
+function repoRelativePath(file, scanPath, repoRoot) {
+    if (typeof file !== 'string' || !file) {
+        return null;
+    }
+    if (!scanPath || !repoRoot) {
+        // Nothing to re-base against; the caller's own guards decide whether a
+        // link is offered at all.
+        return file;
+    }
+
+    const absolute = path.isAbsolute(file) ? file : path.resolve(scanPath, file);
+    const relative = path.relative(repoRoot, absolute);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        // Outside the repository: no commit of this repo can address it.
+        return null;
+    }
+    // A URL path is always forward-slashed, whatever the host filesystem uses.
+    return relative.split(path.sep).join('/');
+}
+
+module.exports = { describeFindingPath, repoRelativePath };
