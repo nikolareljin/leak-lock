@@ -13,7 +13,7 @@ const redactionRules = require('./redaction-rules');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
-const { describeFindingPath } = require('./finding-paths');
+const { describeFindingPath, repoRelativePath } = require('./finding-paths');
 const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
 const credentialInspect = require('./credential-inspect');
 const { classifyFindings } = require('./credential-prepass');
@@ -3478,9 +3478,16 @@ class LeakLockPanel {
             return null;
         }
         const finding = results[findingIndex];
+        // Repo-relative, not scan-relative: see repoRelativePath. Scanning a
+        // folder above the repository otherwise puts the repository's own
+        // directory name into the URL and every link 404s.
+        const file = repoRelativePath(finding.file, this._scanPath, this._scanRepoRoot);
+        if (!file) {
+            return null;
+        }
         const url = buildCommitUrl(this._remoteInfo, {
             commitHash: finding.commitHash,
-            file: finding.file,
+            file,
             line: finding.line
         });
         return url && isPermalinkUrl(url) ? url : null;
