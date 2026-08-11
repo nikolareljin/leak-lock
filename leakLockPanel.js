@@ -14,6 +14,7 @@ const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 const { describeFindingPath } = require('./finding-paths');
+const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -371,6 +372,7 @@ class LeakLockPanel {
         this._scanPath = null;
         this._scanRepoRoot = null;
         this._trackedFiles = null;
+        this._remoteInfo = null;
         this._scanCleanup = {
             preparedCommand: null,
             preparedMode: null, // 'bfg' | 'git'
@@ -533,6 +535,9 @@ class LeakLockPanel {
                         break;
                     case 'openSecurityGuide':
                         LeakLockPanel.currentPanel._openSecurityGuide();
+                        break;
+                    case 'openCommitUrl':
+                        LeakLockPanel.currentPanel._openCommitUrl(message.findingIndex);
                         break;
                     case 'scan.prepareBfg':
                         LeakLockPanel.currentPanel._prepareScanBfgCommand(message.replacements);
@@ -1631,6 +1636,15 @@ class LeakLockPanel {
                             }
                         }
 
+                        // Commit permalink click
+                        if (event.target.closest('.commit-link')) {
+                            const el = event.target.closest('.commit-link');
+                            const idx = parseInt(el.getAttribute('data-finding-index'), 10);
+                            if (!isNaN(idx)) {
+                                vscode.postMessage({ type: 'openCommitUrl', findingIndex: idx });
+                            }
+                        }
+
                         // Close dialog on overlay click (outside dialog box)
                         if (event.target.id === 'detail-dialog-overlay') {
                             hideDetailDialog();
@@ -2640,7 +2654,12 @@ class LeakLockPanel {
                     tooltipParts.push('Branch(es): ' + result.commitBranches.join(', '));
                 }
                 if (shortHash) {
-                    parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
+                    const commitUrl = this._resolveCommitUrl(index);
+                    if (commitUrl) {
+                        parts.push(`<span class="commit-link" data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</span>`);
+                    } else {
+                        parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
+                    }
                     tooltipParts.push('Commit: ' + result.commitHash);
                 }
                 if (commitDateFormatted) {
@@ -3146,6 +3165,7 @@ class LeakLockPanel {
             this._scanPath = scanPath;
             this._scanCoverage = null;
             await this._primeGitTracking(scanPath);
+            await this._primeRemoteInfo(scanPath);
 
             const engineSettings = this._getScanEngineSettings();
 
@@ -3344,6 +3364,55 @@ class LeakLockPanel {
             this._updateWebviewContent();
             vscode.window.showErrorMessage(`Scan failed: ${error.message}`);
         }
+    }
+
+    /**
+     * Resolved once per scan: the remote does not change mid-run, and every row
+     * in the table would otherwise shell out to git for the same answer.
+     */
+    async _primeRemoteInfo(scanPath) {
+        this._remoteInfo = null;
+        if (!scanPath) {
+            return;
+        }
+        try {
+            const remoteUrl = await gitRewrite.getRemoteUrl(scanPath);
+            this._remoteInfo = parseRemote(remoteUrl);
+        } catch {
+            // No remote, not a repository, or a host we do not build URLs for.
+            // The SHA simply stays plain text; this must never fail a scan.
+            this._remoteInfo = null;
+        }
+    }
+
+    /**
+     * The webview sends an index, never a URL. The host rebuilds the address
+     * from its own state and re-validates it, so a crafted message cannot turn
+     * `openExternal` into a launcher for an arbitrary address.
+     */
+    _resolveCommitUrl(findingIndex) {
+        const results = Array.isArray(this._scanResults) ? this._scanResults : [];
+        if (!Number.isInteger(findingIndex) || findingIndex < 0 || findingIndex >= results.length) {
+            return null;
+        }
+        const finding = results[findingIndex];
+        const url = buildCommitUrl(this._remoteInfo, {
+            commitHash: finding.commitHash,
+            file: finding.file,
+            line: finding.line
+        });
+        return url && isPermalinkUrl(url) ? url : null;
+    }
+
+    async _openCommitUrl(findingIndex) {
+        const url = this._resolveCommitUrl(findingIndex);
+        if (!url) {
+            vscode.window.showWarningMessage(
+                'Leak Lock could not build a link for that commit. The repository has no recognised remote, or the finding has no commit.'
+            );
+            return;
+        }
+        await vscode.env.openExternal(vscode.Uri.parse(url));
     }
 
     async _primeGitTracking(scanPath) {
