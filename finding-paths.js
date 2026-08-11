@@ -107,4 +107,43 @@ function repoRelativePath(file, scanPath, repoRoot) {
     return relative.split(path.sep).join('/');
 }
 
-module.exports = { describeFindingPath, repoRelativePath };
+/**
+ * Every plausible repo-relative reading of a finding's path, best guess first.
+ *
+ * Some engines report a path already prefixed with the repository's own
+ * directory name, even when the scan root IS the repository. Resolving that
+ * against the scan root duplicates the segment and the URL 404s:
+ *
+ *     scanPath  /p/dvr
+ *     file      dvr/leaklock-fixture/config/database.yml
+ *     resolved  /p/dvr/dvr/leaklock-fixture/config/database.yml
+ *
+ * Stripping the repeated segment unconditionally would be wrong for a
+ * repository that genuinely contains a top-level directory sharing its own
+ * name — both readings are legitimate, and nothing in the path itself
+ * distinguishes them. So both are returned in order and the caller asks git
+ * which one exists at that commit. The repository is the authority; a guess
+ * here would be a coin flip that silently produces a 404 when it loses.
+ *
+ * @returns {string[]} zero or more forward-slash repo-relative paths
+ */
+function repoRelativeCandidates(file, scanPath, repoRoot) {
+    const primary = repoRelativePath(file, scanPath, repoRoot);
+    if (!primary) {
+        return [];
+    }
+
+    const candidates = [primary];
+
+    const rootName = repoRoot ? path.basename(path.normalize(repoRoot)) : null;
+    if (rootName && primary.startsWith(`${rootName}/`)) {
+        const stripped = primary.slice(rootName.length + 1);
+        if (stripped && !candidates.includes(stripped)) {
+            candidates.push(stripped);
+        }
+    }
+
+    return candidates;
+}
+
+module.exports = { describeFindingPath, repoRelativePath, repoRelativeCandidates };

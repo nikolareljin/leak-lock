@@ -13,7 +13,7 @@ const redactionRules = require('./redaction-rules');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
-const { describeFindingPath, repoRelativePath } = require('./finding-paths');
+const { describeFindingPath, repoRelativePath, repoRelativeCandidates } = require('./finding-paths');
 const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
 const credentialInspect = require('./credential-inspect');
 const { classifyFindings } = require('./credential-prepass');
@@ -3525,8 +3525,47 @@ class LeakLockPanel {
         return url && isPermalinkUrl(url) ? url : null;
     }
 
+    /**
+     * Ask the repository which reading of the finding's path is real, rather
+     * than trusting the first plausible one. Engines differ in whether they
+     * prefix paths with the repository's own directory name, and the wrong
+     * choice yields a link that 404s.
+     */
+    async _resolveCommitUrlVerified(findingIndex) {
+        const results = Array.isArray(this._scanResults) ? this._scanResults : [];
+        if (!Number.isInteger(findingIndex) || findingIndex < 0 || findingIndex >= results.length) {
+            return null;
+        }
+        const finding = results[findingIndex];
+        const candidates = repoRelativeCandidates(finding.file, this._scanPath, this._scanRepoRoot);
+        if (candidates.length === 0) {
+            return null;
+        }
+
+        let file = candidates[0];
+        const repoDir = this._scanRepoRoot || this._scanPath;
+        if (candidates.length > 1 && repoDir && finding.commitHash) {
+            try {
+                const found = await gitRewrite.findPathInCommit(repoDir, finding.commitHash, candidates);
+                if (found) {
+                    file = found;
+                }
+            } catch {
+                // Verification is an improvement, not a precondition: fall back
+                // to the first reading rather than refusing to open anything.
+            }
+        }
+
+        const url = buildCommitUrl(this._remoteInfo, {
+            commitHash: finding.commitHash,
+            file,
+            line: finding.line
+        });
+        return url && isPermalinkUrl(url) ? url : null;
+    }
+
     async _openCommitUrl(findingIndex) {
-        const url = this._resolveCommitUrl(findingIndex);
+        const url = await this._resolveCommitUrlVerified(findingIndex);
         if (!url) {
             vscode.window.showWarningMessage(
                 'Leak Lock could not build a link for that commit. The repository has no recognised remote, or the finding has no commit.'

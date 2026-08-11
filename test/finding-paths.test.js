@@ -1,6 +1,6 @@
 const assert = require('assert');
 const path = require('path');
-const { describeFindingPath, repoRelativePath } = require('../finding-paths');
+const { describeFindingPath, repoRelativePath, repoRelativeCandidates } = require('../finding-paths');
 
 // Absolute fixture paths are BUILT, never written as literals.
 //
@@ -83,6 +83,55 @@ suite('repoRelativePath', () => {
         assert.strictEqual(
             repoRelativePath(path.join(REPO, 'test', 'a.js'), SCAN_ROOT, REPO),
             'test/a.js'
+        );
+    });
+});
+
+suite('repoRelativeCandidates', () => {
+
+    // Some engines report a path already prefixed with the repository's own
+    // directory name, even when the scan root IS the repository. Resolving that
+    // against the scan root duplicates the segment:
+    //   scanPath  /p/dvr
+    //   file      dvr/fixture/db.yml
+    //   resolved  /p/dvr/dvr/fixture/db.yml     -> URL 404s
+    // Both readings are legitimate — a repo may genuinely contain a top-level
+    // directory sharing its own name — so this returns candidates in order and
+    // lets git decide which one exists at the commit.
+
+    test('offers the de-prefixed reading when the path repeats the repo name', () => {
+        const candidates = repoRelativeCandidates(
+            path.join('a-repo', 'fixture', 'db.yml'), REPO, REPO
+        );
+        assert.deepStrictEqual(candidates, ['a-repo/fixture/db.yml', 'fixture/db.yml']);
+    });
+
+    test('offers a single candidate when there is nothing to strip', () => {
+        assert.deepStrictEqual(
+            repoRelativeCandidates(path.join('fixture', 'db.yml'), REPO, REPO),
+            ['fixture/db.yml']
+        );
+    });
+
+    test('does not strip a directory that merely starts with the repo name', () => {
+        assert.deepStrictEqual(
+            repoRelativeCandidates(path.join('a-repository', 'db.yml'), REPO, REPO),
+            ['a-repository/db.yml']
+        );
+    });
+
+    test('never strips down to nothing', () => {
+        assert.deepStrictEqual(
+            repoRelativeCandidates('a-repo', REPO, REPO),
+            ['a-repo']
+        );
+    });
+
+    test('an unresolvable path yields no candidates rather than a bad URL', () => {
+        assert.deepStrictEqual(repoRelativeCandidates(null, REPO, REPO), []);
+        assert.deepStrictEqual(
+            repoRelativeCandidates(path.join('..', 'outside', 'a.js'), REPO, REPO),
+            []
         );
     });
 });
