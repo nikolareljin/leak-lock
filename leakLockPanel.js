@@ -1699,7 +1699,7 @@ class LeakLockPanel {
                             const idx = parseInt(el.getAttribute('data-finding-index'), 10);
                             if (!isNaN(idx)) {
                                 showReportDialog('Credential details', '<div class="cred-loading">Inspecting…</div>');
-                                vscode.postMessage({ type: 'inspectCredential', findingIndex: idx });
+                                vscode.postMessage({ command: 'inspectCredential', findingIndex: idx });
                             }
                         }
 
@@ -1708,7 +1708,7 @@ class LeakLockPanel {
                             const el = event.target.closest('.commit-link');
                             const idx = parseInt(el.getAttribute('data-finding-index'), 10);
                             if (!isNaN(idx)) {
-                                vscode.postMessage({ type: 'openCommitUrl', findingIndex: idx });
+                                vscode.postMessage({ command: 'openCommitUrl', findingIndex: idx });
                             }
                         }
 
@@ -2772,7 +2772,7 @@ class LeakLockPanel {
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
                     <td><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" ${cleanupDisabled ? `disabled title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></td>
                     <td title="${escapeHtml(pathInfo.tooltip)}${contextNote}${cleanupNote}">
-                        <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
+                        <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${escapeHtml(pathInfo.tooltip)}&#10;${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
                         </span>
                         ${isDependency ? '<span class="dep-badge" title="This finding is inside a third-party dependency (node_modules, vendor, …), not your own code. Dependencies are not selectable for cleanup — fix them by updating the package, not by rewriting your history.">Dependency · not your code</span>' : ''}
