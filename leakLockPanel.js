@@ -15,6 +15,8 @@ const hostCapacity = require('./host-capacity');
 const { escapeHtml } = require('./html-escape');
 const { describeFindingPath } = require('./finding-paths');
 const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
+const credentialInspect = require('./credential-inspect');
+const { classifyFindings } = require('./credential-prepass');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -373,6 +375,8 @@ class LeakLockPanel {
         this._scanRepoRoot = null;
         this._trackedFiles = null;
         this._remoteInfo = null;
+        this._credentialSession = null;
+        this._credentialStates = [];
         this._scanCleanup = {
             preparedCommand: null,
             preparedMode: null, // 'bfg' | 'git'
@@ -3313,6 +3317,7 @@ class LeakLockPanel {
 
             // Update results
             this._scanResults = allResults;
+            await this._classifyCredentials();
             this._scanCoverage = await this._buildScanCoverage({
                 scanPath,
                 settings: engineSettings,
@@ -3413,6 +3418,41 @@ class LeakLockPanel {
             return;
         }
         await vscode.env.openExternal(vscode.Uri.parse(url));
+    }
+
+    /**
+     * One inspection session per scan run. The cache is keyed by the exact
+     * bytes, so the same key committed on five branches costs one inspection.
+     */
+    async _classifyCredentials() {
+        this._disposeCredentialSession();
+        const results = Array.isArray(this._scanResults) ? this._scanResults : [];
+        if (results.length === 0) {
+            this._credentialStates = [];
+            return;
+        }
+        try {
+            this._credentialSession = await credentialInspect.createSession();
+        } catch {
+            // Bundled but unloadable. Findings stay unclickable; the
+            // Dependencies panel is where the user is told why.
+            this._credentialSession = null;
+        }
+        const session = this._credentialSession;
+        this._credentialStates = await classifyFindings(results, {
+            inspect: session ? (bytes => session.inspectBytes(bytes)) : null
+        });
+    }
+
+    _disposeCredentialSession() {
+        if (this._credentialSession) {
+            try {
+                this._credentialSession.dispose();
+            } catch {
+                // Disposal is best effort; a failure here must not surface.
+            }
+            this._credentialSession = null;
+        }
     }
 
     async _primeGitTracking(scanPath) {
@@ -7418,6 +7458,9 @@ class LeakLockPanel {
     }
 
     dispose() {
+        // Clears the cache entries and zeroes the session's HMAC secret.
+        this._disposeCredentialSession();
+
         if (this._panel) {
             this._panel.dispose();
         }
