@@ -468,6 +468,29 @@ function notVerified(remote, reason) {
     };
 }
 
+/**
+ * Which of `candidates` actually exists at `commitHash`.
+ *
+ * A finding's path can have more than one plausible repo-relative reading (see
+ * repoRelativeCandidates); the repository itself is the only authority on which
+ * is real, and `git cat-file -e` answers it exactly. Guessing instead produces a
+ * link that 404s, which looks like Leak Lock pointing at the wrong commit.
+ *
+ * @returns {Promise<string|null>} the first candidate present in that commit,
+ *   or null when none is — never a fallback guess.
+ */
+async function findPathInCommit(repoDir, commitHash, candidates = []) {
+    for (const candidate of candidates) {
+        try {
+            await git(repoDir, ['cat-file', '-e', `${commitHash}:${candidate}`]);
+            return candidate;
+        } catch {
+            // Not at that commit; try the next reading.
+        }
+    }
+    return null;
+}
+
 /** Single-quote a string for PowerShell (no interpolation; embedded ' doubled). */
 function psQuote(value) {
     return `'${String(value).replace(/'/g, "''")}'`;
@@ -1202,6 +1225,7 @@ module.exports = {
     detectRemoteProvider,
     buildRewriteScript,
     buildRewriteScriptPs1,
+    findPathInCommit,
     psQuote,
     runRewrite
 };

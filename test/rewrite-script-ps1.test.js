@@ -39,6 +39,61 @@ suite('psQuote', () => {
     });
 });
 
+suite('findPathInCommit', () => {
+
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { execFileSync } = require('child_process');
+
+    let repo;
+    let sha;
+
+    suiteSetup(() => {
+        // A real repository, because the point of this function is that git —
+        // not a heuristic — decides which path is real.
+        repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-commit-'));
+        const run = (...args) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' });
+        run('init', '--quiet');
+        run('config', 'user.email', 'fixture@example.invalid');
+        run('config', 'user.name', 'Fixture');
+        fs.mkdirSync(path.join(repo, 'fixture'), { recursive: true });
+        fs.writeFileSync(path.join(repo, 'fixture', 'db.yml'), 'password: placeholder\n');
+        run('add', '-A');
+        run('commit', '--quiet', '-m', 'fixture');
+        sha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    });
+
+    suiteTeardown(() => {
+        if (repo) { fs.rmSync(repo, { recursive: true, force: true }); }
+    });
+
+    test('picks the candidate that exists at the commit, not the first offered', async () => {
+        const found = await gitRewrite.findPathInCommit(repo, sha, [
+            'some-repo/fixture/db.yml',   // the prefixed reading — not real
+            'fixture/db.yml'              // the real one
+        ]);
+        assert.strictEqual(found, 'fixture/db.yml');
+    });
+
+    test('prefers the earlier candidate when both exist', async () => {
+        const found = await gitRewrite.findPathInCommit(repo, sha, ['fixture/db.yml', 'fixture/db.yml']);
+        assert.strictEqual(found, 'fixture/db.yml');
+    });
+
+    test('returns null when nothing matches, rather than guessing', async () => {
+        // A guess here becomes a link that 404s, which reads as Leak Lock
+        // pointing at the wrong commit.
+        assert.strictEqual(await gitRewrite.findPathInCommit(repo, sha, ['nope/a.yml']), null);
+        assert.strictEqual(await gitRewrite.findPathInCommit(repo, sha, []), null);
+    });
+
+    test('an unknown commit yields null rather than throwing', async () => {
+        const missing = '0000000000000000000000000000000000000000';
+        assert.strictEqual(await gitRewrite.findPathInCommit(repo, missing, ['fixture/db.yml']), null);
+    });
+});
+
 suite('buildRewriteScriptPs1', () => {
 
     test('a repo path containing a quote cannot break out of the literal', () => {
