@@ -19,6 +19,7 @@ const engineDocker = require('./engine-docker');
 // so they must be escaped before interpolation into the webview HTML. Shared with
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
+const credentialInspect = require('./credential-inspect');
 
 /**
  * Java's version banner, from whichever stream it lands on.
@@ -1020,7 +1021,24 @@ class LeakLockSidebarProvider {
                         ${this._dependencyStatus.bfg.error} (manual commands available)
                     </div>
                 ` : '')}
-                
+
+                ${this._dependencyStatus?.credentialLens ? `
+                    <!-- Bundled with the extension, so there is nothing to install.
+                         The tick reflects a successful dynamic import, not the mere
+                         presence of a dependency entry: a .vsix built without the
+                         package must show as broken here, rather than at the user's
+                         first click on a Secret cell. -->
+                    <div class="status-item">
+                        <span><span class="status-icon">${this._dependencyStatus.credentialLens.installed ? '✅' : '❌'}</span>credential-lens${this._dependencyStatus.credentialLens.version ? ` v${escapeHtml(this._dependencyStatus.credentialLens.version)}` : ''}</span>
+                    </div>
+                    <div style="font-size: 10px; color: ${this._dependencyStatus.credentialLens.installed ? 'var(--vscode-descriptionForeground)' : 'var(--vscode-inputValidation-warningForeground)'}; margin-left: 20px; margin-bottom: 5px;">
+                        ${this._dependencyStatus.credentialLens.installed
+                            ? 'Bundled with Leak Lock — nothing to install. Identifies keys, certificates and tokens in scan results.'
+                            : 'Bundled but could not be loaded, so credential details are unavailable. Scanning is unaffected.'}
+                        ${this._dependencyStatus.credentialLens.error ? `<br>${escapeHtml(this._dependencyStatus.credentialLens.error)}` : ''}
+                    </div>
+                ` : ''}
+
                 <button class="install-button" onclick="installDependencies()" ${this._isInstalling ? 'disabled' : ''}>
                     ${installButtonText}
                 </button>
@@ -1298,6 +1316,12 @@ class LeakLockSidebarProvider {
         } else {
             this._dependencyStatus.bfg.error = 'BFG tool not downloaded';
         }
+
+        // credential-lens is bundled, so this is a load check, not an install
+        // check — and it is deliberately resolved before `missing` is computed
+        // but never added to it. The engines perform the scan; an enrichment
+        // library must not be able to report setup as incomplete.
+        this._dependencyStatus.credentialLens = await credentialInspect.describeCredentialLensStatus();
 
         // The engines that actually scan decide whether setup is complete.
         //

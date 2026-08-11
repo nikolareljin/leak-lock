@@ -1,5 +1,21 @@
 # Change Log
 
+## 2026-08-11 — v0.8.0
+### Added
+- **Credential details behind any recognised secret.** A finding that is an SSH or PEM private key, a certificate, a JWT, a GCP service-account document, or another artifact [credential-lens](https://github.com/nikolareljin/credential-lens) understands is now badged with what it is, and clicking it opens the algorithm, fingerprint, validity window and claims — with the limits of that evidence stated alongside them, because a name inside a credential is what the artifact says about itself, not proof of ownership. All analysis is local: the bytes are never sent anywhere, and the report omits private-key bodies and JWT signatures. A secret the scanner cut short is badged **inspect** and identified by reading the whole file when you open it — fifty characters of a private key is not a key.
+- **Commit hashes open the file at that commit.** The SHA in Git Info was inert text; it now opens the exact file, at that commit, on GitHub, GitLab or Bitbucket, anchored to the line. A repository whose remote is self-hosted or unrecognised keeps showing the hash as before rather than a link that would 404, and a commit you have not pushed has nothing to open until you push it.
+- **The File column tooltip shows the full path.** It previously repeated the shortened path already on screen. A finding from history names the commit its path belongs to, because that file may no longer exist on disk.
+- **credential-lens appears in Dependencies Setup**, reported as bundled and ready — and only after it has actually loaded, so a broken build is visible there rather than at the first click.
+
+### Fixed
+- **Local agent and tooling state is no longer packaged into the extension.** `.remember/` and `.claude/` are gitignored, but `vsce` does not read `.gitignore` when a `.vscodeignore` exists — so packaging from a working copy that had them included session notes and local settings in the `.vsix`. Published releases were never affected, because they are built from a clean CI checkout, but `publish.sh` packages locally and was one command away from it. Both are now excluded, and a test asserts the rules stay.
+
+### Changed
+- **`package-lock.json` is committed.** Ignoring it is a convention for libraries, which publish a version range and resolve fresh for each consumer; an extension resolves once and ships the result. Committing it pins every transitive version and records a checksum per package, which is the only in-repo pin on what actually goes into the `.vsix`.
+
+### Notes
+- credential-lens ships inside the extension. There is nothing to install, it needs no network, and a scan never depends on it: if it cannot load, credential details are unavailable and scanning is unaffected.
+
 ## 2026-08-10 — v0.7.5
 ### Fixed
 - **Dependencies Setup installs Gitleaks and TruffleHog** ([#104](https://github.com/nikolareljin/leak-lock/issues/104)). It never did: the flow pulled the Nosey Parker image, downloaded BFG and reported success, while the two engines a default scan runs had no install step at all. Windows and Ubuntu failed identically because nothing was ever attempted. Leak Lock now downloads the release binary for your platform, per engine — no Docker involved for either.

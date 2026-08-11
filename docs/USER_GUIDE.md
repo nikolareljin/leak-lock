@@ -91,6 +91,20 @@ The results appear in a detailed table with the following columns:
 - 🟢 **Low**: Possible false positives or test data
 - 🟢 **Safe (Not committed)**: Found only in the working tree (not tracked or in git history)
 
+### Reading a finding
+
+**The file path.** The File column shows the path relative to the folder you scanned. Hover it to see the full path. A finding from git history names the commit its path belongs to, because that file may have been renamed or deleted since.
+
+**The commit.** If the finding came from history, the Git Info column shows the commit that contained it. Click the hash to open that file, at that commit, in your browser, with the line highlighted. This works for repositories hosted on GitHub, GitLab and Bitbucket. A repository on a self-hosted or unrecognised host shows the hash as plain text — Leak Lock will not guess a URL that would send you to a page that does not exist. A commit you have not pushed yet has nothing to open, so that link will not resolve until you push.
+
+**The secret.** Some secrets can be identified rather than merely matched. When Leak Lock recognises one — an SSH or PEM private key, a certificate, a JWT, a GCP service-account file and others — the Secret cell is badged with what it is. Click it to see the algorithm, fingerprint, whether the key is passphrase-protected, any validity window, and the claims the artifact carries.
+
+A cell badged **inspect** is one that looks like a credential but was cut short by the scanner. Clicking it reads the whole file to identify it.
+
+All of this analysis happens on your machine. Nothing is uploaded, and the report never contains the private key body or a JWT signature.
+
+**What the report does not tell you.** Names inside a credential — an SSH key comment, a certificate subject, a JWT `sub` claim — are evidence of what the artifact says about itself, not proof of who owns it. The report labels each claim's source and states its limits; read those before acting on a name.
+
 ### Exporting Results
 
 After a scan completes, use the export actions in the results section:
