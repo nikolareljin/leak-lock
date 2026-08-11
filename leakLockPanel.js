@@ -13,6 +13,7 @@ const redactionRules = require('./redaction-rules');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
+const { describeFindingPath } = require('./finding-paths');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -2625,6 +2626,8 @@ class LeakLockPanel {
                 }
             }
 
+            const pathInfo = describeFindingPath(result, this._scanPath);
+
             let gitInfoHtml = '';
             let gitInfoTooltip = '';
             if (result.commitHash || (result.commitBranches && result.commitBranches.length > 0) || result.commitDate) {
@@ -2668,7 +2671,7 @@ class LeakLockPanel {
             return `
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
                     <td><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" ${cleanupDisabled ? `disabled title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></td>
-                    <td title="${escapeHtml(result.file)}${contextNote}${cleanupNote}">
+                    <td title="${escapeHtml(pathInfo.tooltip)}${contextNote}${cleanupNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
                         </span>
