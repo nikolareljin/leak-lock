@@ -6,9 +6,26 @@
 // A history finding is deliberately worded differently: the file may have been
 // deleted or renamed since that commit, and a bare absolute path would imply
 // something openable on disk.
+const fs = require('fs');
 const path = require('path');
 
 const SHORT_HASH_LENGTH = 7;
+
+/** Walk up from `startDir` until a directory containing `.git` is found. */
+function findGitRoot(startDir) {
+    let dir = startDir;
+    while (dir) {
+        if (fs.existsSync(path.join(dir, '.git'))) {
+            return dir;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) {
+            return null;
+        }
+        dir = parent;
+    }
+    return null;
+}
 
 function describeFindingPath(finding, scanPath) {
     const file = finding && typeof finding.file === 'string' ? finding.file : null;
@@ -53,14 +70,35 @@ function repoRelativePath(file, scanPath, repoRoot) {
     if (typeof file !== 'string' || !file) {
         return null;
     }
-    if (!scanPath || !repoRoot) {
-        // Nothing to re-base against; the caller's own guards decide whether a
-        // link is offered at all.
-        return file;
+
+    const absolute = path.isAbsolute(file)
+        ? file
+        : (scanPath ? path.resolve(scanPath, file) : null);
+
+    // Normalize repoRoot so path.relative receives native separators on every
+    // platform — git outputs forward slashes on Windows (C:/...) while
+    // path.resolve produces backslashes.
+    let root = repoRoot ? path.normalize(repoRoot) : null;
+
+    if (!root) {
+        if (!absolute) {
+            // No context at all: return file as-is (best-effort, caller decides).
+            return file;
+        }
+        // repoRoot was not detected (e.g. scan ran on a parent directory that is
+        // not itself a git repo). Walk up the filesystem to find it so the URL
+        // segment is repo-relative rather than scan-relative.
+        root = findGitRoot(path.dirname(absolute));
+        if (!root) {
+            return null;
+        }
     }
 
-    const absolute = path.isAbsolute(file) ? file : path.resolve(scanPath, file);
-    const relative = path.relative(repoRoot, absolute);
+    if (!absolute) {
+        return null;
+    }
+
+    const relative = path.relative(root, absolute);
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
         // Outside the repository: no commit of this repo can address it.
         return null;

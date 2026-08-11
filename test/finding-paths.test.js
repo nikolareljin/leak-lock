@@ -31,6 +31,16 @@ suite('repoRelativePath', () => {
         );
     });
 
+    test('returns null when the scan root is above the repo but repoRoot was not detected', () => {
+        // Scanning a parent directory that is not itself a git repo causes
+        // _primeGitTracking to leave _scanRepoRoot null. Returning the file
+        // unchanged would include the repo directory as a bogus URL segment.
+        assert.strictEqual(
+            repoRelativePath(path.join('a-repo', 'test', 'a.js'), SCAN_ROOT, null),
+            null
+        );
+    });
+
     test('is a no-op when the scan root is the repo root', () => {
         assert.strictEqual(
             repoRelativePath(path.join('test', 'a.js'), REPO, REPO),
@@ -57,10 +67,16 @@ suite('repoRelativePath', () => {
         );
     });
 
-    test('missing inputs fall back to the path as given, never throwing', () => {
-        assert.strictEqual(repoRelativePath(path.join('test', 'a.js'), null, null), 'test/a.js');
-        assert.strictEqual(repoRelativePath(path.join('test', 'a.js'), REPO, null), 'test/a.js');
+    test('null repoRoot with no scanPath falls back to the path as given', () => {
+        const f = path.join('test', 'a.js');
+        assert.strictEqual(repoRelativePath(f, null, null), f);
         assert.strictEqual(repoRelativePath(null, REPO, REPO), null);
+    });
+
+    test('null repoRoot with a known scanPath tries findGitRoot; returns null when no .git found', () => {
+        // SCAN_ROOT and REPO are fake paths with no .git on disk, so findGitRoot
+        // returns null and the function returns null rather than a repo-prefixed path.
+        assert.strictEqual(repoRelativePath(path.join('test', 'a.js'), REPO, null), null);
     });
 
     test('an absolute finding path is relativized against the repo root', () => {

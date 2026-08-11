@@ -41,10 +41,14 @@ function renderValue(value) {
 }
 
 function renderSummary(summary) {
-    const rows = SUMMARY_FIELDS.map(([key, label]) =>
-        `<div class="cred-field"><span class="cred-key">${escapeHtml(label)}</span><span class="cred-value">${renderValue(summary ? summary[key] : null)}</span></div>`
-    ).join('');
-    return `<div class="cred-summary">${rows}</div>`;
+    // Only render fields that carry an actual value; null/empty fields add no
+    // information and push the meaningful rows (issuer, subject, validity) off-screen.
+    const rows = SUMMARY_FIELDS
+        .filter(([key]) => summary && summary[key] !== null && summary[key] !== undefined && summary[key] !== '')
+        .map(([key, label]) =>
+            `<div class="cred-field"><span class="cred-key">${escapeHtml(label)}</span><span class="cred-value">${renderValue(summary[key])}</span></div>`
+        ).join('');
+    return rows ? `<div class="cred-summary">${rows}</div>` : '';
 }
 
 function renderClaims(claims) {
