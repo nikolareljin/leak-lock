@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -338,5 +338,8 @@
       "glob": "10.5.0",
       "minimatch": "9.0.9"
     }
+  },
+  "dependencies": {
+    "@nikolareljin/credential-lens": "0.3.0"
   }
 }
