@@ -48,8 +48,39 @@ suite('renderCredentialReportHtml', () => {
         assert.match(html, /Only the caveat form\./);
     });
 
-    test('null summary fields say so rather than being dropped', () => {
+    test('empty summary fields are omitted, not spelled out', () => {
+        // An ordinary SSH key leaves issuer, subject and all three date fields
+        // null — five of eight rows saying "not present", pushing the algorithm
+        // and fingerprint off the top of the dialog. The library's own caveats
+        // already explain the absence ("an ordinary SSH key has no expiry
+        // date"), so restating it per row was noise, not information.
         const html = renderCredentialReportHtml(REPORT, { source: 'file' });
+        assert.match(html, /Algorithm/);
+        assert.match(html, /Fingerprint/);
+        assert.ok(!html.includes('Issuer'), 'a null issuer should not render a row');
+        assert.ok(!html.includes('Not before'), 'a null validity window should not render a row');
+    });
+
+    test('a summary with nothing populated renders no grid at all', () => {
+        const bare = { ...REPORT, summary: { algorithm: null, fingerprint: null, encrypted: null } };
+        const html = renderCredentialReportHtml(bare, { source: 'file' });
+        assert.ok(!html.includes('cred-summary'), 'an empty grid is an empty box on screen');
+    });
+
+    test('false and 0 are values, not absences', () => {
+        // `encrypted: false` is the single most useful thing to know about a
+        // private key. A truthiness filter would hide exactly that.
+        const html = renderCredentialReportHtml(REPORT, { source: 'file' });
+        assert.match(html, /Encrypted/);
+        assert.match(html, />no</);
+    });
+
+    test('claims still spell out an absent value, where the row exists regardless', () => {
+        const withEmptyClaim = {
+            ...REPORT,
+            claims: [{ id: 'x', label: 'Comment', category: 'identity', value: null, source: 'embedded', verification: 'unverified' }]
+        };
+        const html = renderCredentialReportHtml(withEmptyClaim, { source: 'file' });
         assert.match(html, /not present in the artifact/);
     });
 

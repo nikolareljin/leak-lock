@@ -435,7 +435,7 @@ class LeakLockPanel {
             running: false,
             combineMode: 'combined', // 'combined' | 'individual'
             details: [], // per-target info after prepare
-            deletionMode: 'bfg', // 'bfg' | 'git'
+            deletionMode: 'git', // 'bfg' | 'git'
             preview: null, // { branches/remotes/tags }
             lastFetchAt: null,
             pushPlan: null, // ref-by-ref preview of the force-push
@@ -1149,7 +1149,7 @@ class LeakLockPanel {
                         border-radius: 8px;
                         padding: 20px;
                         min-width: 340px;
-                        max-width: 560px;
+                        max-width: 680px;
                         max-height: 70vh;
                         display: flex;
                         flex-direction: column;
@@ -1188,6 +1188,12 @@ class LeakLockPanel {
                         border-radius: 4px;
                         margin-bottom: 12px;
                         max-height: 50vh;
+                    }
+                    .detail-dialog-body.report-mode {
+                        font-family: var(--vscode-font-family, inherit);
+                        white-space: normal;
+                        background: transparent;
+                        padding: 0;
                     }
                     .detail-dialog-actions {
                         display: flex;
@@ -1620,6 +1626,7 @@ class LeakLockPanel {
                         if (!overlay || !titleEl || !bodyEl) { return; }
                         titleEl.textContent = title;
                         bodyEl.innerHTML = html;
+                        bodyEl.classList.add('report-mode');
                         overlay.classList.add('visible');
                     }
 
@@ -1637,7 +1644,9 @@ class LeakLockPanel {
 
                     function hideDetailDialog() {
                         const overlay = document.getElementById('detail-dialog-overlay');
+                        const bodyEl = document.getElementById('detail-dialog-body');
                         overlay.classList.remove('visible');
+                        if (bodyEl) { bodyEl.classList.remove('report-mode'); }
                     }
 
                     function fallbackCopyToClipboard(textToCopy) {
@@ -2152,6 +2161,16 @@ class LeakLockPanel {
 
     _buildBfgCommand(repoDir, targets) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        if (process.platform === 'win32') {
+            const args = this._buildBfgArgs(targets).map(a => gitRewrite.psQuote(a)).join(' ');
+            return gitRewrite.buildRewriteScriptPs1({
+                repoDir,
+                rewriteLines: [
+                    `& java -jar ${gitRewrite.psQuote(bfgPath)} ${args} ${gitRewrite.psQuote(repoDir)}`
+                ],
+                verifyRegex: this._buildTargetVerifyRegex(targets)
+            });
+        }
         const args = this._buildBfgArgs(targets).map(a => gitRewrite.shellQuote(a)).join(' ');
         return gitRewrite.buildRewriteScript({
             repoDir,
@@ -2227,6 +2246,18 @@ class LeakLockPanel {
 
     _buildIndividualBfgCommands(repoDir, targets) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        if (process.platform === 'win32') {
+            const rewriteLines = targets.map(t => {
+                const flag = t.type === 'directory' ? '--delete-folders' : '--delete-files';
+                const pattern = gitRewrite.psQuote(this._escapeRegex(t.base));
+                return `& java -jar ${gitRewrite.psQuote(bfgPath)} ${flag} ${pattern} ${gitRewrite.psQuote(repoDir)}`;
+            });
+            return gitRewrite.buildRewriteScriptPs1({
+                repoDir,
+                rewriteLines,
+                verifyRegex: this._buildTargetVerifyRegex(targets)
+            });
+        }
         const rewriteLines = targets.map(t => {
             const flag = t.type === 'directory' ? '--delete-folders' : '--delete-files';
             // BFG treats the argument as a pattern - escape metacharacters so a
@@ -2375,6 +2406,16 @@ class LeakLockPanel {
     _buildGitFilterBranchCommandForDisplay(repoDir, indexFilter, targets = []) {
         // Display/copy version of the command. Execution goes through
         // gitRewrite.runRewrite(), which follows the exact same sequence.
+        if (process.platform === 'win32') {
+            return gitRewrite.buildRewriteScriptPs1({
+                repoDir,
+                rewriteLines: [
+                    `& git filter-branch --force --index-filter ${gitRewrite.psQuote(indexFilter)} \``,
+                    '    --prune-empty --tag-name-filter cat -- --all'
+                ],
+                verifyRegex: this._buildTargetVerifyRegex(targets, { exact: true })
+            });
+        }
         return gitRewrite.buildRewriteScript({
             repoDir,
             rewriteLines: [
@@ -3269,20 +3310,11 @@ class LeakLockPanel {
 
                 const dockerCheck = await this._checkDockerAvailability();
                 if (!dockerCheck.available) {
-                    const others = engineIds.filter(id => id !== 'noseyparker');
-                    if (others.length === 0) {
-                        vscode.window.showErrorMessage(
-                            `Docker not available: ${dockerCheck.error}. Nosey Parker is the only enabled engine and it requires Docker. ` +
-                            'Enable Gitleaks in leakLock.scan.engines to scan without Docker.'
-                        );
-                        this._isScanning = false;
-                        this._updateWebviewContent();
-                        return;
-                    }
-                    // Degrade to the engines that can still run rather than failing the
-                    // whole scan.
+                    // Nosey Parker requires Docker but it is never the only option —
+                    // degrade to whatever other engines are enabled rather than failing
+                    // the whole scan. Inform but do not block.
                     vscode.window.showWarningMessage(
-                        `Docker not available (${dockerCheck.error}); skipping Nosey Parker. Scanning with: ${others.join(', ')}.`
+                        `Docker not available (${dockerCheck.error}); skipping Nosey Parker. Scanning with: ${engineIds.filter(id => id !== 'noseyparker').join(', ') || 'no engines'}.`
                     );
                     this._scanCleanup.noseyParkerUnavailable = dockerCheck.error;
                 }
@@ -3595,7 +3627,9 @@ class LeakLockPanel {
         const execFileAsync = util.promisify(execFile);
         try {
             const { stdout: rootOut } = await execFileAsync('git', ['-C', scanPath, 'rev-parse', '--show-toplevel']);
-            const repoRoot = rootOut.trim();
+            // Normalize to native separators: git outputs forward slashes on
+            // Windows (C:/Users/...) while the rest of the code uses backslashes.
+            const repoRoot = path.normalize(rootOut.trim());
             if (!repoRoot) {
                 return;
             }
@@ -5327,9 +5361,10 @@ class LeakLockPanel {
     _getEnabledEngineIds() {
         const config = vscode.workspace.getConfiguration('leakLock');
         const configured = config.get('scan.engines');
+        // Default to the two engines that run without Docker or Java.
         const ids = Array.isArray(configured) && configured.length
             ? configured
-            : ['gitleaks', 'trufflehog', 'noseyparker'];
+            : ['gitleaks', 'trufflehog'];
         const known = new Set(['gitleaks', 'trufflehog', 'noseyparker']);
         const valid = ids.filter(id => known.has(id));
         const unknown = ids.filter(id => !known.has(id));
@@ -6339,6 +6374,13 @@ class LeakLockPanel {
         };
     }
 
+    _buildReplacementScriptSetupPs1(replacements) {
+        const replacementLines = this._toRuleList(replacements)
+            .map(rule => redactionRules.formatRuleLine(rule))
+            .join("\n");
+        return { replacementsContent: replacementLines };
+    }
+
     async _withSecureReplacementsFile(replacements, callback) {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-"));
         try {
@@ -6366,6 +6408,19 @@ class LeakLockPanel {
 
     _buildScanBfgReplaceCommand(scanPath, replacements) {
         const bfgPath = path.join(this._extensionUri.fsPath, "bfg.jar");
+        if (process.platform === 'win32') {
+            const { replacementsContent } = this._buildReplacementScriptSetupPs1(replacements);
+            return gitRewrite.buildRewriteScriptPs1({
+                repoDir: scanPath,
+                remote: gitRewrite.DEFAULT_REMOTE,
+                requiredCommands: ['git', 'java'],
+                rewriteLines: [
+                    `& java -jar ${gitRewrite.psQuote(bfgPath)} --replace-text $replacement_file`
+                ],
+                verifyRulesFile: '$replacement_file',
+                replacementsContent,
+            });
+        }
         const secureSetup = this._buildReplacementScriptSetup(replacements);
         return gitRewrite.buildRewriteScript({
             repoDir: scanPath,
@@ -6374,16 +6429,27 @@ class LeakLockPanel {
             rewriteLines: [
                 `java -jar ${gitRewrite.shellQuote(bfgPath)} --replace-text "$replacement_file"`
             ],
-            // Verification re-reads the same rule file the rewrite consumed, so each
-            // secret appears exactly once in the script — inside the owner-only temp
-            // file — instead of being repeated in a grep line per rule. It also cannot
-            // drift from what was actually rewritten.
             verifyRulesFile: '"$replacement_file"',
             ...secureSetup
         });
     }
 
     _buildScanGitReplaceCommand(scanPath, replacements, remoteUrl = null) {
+        if (process.platform === 'win32') {
+            const { replacementsContent } = this._buildReplacementScriptSetupPs1(replacements);
+            return gitRewrite.buildRewriteScriptPs1({
+                repoDir: scanPath,
+                remote: gitRewrite.DEFAULT_REMOTE,
+                requiredCommands: ['git', 'git-filter-repo'],
+                rewriteLines: [
+                    '& git filter-repo --replace-text $replacement_file --force'
+                ],
+                verifyRulesFile: '$replacement_file',
+                restoreRemote: true,
+                remoteUrl,
+                replacementsContent,
+            });
+        }
         const secureSetup = this._buildReplacementScriptSetup(replacements);
         return gitRewrite.buildRewriteScript({
             repoDir: scanPath,
