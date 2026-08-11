@@ -17,6 +17,7 @@ const { describeFindingPath } = require('./finding-paths');
 const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
 const credentialInspect = require('./credential-inspect');
 const { classifyFindings } = require('./credential-prepass');
+const { renderCredentialReportHtml } = require('./credential-report-html');
 
 // Configuration constants
 const MAX_PATH_LENGTH = 4096; // Maximum allowed path length to prevent DoS attacks
@@ -542,6 +543,9 @@ class LeakLockPanel {
                         break;
                     case 'openCommitUrl':
                         LeakLockPanel.currentPanel._openCommitUrl(message.findingIndex);
+                        break;
+                    case 'inspectCredential':
+                        LeakLockPanel.currentPanel._inspectCredential(message.findingIndex);
                         break;
                     case 'scan.prepareBfg':
                         LeakLockPanel.currentPanel._prepareScanBfgCommand(message.replacements);
@@ -1212,6 +1216,27 @@ class LeakLockPanel {
                         background: var(--vscode-button-secondaryHoverBackground);
                     }
 
+                    .credential-link:hover { opacity: 0.85; }
+                    .cred-badge { margin-left: 6px; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); white-space: nowrap; }
+                    .cred-badge-muted { opacity: 0.7; }
+                    .cred-report { font-size: 0.9em; }
+                    .cred-header { display: flex; gap: 8px; align-items: baseline; margin-bottom: 10px; flex-wrap: wrap; }
+                    .cred-kind { font-weight: 600; font-size: 1.1em; }
+                    .cred-family, .cred-format { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+                    .cred-summary { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin-bottom: 12px; }
+                    .cred-field { display: contents; }
+                    .cred-key { color: var(--vscode-descriptionForeground); }
+                    .cred-value { font-family: monospace; word-break: break-all; }
+                    .cred-absent { color: var(--vscode-descriptionForeground); font-style: italic; }
+                    .cred-category { margin: 12px 0 4px; font-size: 0.9em; text-transform: capitalize; }
+                    .cred-claims { width: 100%; border-collapse: collapse; }
+                    .cred-claims th, .cred-claims td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--vscode-panel-border); }
+                    .cred-claim-value { font-family: monospace; word-break: break-all; }
+                    .cred-warnings { border-left: 3px solid var(--vscode-editorWarning-foreground); padding: 6px 10px; margin-bottom: 12px; background: var(--vscode-textBlockQuote-background); }
+                    .cred-warnings ul { margin: 4px 0 0; padding-left: 18px; }
+                    .cred-footer { margin-top: 12px; color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+                    .cred-loading { color: var(--vscode-descriptionForeground); }
+
                     .branch-link {
                         cursor: pointer;
                         text-decoration: underline;
@@ -1582,6 +1607,34 @@ class LeakLockPanel {
                         overlay.classList.add('visible');
                     }
 
+                    // Same overlay as showDetailDialog, so hideDetailDialog and
+                    // the existing Escape and overlay-click handlers close it
+                    // unchanged. The only difference is innerHTML in place of
+                    // textContent: the host assembled and escaped this markup
+                    // (credential-report-html.js), and the webview never builds
+                    // it from raw finding data.
+                    function showReportDialog(title, html) {
+                        const overlay = document.getElementById('detail-dialog-overlay');
+                        const titleEl = document.getElementById('detail-dialog-title');
+                        const bodyEl = document.getElementById('detail-dialog-body');
+                        if (!overlay || !titleEl || !bodyEl) { return; }
+                        titleEl.textContent = title;
+                        bodyEl.innerHTML = html;
+                        overlay.classList.add('visible');
+                    }
+
+                    // The host answers asynchronously. This is the only inbound
+                    // message channel the panel has.
+                    window.addEventListener('message', function (event) {
+                        const message = event.data;
+                        if (!message || typeof message.type !== 'string') {
+                            return;
+                        }
+                        if (message.type === 'credentialReport') {
+                            showReportDialog('Credential details', message.html);
+                        }
+                    });
+
                     function hideDetailDialog() {
                         const overlay = document.getElementById('detail-dialog-overlay');
                         overlay.classList.remove('visible');
@@ -1637,6 +1690,16 @@ class LeakLockPanel {
                             if (idx !== null && window.__branchData && window.__branchData[idx]) {
                                 const branches = window.__branchData[idx];
                                 showDetailDialog('Branches and tags containing this commit', branches.join('\\n'));
+                            }
+                        }
+
+                        // Credential report click
+                        if (event.target.closest('.credential-link')) {
+                            const el = event.target.closest('.credential-link');
+                            const idx = parseInt(el.getAttribute('data-finding-index'), 10);
+                            if (!isNaN(idx)) {
+                                showReportDialog('Credential details', '<div class="cred-loading">Inspecting…</div>');
+                                vscode.postMessage({ type: 'inspectCredential', findingIndex: idx });
                             }
                         }
 
@@ -2646,6 +2709,20 @@ class LeakLockPanel {
 
             const pathInfo = describeFindingPath(result, this._scanPath);
 
+            // 'classified' — credential-lens named it from the snippet alone.
+            // 'candidate'  — it looks like a credential the snippet cut short,
+            //                so opening it reads the whole artifact.
+            const credentialState = (this._credentialStates && this._credentialStates[index])
+                || { state: 'none', label: null };
+            const credState = {
+                clickable: credentialState.state !== 'none',
+                badge: credentialState.label
+                    ? `<span class="cred-badge" title="Identified by credential-lens">${escapeHtml(credentialState.label)}</span>`
+                    : (credentialState.state === 'candidate'
+                        ? '<span class="cred-badge cred-badge-muted" title="Looks like a credential the scanner cut short. Click to inspect the whole artifact.">inspect</span>'
+                        : '')
+            };
+
             let gitInfoHtml = '';
             let gitInfoTooltip = '';
             if (result.commitHash || (result.commitBranches && result.commitBranches.length > 0) || result.commitDate) {
@@ -2708,9 +2785,9 @@ class LeakLockPanel {
                         </span>
                     </td>
                     <td title="${escapeHtml(result.secret)}">
-                        <span style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;">
+                        <span class="${credState.clickable ? 'credential-link' : ''}"${credState.clickable ? ` data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Click to inspect this credential"` : ''} style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;${credState.clickable ? ' cursor: pointer; text-decoration: underline;' : ''}">
                             ${escapeHtml(result.secret)}
-                        </span>
+                        </span>${credState.badge}
                     </td>
                     <td>
                         <input type="text" class="replacement-input" data-finding-index="${index}" value="${escapeHtml(this._getReplacementValue(index))}" placeholder="Replacement value" ${cleanupDisabled ? 'disabled' : ''}>
@@ -3442,6 +3519,52 @@ class LeakLockPanel {
         this._credentialStates = await classifyFindings(results, {
             inspect: session ? (bytes => session.inspectBytes(bytes)) : null
         });
+    }
+
+    /**
+     * Until this feature the panel only ever *received* messages and refreshed
+     * by regenerating its whole HTML. A report is computed on click, and a full
+     * re-render would discard scroll position, the search filter and every
+     * unsaved replacement input — so this is the panel's first host-to-webview
+     * message.
+     */
+    _postToWebview(message) {
+        // The panel may have been disposed between a request and its answer.
+        if (this._panel && this._panel.webview) {
+            this._panel.webview.postMessage(message);
+        }
+    }
+
+    async _inspectCredential(findingIndex) {
+        const results = Array.isArray(this._scanResults) ? this._scanResults : [];
+        if (!Number.isInteger(findingIndex) || findingIndex < 0 || findingIndex >= results.length) {
+            return;
+        }
+        if (!this._credentialSession) {
+            this._postToWebview({
+                type: 'credentialReport',
+                findingIndex,
+                html: '<div class="cred-report"><div class="cred-header"><span class="cred-kind">Credential inspection is unavailable</span></div>'
+                    + '<div class="cred-footer">credential-lens could not be loaded. See Dependencies Setup in the sidebar. Scanning is unaffected.</div></div>'
+            });
+            return;
+        }
+        let outcome = null;
+        try {
+            outcome = await credentialInspect.inspectFinding(results[findingIndex], {
+                session: this._credentialSession,
+                scanPath: this._scanPath
+            });
+        } catch {
+            outcome = null;
+        }
+        const html = outcome
+            ? renderCredentialReportHtml(outcome.report, { source: outcome.source })
+            : renderCredentialReportHtml(
+                { credential: null, summary: {}, claims: [], warnings: [], cache: { hit: false } },
+                { source: 'declined' }
+            );
+        this._postToWebview({ type: 'credentialReport', findingIndex, html });
     }
 
     _disposeCredentialSession() {
