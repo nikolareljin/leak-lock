@@ -65,6 +65,9 @@ class LeakLockSidebarProvider {
         this._installProgress = null;
         this._workspaceGitRepo = null;
         this._showDependencyDetails = false;
+        // Whether the block above was opened by the code (because nothing could
+        // scan) rather than by the user. Only an auto-opened block closes itself.
+        this._dependencyDetailsAutoOpened = false;
         this._showGitHistorySection = false;
         // Native engine probe results. null until the details are opened, because
         // probing spawns a subprocess per engine and the compact view never shows it.
@@ -134,6 +137,9 @@ class LeakLockSidebarProvider {
                         break;
                     case 'showDependencyDetails':
                         this._showDependencyDetails = true;
+                        // Asked for deliberately, so it must not be collapsed by
+                        // the next refresh that finds everything ready.
+                        this._dependencyDetailsAutoOpened = false;
                         this._updateView();
                         // Probing costs a subprocess per engine, so it happens on expand
                         // rather than on every render. The engine probes swallow their
@@ -145,6 +151,7 @@ class LeakLockSidebarProvider {
                         break;
                     case 'hideDependencyDetails':
                         this._showDependencyDetails = false;
+                        this._dependencyDetailsAutoOpened = false;
                         this._updateView();
                         break;
                     case 'openWebsite':
@@ -1338,18 +1345,41 @@ class LeakLockSidebarProvider {
         // Probing here costs two subprocesses and buys the guarantee this release is
         // about: setup never claims success while a default engine is absent.
         await this._refreshEngineStatus();
+        this._applyDependencyVerdict();
+
+        this._updateView();
+    }
+
+    /**
+     * Turn the probed status into the verdict and the panel's open/closed state.
+     *
+     * The auto-open is tracked separately from the user's own Details click. Both
+     * used to set the same flag, so a block opened because nothing could scan
+     * stayed open after the engines arrived — there was nothing to distinguish
+     * "the code opened this" from "the user asked for this", and only the latter
+     * should survive becoming ready.
+     */
+    _applyDependencyVerdict() {
         this._dependencyStatus.missing = this._missingRequiredDependencies();
         // Absent-but-optional never gates a scan; it only annotates the ready state.
         this._dependencyStatus.optionalMissing = this._missingOptionalDependencies();
         this._dependenciesInstalled = this._dependencyStatus.missing.length === 0;
 
-        // Nothing can scan: open Dependencies Setup rather than leaving the user
-        // to find it behind a "Details" button.
         if (!this._dependenciesInstalled) {
-            this._showDependencyDetails = true;
+            // Nothing can scan: open Dependencies Setup rather than leaving the
+            // user to find it behind a "Details" button.
+            if (!this._showDependencyDetails) {
+                this._showDependencyDetails = true;
+                this._dependencyDetailsAutoOpened = true;
+            }
+            return;
         }
 
-        this._updateView();
+        // Ready. Collapse what the code opened; leave what the user opened.
+        if (this._dependencyDetailsAutoOpened) {
+            this._showDependencyDetails = false;
+            this._dependencyDetailsAutoOpened = false;
+        }
     }
 
     /**

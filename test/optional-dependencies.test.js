@@ -37,6 +37,15 @@ const ALL_PRESENT = {
     bfg: { installed: true }
 };
 
+// Docker plus the pulled image is itself a runnable scanner, so "nothing can
+// scan" means both of those absent too, not merely the binary engines.
+const NOTHING_RUNNABLE = {
+    docker: { installed: false },
+    noseyparker: { installed: false },
+    java: { installed: true },
+    bfg: { installed: true }
+};
+
 suite('optional dependencies', () => {
 
     const ALL_ENGINES = ['gitleaks', 'trufflehog', 'noseyparker'];
@@ -238,6 +247,47 @@ suite('optional dependencies', () => {
         // On its own line, not trailing the ready text.
         assert.match(all, /display: block/,
             'the list must sit under "Dependencies ready", not run on from it');
+    });
+
+    test('the auto-opened setup closes once something can scan', () => {
+        // It was opened by the code, not by the user, so it must close itself.
+        // Setting the same flag the Details button sets made it sticky: expanded
+        // on the first blocked refresh and expanded forever after.
+        // Docker plus the image IS a scanner, so a genuinely blocked state
+        // needs both absent as well as the binary engines.
+        const p = provider(NOTHING_RUNNABLE, undefined, []);
+        try {
+            p._applyDependencyVerdict();
+            assert.strictEqual(p._showDependencyDetails, true, 'nothing can scan: open it');
+            assert.strictEqual(p._dependencyDetailsAutoOpened, true);
+
+            p._engineStatus = ENGINES(['gitleaks']);
+            p._applyDependencyVerdict();
+            assert.strictEqual(p._showDependencyDetails, false,
+                'an engine arrived: the block must collapse on its own');
+            assert.strictEqual(p._dependencyDetailsAutoOpened, false);
+        } finally { p._restore(); }
+    });
+
+    test('a setup the user opened stays open when dependencies become ready', () => {
+        // Closing it here would yank the panel away mid-read from someone who
+        // deliberately asked to see it.
+        const p = provider(ALL_PRESENT, undefined, ['gitleaks']);
+        try {
+            p._showDependencyDetails = true;
+            p._dependencyDetailsAutoOpened = false;
+            p._applyDependencyVerdict();
+            assert.strictEqual(p._showDependencyDetails, true);
+        } finally { p._restore(); }
+    });
+
+    test('a still-blocked refresh keeps it open', () => {
+        const p = provider(NOTHING_RUNNABLE, undefined, []);
+        try {
+            p._applyDependencyVerdict();
+            p._applyDependencyVerdict();
+            assert.strictEqual(p._showDependencyDetails, true);
+        } finally { p._restore(); }
     });
 
     test('optional absences never gate scanning', () => {
