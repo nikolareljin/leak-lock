@@ -834,12 +834,15 @@ class LeakLockSidebarProvider {
 
     _getDependenciesSection() {
         // If all dependencies are met and details not requested, show compact status
+        const optionalMissing = this._dependencyStatus?.optionalMissing || [];
         if (this._dependenciesInstalled && !this._isInstalling && !this._showDependencyDetails) {
             return `
                 <div class="section" style="padding: 10px 15px;">
                     <div style="display: flex; align-items: center; justify-content: space-between;">
                         <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 12px;">
-                            ✅ Dependencies ready
+                            ✅ Dependencies ready${optionalMissing.length ? `<span style="color: var(--vscode-descriptionForeground);" title="These are not needed to scan: ${escapeHtml(optionalMissing.join(', '))}. BFG is an alternative to the git history rewrite; Docker is needed only by Nosey Parker.">
+                                — optional dependencies missing (${escapeHtml(optionalMissing.join(', '))})
+                            </span>` : ''}
                         </span>
                         <button class="install-button" onclick="showDependencyDetails()" 
                                 style="width: auto; padding: 4px 8px; font-size: 11px; margin: 0;">
@@ -1332,6 +1335,8 @@ class LeakLockSidebarProvider {
         // about: setup never claims success while a default engine is absent.
         await this._refreshEngineStatus();
         this._dependencyStatus.missing = this._missingRequiredDependencies();
+        // Absent-but-optional never gates a scan; it only annotates the ready state.
+        this._dependencyStatus.optionalMissing = this._missingOptionalDependencies();
         this._dependenciesInstalled = this._dependencyStatus.missing.length === 0;
 
         this._updateView();
@@ -1363,12 +1368,45 @@ class LeakLockSidebarProvider {
         return missing;
     }
 
+    /**
+     * What is absent but not needed for a scan, named.
+     *
+     * These enable extra capability rather than gating anything:
+     *   - BFG            an alternative history-rewrite engine; the git route
+     *                    needs no Java and is now the default.
+     *   - Docker         required only by Nosey Parker.
+     *   - Nosey Parker   an additional engine, upstream archived, off by default.
+     *
+     * Reported separately from `missing` so "Dependencies ready" stays honest:
+     * a scan really will run, and the note says what is not available.
+     */
+    _missingOptionalDependencies() {
+        const optional = [];
+        if (!this._dependencyStatus?.java?.installed || !this._dependencyStatus?.bfg?.installed) {
+            optional.push('BFG');
+        }
+        // When Nosey Parker is enabled these are required, not optional, and
+        // _missingRequiredDependencies already names them.
+        if (!this._isNoseyParkerEnabled()) {
+            if (!this._dependencyStatus?.docker?.installed) {
+                optional.push('Docker');
+            }
+            if (!this._dependencyStatus?.noseyparker?.installed) {
+                optional.push('Nosey Parker');
+            }
+        }
+        return optional;
+    }
+
     _isNoseyParkerEnabled() {
         try {
             const configured = vscode.workspace.getConfiguration('leakLock').get('scan.engines');
+            // Must match the panel's default (_getEnabledEngineIds). When these
+            // disagreed, the sidebar demanded Docker and the Nosey Parker image
+            // as REQUIRED for a scan that would never run Nosey Parker.
             const engines = Array.isArray(configured) && configured.length
                 ? configured
-                : ['gitleaks', 'trufflehog', 'noseyparker'];
+                : ['gitleaks', 'trufflehog'];
             return engines.includes('noseyparker');
         } catch {
             return true;
@@ -1681,6 +1719,12 @@ class LeakLockSidebarProvider {
         }
 
         if (!missing.length) {
+            // Named, not silently omitted: a user who wanted BFG or Nosey Parker
+            // should not have to infer from a bare "ready" that they did not get it.
+            const optional = this._missingOptionalDependencies();
+            if (optional.length) {
+                parts.push(`Optional dependencies missing: ${optional.join(', ')} — scanning is unaffected.`);
+            }
             vscode.window.showInformationMessage(
                 parts.length ? `Dependencies ready. ${parts.join(' ')}` : 'Dependencies ready.'
             );
