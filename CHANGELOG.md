@@ -5,6 +5,7 @@
 - Fall back to the standalone `git-filter-repo` launcher for cleanup.
 - Fix Git Info commit links for findings in child repositories and VS Code webviews.
 - Make each scan-result checkbox cell clickable.
+- Speed up result processing for large scans.
 ## 2026-08-11 — v0.8.0
 ### Added
 - **Credential details behind any recognised secret.** A finding that is an SSH or PEM private key, a certificate, a JWT, a GCP service-account document, or another artifact [credential-lens](https://github.com/nikolareljin/credential-lens) understands is now badged with what it is, and clicking it opens the algorithm, fingerprint, validity window and claims — with the limits of that evidence stated alongside them, because a name inside a credential is what the artifact says about itself, not proof of ownership. All analysis is local: the bytes are never sent anywhere, and the report omits private-key bodies and JWT signatures. A secret the scanner cut short is badged **inspect** and identified by reading the whole file when you open it — fifty characters of a private key is not a key.
