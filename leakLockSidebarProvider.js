@@ -1060,7 +1060,10 @@ class LeakLockSidebarProvider {
                              wrong in both directions: neither is required when Gitleaks
                              and TruffleHog are the enabled engines, and neither being
                              present makes a scan possible when those two are absent. -->
-                        ⚠️ Not ready to scan — missing: ${escapeHtml((this._dependencyStatus?.missing || []).join(', ') || 'a scan engine')}
+                        ⚠️ Not ready to scan — no scan engine is installed.<br>
+                        Install <strong>at least one</strong> of Gitleaks, TruffleHog or Nosey Parker below.${(this._dependencyStatus?.missing || []).includes('credential-lens')
+                            ? '<br>credential-lens could not be loaded either — it ships with the extension, so this indicates a broken install.'
+                            : ''}
                     </div>
                 ` : ''}
 
@@ -1339,6 +1342,12 @@ class LeakLockSidebarProvider {
         this._dependencyStatus.optionalMissing = this._missingOptionalDependencies();
         this._dependenciesInstalled = this._dependencyStatus.missing.length === 0;
 
+        // Nothing can scan: open Dependencies Setup rather than leaving the user
+        // to find it behind a "Details" button.
+        if (!this._dependenciesInstalled) {
+            this._showDependencyDetails = true;
+        }
+
         this._updateView();
     }
 
@@ -1352,20 +1361,28 @@ class LeakLockSidebarProvider {
      */
     _missingRequiredDependencies() {
         const missing = [];
-        for (const engine of this._engineStatus || []) {
-            if (engine.enabled && !engine.installed) {
-                missing.push(engine.displayName);
+
+        // One working scanner is the whole requirement. Demanding every enabled
+        // engine blocked setup over an engine the user did not need — "missing:
+        // Nosey Parker image" while Gitleaks sat installed and ready. A second
+        // engine widens coverage; it does not decide whether a scan can run.
+        if (this._installedScanners().length === 0) {
+            missing.push('at least one scan engine (Gitleaks, TruffleHog or Nosey Parker)');
+            // Named alongside, because the fix for both is the same trip through
+            // Dependencies Setup. It is bundled, so its absence means a broken
+            // build rather than something the user forgot to install.
+            if (this._dependencyStatus?.credentialLens
+                && !this._dependencyStatus.credentialLens.installed) {
+                missing.push('credential-lens');
             }
         }
-        if (this._isNoseyParkerEnabled()) {
-            if (!this._dependencyStatus?.docker?.installed) {
-                missing.push('Docker Engine');
-            }
-            if (!this._dependencyStatus?.noseyparker?.installed) {
-                missing.push('Nosey Parker image');
-            }
-        }
+
         return missing;
+    }
+
+    /** Every scan engine that would actually run right now, whatever is enabled. */
+    _installedScanners() {
+        return (this._engineStatus || []).filter(engine => engine.installed);
     }
 
     /**
@@ -1381,21 +1398,36 @@ class LeakLockSidebarProvider {
      * a scan really will run, and the note says what is not available.
      */
     _missingOptionalDependencies() {
+        // Everything that is not "the one scanner a scan needs" lands here.
         const optional = [];
+
+        // A second or third engine widens coverage — a secret one engine misses
+        // and another catches — but a scan runs without it. Only listed once at
+        // least one engine is present; with none, the required list says so.
+        if (this._installedScanners().length > 0) {
+            for (const engine of this._engineStatus || []) {
+                if (!engine.installed) {
+                    optional.push(engine.displayName);
+                }
+            }
+        }
+
         if (!this._dependencyStatus?.java?.installed || !this._dependencyStatus?.bfg?.installed) {
             optional.push('BFG');
         }
-        // When Nosey Parker is enabled these are required, not optional, and
-        // _missingRequiredDependencies already names them.
-        if (!this._isNoseyParkerEnabled()) {
-            if (!this._dependencyStatus?.docker?.installed) {
-                optional.push('Docker');
-            }
-            if (!this._dependencyStatus?.noseyparker?.installed) {
-                optional.push('Nosey Parker');
-            }
+        if (!this._dependencyStatus?.docker?.installed) {
+            optional.push('Docker');
         }
-        return optional;
+        if (this._dependencyStatus?.credentialLens
+            && !this._dependencyStatus.credentialLens.installed
+            && this._installedScanners().length > 0) {
+            // Scanning is unaffected; only the credential details are lost.
+            optional.push('credential-lens');
+        }
+
+        // De-duplicate: Nosey Parker can arrive both as an uninstalled engine
+        // and as a missing image.
+        return [...new Set(optional)];
     }
 
     _isNoseyParkerEnabled() {
@@ -1435,10 +1467,11 @@ class LeakLockSidebarProvider {
         try {
             const config = vscode.workspace.getConfiguration('leakLock');
             const configured = config.get('scan.engines');
+            // Must match the panel's _getEnabledEngineIds default.
             const enabled = new Set(
                 Array.isArray(configured) && configured.length
                     ? configured
-                    : ['gitleaks', 'trufflehog', 'noseyparker']
+                    : ['gitleaks', 'trufflehog']
             );
 
             this._engineStatus = await Promise.all(
@@ -1731,7 +1764,7 @@ class LeakLockSidebarProvider {
             return;
         }
         vscode.window.showWarningMessage(
-            `Dependency setup incomplete — still missing: ${missing.join(', ')}. ${parts.join(' ')}`.trim()
+            `Cannot scan yet — install at least one scan engine (Gitleaks, TruffleHog or Nosey Parker). ${parts.join(' ')}`.trim()
         );
     }
 
