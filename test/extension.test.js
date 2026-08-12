@@ -4077,9 +4077,10 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			}
 		}
 
-		test('a missing default engine is named, even with the Docker parts present', () => {
-			// The old verdict was `docker && noseyparker`, which said "Dependencies
-			// ready" on a machine that could not run a single default engine.
+		test('no runnable engine is named, even with the Docker parts present', () => {
+			// The original verdict was `docker && noseyparker`, which said
+			// "Dependencies ready" on a machine that could not run a single
+			// engine. Docker and an image are still not a scanner.
 			const p = provider([
 				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null },
 				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true, installed: false, version: null }
@@ -4088,10 +4089,15 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			p._dependencyStatus.noseyparker.installed = true;
 
 			const missing = withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies());
-			assert.deepStrictEqual(missing, ['Gitleaks', 'TruffleHog']);
+			assert.strictEqual(missing.length, 1);
+			assert.match(missing[0], /at least one scan engine/);
 		});
 
-		test('Docker is required only while Nosey Parker is enabled', () => {
+		test('one installed engine is enough; the rest are optional', () => {
+			// Requiring every ENABLED engine blocked setup over an engine the
+			// user did not need: "Not ready to scan — missing: Nosey Parker
+			// image" on a machine where Gitleaks was installed and ready.
+			// Enabling an engine is a preference, not a capability.
 			const p = provider([
 				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: true, version: 'v8.30.1' },
 				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: false, installed: false, version: null }
@@ -4104,8 +4110,11 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			);
 			assert.deepStrictEqual(
 				withEngines(['gitleaks', 'noseyparker'], () => p._missingRequiredDependencies()),
-				['Docker Engine', 'Nosey Parker image']
+				[],
+				'enabling Nosey Parker must not block a scan Gitleaks can run'
 			);
+			const optional = withEngines(['gitleaks', 'noseyparker'], () => p._missingOptionalDependencies());
+			assert.ok(optional.includes('TruffleHog'), 'the absent engine is still reported, as optional');
 		});
 
 		test('a missing installable engine gets an install button; Nosey Parker does not', () => {
