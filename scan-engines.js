@@ -529,11 +529,36 @@ const gitleaksEngine = {
  * Verification makes read-only API calls to third-party providers using the discovered
  * credential, so it is opt-in and must never be enabled silently.
  */
-function buildTruffleHogArgs({ repoDir, repoUrl, verify, results }) {
+// `platform` is injectable so the Windows branch can be exercised from any
+// host. Reading process.platform directly would leave that branch untested
+// everywhere it is not already running — including CI, which is Linux — and a
+// platform-specific fix nobody can run is a fix that rots silently.
+function buildTruffleHogArgs({ repoDir, repoUrl, verify, results, platform = process.platform }) {
     // `file://` + a raw path is not a URL on Windows: drive letters and backslashes
     // produce something TruffleHog cannot open, so scanning failed outright there.
     // Under the container runtime the caller supplies the in-container URL instead,
     // because converting the host path would name a directory the container cannot see.
+    //
+    // On Windows, file:///C:/path (three slashes, empty authority) delivers /C:/path to
+    // go-git. Go's filepath.Abs treats /C:/path as relative (no drive letter prefix),
+    // prepends the CWD drive and produces C:/C:/path. Using two slashes (file://C:/path)
+    // encodes C: as the URL host; TruffleHog extracts host+path = C:/path, which is
+    // the correct absolute Windows path.
+    if (!repoUrl && platform === 'win32') {
+        const normalized = repoDir.replace(/\\/g, '/');
+        // Uppercase the drive letter so it survives go-git's URL host round-trip.
+        const withUpper = /^[a-z]:/.test(normalized)
+            ? normalized[0].toUpperCase() + normalized.slice(1)
+            : normalized;
+        const winUrl = 'file://' + withUpper;
+        const args = ['git', winUrl, '--json', '--no-update'];
+        if (verify === false) {
+            args.push('--no-verification');
+        } else {
+            args.push(`--results=${results || 'verified,unknown'}`);
+        }
+        return args;
+    }
     const url = repoUrl || pathToFileURL(repoDir).href;
     const args = ['git', url, '--json', '--no-update'];
     if (verify === false) {

@@ -37,13 +37,32 @@ On first launch, you'll see the welcome view:
 2. The main panel opens in the editor area
 3. You'll see a "🔧 Install Dependencies" section
 
-**Install Required Tools**
-1. Click "🔧 Install Dependencies"
-2. Wait for the installation process to complete
-3. Dependencies include:
-   - Docker (must be pre-installed)
-   - Detection engines (Gitleaks binary; optionally TruffleHog, or the Nosey Parker Docker image)
-   - BFG Repo Cleaner tool
+**What you actually need**
+
+One scan engine. That is the whole requirement — any single one of Gitleaks, TruffleHog or
+Nosey Parker, and Leak Lock can scan. Click "🔧 Install Dependencies" and it fetches the
+native binaries for Gitleaks and TruffleHog; neither needs Docker or Java.
+
+Everything else is optional and never blocks a scan:
+
+| | What it adds | If it is missing |
+|---|---|---|
+| A second or third engine | Rules the others miss | Fewer findings; the coverage panel names which engines ran |
+| Docker | Needed only by Nosey Parker | Gitleaks and TruffleHog are native binaries |
+| Nosey Parker image | An extra engine, upstream archived | Off by default |
+| Java + BFG | An alternative history-rewrite engine | The git route is the default and needs no Java |
+
+When at least one engine is installed the sidebar reads **✅ Dependencies ready**, with any
+optional absences listed underneath — they are worth knowing about, not worth stopping for.
+The panel collapses on its own once something can scan; click **Details** any time to
+reopen it.
+
+If no engine is installed at all, Dependencies Setup opens by itself and says which ones
+would fix it.
+
+**credential-lens** ships inside the extension. There is nothing to install, it needs no
+network, and if it ever fails to load the sidebar says so — scanning is unaffected, only
+the credential details are lost.
 
 ---
 
@@ -90,6 +109,20 @@ The results appear in a detailed table with the following columns:
 - 🟡 **Medium**: Potentially sensitive data
 - 🟢 **Low**: Possible false positives or test data
 - 🟢 **Safe (Not committed)**: Found only in the working tree (not tracked or in git history)
+
+### Reading a finding
+
+**The file path.** The File column shows the path relative to the folder you scanned. Hover it to see the full path. A finding from git history names the commit its path belongs to, because that file may have been renamed or deleted since.
+
+**The commit.** If the finding came from history, the Git Info column shows the commit that contained it. Click the hash to open that file, at that commit, in your browser, with the line highlighted. This works for repositories hosted on GitHub, GitLab and Bitbucket. A repository on a self-hosted or unrecognised host shows the hash as plain text — Leak Lock will not guess a URL that would send you to a page that does not exist. A commit you have not pushed yet has nothing to open, so that link will not resolve until you push.
+
+**The secret.** Some secrets can be identified rather than merely matched. When Leak Lock recognises one — an SSH or PEM private key, a certificate, a JWT, a GCP service-account file and others — the Secret cell is badged with what it is. Click it to see the algorithm, fingerprint, whether the key is passphrase-protected, any validity window, and the claims the artifact carries.
+
+A cell badged **inspect** is one that looks like a credential but was cut short by the scanner. Clicking it reads the whole file to identify it.
+
+All of this analysis happens on your machine. Nothing is uploaded, and the report never contains the private key body or a JWT signature.
+
+**What the report does not tell you.** Names inside a credential — an SSH key comment, a certificate subject, a JWT `sub` claim — are evidence of what the artifact says about itself, not proof of who owns it. The report labels each claim's source and states its limits; read those before acting on a name.
 
 ### Exporting Results
 

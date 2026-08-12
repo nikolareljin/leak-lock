@@ -186,7 +186,16 @@ no-limit values. If a cap is ever reintroduced, the results must say so.
 
 ## Choosing engines
 
-`leakLock.scan.engines` is an ordered list. **All three are enabled by default:**
+`leakLock.scan.engines` is an ordered list. **Gitleaks and TruffleHog are enabled by
+default:**
+
+```jsonc
+"leakLock.scan.engines": ["gitleaks", "trufflehog"]
+```
+
+Both are single binaries needing no container runtime and no JVM, so a default install
+scans without Docker. Nosey Parker is off by default — its upstream is archived and it runs
+only as a container image — but nothing stops you adding it:
 
 ```jsonc
 "leakLock.scan.engines": ["gitleaks", "trufflehog", "noseyparker"]
@@ -445,7 +454,7 @@ caveat.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `leakLock.scan.engines` | `["gitleaks","trufflehog","noseyparker"]` | Which engines run, in order |
+| `leakLock.scan.engines` | `["gitleaks","trufflehog"]` | Which engines run, in order. Add `"noseyparker"` to include the archived container-image engine |
 | `leakLock.scan.executionMode` | `auto` | `auto`, `parallel`, `sequential` or `single` — see [How many engines run at once](#how-many-engines-run-at-once) |
 | `leakLock.scan.timeoutSeconds` | `300` | Per-engine timeout. On expiry, partial findings are reported and marked incomplete |
 | `leakLock.scan.refreshRefsBeforeScan` | `true` | `git fetch --tags` first, so remote-only branches are not invisible. Read-only: the scan never prunes — only the refresh immediately before a rewrite does, where the plan must match the server exactly |

@@ -40,3 +40,22 @@ tools/**
 # Contributor and scratch notes, not shipped to users.
 AGENTS.md
 TODO.txt
+CLAUDE.md
+
+# Local agent/tooling state. These are gitignored, but .vscodeignore is a
+# separate mechanism: vsce does not read .gitignore when a .vscodeignore file
+# exists, so a working copy that has them ships them. `publish.sh` runs
+# `vsce package` locally, which is one command away from putting session notes
+# and local settings on the Marketplace. Published 0.7.5 escaped this only
+# because it was released from a clean CI checkout.
+.remember/**
+.claude/**
+.cursor/**
+.aider*
+.DS_Store
+
+# credential-lens is bundled, not runtime-installed: 41 KB, zero dependencies,
+# and it runs in-process. Removing these two lines produces an extension that
+# loads cleanly and throws the first time a user opens a credential report.
+!node_modules/@nikolareljin/**
+!node_modules/@nikolareljin/credential-lens/**
