@@ -77,7 +77,7 @@ Common questions and solutions
 Deep dive into extension architecture
 - 🧩 Core components and data flow
 - 🎨 UI architecture and layout design
-- 🔧 External tool integration (Docker, Nosey Parker, BFG)
+- 🔧 External tool integration (scan engines, credential-lens, Docker, BFG)
 - 📊 State management and lifecycle
 
 #### 🔧 **[API Reference](./API_REFERENCE.md)**

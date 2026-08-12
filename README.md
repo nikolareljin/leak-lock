@@ -6,7 +6,7 @@
 
 **Secure your code repositories by detecting and removing sensitive information from git history**
 
-[![Version](https://img.shields.io/badge/version-0.7.0-blue.svg)](package.json)
+[![Version](https://img.shields.io/github/package-json/v/nikolareljin/leak-lock?color=blue)](package.json)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.125.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
 [🌐 Website](https://nikolareljin.github.io/leak-lock/) • [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
@@ -19,6 +19,7 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 
 - 🔍 **Scanning** git repositories for secrets, API keys, and sensitive data
 - 🛡️ **Detecting** credentials with **multiple engines** — Gitleaks, TruffleHog and Nosey Parker — merged into one attributed result set
+- 🔎 **Identifying** what a secret actually *is* — key type, algorithm, fingerprint, expiry — not merely that a rule matched
 - ✅ **Verifying** whether a discovered credential is still live (TruffleHog)
 - ✏️ **Removing** both detected secrets and **arbitrary text you specify** from git history
 - 📋 **Reporting** exactly what was scanned, so "no findings" is a claim you can check
@@ -32,6 +33,17 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 - **Full history, every ref**: refs are refreshed before scanning, so a branch that exists only on the remote is not silently skipped
 - **Working tree too**: untracked and ignored files (a local `.env`) are found and flagged as not-committed, since those are fixed by deleting the file, not by rewriting history
 - **No silent truncation**: results are never capped without saying so
+
+### 🔎 **Credential Identification**
+- **What it is, not just that it matched**: a finding that is an SSH or PEM private key, a certificate, a JWT or a GCP service-account file is badged with its type. Click it for the algorithm, fingerprint, whether the key is passphrase-protected, any validity window, and the claims the artifact carries
+- **The whole artifact, not the snippet**: fifty characters of a private key is not a key, so a secret the scanner cut short is identified by reading the enclosing file — or the blob at that commit, for a finding from history
+- **Local, always**: analysis runs on your machine via [credential-lens](https://github.com/nikolareljin/credential-lens), which ships inside the extension. Nothing is uploaded, and the report omits private-key bodies and JWT signatures
+- **Evidence, not proof**: a key comment or certificate subject is what the artifact says about itself. Each claim carries its source and the report states its limits
+
+### 🔗 **Findings You Can Follow**
+- **Full path on hover**: the File column shows a path relative to what you scanned; hover for the absolute one. A finding from history names the commit its path belongs to, since that file may no longer exist on disk
+- **Commit hashes open in your browser**: click the SHA to open that file, at that commit, on GitHub, GitLab or Bitbucket, anchored to the line. The repository is asked which path is real, so the link is not a guess
+- **No broken links**: a self-hosted or unrecognised host shows the hash as plain text rather than a URL that would 404
 
 ### ✏️ **Manual Redaction**
 - **Source text → Replace with**: remove content no scanner flags — an internal hostname, a private repository or team name, a customer identifier
@@ -48,7 +60,7 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 - **Results Export**: Export findings to JSON or print/save as PDF directly from the results view
 
 ### 🤖 **Automated Workflow**
-- **One-Click Dependency Install**: Docker, Nosey Parker, BFG tool
+- **One-Click Dependency Install**: the scan engines, plus the optional Docker, Nosey Parker image and BFG
 - **Intelligent Scanning**: Context-aware repository analysis
 - **Guided Remediation**: Step-by-step secret removal process
 - **Git History Cleanup**: Automatic history rewriting and cleanup
@@ -398,10 +410,15 @@ it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
 `executionMode` to `parallel`, `sequential` or `single` to decide for yourself.
 
 ### Choosing engines
-`leakLock.scan.engines` sets which run, and in what order. **All three are enabled by
-default** — `["gitleaks", "trufflehog", "noseyparker"]`. A missing engine binary disables
-that engine, never the whole scan, and the coverage panel says which engines ran and which
-did not, so an engine you have not installed is visible rather than silently absent.
+`leakLock.scan.engines` sets which run, and in what order. **Gitleaks and TruffleHog are
+enabled by default** — `["gitleaks", "trufflehog"]`. Both are single binaries needing no
+container runtime and no JVM, so a default install scans without Docker. Nosey Parker is
+available but off by default: its upstream is archived and it runs only as a container
+image. Add it with `["gitleaks", "trufflehog", "noseyparker"]`.
+
+A missing engine binary disables that engine, never the whole scan, and the coverage panel
+says which engines ran and which did not, so an engine you have not installed is visible
+rather than silently absent.
 
 Enabling TruffleHog does not by itself make any network call; verification is the separate
 `leakLock.trufflehog.verify` setting, off by default.
@@ -447,14 +464,25 @@ set `leakLock.trufflehog.binaryPath` or `leakLock.gitleaks.binaryPath`.
 - `leak-lock.cleanup` - Clean up all dependencies
 
 ### **Dependencies**
-- **Git**: required
-- **Gitleaks**: default detection engine — a single binary, no runtime
-- **TruffleHog**: optional, for live credential verification
-- **Docker**: only needed if the Nosey Parker engine is enabled
-- **Java**: runtime for the BFG cleanup tool (auto-detected)
-- **git-filter-repo**: only needed for the Git-only cleanup mode
 
-A missing engine disables that engine, not the scan.
+**Required — one scan engine.** Any single one of Gitleaks, TruffleHog or Nosey Parker is
+enough to scan. Setup is complete the moment one of them works; a second widens coverage
+but does not decide whether a scan can run. Git itself is required, as is credential-lens —
+which ships inside the extension, so there is nothing to install.
+
+**Optional — everything else.** Their absence is named next to "Dependencies ready" rather
+than blocking anything:
+
+| | What it adds | Without it |
+|---|---|---|
+| **A second or third engine** | Rules the others miss — they disagree more than you would expect | Fewer findings, and the coverage panel says which engines ran |
+| **Docker** | Required only by Nosey Parker | Gitleaks and TruffleHog are native binaries |
+| **Nosey Parker image** | An extra engine; upstream archived | Off by default |
+| **Java + BFG** | An alternative history-rewrite engine | The git route is the default and needs no JVM |
+| **git-filter-repo** | The Git-only cleanup mode | BFG, if Java is present |
+
+When no engine at all is installed, Dependencies Setup opens by itself and names the
+choice. A missing engine disables that engine, not the scan.
 
 ---
 
