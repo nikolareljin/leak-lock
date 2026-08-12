@@ -1,0 +1,171 @@
+const assert = require('assert');
+const path = require('path');
+const { describeFindingPath, repoRelativePath, repoRelativeCandidates } = require('../finding-paths');
+
+// Absolute fixture paths are BUILT, never written as literals.
+//
+// These tests previously used a made-up placeholder ('/home/u/repo' — a fake
+// path, never anyone's real directory) and that was wrong for a reason that has
+// nothing to do with privacy: a hard-coded POSIX path is POSIX-only. On Windows
+// path.relative would not treat it the way these assertions assume, so they
+// would pass while testing fiction. Building the paths keeps them correct on
+// every platform, and keeps real directory layouts out of the repository as a
+// side effect.
+const SCAN_ROOT = path.resolve(path.sep, 'scan-root');
+const REPO = path.join(SCAN_ROOT, 'a-repo');
+const OUTSIDE = path.resolve(path.sep, 'elsewhere');
+
+suite('repoRelativePath', () => {
+
+    // A finding's `file` is relative to the SCANNED directory. A permalink needs
+    // it relative to the GIT ROOT. Scanning a folder above the repository makes
+    // those differ, and every generated URL carried the repository's own
+    // directory name as a bogus first segment:
+    //   /blob/<sha>/leak-lock/test/a.js   ->  404
+    //   /blob/<sha>/test/a.js             ->  correct
+
+    test('strips the scan-directory prefix when the scan root is above the repo', () => {
+        assert.strictEqual(
+            repoRelativePath(path.join('a-repo', 'test', 'a.js'), SCAN_ROOT, REPO),
+            'test/a.js'
+        );
+    });
+
+    test('returns null when the scan root is above the repo but repoRoot was not detected', () => {
+        // Scanning a parent directory that is not itself a git repo causes
+        // _primeGitTracking to leave _scanRepoRoot null. Returning the file
+        // unchanged would include the repo directory as a bogus URL segment.
+        assert.strictEqual(
+            repoRelativePath(path.join('a-repo', 'test', 'a.js'), SCAN_ROOT, null),
+            null
+        );
+    });
+
+    test('is a no-op when the scan root is the repo root', () => {
+        assert.strictEqual(
+            repoRelativePath(path.join('test', 'a.js'), REPO, REPO),
+            'test/a.js'
+        );
+    });
+
+    test('handles a scan root below the repo root', () => {
+        assert.strictEqual(
+            repoRelativePath('a.js', path.join(REPO, 'src'), REPO),
+            'src/a.js'
+        );
+    });
+
+    test('uses forward slashes, because a URL path is not a filesystem path', () => {
+        const result = repoRelativePath(path.join('sub', 'a.js'), REPO, REPO);
+        assert.ok(!result.includes('\\'), 'a backslash would break the URL on Windows');
+    });
+
+    test('a file outside the repository yields null rather than a ../ URL', () => {
+        assert.strictEqual(
+            repoRelativePath(path.join('..', 'outside', 'a.js'), REPO, REPO),
+            null
+        );
+    });
+
+    test('null repoRoot with no scanPath falls back to the path as given', () => {
+        const f = path.join('test', 'a.js');
+        assert.strictEqual(repoRelativePath(f, null, null), f);
+        assert.strictEqual(repoRelativePath(null, REPO, REPO), null);
+    });
+
+    test('null repoRoot with a known scanPath tries findGitRoot; returns null when no .git found', () => {
+        // SCAN_ROOT and REPO are fake paths with no .git on disk, so findGitRoot
+        // returns null and the function returns null rather than a repo-prefixed path.
+        assert.strictEqual(repoRelativePath(path.join('test', 'a.js'), REPO, null), null);
+    });
+
+    test('an absolute finding path is relativized against the repo root', () => {
+        assert.strictEqual(
+            repoRelativePath(path.join(REPO, 'test', 'a.js'), SCAN_ROOT, REPO),
+            'test/a.js'
+        );
+    });
+});
+
+suite('repoRelativeCandidates', () => {
+
+    // Some engines report a path already prefixed with the repository's own
+    // directory name, even when the scan root IS the repository. Resolving that
+    // against the scan root duplicates the segment:
+    //   scanPath  /p/dvr
+    //   file      dvr/fixture/db.yml
+    //   resolved  /p/dvr/dvr/fixture/db.yml     -> URL 404s
+    // Both readings are legitimate — a repo may genuinely contain a top-level
+    // directory sharing its own name — so this returns candidates in order and
+    // lets git decide which one exists at the commit.
+
+    test('offers the de-prefixed reading when the path repeats the repo name', () => {
+        const candidates = repoRelativeCandidates(
+            path.join('a-repo', 'fixture', 'db.yml'), REPO, REPO
+        );
+        assert.deepStrictEqual(candidates, ['a-repo/fixture/db.yml', 'fixture/db.yml']);
+    });
+
+    test('offers a single candidate when there is nothing to strip', () => {
+        assert.deepStrictEqual(
+            repoRelativeCandidates(path.join('fixture', 'db.yml'), REPO, REPO),
+            ['fixture/db.yml']
+        );
+    });
+
+    test('does not strip a directory that merely starts with the repo name', () => {
+        assert.deepStrictEqual(
+            repoRelativeCandidates(path.join('a-repository', 'db.yml'), REPO, REPO),
+            ['a-repository/db.yml']
+        );
+    });
+
+    test('never strips down to nothing', () => {
+        assert.deepStrictEqual(
+            repoRelativeCandidates('a-repo', REPO, REPO),
+            ['a-repo']
+        );
+    });
+
+    test('an unresolvable path yields no candidates rather than a bad URL', () => {
+        assert.deepStrictEqual(repoRelativeCandidates(null, REPO, REPO), []);
+        assert.deepStrictEqual(
+            repoRelativeCandidates(path.join('..', 'outside', 'a.js'), REPO, REPO),
+            []
+        );
+    });
+});
+
+suite('describeFindingPath', () => {
+
+    test('a worktree finding resolves against the scan path', () => {
+        const result = describeFindingPath({ file: path.join('src', 'config.js') }, REPO);
+        assert.strictEqual(result.absolutePath, path.join(REPO, 'src', 'config.js'));
+        assert.strictEqual(result.tooltip, path.join(REPO, 'src', 'config.js'));
+    });
+
+    test('a history finding names the commit instead of implying a file on disk', () => {
+        const result = describeFindingPath(
+            { file: path.join('src', 'old.js'), commitHash: 'abc1234567890abcdef1234567890abcdef1234' },
+            REPO
+        );
+        assert.strictEqual(result.tooltip, `${path.join(REPO, 'src', 'old.js')} (at commit abc1234)`);
+    });
+
+    test('an already-absolute path is not joined twice', () => {
+        const result = describeFindingPath({ file: path.join(OUTSIDE, 'a.js') }, REPO);
+        assert.strictEqual(result.absolutePath, path.join(OUTSIDE, 'a.js'));
+    });
+
+    test('a missing scan path degrades to the relative path rather than throwing', () => {
+        const result = describeFindingPath({ file: path.join('src', 'config.js') }, null);
+        assert.strictEqual(result.absolutePath, null);
+        assert.strictEqual(result.tooltip, path.join('src', 'config.js'));
+    });
+
+    test('a finding with no file yields an empty tooltip, not the string "null"', () => {
+        const result = describeFindingPath({}, REPO);
+        assert.strictEqual(result.absolutePath, null);
+        assert.strictEqual(result.tooltip, '');
+    });
+});

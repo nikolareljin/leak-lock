@@ -1005,6 +1005,61 @@ suite('TruffleHog engine adapter', () => {
 		assert.ok(verifying.includes('git') && verifying.includes('file:///repo'));
 	});
 
+	test('Windows lowercase drive letter is uppercased in the file URL', () => {
+		// file:///C:/path (three slashes) delivers /C:/path to go-git. On Windows,
+		// filepath.Abs treats that as relative and prepends the CWD drive, giving
+		// C:/C:/path. Two slashes (file://C:/path) encodes C: as the URL host so
+		// TruffleHog assembles host+path = C:/path correctly.
+		//
+		// The platform is passed explicitly rather than read from process: this
+		// suite runs on Linux, in CI too, so a test that relied on the real
+		// platform would exercise the POSIX branch and assert nothing about
+		// Windows at all.
+		const args = engines.buildTruffleHogArgs({
+			repoDir: 'c:\\Users\\user\\repo', verify: false, platform: 'win32'
+		});
+		const url = args[1];
+		assert.ok(url.startsWith('file://C:/'), `expected file://C:/ prefix, got: ${url}`);
+		assert.ok(!url.startsWith('file:///'), `must not have empty-authority (three slashes): ${url}`);
+		assert.ok(!url.includes('\\'), `backslashes must be converted: ${url}`);
+		assert.ok(!url.includes('%5C'), `backslashes must not be percent-encoded: ${url}`);
+	});
+
+	test('an already-uppercase Windows drive letter is left alone', () => {
+		const args = engines.buildTruffleHogArgs({
+			repoDir: 'D:\\repos\\thing', verify: false, platform: 'win32'
+		});
+		assert.strictEqual(args[1], 'file://D:/repos/thing');
+	});
+
+	test('the Windows branch still honours verification flags', () => {
+		const off = engines.buildTruffleHogArgs({
+			repoDir: 'C:\\r', verify: false, platform: 'win32'
+		});
+		assert.ok(off.includes('--no-verification'));
+		const on = engines.buildTruffleHogArgs({
+			repoDir: 'C:\\r', verify: true, results: 'verified', platform: 'win32'
+		});
+		assert.ok(on.includes('--results=verified'));
+		assert.ok(!on.includes('--no-verification'));
+	});
+
+	test('POSIX hosts are unaffected by the Windows branch', () => {
+		const args = engines.buildTruffleHogArgs({
+			repoDir: '/home/u/repo', verify: false, platform: 'linux'
+		});
+		assert.ok(args[1].startsWith('file:///'), `POSIX keeps the three-slash form: ${args[1]}`);
+	});
+
+	test('a container repoUrl wins over the Windows branch', () => {
+		// Under the container runtime the caller supplies the in-container URL;
+		// converting the host path would name a directory the container cannot see.
+		const args = engines.buildTruffleHogArgs({
+			repoDir: 'C:\\host\\repo', repoUrl: 'file:///repo', verify: false, platform: 'win32'
+		});
+		assert.strictEqual(args[1], 'file:///repo');
+	});
+
 	test('JSONL output is parsed and progress records are ignored', () => {
 		const stdout = [
 			'{"level":"info","msg":"scanning"}',
@@ -4022,9 +4077,27 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			}
 		}
 
-		test('a missing default engine is named, even with the Docker parts present', () => {
-			// The old verdict was `docker && noseyparker`, which said "Dependencies
-			// ready" on a machine that could not run a single default engine.
+		test('Docker without the image is not a scanner', () => {
+			// The original verdict was `docker && noseyparker`, which said
+			// "Dependencies ready" on a machine that could not run a single
+			// engine. A container runtime on its own still runs nothing.
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null },
+				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true, installed: false, version: null }
+			]);
+			p._dependencyStatus.docker.installed = true;
+			p._dependencyStatus.noseyparker.installed = false;
+
+			const missing = withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies());
+			assert.strictEqual(missing.length, 1);
+			assert.match(missing[0], /at least one scan engine/);
+		});
+
+		test('Docker plus the pulled image IS a scanner, with no binary engine present', () => {
+			// Nosey Parker has no binary and never appears in _engineStatus, so
+			// this only holds because availability is read from Docker and the
+			// image directly. Without that, a machine able to scan would be told
+			// it could not.
 			const p = provider([
 				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null },
 				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true, installed: false, version: null }
@@ -4032,11 +4105,17 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			p._dependencyStatus.docker.installed = true;
 			p._dependencyStatus.noseyparker.installed = true;
 
-			const missing = withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies());
-			assert.deepStrictEqual(missing, ['Gitleaks', 'TruffleHog']);
+			assert.deepStrictEqual(
+				withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies()),
+				[]
+			);
 		});
 
-		test('Docker is required only while Nosey Parker is enabled', () => {
+		test('one installed engine is enough; the rest are optional', () => {
+			// Requiring every ENABLED engine blocked setup over an engine the
+			// user did not need: "Not ready to scan — missing: Nosey Parker
+			// image" on a machine where Gitleaks was installed and ready.
+			// Enabling an engine is a preference, not a capability.
 			const p = provider([
 				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: true, version: 'v8.30.1' },
 				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: false, installed: false, version: null }
@@ -4049,8 +4128,11 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			);
 			assert.deepStrictEqual(
 				withEngines(['gitleaks', 'noseyparker'], () => p._missingRequiredDependencies()),
-				['Docker Engine', 'Nosey Parker image']
+				[],
+				'enabling Nosey Parker must not block a scan Gitleaks can run'
 			);
+			const optional = withEngines(['gitleaks', 'noseyparker'], () => p._missingOptionalDependencies());
+			assert.ok(optional.includes('TruffleHog'), 'the absent engine is still reported, as optional');
 		});
 
 		test('a missing installable engine gets an install button; Nosey Parker does not', () => {

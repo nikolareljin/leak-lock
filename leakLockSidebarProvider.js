@@ -19,6 +19,7 @@ const engineDocker = require('./engine-docker');
 // so they must be escaped before interpolation into the webview HTML. Shared with
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
+const credentialInspect = require('./credential-inspect');
 
 /**
  * Java's version banner, from whichever stream it lands on.
@@ -64,6 +65,9 @@ class LeakLockSidebarProvider {
         this._installProgress = null;
         this._workspaceGitRepo = null;
         this._showDependencyDetails = false;
+        // Whether the block above was opened by the code (because nothing could
+        // scan) rather than by the user. Only an auto-opened block closes itself.
+        this._dependencyDetailsAutoOpened = false;
         this._showGitHistorySection = false;
         // Native engine probe results. null until the details are opened, because
         // probing spawns a subprocess per engine and the compact view never shows it.
@@ -133,6 +137,9 @@ class LeakLockSidebarProvider {
                         break;
                     case 'showDependencyDetails':
                         this._showDependencyDetails = true;
+                        // Asked for deliberately, so it must not be collapsed by
+                        // the next refresh that finds everything ready.
+                        this._dependencyDetailsAutoOpened = false;
                         this._updateView();
                         // Probing costs a subprocess per engine, so it happens on expand
                         // rather than on every render. The engine probes swallow their
@@ -144,6 +151,7 @@ class LeakLockSidebarProvider {
                         break;
                     case 'hideDependencyDetails':
                         this._showDependencyDetails = false;
+                        this._dependencyDetailsAutoOpened = false;
                         this._updateView();
                         break;
                     case 'openWebsite':
@@ -833,12 +841,16 @@ class LeakLockSidebarProvider {
 
     _getDependenciesSection() {
         // If all dependencies are met and details not requested, show compact status
+        const optionalMissing = this._dependencyStatus?.optionalMissing || [];
         if (this._dependenciesInstalled && !this._isInstalling && !this._showDependencyDetails) {
             return `
                 <div class="section" style="padding: 10px 15px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
                         <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 12px;">
-                            ✅ Dependencies ready
+                            ✅ Dependencies ready${optionalMissing.length ? `
+                            <span style="display: block; margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.4;" title="None of these is needed to scan. BFG is an alternative to the git history rewrite, which needs no Java; Docker is needed only by Nosey Parker.">
+                                Optional dependencies missing: ${escapeHtml(optionalMissing.join(', '))}
+                            </span>` : ''}
                         </span>
                         <button class="install-button" onclick="showDependencyDetails()" 
                                 style="width: auto; padding: 4px 8px; font-size: 11px; margin: 0;">
@@ -1020,7 +1032,24 @@ class LeakLockSidebarProvider {
                         ${this._dependencyStatus.bfg.error} (manual commands available)
                     </div>
                 ` : '')}
-                
+
+                ${this._dependencyStatus?.credentialLens ? `
+                    <!-- Bundled with the extension, so there is nothing to install.
+                         The tick reflects a successful dynamic import, not the mere
+                         presence of a dependency entry: a .vsix built without the
+                         package must show as broken here, rather than at the user's
+                         first click on a Secret cell. -->
+                    <div class="status-item">
+                        <span><span class="status-icon">${this._dependencyStatus.credentialLens.installed ? '✅' : '❌'}</span>credential-lens${this._dependencyStatus.credentialLens.version ? ` v${escapeHtml(this._dependencyStatus.credentialLens.version)}` : ''}</span>
+                    </div>
+                    <div style="font-size: 10px; color: ${this._dependencyStatus.credentialLens.installed ? 'var(--vscode-descriptionForeground)' : 'var(--vscode-inputValidation-warningForeground)'}; margin-left: 20px; margin-bottom: 5px;">
+                        ${this._dependencyStatus.credentialLens.installed
+                            ? 'Bundled with Leak Lock — nothing to install. Identifies keys, certificates and tokens in scan results.'
+                            : 'Bundled but could not be loaded, so credential details are unavailable. Scanning is unaffected.'}
+                        ${this._dependencyStatus.credentialLens.error ? `<br>${escapeHtml(this._dependencyStatus.credentialLens.error)}` : ''}
+                    </div>
+                ` : ''}
+
                 <button class="install-button" onclick="installDependencies()" ${this._isInstalling ? 'disabled' : ''}>
                     ${installButtonText}
                 </button>
@@ -1039,7 +1068,10 @@ class LeakLockSidebarProvider {
                              wrong in both directions: neither is required when Gitleaks
                              and TruffleHog are the enabled engines, and neither being
                              present makes a scan possible when those two are absent. -->
-                        ⚠️ Not ready to scan — missing: ${escapeHtml((this._dependencyStatus?.missing || []).join(', ') || 'a scan engine')}
+                        ⚠️ Not ready to scan — no scan engine is installed.<br>
+                        Install <strong>at least one</strong> of Gitleaks, TruffleHog or Nosey Parker below.${(this._dependencyStatus?.missing || []).includes('credential-lens')
+                            ? '<br>credential-lens could not be loaded either — it ships with the extension, so this indicates a broken install.'
+                            : ''}
                     </div>
                 ` : ''}
 
@@ -1299,6 +1331,12 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.bfg.error = 'BFG tool not downloaded';
         }
 
+        // credential-lens is bundled, so this is a load check, not an install
+        // check — and it is deliberately resolved before `missing` is computed
+        // but never added to it. The engines perform the scan; an enrichment
+        // library must not be able to report setup as incomplete.
+        this._dependencyStatus.credentialLens = await credentialInspect.describeCredentialLensStatus();
+
         // The engines that actually scan decide whether setup is complete.
         //
         // This used to be `docker && noseyparker`, which reported "Dependencies ready"
@@ -1307,10 +1345,41 @@ class LeakLockSidebarProvider {
         // Probing here costs two subprocesses and buys the guarantee this release is
         // about: setup never claims success while a default engine is absent.
         await this._refreshEngineStatus();
-        this._dependencyStatus.missing = this._missingRequiredDependencies();
-        this._dependenciesInstalled = this._dependencyStatus.missing.length === 0;
+        this._applyDependencyVerdict();
 
         this._updateView();
+    }
+
+    /**
+     * Turn the probed status into the verdict and the panel's open/closed state.
+     *
+     * The auto-open is tracked separately from the user's own Details click. Both
+     * used to set the same flag, so a block opened because nothing could scan
+     * stayed open after the engines arrived — there was nothing to distinguish
+     * "the code opened this" from "the user asked for this", and only the latter
+     * should survive becoming ready.
+     */
+    _applyDependencyVerdict() {
+        this._dependencyStatus.missing = this._missingRequiredDependencies();
+        // Absent-but-optional never gates a scan; it only annotates the ready state.
+        this._dependencyStatus.optionalMissing = this._missingOptionalDependencies();
+        this._dependenciesInstalled = this._dependencyStatus.missing.length === 0;
+
+        if (!this._dependenciesInstalled) {
+            // Nothing can scan: open Dependencies Setup rather than leaving the
+            // user to find it behind a "Details" button.
+            if (!this._showDependencyDetails) {
+                this._showDependencyDetails = true;
+                this._dependencyDetailsAutoOpened = true;
+            }
+            return;
+        }
+
+        // Ready. Collapse what the code opened; leave what the user opened.
+        if (this._dependencyDetailsAutoOpened) {
+            this._showDependencyDetails = false;
+            this._dependencyDetailsAutoOpened = false;
+        }
     }
 
     /**
@@ -1323,28 +1392,107 @@ class LeakLockSidebarProvider {
      */
     _missingRequiredDependencies() {
         const missing = [];
-        for (const engine of this._engineStatus || []) {
-            if (engine.enabled && !engine.installed) {
-                missing.push(engine.displayName);
+
+        // One working scanner is the whole requirement. Demanding every enabled
+        // engine blocked setup over an engine the user did not need — "missing:
+        // Nosey Parker image" while Gitleaks sat installed and ready. A second
+        // engine widens coverage; it does not decide whether a scan can run.
+        if (this._installedScanners().length === 0) {
+            missing.push('at least one scan engine (Gitleaks, TruffleHog or Nosey Parker)');
+            // Named alongside, because the fix for both is the same trip through
+            // Dependencies Setup. It is bundled, so its absence means a broken
+            // build rather than something the user forgot to install.
+            if (this._dependencyStatus?.credentialLens
+                && !this._dependencyStatus.credentialLens.installed) {
+                missing.push('credential-lens');
             }
         }
-        if (this._isNoseyParkerEnabled()) {
-            if (!this._dependencyStatus?.docker?.installed) {
-                missing.push('Docker Engine');
-            }
-            if (!this._dependencyStatus?.noseyparker?.installed) {
-                missing.push('Nosey Parker image');
-            }
-        }
+
         return missing;
+    }
+
+    /**
+     * Nosey Parker is not in scanEngines.ENGINES — it has no binary and runs
+     * only as a container image, so it never appears in `_engineStatus` and its
+     * availability is Docker plus the pulled image.
+     */
+    _noseyParkerAvailable() {
+        return Boolean(
+            this._dependencyStatus?.docker?.installed
+            && this._dependencyStatus?.noseyparker?.installed
+        );
+    }
+
+    /** Every scan engine that would actually run right now, whatever is enabled. */
+    _installedScanners() {
+        const installed = (this._engineStatus || [])
+            .filter(engine => engine.installed)
+            .map(engine => engine.displayName);
+        if (this._noseyParkerAvailable()) {
+            installed.push('Nosey Parker');
+        }
+        return installed;
+    }
+
+    /**
+     * What is absent but not needed for a scan, named.
+     *
+     * These enable extra capability rather than gating anything:
+     *   - BFG            an alternative history-rewrite engine; the git route
+     *                    needs no Java and is now the default.
+     *   - Docker         required only by Nosey Parker.
+     *   - Nosey Parker   an additional engine, upstream archived, off by default.
+     *
+     * Reported separately from `missing` so "Dependencies ready" stays honest:
+     * a scan really will run, and the note says what is not available.
+     */
+    _missingOptionalDependencies() {
+        // Everything that is not "the one scanner a scan needs" lands here.
+        const optional = [];
+
+        // A second or third engine widens coverage — a secret one engine misses
+        // and another catches — but a scan runs without it. Only listed once at
+        // least one engine is present; with none, the required list says so.
+        if (this._installedScanners().length > 0) {
+            for (const engine of this._engineStatus || []) {
+                if (!engine.installed) {
+                    optional.push(engine.displayName);
+                }
+            }
+            // Reported from its own status, not from `_engineStatus`, which
+            // never contains it: it has no binary to probe for.
+            if (!this._noseyParkerAvailable()) {
+                optional.push('Nosey Parker');
+            }
+        }
+
+        if (!this._dependencyStatus?.java?.installed || !this._dependencyStatus?.bfg?.installed) {
+            optional.push('BFG');
+        }
+        if (!this._dependencyStatus?.docker?.installed) {
+            optional.push('Docker');
+        }
+        if (this._dependencyStatus?.credentialLens
+            && !this._dependencyStatus.credentialLens.installed
+            && this._installedScanners().length > 0) {
+            // Scanning is unaffected; only the credential details are lost.
+            optional.push('credential-lens');
+        }
+
+        // De-duplicate: Nosey Parker can arrive both as an uninstalled engine
+        // and as a missing image.
+        return [...new Set(optional)];
     }
 
     _isNoseyParkerEnabled() {
         try {
             const configured = vscode.workspace.getConfiguration('leakLock').get('scan.engines');
+            // Must match the panel's default (_getEnabledEngineIds). When these
+            // disagreed, the sidebar demanded Docker and the Nosey Parker image
+            // as REQUIRED for a scan that would never run Nosey Parker.
             const engines = Array.isArray(configured) && configured.length
                 ? configured
-                : ['gitleaks', 'trufflehog', 'noseyparker'];
+                : ['gitleaks', 'trufflehog'];
             return engines.includes('noseyparker');
         } catch {
             return true;
@@ -1373,10 +1521,11 @@ class LeakLockSidebarProvider {
         try {
             const config = vscode.workspace.getConfiguration('leakLock');
             const configured = config.get('scan.engines');
+            // Must match the panel's _getEnabledEngineIds default.
             const enabled = new Set(
                 Array.isArray(configured) && configured.length
                     ? configured
-                    : ['gitleaks', 'trufflehog', 'noseyparker']
+                    : ['gitleaks', 'trufflehog']
             );
 
             this._engineStatus = await Promise.all(
@@ -1657,13 +1806,19 @@ class LeakLockSidebarProvider {
         }
 
         if (!missing.length) {
+            // Named, not silently omitted: a user who wanted BFG or Nosey Parker
+            // should not have to infer from a bare "ready" that they did not get it.
+            const optional = this._missingOptionalDependencies();
+            if (optional.length) {
+                parts.push(`Optional dependencies missing: ${optional.join(', ')} — scanning is unaffected.`);
+            }
             vscode.window.showInformationMessage(
                 parts.length ? `Dependencies ready. ${parts.join(' ')}` : 'Dependencies ready.'
             );
             return;
         }
         vscode.window.showWarningMessage(
-            `Dependency setup incomplete — still missing: ${missing.join(', ')}. ${parts.join(' ')}`.trim()
+            `Cannot scan yet — install at least one scan engine (Gitleaks, TruffleHog or Nosey Parker). ${parts.join(' ')}`.trim()
         );
     }
 

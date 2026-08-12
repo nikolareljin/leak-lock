@@ -3,8 +3,14 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
 yarn.lock
+
+# package-lock.json IS committed. Ignoring it is a library convention — a
+# library publishes a version range and must resolve fresh for each consumer.
+# leak-lock is an application: nobody installs it as a dependency, so there is
+# no reason to leave resolution floating. Committing it pins every transitive
+# version and records a sha512 integrity hash per package in the repository,
+# which is the only in-repo pin on the bytes that get packaged into the .vsix.
 
 # Build outputs
 out/
@@ -111,3 +117,13 @@ private/
 
 # JAR files
 bfg.jar
+
+# Planning artifacts are a working method, not project documentation. They go
+# stale the moment implementation diverges from them, and a stale plan in-repo
+# reads as authoritative. The decisions worth keeping belong in ARCHITECTURE.md
+# and the CHANGELOG, where they are maintained. Renaming the directory does not
+# make them belong here — these were once committed as docs/specs and
+# docs/plans, and had to be rewritten out of history.
+docs/superpowers/
+docs/specs/
+docs/plans/
