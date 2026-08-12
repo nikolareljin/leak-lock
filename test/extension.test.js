@@ -293,6 +293,17 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(out.indexOf('command -v "$cmd"') < out.indexOf('# 1. Refresh every ref'));
 	});
 
+	test('uses the standalone pip launcher when Git cannot discover filter-repo', () => {
+		const out = script({
+			requiredCommands: ['git', 'git-filter-repo'],
+			rewriteLines: ['git_filter_repo --replace-text "$replacement_file" --force']
+		});
+		assert.match(out, /git filter-repo --version/, 'tries Git\'s subcommand first');
+		assert.match(out, /command -v git-filter-repo/, 'falls back to pip\'s standalone launcher');
+		assert.match(out, /git-filter-repo "\$@"/, 'the fallback receives the rewrite arguments');
+		assert.ok(!out.includes("for cmd in 'git' 'git-filter-repo'"), 'does not reject a valid PATH launcher before trying it');
+	});
+
 	test('verification reads the rule file instead of repeating every secret inline', () => {
 		const out = script({
 			verifyRulesFile: '"$replacement_file"',
