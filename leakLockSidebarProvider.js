@@ -838,10 +838,11 @@ class LeakLockSidebarProvider {
         if (this._dependenciesInstalled && !this._isInstalling && !this._showDependencyDetails) {
             return `
                 <div class="section" style="padding: 10px 15px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
                         <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 12px;">
-                            ✅ Dependencies ready${optionalMissing.length ? `<span style="color: var(--vscode-descriptionForeground);" title="These are not needed to scan: ${escapeHtml(optionalMissing.join(', '))}. BFG is an alternative to the git history rewrite; Docker is needed only by Nosey Parker.">
-                                — optional dependencies missing (${escapeHtml(optionalMissing.join(', '))})
+                            ✅ Dependencies ready${optionalMissing.length ? `
+                            <span style="display: block; margin-top: 3px; color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.4;" title="None of these is needed to scan. BFG is an alternative to the git history rewrite, which needs no Java; Docker is needed only by Nosey Parker.">
+                                Optional dependencies missing: ${escapeHtml(optionalMissing.join(', '))}
                             </span>` : ''}
                         </span>
                         <button class="install-button" onclick="showDependencyDetails()" 
@@ -1380,9 +1381,27 @@ class LeakLockSidebarProvider {
         return missing;
     }
 
+    /**
+     * Nosey Parker is not in scanEngines.ENGINES — it has no binary and runs
+     * only as a container image, so it never appears in `_engineStatus` and its
+     * availability is Docker plus the pulled image.
+     */
+    _noseyParkerAvailable() {
+        return Boolean(
+            this._dependencyStatus?.docker?.installed
+            && this._dependencyStatus?.noseyparker?.installed
+        );
+    }
+
     /** Every scan engine that would actually run right now, whatever is enabled. */
     _installedScanners() {
-        return (this._engineStatus || []).filter(engine => engine.installed);
+        const installed = (this._engineStatus || [])
+            .filter(engine => engine.installed)
+            .map(engine => engine.displayName);
+        if (this._noseyParkerAvailable()) {
+            installed.push('Nosey Parker');
+        }
+        return installed;
     }
 
     /**
@@ -1409,6 +1428,11 @@ class LeakLockSidebarProvider {
                 if (!engine.installed) {
                     optional.push(engine.displayName);
                 }
+            }
+            // Reported from its own status, not from `_engineStatus`, which
+            // never contains it: it has no binary to probe for.
+            if (!this._noseyParkerAvailable()) {
+                optional.push('Nosey Parker');
             }
         }
 

@@ -7,10 +7,15 @@ const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
 // enabled while the panel did not, so Docker and the Nosey Parker image were
 // demanded as REQUIRED for a scan that would never run Nosey Parker.
 
+// Only Gitleaks and TruffleHog exist in scanEngines.ENGINES. Nosey Parker has no
+// binary — it runs solely as a container image — so it never appears in
+// _engineStatus, and its availability is Docker plus the pulled image. An
+// earlier version of this helper invented a noseyparker entry, which made the
+// tests agree with each other while disagreeing with the product: the sidebar
+// could not report Nosey Parker at all, and nothing here noticed.
 const ENGINES = (installed) => [
     { id: 'gitleaks', displayName: 'Gitleaks', enabled: true, installed: installed.includes('gitleaks') },
-    { id: 'trufflehog', displayName: 'TruffleHog', enabled: true, installed: installed.includes('trufflehog') },
-    { id: 'noseyparker', displayName: 'Nosey Parker', enabled: false, installed: installed.includes('noseyparker') }
+    { id: 'trufflehog', displayName: 'TruffleHog', enabled: true, installed: installed.includes('trufflehog') }
 ];
 
 function provider(dependencyStatus, engines, installedEngines = ['gitleaks', 'trufflehog']) {
@@ -61,22 +66,50 @@ suite('optional dependencies', () => {
     test('one installed engine is enough to scan; the others are optional', () => {
         // The reported bug: "Not ready to scan — missing: Nosey Parker image"
         // while Gitleaks was installed and perfectly able to run.
+        // ALL_PRESENT has Docker and the image, so Nosey Parker IS available
+        // here and is not reported missing — only TruffleHog is absent.
         const p = provider(ALL_PRESENT, undefined, ['gitleaks']);
         try {
             assert.deepStrictEqual(p._missingRequiredDependencies(), []);
-            assert.deepStrictEqual(p._missingOptionalDependencies(), ['TruffleHog', 'Nosey Parker']);
+            assert.deepStrictEqual(p._missingOptionalDependencies(), ['TruffleHog']);
         } finally { p._restore(); }
     });
 
     test('Nosey Parker alone also satisfies the requirement', () => {
-        const p = provider(ALL_PRESENT, ['noseyparker'], ['noseyparker']);
+        // It has no entry in _engineStatus, so this only holds because
+        // _installedScanners consults Docker plus the image directly.
+        const p = provider(
+            { ...ALL_PRESENT, docker: { installed: true }, noseyparker: { installed: true } },
+            ['noseyparker'], []
+        );
         try {
             assert.deepStrictEqual(p._missingRequiredDependencies(), []);
+            assert.deepStrictEqual(p._installedScanners(), ['Nosey Parker']);
+        } finally { p._restore(); }
+    });
+
+    test('Nosey Parker is reported missing even though it is not an engine entry', () => {
+        // The reported bug: the note said "(BFG)" while Nosey Parker was also
+        // absent. It never appeared because the loop only walked _engineStatus.
+        const p = provider({
+            docker: { installed: true },
+            noseyparker: { installed: false },
+            java: { installed: false },
+            bfg: { installed: false }
+        }, undefined, ['gitleaks', 'trufflehog']);
+        try {
+            assert.deepStrictEqual(
+                p._missingOptionalDependencies(),
+                ['Nosey Parker', 'BFG']
+            );
         } finally { p._restore(); }
     });
 
     test('no engine at all is the only blocking state', () => {
-        const p = provider(ALL_PRESENT, undefined, []);
+        const p = provider(
+            { ...ALL_PRESENT, docker: { installed: false }, noseyparker: { installed: false } },
+            undefined, []
+        );
         try {
             const required = p._missingRequiredDependencies();
             assert.strictEqual(required.length, 1);
@@ -86,7 +119,12 @@ suite('optional dependencies', () => {
 
     test('with no engine, credential-lens is named in the same prompt', () => {
         const p = provider(
-            { ...ALL_PRESENT, credentialLens: { installed: false, error: 'ERR_MODULE_NOT_FOUND' } },
+            {
+                ...ALL_PRESENT,
+                docker: { installed: false },
+                noseyparker: { installed: false },
+                credentialLens: { installed: false, error: 'ERR_MODULE_NOT_FOUND' }
+            },
             undefined, []
         );
         try {
@@ -185,16 +223,21 @@ suite('optional dependencies', () => {
 
         const clean = render([]);
         assert.match(clean, /✅ Dependencies ready/);
-        assert.ok(!clean.includes('optional dependencies missing'),
+        assert.ok(!clean.includes('Optional dependencies missing'),
             'nothing missing should read as a plain ready state');
 
         const partial = render(['BFG']);
-        assert.match(partial, /optional dependencies missing \(BFG\)/);
+        assert.match(partial, /Optional dependencies missing: BFG/);
 
-        const all = render(['BFG', 'Docker', 'Nosey Parker']);
-        assert.match(all, /optional dependencies missing \(BFG, Docker, Nosey Parker\)/);
+        // Every absent optional is listed, not just the first. The reported bug
+        // showed "(BFG)" while Nosey Parker was missing too.
+        const all = render(['Nosey Parker', 'BFG', 'Docker']);
+        assert.match(all, /Optional dependencies missing: Nosey Parker, BFG, Docker/);
         assert.match(all, /✅ Dependencies ready/,
             'the ready state must survive: these do not block a scan');
+        // On its own line, not trailing the ready text.
+        assert.match(all, /display: block/,
+            'the list must sit under "Dependencies ready", not run on from it');
     });
 
     test('optional absences never gate scanning', () => {
@@ -203,7 +246,7 @@ suite('optional dependencies', () => {
             noseyparker: { installed: false },
             java: { installed: false },
             bfg: { installed: false }
-        }, undefined);
+        }, undefined, ['gitleaks']);
         try {
             // No enabled engine is missing, so nothing blocks.
             assert.deepStrictEqual(p._missingRequiredDependencies(), []);

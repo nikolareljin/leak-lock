@@ -4077,10 +4077,27 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			}
 		}
 
-		test('no runnable engine is named, even with the Docker parts present', () => {
+		test('Docker without the image is not a scanner', () => {
 			// The original verdict was `docker && noseyparker`, which said
 			// "Dependencies ready" on a machine that could not run a single
-			// engine. Docker and an image are still not a scanner.
+			// engine. A container runtime on its own still runs nothing.
+			const p = provider([
+				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null },
+				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true, installed: false, version: null }
+			]);
+			p._dependencyStatus.docker.installed = true;
+			p._dependencyStatus.noseyparker.installed = false;
+
+			const missing = withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies());
+			assert.strictEqual(missing.length, 1);
+			assert.match(missing[0], /at least one scan engine/);
+		});
+
+		test('Docker plus the pulled image IS a scanner, with no binary engine present', () => {
+			// Nosey Parker has no binary and never appears in _engineStatus, so
+			// this only holds because availability is read from Docker and the
+			// image directly. Without that, a machine able to scan would be told
+			// it could not.
 			const p = provider([
 				{ id: 'gitleaks', displayName: 'Gitleaks', installHint: '', enabled: true, installed: false, version: null },
 				{ id: 'trufflehog', displayName: 'TruffleHog', installHint: '', enabled: true, installed: false, version: null }
@@ -4088,9 +4105,10 @@ suite('Dependencies Setup installs the engines that actually scan', () => {
 			p._dependencyStatus.docker.installed = true;
 			p._dependencyStatus.noseyparker.installed = true;
 
-			const missing = withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies());
-			assert.strictEqual(missing.length, 1);
-			assert.match(missing[0], /at least one scan engine/);
+			assert.deepStrictEqual(
+				withEngines(['gitleaks', 'trufflehog', 'noseyparker'], () => p._missingRequiredDependencies()),
+				[]
+			);
 		});
 
 		test('one installed engine is enough; the rest are optional', () => {
