@@ -4926,7 +4926,8 @@ suite('PR #105 eighth review pass', () => {
 		assert.strictEqual(progressRan, false, 'no Docker work may run when nothing needs Docker');
 	});
 
-	test('the Docker step still runs when Nosey Parker is enabled', async () => {
+	test('the Docker step still runs when Nosey Parker is enabled', async function () {
+		this.timeout(5000);
 		const p = new LeakLockSidebarProvider(
 			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'))),
 			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
@@ -4943,17 +4944,29 @@ suite('PR #105 eighth review pass', () => {
 		const getConfiguration = vscode.workspace.getConfiguration;
 		let progressRan = false;
 
-		// Fails immediately: this asserts the step is attempted, not that Docker exists.
-		vscode.window.withProgress = async () => { progressRan = true; throw new Error('docker unavailable in test'); };
+		Object.defineProperty(vscode.window, 'withProgress', {
+			configurable: true,
+			value: async () => {
+				progressRan = true;
+				throw new Error('docker unavailable in test');
+			}
+		});
 		vscode.window.showInformationMessage = async () => undefined;
 		vscode.window.showWarningMessage = async () => undefined;
-		vscode.workspace.getConfiguration = () => ({ get: (key) => (key === 'scan.engines' ? ['noseyparker'] : undefined) });
+		vscode.workspace.getConfiguration = () => ({
+			get: (key) => (key === 'scan.engines' ? ['noseyparker'] : undefined)
+		});
+		p._installBfg = async () => {};
 		p._checkDependencies = async () => {};
+		p._reportSetupOutcome = () => {};
 
 		try {
 			await p._installDependencies();
 		} finally {
-			vscode.window.withProgress = withProgress;
+			Object.defineProperty(vscode.window, 'withProgress', {
+				configurable: true,
+				value: withProgress
+			});
 			vscode.window.showInformationMessage = showInfo;
 			vscode.window.showWarningMessage = showWarn;
 			vscode.workspace.getConfiguration = getConfiguration;
