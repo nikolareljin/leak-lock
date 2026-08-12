@@ -37,13 +37,32 @@ On first launch, you'll see the welcome view:
 2. The main panel opens in the editor area
 3. You'll see a "🔧 Install Dependencies" section
 
-**Install Required Tools**
-1. Click "🔧 Install Dependencies"
-2. Wait for the installation process to complete
-3. Dependencies include:
-   - Docker (must be pre-installed)
-   - Detection engines (Gitleaks binary; optionally TruffleHog, or the Nosey Parker Docker image)
-   - BFG Repo Cleaner tool
+**What you actually need**
+
+One scan engine. That is the whole requirement — any single one of Gitleaks, TruffleHog or
+Nosey Parker, and Leak Lock can scan. Click "🔧 Install Dependencies" and it fetches the
+native binaries for Gitleaks and TruffleHog; neither needs Docker or Java.
+
+Everything else is optional and never blocks a scan:
+
+| | What it adds | If it is missing |
+|---|---|---|
+| A second or third engine | Rules the others miss | Fewer findings; the coverage panel names which engines ran |
+| Docker | Needed only by Nosey Parker | Gitleaks and TruffleHog are native binaries |
+| Nosey Parker image | An extra engine, upstream archived | Off by default |
+| Java + BFG | An alternative history-rewrite engine | The git route is the default and needs no Java |
+
+When at least one engine is installed the sidebar reads **✅ Dependencies ready**, with any
+optional absences listed underneath — they are worth knowing about, not worth stopping for.
+The panel collapses on its own once something can scan; click **Details** any time to
+reopen it.
+
+If no engine is installed at all, Dependencies Setup opens by itself and says which ones
+would fix it.
+
+**credential-lens** ships inside the extension. There is nothing to install, it needs no
+network, and if it ever fails to load the sidebar says so — scanning is unaffected, only
+the credential details are lost.
 
 ---
 

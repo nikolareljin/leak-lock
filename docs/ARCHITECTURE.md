@@ -128,6 +128,47 @@ Activity Bar    Sidebar View
                └──────────────────┘
 ```
 
+### Credential identification
+
+`credential-inspect.js` is the only module that touches
+[`@nikolareljin/credential-lens`](https://github.com/nikolareljin/credential-lens). Leak
+Lock is CommonJS and the library is ESM, so the boundary is crossed exactly once, through
+`await import()`, and nothing else in the codebase has to become async to accommodate it.
+The library is bundled into the `.vsix`: it is 41 KB with zero dependencies and runs
+in-process, so runtime installation would trade one packaging test for a network
+requirement and version drift.
+
+Around it:
+
+| Module | Responsibility |
+|---|---|
+| `credential-sniff.js` | Pure, synchronous shape check — is this snippet worth reading the whole file for? |
+| `credential-prepass.js` | Post-scan classification over snippet bytes only, bounded and concurrency-limited, so it never scales with repository size |
+| `credential-report-html.js` | Renders the report; kept separate so the escaping is directly testable |
+
+Nothing here may throw into a scan. Credential inspection enriches findings that already
+exist, so every failure degrades to a declined report rather than a failed scan — and the
+Dependencies panel reports the library as ready only after the import has actually
+succeeded, never from the mere presence of a dependency entry.
+
+### Linking findings to their commit
+
+`git-permalink.js` parses `git remote get-url` into `{host, owner, repo}` and builds
+provider URLs. It is deliberately distinct from `detectRemoteProvider` in `git-rewrite.js`,
+which matches provider names out of git *error text* and cannot yield an owner or repo.
+
+The path needs care: a finding's `file` is relative to the **scanned directory**, while a
+permalink needs it relative to the **git root**, and some engines report a path already
+prefixed with the repository's own directory name. Both readings can be legitimate — a repo
+may genuinely contain a top-level directory sharing its name — so `finding-paths.js`
+returns ordered candidates and `findPathInCommit` asks git (`cat-file -e`) which one exists
+at that commit. The repository is the authority; a guess produces a 404 that reads as Leak
+Lock pointing at the wrong commit.
+
+The webview sends **indices, never URLs**. The host rebuilds the address from its own state
+and revalidates scheme and host before `openExternal`, so a crafted message cannot turn it
+into a launcher for an arbitrary address.
+
 ## 🔧 External Tool Integration
 
 ### Detection Engines
