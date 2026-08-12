@@ -2809,7 +2809,7 @@ class LeakLockPanel {
                 if (shortHash) {
                     const commitUrl = this._resolveCommitUrl(index);
                     if (commitUrl) {
-                        parts.push(`<a class="commit-link" href="${escapeHtml(commitUrl)}" target="_blank" rel="noopener noreferrer" data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</a>`);
+                        parts.push(`<button type="button" class="commit-link" data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</button>`);
                     } else {
                         parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
                     }
@@ -3654,7 +3654,7 @@ class LeakLockPanel {
     }
 
     async _openCommitUrl(findingIndex) {
-        const url = await this._resolveCommitUrlVerified(findingIndex);
+        const url = await this._resolveCommitUrl(findingIndex);
         if (!url) {
             vscode.window.showWarningMessage(
                 'Leak Lock could not build a link for that commit. The repository has no recognised remote, or the finding has no commit.'

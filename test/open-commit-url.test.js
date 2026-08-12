@@ -54,12 +54,12 @@ suite('openCommitUrl resolution', () => {
         );
     });
 
-    test('opens the verified permalink in the default browser', async () => {
+    test('opens the rendered permalink in the default browser', async () => {
         const vscode = require('vscode');
         const LeakLockPanel = require('../leakLockPanel');
         const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
         const expected = `https://github.com/o/r/blob/${SHA}/src/a.js#L5`;
-        panel._resolveCommitUrlVerified = async () => expected;
+        panel._resolveCommitUrl = async () => expected;
         const original = vscode.env.openExternal;
         let opened = null;
         try {
@@ -78,7 +78,7 @@ suite('openCommitUrl resolution', () => {
         const vscode = require('vscode');
         const LeakLockPanel = require('../leakLockPanel');
         const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
-        panel._resolveCommitUrlVerified = async () => `https://github.com/o/r/blob/${SHA}/src/a.js#L5`;
+        panel._resolveCommitUrl = async () => `https://github.com/o/r/blob/${SHA}/src/a.js#L5`;
         const originalOpen = vscode.env.openExternal;
         const originalPrompt = vscode.window.showWarningMessage;
         let prompt = null;
