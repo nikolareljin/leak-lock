@@ -1340,13 +1340,17 @@ class LeakLockPanel {
                 <script>
                     const vscode = acquireVsCodeApi();
                     
+                    function openCommitUrl(findingIndex) {
+                        vscode.postMessage({ command: "openCommitUrl", findingIndex: findingIndex });
+                    }
+
                     // Dependency installation and directory selection 
                     // is now handled by the sidebar panel
                     
                     function collectReplacements() {
                         const replacements = {};
                         const checkboxes = document.querySelectorAll('.secret-checkbox:checked');
-                        
+
                         checkboxes.forEach(checkbox => {
                             const row = checkbox.closest('tr');
                             const findingIndex = row.dataset.findingIndex;
@@ -1737,19 +1741,6 @@ class LeakLockPanel {
                                 showReportDialog('Credential details', '<div class="cred-loading">Inspecting…</div>');
                                 vscode.postMessage({ command: 'inspectCredential', findingIndex: idx });
                             }
-                        }
-
-                        // Commit permalinks must go through the extension host: VS Code
-                        // webviews intentionally do not treat ordinary external anchors as
-                        // browser-navigation permissions.
-                        if (event.target.closest(".commit-link")) {
-                            event.preventDefault();
-                            const el = event.target.closest(".commit-link");
-                            const idx = parseInt(el.getAttribute("data-finding-index"), 10);
-                            if (!isNaN(idx)) {
-                                vscode.postMessage({ command: "openCommitUrl", findingIndex: idx });
-                            }
-                        }
 
 
                         // Close dialog on overlay click (outside dialog box)
@@ -2809,7 +2800,7 @@ class LeakLockPanel {
                 if (shortHash) {
                     const commitUrl = this._resolveCommitUrl(index);
                     if (commitUrl) {
-                        parts.push(`<button type="button" class="commit-link" data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</button>`);
+                        parts.push(`<button type="button" class="commit-link" onclick="openCommitUrl(${index})" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="appearance: none; border: 0; background: transparent; padding: 0; font: inherit; font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</button>`);
                     } else {
                         parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
                     }
@@ -4716,8 +4707,8 @@ class LeakLockPanel {
      * git commands are used for branch resolution and as a date fallback.
      * Batch-processes unique commit hashes to avoid redundant git calls.
      */
-    async _enrichResultsWithGitInfo(results, scanPath) {
-        if (!scanPath || !results || results.length === 0) {
+    async _enrichResultsWithGitInfo(results, _scanPath) {
+        if (!this._scanRepoRoot || !results || results.length === 0) {
             return;
         }
 
@@ -4741,7 +4732,7 @@ class LeakLockPanel {
         }
 
         // Limit enrichment work to keep git calls bounded on large result sets.
-        const MAX_HASHES_TO_ENRICH = 200;
+        const MAX_HASHES_TO_ENRICH = 50;
         const hashArray = [...uniqueHashes].slice(0, MAX_HASHES_TO_ENRICH);
         if (uniqueHashes.size > MAX_HASHES_TO_ENRICH) {
             console.warn(
@@ -4749,7 +4740,7 @@ class LeakLockPanel {
                 `${uniqueHashes.size} unique commit hashes. Some findings may not include branch/date metadata.`
             );
         }
-        const repoDir = this._scanRepoRoot || scanPath;
+        const repoDir = this._scanRepoRoot;
         const commitInfo = new Map(); // hash -> { branches, fallbackDate }
 
         // Resolve commit metadata in parallel with limited concurrency
