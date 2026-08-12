@@ -116,15 +116,11 @@ suite('buildRewriteScriptPs1', () => {
         assert.ok(checkAt < rewriteAt, 'the check must precede the rewrite, not follow it');
     });
 
-    test('detects git-filter-repo through git, not Get-Command', () => {
-        // It is a git subcommand living in git's exec-path, not on PATH, so
-        // Get-Command cannot see it even when `git filter-repo` works.
+    test('uses the standalone pip launcher when Git cannot discover filter-repo', () => {
         const out = ps({ requiredCommands: ['git-filter-repo'] });
-        assert.match(out, /& git filter-repo --version/);
-        assert.ok(
-            !/Get-Command\s+.*filter-repo/.test(out),
-            'Get-Command would report it missing on a machine where it works'
-        );
+        assert.match(out, /& git filter-repo --version/, 'tries Git\'s subcommand first');
+        assert.match(out, /Get-Command git-filter-repo/, 'then looks for pip\'s PATH launcher');
+        assert.match(out, /function Invoke-GitFilterRepo \{ & git-filter-repo @args \}/);
         assert.match(out, /pip install git-filter-repo/, 'and should say how to install it');
     });
 

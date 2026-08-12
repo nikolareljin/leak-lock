@@ -13,7 +13,7 @@ const redactionRules = require('./redaction-rules');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
-const { describeFindingPath, repoRelativePath, repoRelativeCandidates } = require('./finding-paths');
+const { findGitRoot, describeFindingPath, repoRelativePath, repoRelativeCandidates } = require('./finding-paths');
 const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
 const credentialInspect = require('./credential-inspect');
 const { classifyFindings } = require('./credential-prepass');
@@ -723,6 +723,7 @@ class LeakLockPanel {
                     }
                     .results-table {
                         width: 100%;
+                        height: 100%;
                         border-collapse: collapse;
                         margin-top: 10px;
                         table-layout: fixed;
@@ -739,6 +740,7 @@ class LeakLockPanel {
                     }
                     .replacement-input {
                         width: 100%;
+                        height: 100%;
                         box-sizing: border-box;
                         background-color: var(--vscode-input-background);
                         color: var(--vscode-input-foreground);
@@ -749,6 +751,25 @@ class LeakLockPanel {
                     }
                     .checkbox {
                         margin-right: 5px;
+                    }
+                    .scan-selection-cell {
+                        padding: 0 !important;
+                        text-align: center !important;
+                        vertical-align: middle;
+                    }
+                    .scan-selection-label {
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        width: 100%;
+                        height: 100%;
+                        min-height: 100%;
+                        box-sizing: border-box;
+                        padding: 8px 12px;
+                        cursor: pointer;
+                    }
+                    .scan-selection-label.disabled {
+                        cursor: not-allowed;
                     }
                     .selection-counter {
                         margin-top: 6px;
@@ -1277,6 +1298,7 @@ class LeakLockPanel {
                         }
                         .results-table {
                             width: 100%;
+                        height: 100%;
                             border-collapse: collapse;
                             table-layout: fixed;
                         }
@@ -1717,14 +1739,18 @@ class LeakLockPanel {
                             }
                         }
 
-                        // Commit permalink click
-                        if (event.target.closest('.commit-link')) {
-                            const el = event.target.closest('.commit-link');
-                            const idx = parseInt(el.getAttribute('data-finding-index'), 10);
+                        // Commit permalinks must go through the extension host: VS Code
+                        // webviews intentionally do not treat ordinary external anchors as
+                        // browser-navigation permissions.
+                        if (event.target.closest(".commit-link")) {
+                            event.preventDefault();
+                            const el = event.target.closest(".commit-link");
+                            const idx = parseInt(el.getAttribute("data-finding-index"), 10);
                             if (!isNaN(idx)) {
-                                vscode.postMessage({ command: 'openCommitUrl', findingIndex: idx });
+                                vscode.postMessage({ command: "openCommitUrl", findingIndex: idx });
                             }
                         }
+
 
                         // Close dialog on overlay click (outside dialog box)
                         if (event.target.id === 'detail-dialog-overlay') {
@@ -2783,7 +2809,7 @@ class LeakLockPanel {
                 if (shortHash) {
                     const commitUrl = this._resolveCommitUrl(index);
                     if (commitUrl) {
-                        parts.push(`<span class="commit-link" data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</span>`);
+                        parts.push(`<a class="commit-link" href="${escapeHtml(commitUrl)}" target="_blank" rel="noopener noreferrer" data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</a>`);
                     } else {
                         parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
                     }
@@ -2816,7 +2842,7 @@ class LeakLockPanel {
 
             return `
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
-                    <td><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" ${cleanupDisabled ? `disabled title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></td>
+                    <td class="scan-selection-cell"><label class="scan-selection-label${cleanupDisabled ? ' disabled' : ''}"${cleanupDisabled ? ` title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''}><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" aria-label="Select finding ${index + 1}" ${cleanupDisabled ? `disabled title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></label></td>
                     <td title="${escapeHtml(pathInfo.tooltip)}${contextNote}${cleanupNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${escapeHtml(pathInfo.tooltip)}&#10;${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
@@ -3409,6 +3435,10 @@ class LeakLockPanel {
             let allResults = this._deduplicateScanResults(
                 engineResults.concat(keywordHistoryResults)
             );
+            // A scan can start above several repositories (for example a workspace of
+            // projects). Discover the Git root and remote for every finding rather than
+            // treating the scan directory as one repository and producing 404 links.
+            await this._primeFindingRepoInfo(allResults, scanPath);
 
             // Only Nosey Parker accepts an ignore file, so without this the setting
             // meant different things depending on which engines were enabled.
@@ -3505,6 +3535,56 @@ class LeakLockPanel {
     }
 
     /**
+     * Attach the owning repository context to each finding. The scan root is enough
+     * when it is one repository, but a workspace parent has no .git of its own while
+     * its child projects do.
+     */
+    async _primeFindingRepoInfo(results, scanPath) {
+        if (!Array.isArray(results) || !scanPath) {
+            return;
+        }
+
+        const roots = new Map();
+        const rootByDirectory = new Map();
+        for (const finding of results) {
+            if (!finding || typeof finding.file !== 'string' || !finding.file) {
+                continue;
+            }
+            const absoluteFile = path.isAbsolute(finding.file)
+                ? finding.file
+                : path.resolve(scanPath, finding.file);
+            const directory = path.dirname(absoluteFile);
+            let repoRoot = rootByDirectory.get(directory);
+            if (repoRoot === undefined) {
+                repoRoot = findGitRoot(directory);
+                rootByDirectory.set(directory, repoRoot);
+            }
+            if (!repoRoot) {
+                continue;
+            }
+            finding.repoRoot = repoRoot;
+            if (!roots.has(repoRoot)) {
+                roots.set(repoRoot, null);
+            }
+        }
+
+        await Promise.all([...roots.keys()].map(async (repoRoot) => {
+            try {
+                roots.set(repoRoot, parseRemote(await gitRewrite.getRemoteUrl(repoRoot)));
+            } catch {
+                // An unrecognised or local remote simply keeps its commit hash as text.
+                roots.set(repoRoot, null);
+            }
+        }));
+
+        for (const finding of results) {
+            if (finding && finding.repoRoot) {
+                finding.remoteInfo = roots.get(finding.repoRoot) || null;
+            }
+        }
+    }
+
+    /**
      * The webview sends an index, never a URL. The host rebuilds the address
      * from its own state and re-validates it, so a crafted message cannot turn
      * `openExternal` into a launcher for an arbitrary address.
@@ -3515,14 +3595,16 @@ class LeakLockPanel {
             return null;
         }
         const finding = results[findingIndex];
+        const repoRoot = finding.repoRoot || this._scanRepoRoot;
+        const remoteInfo = finding.remoteInfo || this._remoteInfo;
         // Repo-relative, not scan-relative: see repoRelativePath. Scanning a
         // folder above the repository otherwise puts the repository's own
         // directory name into the URL and every link 404s.
-        const file = repoRelativePath(finding.file, this._scanPath, this._scanRepoRoot);
+        const file = repoRelativePath(finding.file, this._scanPath, repoRoot);
         if (!file) {
             return null;
         }
-        const url = buildCommitUrl(this._remoteInfo, {
+        const url = buildCommitUrl(remoteInfo, {
             commitHash: finding.commitHash,
             file,
             line: finding.line
@@ -3542,13 +3624,15 @@ class LeakLockPanel {
             return null;
         }
         const finding = results[findingIndex];
-        const candidates = repoRelativeCandidates(finding.file, this._scanPath, this._scanRepoRoot);
+        const repoRoot = finding.repoRoot || this._scanRepoRoot;
+        const remoteInfo = finding.remoteInfo || this._remoteInfo;
+        const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoRoot);
         if (candidates.length === 0) {
             return null;
         }
 
         let file = candidates[0];
-        const repoDir = this._scanRepoRoot || this._scanPath;
+        const repoDir = repoRoot || this._scanPath;
         if (candidates.length > 1 && repoDir && finding.commitHash) {
             try {
                 const found = await gitRewrite.findPathInCommit(repoDir, finding.commitHash, candidates);
@@ -3561,7 +3645,7 @@ class LeakLockPanel {
             }
         }
 
-        const url = buildCommitUrl(this._remoteInfo, {
+        const url = buildCommitUrl(remoteInfo, {
             commitHash: finding.commitHash,
             file,
             line: finding.line
@@ -3577,7 +3661,24 @@ class LeakLockPanel {
             );
             return;
         }
-        await vscode.env.openExternal(vscode.Uri.parse(url));
+
+        try {
+            const opened = await vscode.env.openExternal(vscode.Uri.parse(url));
+            if (opened) {
+                return;
+            }
+        } catch (error) {
+            console.warn('Could not open commit permalink:', error);
+        }
+
+        const action = await vscode.window.showWarningMessage(
+            'VS Code could not open the commit permalink in your browser.',
+            'Copy permalink'
+        );
+        if (action === 'Copy permalink') {
+            await vscode.env.clipboard.writeText(url);
+            vscode.window.showInformationMessage('Commit permalink copied to the clipboard.');
+        }
     }
 
     /**
@@ -6489,7 +6590,7 @@ class LeakLockPanel {
                 remote: gitRewrite.DEFAULT_REMOTE,
                 requiredCommands: ['git', 'git-filter-repo'],
                 rewriteLines: [
-                    '& git filter-repo --replace-text $replacement_file --force'
+                    '& Invoke-GitFilterRepo --replace-text $replacement_file --force'
                 ],
                 verifyRulesFile: '$replacement_file',
                 restoreRemote: true,
@@ -6503,7 +6604,7 @@ class LeakLockPanel {
             remote: gitRewrite.DEFAULT_REMOTE,
             requiredCommands: ['git', 'git-filter-repo'],
             rewriteLines: [
-                'git filter-repo --replace-text "$replacement_file" --force'
+                'git_filter_repo --replace-text "$replacement_file" --force'
             ],
             verifyRulesFile: '"$replacement_file"',
             restoreRemote: true,
@@ -7013,19 +7114,16 @@ class LeakLockPanel {
                 cancellable: false
             }, async (progress) => {
                 progress.report({ increment: 10, message: "Preparing secure temporary replacement file..." });
-                const util = require("util");
-                const execFileAsync = util.promisify(execFile);
-
                 report = await this._withSecureReplacementsFile(replacements, async (replacementsFile) =>
                     gitRewrite.runRewrite({
                         repoDir: scanPath,
                         push: false,
                         progress: (message) => progress.report({ increment: 10, message }),
                         rewrite: async () => {
-                            await execFileAsync(
-                                "git",
-                                ["filter-repo", "--replace-text", replacementsFile, "--force"],
-                                { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
+                            await gitRewrite.runGitFilterRepo(
+                                scanPath,
+                                ["--replace-text", replacementsFile, "--force"],
+                                { maxBuffer: GIT_MAX_BUFFER }
                             );
                         }
                     })
