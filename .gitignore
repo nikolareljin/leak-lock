@@ -117,3 +117,13 @@ private/
 
 # JAR files
 bfg.jar
+
+# Planning artifacts are a working method, not project documentation. They go
+# stale the moment implementation diverges from them, and a stale plan in-repo
+# reads as authoritative. The decisions worth keeping belong in ARCHITECTURE.md
+# and the CHANGELOG, where they are maintained. Renaming the directory does not
+# make them belong here — these were once committed as docs/specs and
+# docs/plans, and had to be rewritten out of history.
+docs/superpowers/
+docs/specs/
+docs/plans/
