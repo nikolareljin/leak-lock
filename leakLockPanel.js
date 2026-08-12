@@ -1610,6 +1610,11 @@ class LeakLockPanel {
                         const bodyEl = document.getElementById('detail-dialog-body');
                         titleEl.textContent = title;
                         bodyEl.textContent = content;
+                        // Both dialogs share one overlay. Without this, a text
+                        // detail opened straight after a report inherits the
+                        // report's styling — no preformatting, no padding — and
+                        // a branch list renders as one run-on line.
+                        bodyEl.classList.remove('report-mode');
                         overlay.classList.add('visible');
                     }
 
@@ -3631,7 +3636,10 @@ class LeakLockPanel {
         try {
             outcome = await credentialInspect.inspectFinding(results[findingIndex], {
                 session: this._credentialSession,
-                scanPath: this._scanPath
+                scanPath: this._scanPath,
+                // `git show` must run inside the repository. The scan root can
+                // sit above it, in which case it is not a git repo at all.
+                repoRoot: this._scanRepoRoot
             });
         } catch {
             outcome = null;

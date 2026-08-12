@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { sniffCandidate } = require('./credential-sniff');
+const { repoRelativeCandidates } = require('./finding-paths');
 
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const PACKAGE_ID = '@nikolareljin/credential-lens';
@@ -103,14 +104,49 @@ function defaultReadFile(absolutePath) {
     return fs.readFileSync(absolutePath);
 }
 
-function defaultReadBlob(scanPath) {
-    return (commitHash, file) => new Promise((resolve, reject) => {
+/**
+ * `cwd` must be inside the repository. Scanning a directory ABOVE it makes the
+ * scan root not a git repo at all, and `git show` then fails for every history
+ * finding — turning valid inspections into declined reports.
+ */
+function defaultReadBlob(commitHash, file, cwd) {
+    return new Promise((resolve, reject) => {
         execFile(
             'git', ['show', `${commitHash}:${file}`],
-            { cwd: scanPath, encoding: 'buffer', maxBuffer: MAX_ARTIFACT_BYTES + 1024 },
+            { cwd, encoding: 'buffer', maxBuffer: MAX_ARTIFACT_BYTES + 1024 },
             (error, stdout) => (error ? reject(error) : resolve(stdout))
         );
     });
+}
+
+/**
+ * Read the finding's file as it existed at its commit.
+ *
+ * Two things have to be right, and both were wrong: the command must run inside
+ * the repository (the scan root may sit above it), and the path must be
+ * repo-relative (a scan-relative path names nothing inside the repo). Where the
+ * path has more than one plausible reading, each is tried in turn — the same
+ * ambiguity the permalinks resolve, and git is again the one that settles it.
+ */
+async function readCommitBlob(finding, context) {
+    const { scanPath, repoRoot } = context;
+    const readBlob = context.readBlob || defaultReadBlob;
+    const cwd = repoRoot || scanPath;
+
+    const candidates = repoRelativeCandidates(finding.file, scanPath, repoRoot);
+    // With no repo context there is nothing to re-base against; ask for the path
+    // as reported rather than refusing outright.
+    const paths = candidates.length > 0 ? candidates : [finding.file];
+
+    let lastError = null;
+    for (const candidate of paths) {
+        try {
+            return await readBlob(finding.commitHash, candidate, cwd);
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw lastError || new Error('the file could not be read at that commit');
 }
 
 async function inspectFinding(finding, context) {
@@ -142,8 +178,7 @@ async function inspectFinding(finding, context) {
     let bytes;
     try {
         if (finding.commitHash) {
-            const readBlob = context.readBlob || defaultReadBlob(scanPath);
-            bytes = await readBlob(finding.commitHash, finding.file);
+            bytes = await readCommitBlob(finding, context);
         } else {
             const readFile = context.readFile || defaultReadFile;
             const absolutePath = path.isAbsolute(finding.file)

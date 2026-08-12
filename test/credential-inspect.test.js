@@ -125,6 +125,79 @@ suite('inspectFinding', () => {
         }
     });
 
+    test('a history finding reads the blob from the repo root, not the scan root', async () => {
+        // `git show` was run with cwd: scanPath. Scanning a directory ABOVE the
+        // repository makes that not a git repo at all, so every history
+        // inspection degraded to a declined report.
+        const session = await createSession();
+        const seen = [];
+        try {
+            await inspectFinding(
+                { fullSecret: TRUNCATED_PEM, file: 'old_key', line: 1, commitHash: 'abc1234567890abcdef1234567890abcdef12345' },
+                {
+                    session,
+                    scanPath: path.join(path.sep, 'scan-root'),
+                    repoRoot: path.join(path.sep, 'scan-root', 'a-repo'),
+                    readBlob: (sha, file, cwd) => { seen.push(cwd); return PEM_KEY_BYTES; }
+                }
+            );
+            assert.deepStrictEqual(seen, [path.join(path.sep, 'scan-root', 'a-repo')]);
+        } finally { session.dispose(); }
+    });
+
+    test('a history finding addresses the blob by its repo-relative path', async () => {
+        // The same prefix problem the permalinks had: a path relative to the
+        // scan root names nothing inside the repository, so `git show` misses.
+        const session = await createSession();
+        const paths = [];
+        try {
+            await inspectFinding(
+                {
+                    fullSecret: TRUNCATED_PEM,
+                    file: path.join('a-repo', 'keys', 'id_ed25519'),
+                    line: 1,
+                    commitHash: 'abc1234567890abcdef1234567890abcdef12345'
+                },
+                {
+                    session,
+                    scanPath: path.join(path.sep, 'scan-root'),
+                    repoRoot: path.join(path.sep, 'scan-root', 'a-repo'),
+                    readBlob: (sha, file) => { paths.push(file); return PEM_KEY_BYTES; }
+                }
+            );
+            assert.deepStrictEqual(paths, ['keys/id_ed25519']);
+        } finally { session.dispose(); }
+    });
+
+    test('a blob path that misses falls through to the next reading', async () => {
+        // Both readings are plausible when the path repeats the repo name, so a
+        // failure on the first must try the second rather than give up.
+        const session = await createSession();
+        const tried = [];
+        try {
+            const result = await inspectFinding(
+                {
+                    fullSecret: TRUNCATED_PEM,
+                    file: path.join('a-repo', 'keys', 'id_ed25519'),
+                    line: 1,
+                    commitHash: 'abc1234567890abcdef1234567890abcdef12345'
+                },
+                {
+                    session,
+                    scanPath: path.join(path.sep, 'scan-root', 'a-repo'),
+                    repoRoot: path.join(path.sep, 'scan-root', 'a-repo'),
+                    readBlob: (sha, file) => {
+                        tried.push(file);
+                        if (file.startsWith('a-repo/')) { throw new Error('does not exist in commit'); }
+                        return PEM_KEY_BYTES;
+                    }
+                }
+            );
+            assert.deepStrictEqual(tried, ['a-repo/keys/id_ed25519', 'keys/id_ed25519']);
+            assert.strictEqual(result.source, 'commit-blob');
+        } finally { session.dispose(); }
+    });
+
     test('an oversized artifact is declined with a stated reason, not silently skipped', async () => {
         const session = await createSession();
         try {
