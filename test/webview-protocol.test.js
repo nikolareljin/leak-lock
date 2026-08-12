@@ -60,6 +60,23 @@ suite('webview message protocol', () => {
         );
     });
 
+    test('both dialogs manage the shared report-mode class', () => {
+        // showDetailDialog and showReportDialog render into the SAME overlay.
+        // showReportDialog adds report-mode for HTML; if showDetailDialog does
+        // not remove it, a text detail shown straight after a report keeps the
+        // report styling and a branch list renders as one run-on line.
+        const detail = PANEL.slice(
+            PANEL.indexOf('function showDetailDialog'),
+            PANEL.indexOf('function showReportDialog')
+        );
+        assert.ok(detail.includes("classList.remove('report-mode')"),
+            'showDetailDialog must clear the class showReportDialog sets');
+
+        const report = PANEL.slice(PANEL.indexOf('function showReportDialog'));
+        assert.ok(report.slice(0, 800).includes("classList.add('report-mode')"),
+            'showReportDialog must set it');
+    });
+
     test('the commands this feature added are actually handled', () => {
         const handled = handledCommands(PANEL);
         assert.ok(handled, 'could not locate the message switch');
