@@ -1711,6 +1711,19 @@ class LeakLockPanel {
                             }
                         }
 
+                        // Commit permalink click: resolve the path in the commit before opening it.
+                        const commitLink = event.target instanceof Element
+                            ? event.target.closest('.commit-link[data-finding-index]')
+                            : null;
+                        if (commitLink) {
+                            const idx = parseInt(commitLink.getAttribute('data-finding-index'), 10);
+                            if (!isNaN(idx)) {
+                                event.preventDefault();
+                                vscode.postMessage({ command: 'openCommitUrl', findingIndex: idx });
+                            }
+                            return;
+                        }
+
                         // Credential report click
                         if (event.target.closest('.credential-link')) {
                             const el = event.target.closest('.credential-link');
@@ -2779,7 +2792,7 @@ class LeakLockPanel {
                 if (shortHash) {
                     const commitUrl = this._resolveCommitUrl(index);
                     if (commitUrl) {
-                        parts.push(`<a class="commit-link" href="${escapeHtml(commitUrl)}" target="_blank" rel="noreferrer" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</a>`);
+                        parts.push(`<span class="commit-link" data-finding-index="${index}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</span>`);
                     } else {
                         parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
                     }
