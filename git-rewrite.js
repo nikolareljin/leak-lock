@@ -40,6 +40,21 @@ async function git(repoDir, args, options = {}) {
 }
 
 /**
+ * git filter-repo leaves `refs/replace/<old> -> <new>` behind, and every git read
+ * honours those refs: `git show`, `git log`, `git grep` and anything built on them
+ * silently answer with the REWRITTEN commit when asked about the ORIGINAL one. A
+ * verification that trusts plain git therefore reports a still-leaking ref as
+ * clean - the exact false all-clear this product exists to prevent. Every read
+ * that decides whether a secret is gone runs with replacement disabled.
+ */
+const RAW_OBJECT_ENV = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' };
+
+/** git(), with object replacement disabled. Use for anything that verifies. */
+async function gitRaw(repoDir, args, options = {}) {
+    return git(repoDir, args, { env: RAW_OBJECT_ENV, ...options });
+}
+
+/**
  * Absolute path of a repository's git directory. Git itself answers first: the
  * scanned path may be a subdirectory rather than the repository root, and `.git`
  * is a file, not a directory, in linked worktrees and submodules - a blind
@@ -199,8 +214,8 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
     }
 }
 
-async function gitLines(repoDir, args) {
-    const { stdout } = await git(repoDir, args);
+async function gitLines(repoDir, args, options = {}) {
+    const { stdout } = await git(repoDir, args, options);
     // Strip only a trailing CR (Windows line endings), never trim: file paths
     // from `git ls-tree` can legitimately contain leading/trailing spaces, and
     // trimming them would corrupt the "verified clean" path check. Ref names
@@ -391,12 +406,26 @@ async function restoreBranch(repoDir, branch) {
     await git(repoDir, ['checkout', '--quiet', branch]);
 }
 
-/** Delete the refs/original/* backups that filter-branch leaves behind. */
+/**
+ * Delete the backup and alias refs a rewrite leaves behind.
+ *
+ * `refs/original/*` is filter-branch's backup: it keeps the pre-rewrite commits
+ * reachable, so the secret survives a rewrite that otherwise worked.
+ *
+ * `refs/replace/*` is worse, because it hides rather than keeps. git filter-repo
+ * writes one per rewritten commit, and every git read honours them: ask for the
+ * ORIGINAL commit and git hands back the REWRITTEN one. A repository whose remote
+ * still holds the leak then reads as clean locally - `git show`, `git log -S`,
+ * `git grep`, a re-scan, and the extension's own verification all agree that the
+ * secret is gone while it is still on the server. The rewrite is meant to remove
+ * the history, not to alias it, so both namespaces go.
+ */
 async function dropOriginalRefs(repoDir) {
     const { stdout } = await git(repoDir, [
         'for-each-ref',
         '--format=delete %(refname)',
-        'refs/original/'
+        'refs/original/',
+        'refs/replace/'
     ]);
     if (!stdout.trim()) {
         return 0;
@@ -560,12 +589,15 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
     }
 
     await fetchAllRefs(repoDir, remote);
+    // Every read below is a raw one: a leftover `refs/replace/*` from the rewrite
+    // makes plain git answer with the rewritten commit for a ref that still holds
+    // the original, and this loop would report the leak as cleaned.
     const refs = await gitLines(repoDir, [
         'for-each-ref',
         '--format=%(refname)',
         `refs/remotes/${remote}`,
         'refs/tags'
-    ]);
+    ], { env: RAW_OBJECT_ENV });
     const offenders = [];
     let examined = 0;
 
@@ -575,7 +607,7 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
         }
         examined++;
         if (pathRegex) {
-            const files = await gitLines(repoDir, ['ls-tree', '-r', '--name-only', ref]);
+            const files = await gitLines(repoDir, ['ls-tree', '-r', '--name-only', ref], { env: RAW_OBJECT_ENV });
             const hit = files.find(file => pathRegex.test(file));
             if (hit) {
                 offenders.push({ ref, reason: 'path still present', match: hit });
@@ -584,7 +616,7 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
         }
         for (const search of searches) {
             try {
-                await git(repoDir, ['grep', '--quiet', ...search.args, '-e', search.value, ref]);
+                await gitRaw(repoDir, ['grep', '--quiet', ...search.args, '-e', search.value, ref]);
                 offenders.push({ ref, reason: 'secret still present', match: search.value });
                 break;
             } catch (e) {
@@ -836,7 +868,11 @@ function buildRewriteScriptPs1(options) {
     lines.push(
         '',
         '    # 6. Drop the rewrite backup refs and repack.',
-        '    & git for-each-ref --format="delete %(refname)" refs/original/ | & git update-ref --stdin',
+        '    #    refs/original/* keeps the pre-rewrite commits reachable, and',
+        '    #    refs/replace/* (written by git filter-repo) makes git answer for the',
+        '    #    OLD commit with the REWRITTEN one - a ref that still carries the',
+        '    #    secret would then read as clean, here and in any later scan.',
+        '    & git for-each-ref --format="delete %(refname)" refs/original/ refs/replace/ | & git update-ref --stdin',
         '    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
         '    & git reflog expire --expire=now --all',
         '    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
@@ -907,7 +943,7 @@ function buildRewriteScriptPs1(options) {
 
         if (verifyRegex) {
             lines.push(
-                '        $files = & git ls-tree -r --name-only $ref 2>$null',
+                '        $files = & git --no-replace-objects ls-tree -r --name-only $ref 2>$null',
                 '        $ls_rc = $LASTEXITCODE',
                 '        if ($ls_rc -ne 0) {',
                 '            Write-Host "VERIFY FAILED (git ls-tree exit $ls_rc): $ref"',
@@ -930,7 +966,7 @@ function buildRewriteScriptPs1(options) {
                 '            }',
                 '            $needle = ($needle -split \'==>\')[0]',
                 '            if (-not $needle) { continue }',
-                '            & git grep --quiet $grep_flag -e $needle $ref 2>$null',
+                '            & git --no-replace-objects grep --quiet $grep_flag -e $needle $ref 2>$null',
                 '            $grep_rc = $LASTEXITCODE',
                 '            if ($grep_rc -eq 0) {',
                 '                Write-Host "STILL PRESENT (secret): $ref"',
@@ -951,7 +987,7 @@ function buildRewriteScriptPs1(options) {
         ];
         for (const search of verifySearches) {
             lines.push(
-                `        & git grep --quiet ${search.flag} -e ${psQuote(search.value)} $ref 2>$null`,
+                `        & git --no-replace-objects grep --quiet ${search.flag} -e ${psQuote(search.value)} $ref 2>$null`,
                 '        $grep_rc = $LASTEXITCODE',
                 '        if ($grep_rc -eq 0) {',
                 '            Write-Host "STILL PRESENT (secret): $ref"',
@@ -1185,7 +1221,12 @@ function buildRewriteScript(options) {
     lines.push(
         '',
         '# 6. Drop the rewrite backup refs and repack.',
-        'git for-each-ref --format="delete %(refname)" refs/original/ | git update-ref --stdin',
+        '#    refs/original/* keeps the pre-rewrite commits reachable. refs/replace/*',
+        '#    is what git filter-repo writes to alias each old commit to its rewritten',
+        '#    one: while those exist, git answers for the OLD commit with the NEW one,',
+        '#    so a ref that still carries the secret reads as clean - here and in any',
+        '#    later scan. A rewrite removes history; it must not alias it.',
+        'git for-each-ref --format="delete %(refname)" refs/original/ refs/replace/ | git update-ref --stdin',
         'git reflog expire --expire=now --all',
         'git gc --prune=now --aggressive'
     );
@@ -1261,7 +1302,7 @@ function buildRewriteScript(options) {
                 // must be reported, not mistaken for "clean" the way a bare
                 // `if git ls-tree | grep` under set -e would.
                 '\tls_rc=0',
-                '\tfiles="$(git ls-tree -r --name-only "$ref" 2>/dev/null)" || ls_rc=$?',
+                '\tfiles="$(git --no-replace-objects ls-tree -r --name-only "$ref" 2>/dev/null)" || ls_rc=$?',
                 '\tif [ "$ls_rc" -ne 0 ]; then',
                 '\t\techo "VERIFY FAILED (git ls-tree exit $ls_rc): $ref"',
                 '\t\tleftover=1',
@@ -1297,7 +1338,7 @@ function buildRewriteScript(options) {
                 // 128 for a bad ref) is a real failure and must be surfaced, not
                 // swallowed as clean.
                 '\t\tgrep_rc=0',
-                '\t\tgit grep --quiet "$grep_flag" -e "$needle" "$ref" 2>/dev/null || grep_rc=$?',
+                '\t\tgit --no-replace-objects grep --quiet "$grep_flag" -e "$needle" "$ref" 2>/dev/null || grep_rc=$?',
                 '\t\tif [ "$grep_rc" -eq 0 ]; then',
                 '\t\t\techo "STILL PRESENT (secret): $ref"',
                 '\t\t\tleftover=1',
@@ -1318,7 +1359,7 @@ function buildRewriteScript(options) {
         for (const search of verifySearches) {
             lines.push(
                 '\tgrep_rc=0',
-                `\tgit grep --quiet ${search.flag} -e ${shellQuote(search.value)} "$ref" 2>/dev/null || grep_rc=$?`,
+                `\tgit --no-replace-objects grep --quiet ${search.flag} -e ${shellQuote(search.value)} "$ref" 2>/dev/null || grep_rc=$?`,
                 '\tif [ "$grep_rc" -eq 0 ]; then',
                 '\t\techo "STILL PRESENT (secret): $ref"',
                 '\t\tleftover=1',

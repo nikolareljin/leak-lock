@@ -161,6 +161,13 @@ suite('buildRewriteScriptPs1', () => {
             'the retained path is reported from finally');
     });
 
+    test('drops the alias refs a rewrite leaves behind, and verifies past them', () => {
+        const out = ps({ replacementsContent: 'a==>b', verifyRulesFile: '$replacement_file' });
+        assert.match(out, /refs\/original\/ refs\/replace\//, 'both ref namespaces are deleted');
+        assert.match(out, /git --no-replace-objects grep --quiet/,
+            'verification must bypass refs/replace, or a still-leaking ref reads as clean');
+    });
+
     test('parses as valid PowerShell', function () {
         // The bash generator is checked with `bash -n`; this is the equivalent, and
         // the only way to catch a syntax error in the Windows script from a Linux

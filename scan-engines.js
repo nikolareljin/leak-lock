@@ -143,7 +143,13 @@ async function runTool(command, args, options = {}) {
     return execFileAsync(command, args, {
         timeout: options.timeoutMs || DEFAULT_TIMEOUT_MS,
         maxBuffer: MAX_BUFFER,
-        ...options
+        ...options,
+        // A history scan is `git log -p --all` underneath, whichever engine runs it,
+        // and git honours `refs/replace/*`: after a filter-repo rewrite those refs
+        // alias every original commit to its rewritten one, so a commit that still
+        // carries the secret is read as though it were already clean. The scan must
+        // see what is actually stored, not the rewrite's own view of it.
+        env: { ...process.env, ...(options.env || {}), GIT_NO_REPLACE_OBJECTS: '1' }
     });
 }
 

@@ -4219,7 +4219,15 @@ class LeakLockPanel {
         const repoDir = this._scanRepoRoot || scanPath;
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
-        const gitLogOptions = { timeout: 20000, maxBuffer: 50 * 1024 * 1024 };
+        // GIT_NO_REPLACE_OBJECTS: a previous filter-repo run leaves `refs/replace/*`
+        // aliasing every original commit to its rewritten one, and git honours them
+        // everywhere. Searching history through that alias reports a commit that
+        // still carries the secret as clean.
+        const gitLogOptions = {
+            timeout: 20000,
+            maxBuffer: 50 * 1024 * 1024,
+            env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+        };
         // The file-content pass runs `git log -G … -p` (pickaxe over full patches),
         // which is the heaviest search and the most likely to hit a limit on a
         // large repository. Give it a bigger buffer and a longer timeout so it
