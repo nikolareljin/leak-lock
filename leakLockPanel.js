@@ -7515,9 +7515,14 @@ class LeakLockPanel {
             const rulesHandle = gitRewrite.createRulesFile(workspaceFolder.uri.fsPath, replacementLines);
             const replacementsFile = rulesHandle.file;
 
-            // Generate BFG command
-            const bfgCommand = `java -jar bfg.jar --replace-text ${replacementsFile}`;
-            const manualCommand = `cd ${workspaceFolder.uri.fsPath} && ${bfgCommand} && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
+            // Every path is quoted: the rule file now lives under `.git/leak-lock/`,
+            // and a repository checked out to a path with a space (a Windows user
+            // profile, "My Documents") otherwise produces a command that splits into
+            // arguments and fails the moment it is pasted.
+            const quotedRepo = gitRewrite.shellQuote(workspaceFolder.uri.fsPath);
+            const quotedRules = gitRewrite.shellQuote(replacementsFile);
+            const bfgCommand = `java -jar bfg.jar --replace-text ${quotedRules}`;
+            const manualCommand = `cd ${quotedRepo} && ${bfgCommand} && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
 
             // Show the manual command to the user
             const action = await vscode.window.showInformationMessage(
@@ -7528,21 +7533,29 @@ class LeakLockPanel {
             );
 
             if (action === 'Show Manual Command') {
-                vscode.window.showInformationMessage('Manual fix command generated.');
-
-                // Create a document with the command
-                const document = await vscode.workspace.openTextDocument({
-                    content: `# Leak Lock - Manual Secret Fix Command\n\n${manualCommand}\n\n`
-                        + `# Warning: This will rewrite git history!\n`
-                        + `# Make sure to backup your repository first.\n`
-                        + `# After running, you may need to force push with: git push --force-with-lease\n#\n`
-                        + `# The replacement rules are kept at:\n#   ${replacementsFile}\n`
-                        + `# They contain the values you asked to redact. Delete that file once the\n`
-                        + `# rewrite is done:\n#   rm -f "${replacementsFile}"\n`,
-                    language: 'bash'
-                });
-
-                vscode.window.showTextDocument(document);
+                // The rule file is only worth keeping if the user actually receives
+                // the command and the path. If the document cannot be opened they get
+                // neither, so a file of raw secrets must not be left behind for it.
+                try {
+                    const document = await vscode.workspace.openTextDocument({
+                        content: `# Leak Lock - Manual Secret Fix Command\n\n${manualCommand}\n\n`
+                            + `# Warning: This will rewrite git history!\n`
+                            + `# Make sure to backup your repository first.\n`
+                            + `# After running, you may need to force push with: git push --force-with-lease\n#\n`
+                            + `# The replacement rules are kept at:\n#   ${replacementsFile}\n`
+                            + `# They contain the values you asked to redact. Delete that file once the\n`
+                            + `# rewrite is done:\n#   rm -f ${quotedRules}\n`,
+                        language: 'bash'
+                    });
+                    await vscode.window.showTextDocument(document);
+                    vscode.window.showInformationMessage('Manual fix command generated.');
+                } catch (displayError) {
+                    gitRewrite.removeRulesFile(rulesHandle);
+                    vscode.window.showErrorMessage(
+                        'Could not open the manual fix command, so nothing was left behind: the replacement '
+                        + `rules were deleted rather than kept on disk with your secrets in them. Reason: ${displayError.message}`
+                    );
+                }
             } else {
                 // Nothing was shown, so nothing can run the command - drop the rules.
                 gitRewrite.removeRulesFile(rulesHandle);
