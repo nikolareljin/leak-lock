@@ -417,6 +417,30 @@ The generated cleanup script applies the same rule: it exits non-zero and prints
 - Check repository is not corrupted
 - Ensure sufficient disk space
 
+**Git-only cleanup fails with `FileNotFoundError: .../replacements.txt`**
+
+A snap-packaged `git-filter-repo` is confined: it gets a private `/tmp` and can
+only read non-hidden paths under your home directory. The replacement rule file
+now lives inside the repository's `.git` directory for exactly that reason, but a
+snap still cannot touch a repository stored outside `$HOME` at all. Install the
+unconfined tool instead:
+
+```bash
+sudo snap remove git-filter-repo      # optional, but it stays first on PATH otherwise
+python3 -m pip install --user git-filter-repo
+```
+
+Then reload the VS Code window so its `PATH` picks up the new binary. Leak Lock
+reports this case by name rather than passing the Python traceback through.
+
+**A cleanup failed and I do not want to re-select every secret**
+
+Nothing is lost. The replacement rules are written to
+`<repo>/.git/leak-lock/replacements.*` and are deleted **only after** the rewrite,
+the force-push and the verification have all succeeded. A failed run keeps the
+file and the error message names its path, so the same cleanup can be retried
+unchanged. The file holds the raw secret values, so delete it once you are done.
+
 **UI Not Responding**
 - Reload VS Code window (`Ctrl+Shift+P` → "Reload Window")
 - Check VS Code version compatibility

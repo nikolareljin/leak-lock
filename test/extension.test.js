@@ -268,8 +268,10 @@ suite('Ref-complete rewrite script', () => {
 		const out = script();
 		// A rejected push (protected branch) would abort under `set -e` before the
 		// explicit restore; the trap guarantees the repo is never left detached.
-		assert.ok(/trap '.*git checkout --quiet "\$current_branch".*' EXIT/.test(out),
-			'installs an EXIT trap that restores the branch');
+		assert.ok(out.includes('trap cleanup_on_exit EXIT'), 'installs an EXIT trap');
+		const handlerAt = out.indexOf('cleanup_on_exit() {');
+		const restoreAt = out.indexOf('git checkout --quiet "$current_branch"');
+		assert.ok(handlerAt > -1 && restoreAt > handlerAt, 'the trap handler restores the branch');
 	});
 
 	test('is emitted as a multi-line script, not a single line', () => {
@@ -302,6 +304,31 @@ suite('Ref-complete rewrite script', () => {
 		assert.match(out, /command -v git-filter-repo/, 'falls back to pip\'s standalone launcher');
 		assert.match(out, /git-filter-repo "\$@"/, 'the fallback receives the rewrite arguments');
 		assert.ok(!out.includes("for cmd in 'git' 'git-filter-repo'"), 'does not reject a valid PATH launcher before trying it');
+	});
+
+	test('one EXIT trap survives the whole script', () => {
+		const out = script();
+		// A second `trap ... EXIT` for the push log used to replace the first one, so
+		// the branch checked out before the rewrite was never restored.
+		assert.strictEqual((out.match(/^trap /gm) || []).length, 1, 'exactly one trap is installed');
+		assert.ok(out.includes('trap cleanup_on_exit EXIT'));
+		assert.ok(out.includes('rm -f "$push_log"'), 'the push log is still cleaned up');
+		assert.ok(out.includes('git checkout --quiet "$current_branch"'), 'the branch is still restored');
+	});
+
+	test('the rule file outlives a failed run and is removed only after verification', () => {
+		const out = script({
+			verifyRulesFile: '"$replacement_file"',
+			preambleLines: ['replacement_file="$(git rev-parse --absolute-git-dir)/leak-lock/rules"'],
+			finalCleanupCommand: 'rm -f "$replacement_file"',
+			retainedPathExpr: '"$replacement_file"'
+		});
+		const verifyAt = out.indexOf('# 9. Verify the remote');
+		const cleanupAt = out.lastIndexOf('rm -f "$replacement_file"');
+		assert.ok(verifyAt > -1 && cleanupAt > verifyAt, 'the rule file is removed after verification, not before');
+		assert.ok(!/trap .*rm -f "\$replacement_file"/.test(out), 'never removed from the EXIT trap');
+		assert.ok(out.includes('Replacement rules kept for a retry: $replacement_file'),
+			'a failed run says where the rules survived');
 	});
 
 	test('verification reads the rule file instead of repeating every secret inline', () => {
@@ -539,11 +566,18 @@ suite("Prepared cleanup scripts", () => {
 			{ "secret-value": "redacted" },
 			"git@example.com:repo.git"
 		);
-		assert.ok(script.includes('mktemp "${TMPDIR:-/tmp}/leak-lock-replacements.XXXXXX"'));
+		// Inside the git directory, never $TMPDIR: a snap-packaged git-filter-repo
+		// has a private /tmp and cannot open a host temp path, which killed the
+		// rewrite with FileNotFoundError before it touched a commit.
+		assert.ok(script.includes('replacement_dir="$(git rev-parse --absolute-git-dir)/leak-lock"'));
+		assert.ok(script.includes('mktemp "$replacement_dir/replacements.XXXXXX"'));
+		assert.ok(!script.includes('${TMPDIR:-/tmp}/leak-lock-replacements'), 'no host temp path for the rule file');
+		assert.ok(script.indexOf("cd '/repo with spaces'") < script.indexOf('replacement_dir='),
+			'the rule file is created inside the repository, so `git rev-parse` resolves');
 		assert.ok(script.includes("umask 077"));
+		assert.ok(script.includes('chmod 700 "$replacement_dir"'));
 		assert.ok(script.includes('chmod 600 "$replacement_file"'));
 		assert.ok(script.includes("secret-value==>redacted"));
-		assert.ok(/trap .*rm -f .*replacement_file.*git checkout.* EXIT/.test(script));
 		assert.ok(script.includes('--replace-text "$replacement_file"'));
 
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-script-test-"));
@@ -562,11 +596,12 @@ suite("Prepared cleanup scripts", () => {
 		}
 	});
 
-	test("in-panel execution uses owner-only temp storage and always removes it", async () => {
+	test("in-panel execution keeps the owner-only rule file when the cleanup fails", async () => {
 		let tempDir;
 		let tempFile;
+		const p = panel();
 		await assert.rejects(
-			panel()._withSecureReplacementsFile({ secret: "redacted" }, async (file) => {
+			p._withSecureReplacementsFile("/not-a-repo", { secret: "redacted" }, async (file) => {
 				tempFile = file;
 				tempDir = path.dirname(file);
 				if (process.platform !== "win32") {
@@ -578,8 +613,59 @@ suite("Prepared cleanup scripts", () => {
 			}),
 			/simulated cleanup failure/
 		);
+		// Kept on purpose: it is the only materialised copy of what still has to be
+		// redacted, so a retry costs nothing and the panel can point the user at it.
+		assert.strictEqual(fs.existsSync(tempFile), true);
+		assert.strictEqual(p._scanCleanup.replacementsFile, tempFile);
+		assert.match(p._retainedReplacementsNote({}), /kept at/);
+		fs.rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	test("in-panel execution removes the rule file once the cleanup completed", async () => {
+		let tempFile;
+		const p = panel();
+		const result = await p._withSecureReplacementsFile("/not-a-repo", { secret: "redacted" }, async (file) => {
+			tempFile = file;
+			assert.strictEqual(fs.readFileSync(file, "utf8"), "secret==>redacted");
+			return "done";
+		});
+		assert.strictEqual(result, "done");
 		assert.strictEqual(fs.existsSync(tempFile), false);
-		assert.strictEqual(fs.existsSync(tempDir), false);
+		assert.strictEqual(fs.existsSync(path.dirname(tempFile)), false);
+	});
+
+	test("the rule file is created inside the repository's git directory", async () => {
+		const gitRewrite = require("../git-rewrite");
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "leaklock-rules-"));
+		try {
+			cp.execFileSync("git", ["init", "--quiet", repo]);
+			const handle = gitRewrite.createRulesFile(repo, "a==>b");
+			try {
+				assert.strictEqual(handle.insideGitDir, true);
+				// fs.realpathSync: git answers with the resolved path, and the OS temp
+				// directory is a symlink on macOS.
+				assert.ok(handle.file.startsWith(path.join(fs.realpathSync(repo), ".git") + path.sep), handle.file);
+				assert.strictEqual(fs.readFileSync(handle.file, "utf8"), "a==>b");
+			} finally {
+				gitRewrite.removeRulesFile(handle);
+			}
+			assert.strictEqual(fs.existsSync(handle.dir), false);
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	test("a snap-confined git-filter-repo failure is reported as a snap problem", () => {
+		const gitRewrite = require("../git-rewrite");
+		const traceback = [
+			'Command failed: git filter-repo --replace-text /x/replacements.txt --force',
+			'  File "/snap/git-filter-repo/50/bin/git-filter-repo", line 2131, in get_replace_text',
+			"FileNotFoundError: [Errno 2] No such file or directory: '/x/replacements.txt'"
+		].join("\n");
+		const hint = gitRewrite.describeSandboxedFilterRepo(traceback, "/x/replacements.txt");
+		assert.match(hint, /installed as a snap/);
+		assert.match(hint, /pip install --user git-filter-repo/);
+		assert.strictEqual(gitRewrite.describeSandboxedFilterRepo("some other failure", "/x"), null);
 	});
 	test("both prepared modes show save and local-run instructions", () => {
 		const p = panel();
@@ -1646,6 +1732,27 @@ suite('Manual regex redaction end to end', () => {
 		}
 	}
 
+	/**
+	 * A snap-packaged git-filter-repo is confined to $HOME and cannot read this
+	 * fixture, which lives under os.tmpdir(). That is a property of the host, not
+	 * of the code under test, so the suite skips instead of reporting a failure
+	 * that no change here could fix.
+	 */
+	function filterRepoCanReadFixture(dir) {
+		const probe = path.join(dir, 'filter-repo-probe.txt');
+		fs.writeFileSync(probe, 'probe==>probe');
+		try {
+			cp.execFileSync('git', ['-C', dir, 'filter-repo', '--replace-text', probe, '--dry-run', '--force'],
+				{ env, stdio: 'pipe' });
+			return true;
+		} catch (error) {
+			const output = [error.message, error.stderr && error.stderr.toString()].filter(Boolean).join('\n');
+			return !gitRewrite.describeSandboxedFilterRepo(output, probe);
+		} finally {
+			try { fs.unlinkSync(probe); } catch (e) { void e; }
+		}
+	}
+
 	let base, origin, work, available;
 
 	suiteSetup(() => {
@@ -1666,6 +1773,7 @@ suite('Manual regex redaction end to end', () => {
 		].join('\n') + '\n');
 		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
 		g(['add', '-A']); g(['commit', '-qm', 'add config']); g(['push', '-q', 'origin', 'main']);
+		available = filterRepoCanReadFixture(work);
 	});
 
 	suiteTeardown(() => {
@@ -1686,7 +1794,7 @@ suite('Manual regex redaction end to end', () => {
 
 		assert.strictEqual(originMatches('internal-corp-[0-9]+\\.example'), true, 'the remote starts dirty');
 
-		await panel._withSecureReplacementsFile(rules, async (replacementsFile) => {
+		await panel._withSecureReplacementsFile(work, rules, async (replacementsFile) => {
 			// The rule file is what both the rewrite and the verification read.
 			const contents = fs.readFileSync(replacementsFile, 'utf8');
 			assert.ok(contents.startsWith('regex:'), 'the regex: prefix reaches the rewrite tool');
