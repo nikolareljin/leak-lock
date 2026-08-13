@@ -9,8 +9,11 @@
 //
 // No `vscode` import on purpose - this module is unit-testable on its own.
 
-const { execFile, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const util = require('util');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const execFileAsync = util.promisify(execFile);
 
@@ -37,18 +40,145 @@ async function git(repoDir, args, options = {}) {
 }
 
 /**
+ * Absolute path of a repository's git directory. Git itself answers first: the
+ * scanned path may be a subdirectory rather than the repository root, and `.git`
+ * is a file, not a directory, in linked worktrees and submodules - a blind
+ * path.join is wrong in both cases. The filesystem lookup stays as a fallback for
+ * when git cannot be executed. Returns null when repoDir is not a repository.
+ */
+function resolveGitDir(repoDir) {
+    if (!repoDir) {
+        return null;
+    }
+    try {
+        const out = execFileSync('git', ['rev-parse', '--absolute-git-dir'],
+            { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        if (out) {
+            return out;
+        }
+    } catch {
+        // Not a repository, or no git on PATH - fall through to the filesystem.
+    }
+    const dotGit = path.join(repoDir, '.git');
+    let stats = null;
+    try {
+        stats = fs.statSync(dotGit);
+    } catch {
+        return null;
+    }
+    if (stats.isDirectory()) {
+        return dotGit;
+    }
+    try {
+        const pointer = fs.readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+)$/m);
+        if (!pointer) {
+            return null;
+        }
+        const target = pointer[1].trim();
+        return path.isAbsolute(target) ? target : path.resolve(repoDir, target);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Create the owner-only rule file that `--replace-text` reads.
+ *
+ * It lives inside the repository's git directory, never $TMPDIR. Sandboxed
+ * git-filter-repo builds - the snap ships strict confinement - get a private
+ * /tmp namespace and cannot open a path under the host's, which surfaced as
+ * `FileNotFoundError: /tmp/leak-lock-XXXXXX/replacements.txt` the moment
+ * "Run Git-only cleanup" was pressed. The git directory is by definition
+ * reachable by the tool rewriting that repository, and it is not part of the
+ * working tree, so the values can never be staged or committed by accident.
+ *
+ * The caller removes it with removeRulesFile() *after* the rewrite finished.
+ * On failure the file is deliberately kept so the run can be retried without
+ * re-deriving every rule.
+ *
+ * @returns {{dir: string, file: string, insideGitDir: boolean}}
+ */
+function createRulesFile(repoDir, contents, options = {}) {
+    const prefix = options.prefix || 'leak-lock-';
+    const fileName = options.fileName || 'replacements.txt';
+    const gitDir = resolveGitDir(repoDir);
+    const dir = fs.mkdtempSync(path.join(gitDir || os.tmpdir(), prefix));
+    try {
+        fs.chmodSync(dir, 0o700);
+    } catch (permissionError) {
+        if (process.platform !== 'win32') {
+            throw permissionError;
+        }
+    }
+    const file = path.join(dir, fileName);
+    fs.writeFileSync(file, contents, { mode: 0o600, flag: 'wx' });
+    return { dir, file, insideGitDir: Boolean(gitDir) };
+}
+
+/** Remove a createRulesFile() handle. Never throws - cleanup is best effort. */
+function removeRulesFile(handle) {
+    if (!handle || !handle.dir) {
+        return false;
+    }
+    try {
+        fs.rmSync(handle.dir, { recursive: true, force: true });
+        return true;
+    } catch (cleanupError) {
+        console.warn('Failed to remove secure replacement directory:', cleanupError);
+        return false;
+    }
+}
+
+/**
+ * A snap-packaged git-filter-repo runs under strict confinement: it sees a
+ * private /tmp and only non-hidden paths under $HOME, so it cannot read a rule
+ * file elsewhere - nor a repository outside $HOME at all. The Python traceback
+ * it prints ("FileNotFoundError", "PermissionError") reads like a Leak Lock bug,
+ * so translate it into the one action that fixes it.
+ */
+function describeSandboxedFilterRepo(output, rulesPath) {
+    if (!/\/snap\/[^\s]*git-filter-repo/.test(output || '')) {
+        return null;
+    }
+    if (!/(FileNotFoundError|PermissionError)/.test(output)) {
+        return null;
+    }
+    return [
+        'git-filter-repo is installed as a snap, and snaps are confined: this one cannot read',
+        rulesPath ? `the replacement rule file (${rulesPath})` : 'the replacement rule file',
+        'or any repository outside your home directory.',
+        'Install the unconfined tool instead: "python3 -m pip install --user git-filter-repo"',
+        '(optionally "sudo snap remove git-filter-repo" first), then restart VS Code so its',
+        'PATH picks up the new binary.'
+    ].join(' ');
+}
+
+/**
  * Run git-filter-repo regardless of how pip installed it. Git discovers
  * subcommands from its exec-path, while pip commonly installs the standalone
  * `git-filter-repo` launcher on PATH. The latter is fully supported by the
  * upstream tool but `git filter-repo` cannot always see it.
  */
 async function runGitFilterRepo(repoDir, args, options = {}) {
+    const rulesPath = args[args.indexOf('--replace-text') + 1] || null;
+    const withSandboxHint = (error) => {
+        const output = [error.message, error.stderr].filter(Boolean).join('\n');
+        const hint = describeSandboxedFilterRepo(output, args.includes('--replace-text') ? rulesPath : null);
+        if (!hint) {
+            return error;
+        }
+        const wrapped = new Error(hint);
+        wrapped.cause = error;
+        wrapped.stderr = error.stderr;
+        return wrapped;
+    };
+
     try {
         return await git(repoDir, ['filter-repo', ...args], options);
     } catch (gitError) {
         const output = [gitError.message, gitError.stderr].filter(Boolean).join('\n');
         if (!/['"]filter-repo['"] is not a git command|git: filter-repo:.*not a git command/i.test(output)) {
-            throw gitError;
+            throw withSandboxHint(gitError);
         }
 
         try {
@@ -59,7 +189,7 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
             });
         } catch (launcherError) {
             if (launcherError.code !== 'ENOENT') {
-                throw launcherError;
+                throw withSandboxHint(launcherError);
             }
             throw new Error(
                 'git-filter-repo is not installed or is not on PATH. Install it with "python -m pip install git-filter-repo", ' +
@@ -532,7 +662,8 @@ function psQuote(value) {
 /**
  * Emit a PowerShell (.ps1) equivalent of buildRewriteScript() for Windows hosts.
  * Accepts the same conceptual options but uses `replacementsContent` instead of
- * `preambleLines`/`exitCleanupCommand` for the secure temp-file setup.
+ * `replacementsContent` for the rule-file setup instead of
+ * `preambleLines`/`finalCleanupCommand`.
  *
  * @param {object} options
  * @param {string} options.repoDir
@@ -629,17 +760,25 @@ function buildRewriteScriptPs1(options) {
 
     // Declared before `try` so the `finally` block can always read them.
     if (hasReplacements) {
-        lines.push(
-            '# Keep sensitive replacement data outside the repository.',
-            '$replacement_file = [System.IO.Path]::GetTempFileName()',
-            ''
-        );
+        lines.push('$replacement_file = \'\'', '');
     }
     lines.push('$current_branch = \'\'', '', 'try {');
 
+    lines.push(`    Set-Location ${psQuote(repoDir)}`, '');
+
     if (hasReplacements) {
         lines.push(
-            '    # Restrict the temp file to the current user only (equivalent to chmod 600).',
+            '    # The rule file lives in the repository\'s git directory, not $env:TEMP:',
+            '    # sandboxed git-filter-repo builds cannot read a host temp path, and the',
+            '    # git directory is never part of the working tree, so it cannot be committed.',
+            '    $git_dir = (& git rev-parse --absolute-git-dir)',
+            '    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+            '    $replacement_dir = Join-Path $git_dir \'leak-lock\'',
+            '    $null = New-Item -ItemType Directory -Force -Path $replacement_dir',
+            '    $replacement_file = Join-Path $replacement_dir "replacements-$([System.IO.Path]::GetRandomFileName()).txt"',
+            '    $null = New-Item -ItemType File -Force -Path $replacement_file',
+            '',
+            '    # Restrict the rule file to the current user only (equivalent to chmod 600).',
             '    $acl = Get-Acl $replacement_file',
             '    $acl.SetAccessRuleProtection($true, $false)',
             '    foreach ($rule in @($acl.Access)) { $null = $acl.RemoveAccessRule($rule) }',
@@ -653,8 +792,6 @@ function buildRewriteScriptPs1(options) {
     }
 
     lines.push(
-        `    Set-Location ${psQuote(repoDir)}`,
-        '',
         '    # 1. Refresh every ref before planning the rewrite.',
         `    & git fetch --prune --tags ${remoteQ}`,
         '    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
@@ -841,6 +978,19 @@ function buildRewriteScriptPs1(options) {
         );
     }
 
+    if (hasReplacements) {
+        lines.push(
+            '',
+            '    # 10. Everything above succeeded - only now is the rule file no longer',
+            '    #     needed. Any earlier exit keeps it; `finally` says where it is.',
+            '    Remove-Item $replacement_file -Force -ErrorAction SilentlyContinue',
+            '    if (-not (Get-ChildItem -Force $replacement_dir -ErrorAction SilentlyContinue)) {',
+            '        Remove-Item $replacement_dir -Force -ErrorAction SilentlyContinue',
+            '    }',
+            '    $replacement_file = \'\''
+        );
+    }
+
     lines.push(
         '',
         '} finally {',
@@ -850,7 +1000,14 @@ function buildRewriteScriptPs1(options) {
     );
 
     if (hasReplacements) {
-        lines.push('    Remove-Item $replacement_file -Force -ErrorAction SilentlyContinue');
+        // Never delete it here: on a failed run this file is the only copy of what
+        // still has to be redacted, so it is kept and reported instead.
+        lines.push(
+            '    if ($replacement_file -and (Test-Path $replacement_file)) {',
+            '        Write-Warning "Replacement rules kept for a retry: $replacement_file"',
+            '        Write-Warning "They contain the values you asked to redact - delete the file once you are done."',
+            '    }'
+        );
     }
 
     lines.push('}', '');
@@ -881,8 +1038,13 @@ function buildRewriteScriptPs1(options) {
  *   message instead of halfway through a rewrite.
  * @param {boolean} [options.restoreRemote] re-add the remote after the rewrite
  * @param {string} [options.remoteUrl]
- * @param {string[]} [options.preambleLines] setup lines run before entering the repository
- * @param {string} [options.exitCleanupCommand] cleanup run by the script's EXIT trap
+ * @param {string[]} [options.preambleLines] setup lines run inside the repository,
+ *   before the rewrite. They may call git: the script has already cd'd in.
+ * @param {string} [options.finalCleanupCommand] cleanup run once the rewrite, the
+ *   push and the verification have all succeeded - never from the EXIT trap, so a
+ *   failed run keeps the rule file for a retry instead of destroying it
+ * @param {string} [options.retainedPathExpr] shell expression naming a file the
+ *   failure path should point the user at (e.g. '"$replacement_file"')
  */
 function buildRewriteScript(options) {
     const {
@@ -897,7 +1059,8 @@ function buildRewriteScript(options) {
         restoreRemote = false,
         remoteUrl = null,
         preambleLines = [],
-        exitCleanupCommand = null
+        finalCleanupCommand = null,
+        retainedPathExpr = null
     } = options || {};
 
     const remoteQ = shellQuote(remote);
@@ -946,10 +1109,13 @@ function buildRewriteScript(options) {
                 ''
             ]
             : []),
-        ...preambleLines,
-        ...(preambleLines.length > 0 ? [''] : []),
         `cd ${shellQuote(repoDir)}`,
         '',
+        // The rule file is created here, inside the repository, rather than in
+        // $TMPDIR: a snap-packaged git-filter-repo has a private /tmp and cannot
+        // read a host temp path, which failed the rewrite before it started.
+        ...preambleLines,
+        ...(preambleLines.length > 0 ? [''] : []),
         '# 1. Refresh every ref before planning the rewrite.',
         `git fetch --prune --tags ${remoteQ}`,
         '',
@@ -975,8 +1141,30 @@ function buildRewriteScript(options) {
         '',
         '# 3. Detach HEAD: git refuses to force-update the checked-out branch.',
         `current_branch="$(git symbolic-ref --quiet --short HEAD || true)"`,
-        '# Restore the branch and remove sensitive temporary files on ANY exit.',
-        `trap ${shellQuote([exitCleanupCommand, 'if [ -n "${current_branch:-}" ]; then git checkout --quiet "$current_branch" 2>/dev/null || true; fi'].filter(Boolean).join('; '))} EXIT`,
+        'push_log=""',
+        '# One EXIT trap for the whole script. It restores the branch and removes the',
+        '# push log, but it deliberately does NOT remove the replacement rule file: on a',
+        '# failed run that file is the only copy of what still has to be redacted, so it',
+        '# is kept and reported, and removed only after the rewrite is verified.',
+        'cleanup_on_exit() {',
+        '\trc=$?',
+        '\tif [ -n "${push_log:-}" ]; then',
+        '\t\trm -f "$push_log"',
+        '\tfi',
+        '\tif [ -n "${current_branch:-}" ]; then',
+        '\t\tgit checkout --quiet "$current_branch" 2>/dev/null || true',
+        '\tfi',
+        ...(retainedPathExpr
+            ? [
+                `\tif [ "$rc" -ne 0 ] && [ -f ${retainedPathExpr} ]; then`,
+                `\t\techo "Replacement rules kept for a retry: ${retainedPathExpr.replace(/^"|"$/g, '')}" >&2`,
+                '\t\techo "They contain the values you asked to redact - delete the file once you are done." >&2',
+                '\tfi'
+            ]
+            : []),
+        '\treturn "$rc"',
+        '}',
+        'trap cleanup_on_exit EXIT',
         'if [ -n "$current_branch" ]; then',
         '\tgit checkout --detach --quiet',
         'fi',
@@ -1017,8 +1205,9 @@ function buildRewriteScript(options) {
         '#    the remote is never left with rewritten branches but stale tags.',
         '#    The flip side is that one protected branch rejects every ref, which',
         '#    reads as though the whole rewrite failed. Explain that if it happens.',
+        // Assigned, never re-trapped: a second `trap ... EXIT` here used to replace
+        // cleanup_on_exit outright, so the branch was never restored.
         'push_log="$(mktemp "${TMPDIR:-/tmp}/leaklock-push.XXXXXX")"',
-        'trap \'rm -f "$push_log"\' EXIT',
         'push_rc=0',
         `git push --force --atomic ${remoteQ} ${shellQuote('refs/heads/*:refs/heads/*')} ${shellQuote('refs/tags/*:refs/tags/*')} >"$push_log" 2>&1 || push_rc=$?`,
         'cat "$push_log"',
@@ -1156,6 +1345,15 @@ function buildRewriteScript(options) {
         );
     }
 
+    if (finalCleanupCommand) {
+        lines.push(
+            '',
+            '# 10. Everything above succeeded - only now is the rule file no longer',
+            '#     needed. Any earlier exit keeps it, and the EXIT trap says where.',
+            finalCleanupCommand
+        );
+    }
+
     lines.push('');
     return lines.join('\n');
 }
@@ -1259,6 +1457,10 @@ module.exports = {
     AheadBranchesError,
     shellQuote,
     escapeRegex,
+    resolveGitDir,
+    createRulesFile,
+    removeRulesFile,
+    describeSandboxedFilterRepo,
     runGitFilterRepo,
     hasRemote,
     getRemoteUrl,

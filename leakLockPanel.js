@@ -6492,14 +6492,22 @@ class LeakLockPanel {
             .join("\n");
         return {
             preambleLines: [
-                "# Keep sensitive replacement data outside the repository.",
+                "# The rule file lives in the repository's git directory, not $TMPDIR: a",
+                "# snap-packaged git-filter-repo is confined and cannot read a host temp",
+                "# path, and the git directory is never part of the working tree, so the",
+                "# values here cannot be staged or committed by accident.",
                 "umask 077",
-                'replacement_file="$(mktemp "${TMPDIR:-/tmp}/leak-lock-replacements.XXXXXX")"',
-                "trap " + gitRewrite.shellQuote('rm -f "$replacement_file"') + " EXIT",
+                'replacement_dir="$(git rev-parse --absolute-git-dir)/leak-lock"',
+                'mkdir -p "$replacement_dir"',
+                'chmod 700 "$replacement_dir"',
+                'replacement_file="$(mktemp "$replacement_dir/replacements.XXXXXX")"',
                 'chmod 600 "$replacement_file"',
                 `printf "%s" ${gitRewrite.shellQuote(replacementLines)} > "$replacement_file"`
             ],
-            exitCleanupCommand: 'rm -f "$replacement_file"'
+            // Deleted only once the rewrite, push and verification all succeeded -
+            // a failed run keeps it so the cleanup can be retried unchanged.
+            finalCleanupCommand: 'rm -f "$replacement_file"; rmdir "$replacement_dir" 2>/dev/null || true',
+            retainedPathExpr: '"$replacement_file"'
         };
     }
 
@@ -6510,29 +6518,52 @@ class LeakLockPanel {
         return { replacementsContent: replacementLines };
     }
 
-    async _withSecureReplacementsFile(replacements, callback) {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-"));
+    /**
+     * Materialise the `--replace-text` rule file, run the cleanup with it, and
+     * remove it only once that cleanup finished.
+     *
+     * The file is created inside the repository's git directory rather than in
+     * $TMPDIR. A snap-packaged git-filter-repo runs under strict confinement with
+     * a private /tmp, so it could not open the host path at all - the rewrite died
+     * with `FileNotFoundError: /tmp/leak-lock-XXXXXX/replacements.txt` before it
+     * touched a single commit.
+     *
+     * On failure the file is deliberately kept, and its path is attached to the
+     * error: it is the only materialised copy of what still has to be redacted,
+     * and deleting it would force the whole selection to be rebuilt by hand.
+     */
+    async _withSecureReplacementsFile(repoDir, replacements, callback) {
+        const replacementLines = this._toRuleList(replacements)
+            .map(rule => redactionRules.formatRuleLine(rule))
+            .join("\n");
+        const handle = gitRewrite.createRulesFile(repoDir, replacementLines);
+        let succeeded = false;
         try {
-            try {
-                fs.chmodSync(tempDir, 0o700);
-            } catch (permissionError) {
-                if (process.platform !== "win32") {
-                    throw permissionError;
-                }
+            const result = await callback(handle.file);
+            succeeded = true;
+            return result;
+        } catch (error) {
+            if (error && typeof error === "object") {
+                error.replacementsFile = handle.file;
             }
-            const replacementsFile = path.join(tempDir, "replacements.txt");
-            const replacementLines = this._toRuleList(replacements)
-                .map(rule => redactionRules.formatRuleLine(rule))
-                .join("\n");
-            fs.writeFileSync(replacementsFile, replacementLines, { mode: 0o600, flag: "wx" });
-            return await callback(replacementsFile);
+            throw error;
         } finally {
-            try {
-                fs.rmSync(tempDir, { recursive: true, force: true });
-            } catch (cleanupError) {
-                console.warn("Failed to remove secure replacement directory:", cleanupError);
+            if (succeeded) {
+                gitRewrite.removeRulesFile(handle);
+            } else {
+                this._scanCleanup.replacementsFile = handle.file;
             }
         }
+    }
+
+    /** Tell the user where the rule file survived, so a retry costs nothing. */
+    _retainedReplacementsNote(error) {
+        const file = (error && error.replacementsFile) || this._scanCleanup.replacementsFile;
+        if (!file) {
+            return '';
+        }
+        return ` The replacement rules were kept at ${file} so you can retry without rebuilding them; ` +
+            'they contain the values you asked to redact, so delete that file once you are done.';
     }
 
     _buildScanBfgReplaceCommand(scanPath, replacements) {
@@ -7058,7 +7089,9 @@ class LeakLockPanel {
         this._scanCleanup.preparedCommand = null;
         this._scanCleanup.preparedMode = null;
         this._scanCleanup.replacements = null;
-        this._scanCleanup.replacementsFile = null;
+        // `replacementsFile` is NOT cleared here: a failed cleanup leaves the rule
+        // file on disk, and this is the pointer to it. Preparing a new cleanup
+        // replaces it (_prepareScanCleanup), which is when it stops being current.
         this._updateWebviewContent();
     }
 
@@ -7095,7 +7128,7 @@ class LeakLockPanel {
                 cancellable: false
             }, async (progress) => {
                 progress.report({ increment: 10, message: "Preparing secure temporary replacement file..." });
-                report = await this._withSecureReplacementsFile(replacements, async (replacementsFile) =>
+                report = await this._withSecureReplacementsFile(scanPath, replacements, async (replacementsFile) =>
                     gitRewrite.runRewrite({
                         repoDir: scanPath,
                         push: false,
@@ -7122,7 +7155,8 @@ class LeakLockPanel {
             }
             vscode.window.showErrorMessage(
                 'Git-only cleanup did not complete. Your remote was not touched — this step only rewrites ' +
-                `local history, and the force-push is a separate confirmation. Reason: ${error.message}`
+                `local history, and the force-push is a separate confirmation. Reason: ${error.message}` +
+                this._retainedReplacementsNote(error)
             );
         }
     }
@@ -7368,13 +7402,16 @@ class LeakLockPanel {
                 return;
             }
 
-            // Create a temporary replacements file for BFG
-            const replacementsFile = path.join(workspaceFolder.uri.fsPath, 'secrets-replacements.txt');
+            // The rule file the printed command reads. It goes into the git directory,
+            // not the working tree: it holds the raw secrets, and a file named
+            // `secrets-replacements.txt` sitting next to the source was one `git add .`
+            // away from being committed. It is NOT deleted here - the user runs the
+            // command afterwards, and deleting the file first made that command fail.
             const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
                 `${secret}==>${replacement}`
             ).join('\n');
-
-            fs.writeFileSync(replacementsFile, replacementLines);
+            const rulesHandle = gitRewrite.createRulesFile(workspaceFolder.uri.fsPath, replacementLines);
+            const replacementsFile = rulesHandle.file;
 
             // Generate BFG command
             const bfgCommand = `java -jar bfg.jar --replace-text ${replacementsFile}`;
@@ -7393,18 +7430,20 @@ class LeakLockPanel {
 
                 // Create a document with the command
                 const document = await vscode.workspace.openTextDocument({
-                    content: `# Leak Lock - Manual Secret Fix Command\n\n${manualCommand}\n\n# Warning: This will rewrite git history!\n# Make sure to backup your repository first.\n# After running, you may need to force push with: git push --force-with-lease`,
+                    content: `# Leak Lock - Manual Secret Fix Command\n\n${manualCommand}\n\n`
+                        + `# Warning: This will rewrite git history!\n`
+                        + `# Make sure to backup your repository first.\n`
+                        + `# After running, you may need to force push with: git push --force-with-lease\n#\n`
+                        + `# The replacement rules are kept at:\n#   ${replacementsFile}\n`
+                        + `# They contain the values you asked to redact. Delete that file once the\n`
+                        + `# rewrite is done:\n#   rm -f "${replacementsFile}"\n`,
                     language: 'bash'
                 });
 
                 vscode.window.showTextDocument(document);
-            }
-
-            // Clean up the temporary file
-            try {
-                fs.unlinkSync(replacementsFile);
-            } catch (cleanupError) {
-                console.warn('Failed to clean up temporary file:', cleanupError);
+            } else {
+                // Nothing was shown, so nothing can run the command - drop the rules.
+                gitRewrite.removeRulesFile(rulesHandle);
             }
 
         } catch (error) {
@@ -7454,7 +7493,7 @@ class LeakLockPanel {
                 const util = require("util");
                 const execFileAsync = util.promisify(execFile);
 
-                report = await this._withSecureReplacementsFile(replacements, async (replacementsFile) =>
+                report = await this._withSecureReplacementsFile(scanPath, replacements, async (replacementsFile) =>
                     gitRewrite.runRewrite({
                         repoDir: scanPath,
                         push: false,
@@ -7484,7 +7523,8 @@ class LeakLockPanel {
             }
             vscode.window.showErrorMessage(
                 'BFG cleanup did not complete. Your remote was not touched — this step only rewrites ' +
-                `local history, and the force-push is a separate confirmation. Reason: ${error.message}`
+                `local history, and the force-push is a separate confirmation. Reason: ${error.message}` +
+                this._retainedReplacementsNote(error)
             );
         }
     }
