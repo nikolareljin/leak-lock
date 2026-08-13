@@ -70,6 +70,23 @@ suite('openCommitUrl resolution', () => {
         );
     });
 
+    test('a finding whose directory has no repository above it falls back to the scan root', async () => {
+        // findGitRoot returns null for a path that no longer exists on disk — a
+        // history finding for a deleted file, say. The scanned repository is still
+        // known, so the permalink must not be dropped.
+        const repoRoot = path.join(path.sep, 'tmp', 'no-such-repo-anywhere');
+        const panel = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'extension') });
+        panel._scanPath = repoRoot;
+        panel._scanRepoRoot = repoRoot;
+        panel._remoteInfo = REMOTE;
+        panel._scanResults = [{ commitHash: SHA, file: 'deleted/secrets.env', line: 3 }];
+
+        assert.strictEqual(
+            await panel._resolveCommitUrlVerified(0),
+            `https://github.com/o/r/blob/${SHA}/deleted/secrets.env#L3`
+        );
+    });
+
     test('priming repository info walks the tree once per directory, not once per finding', async () => {
         // findGitRoot does an existsSync per level, and this runs on the scan's
         // critical path. A 2,000-row scan through five directories must cost five

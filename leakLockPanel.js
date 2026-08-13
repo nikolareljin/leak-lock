@@ -2787,7 +2787,7 @@ class LeakLockPanel {
                     branchHtml = `<span title="${escapeHtml(branches.join(', '))}" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)}</span>`;
                 } else {
                     branchDataMap[index] = branches;
-                    branchHtml = `<span class="branch-link" data-branch-idx="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Click to see all ${branches.length} branches/tags" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
+                    branchHtml = `<span class="branch-link" data-branch-idx="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'){this.click();event.preventDefault();}" title="Click to see all ${branches.length} branches/tags" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
                 }
             }
 
@@ -2821,7 +2821,7 @@ class LeakLockPanel {
                 if (shortHash) {
                     const commitUrl = this._resolveCommitUrl(index);
                     if (commitUrl) {
-                        parts.push(`<span class="commit-link" data-finding-index="${index}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</span>`);
+                        parts.push(`<span class="commit-link" data-finding-index="${index}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</span>`);
                     } else {
                         parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
                     }
@@ -2869,7 +2869,7 @@ class LeakLockPanel {
                         </span>
                     </td>
                     <td title="${escapeHtml(result.secret)}">
-                        <span class="${credState.clickable ? 'credential-link' : ''}"${credState.clickable ? ` data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Click to inspect this credential"` : ''} style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;${credState.clickable ? ' cursor: pointer; text-decoration: underline;' : ''}">
+                        <span class="${credState.clickable ? 'credential-link' : ''}"${credState.clickable ? ` data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'){this.click();event.preventDefault();}" title="Click to inspect this credential"` : ''} style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;${credState.clickable ? ' cursor: pointer; text-decoration: underline;' : ''}">
                             ${escapeHtml(result.secret)}
                         </span>${credState.badge}
                     </td>
@@ -3677,8 +3677,13 @@ class LeakLockPanel {
         // scan; this recomputes it because a finding can also arrive from a path
         // that priming skipped (no scanPath, or a result added afterwards), and
         // one user click is not worth a cache-invalidation rule.
+        // The scan root is the last fallback, not an alternative branch: a finding
+        // whose own directory has no .git above it (a path that no longer exists, a
+        // symlinked checkout) would otherwise resolve to nothing and lose its
+        // permalink even though the scanned repository is known.
         const repoDir = finding.repoRoot
-            || (absoluteFile ? findGitRoot(path.dirname(absoluteFile)) : this._scanRepoRoot);
+            || (absoluteFile && findGitRoot(path.dirname(absoluteFile)))
+            || this._scanRepoRoot;
         const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoDir);
         if (candidates.length === 0 || !repoDir) {
             return null;
