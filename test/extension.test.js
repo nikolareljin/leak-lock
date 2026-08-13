@@ -306,6 +306,18 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(!out.includes("for cmd in 'git' 'git-filter-repo'"), 'does not reject a valid PATH launcher before trying it');
 	});
 
+	test('a missing git-filter-repo stops the script before it touches a branch', () => {
+		const out = script({ requiredCommands: ['git', 'git-filter-repo'] });
+		const probeAt = out.indexOf('! git filter-repo --version');
+		assert.ok(probeAt > -1, 'the tool is probed, not assumed');
+		// The `command -v` loop cannot check this one: it is valid either as a git
+		// subcommand or as a PATH launcher. Without an explicit probe the script
+		// detaches HEAD and force-resets every local branch first, then fails.
+		for (const destructive of ['git checkout --detach', 'git branch --force --no-track']) {
+			assert.ok(probeAt < out.indexOf(destructive), `probe runs before: ${destructive}`);
+		}
+	});
+
 	test('drops the alias refs a rewrite leaves behind, and verifies past them', () => {
 		const out = script({ verifyRulesFile: '"$replacement_file"' });
 		// refs/replace/* makes git answer for the original commit with the rewritten

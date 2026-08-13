@@ -1197,6 +1197,17 @@ function buildRewriteScript(options) {
                 '\t\texit 1',
                 '\tfi',
                 '}',
+                '',
+                '# Probe it now, not at step 5. The `command -v` loop above cannot check',
+                '# this one - it is valid either as a git subcommand or as a PATH launcher -',
+                '# so without this the script would detach HEAD and force-reset every local',
+                '# branch to its remote before discovering the tool is missing.',
+                'if ! git filter-repo --version >/dev/null 2>&1 \\',
+                '\t&& ! command -v git-filter-repo >/dev/null 2>&1; then',
+                '\techo "git-filter-repo is not installed or is not on PATH." >&2',
+                '\techo "Install it with: python3 -m pip install --user git-filter-repo" >&2',
+                '\texit 1',
+                'fi',
                 ''
             ]
             : []),
