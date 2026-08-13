@@ -13,7 +13,7 @@ const redactionRules = require('./redaction-rules');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
-const { findGitRoot, describeFindingPath, repoRelativePath, repoRelativeCandidates } = require('./finding-paths');
+const { findGitRoot, describeFindingPath, repoRelativeCandidates } = require('./finding-paths');
 const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
 const credentialInspect = require('./credential-inspect');
 const { classifyFindings } = require('./credential-prepass');
@@ -3553,9 +3553,11 @@ class LeakLockPanel {
         const finding = results[findingIndex];
         const repoRoot = finding.repoRoot || this._scanRepoRoot;
         const remoteInfo = finding.remoteInfo || this._remoteInfo;
-        // Repo-relative, not scan-relative: scanning a workspace parent must
-        // not put the child repository name into its own permalink.
-        const file = repoRelativePath(finding.file, this._scanPath, repoRoot);
+        // The inline href cannot await git to disambiguate candidates. When the
+        // scanner repeats the repository directory, use the de-prefixed URL
+        // reading; this avoids /<repo>/<repo>/... permalinks.
+        const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoRoot);
+        const file = candidates.length > 1 ? candidates[1] : candidates[0];
         if (!file) {
             return null;
         }
