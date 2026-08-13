@@ -2030,7 +2030,7 @@ class LeakLockPanel {
                 }
                 this._removalState.repoDir = validated;
                 this._removalState.preparedCommand = null;
-            this._removalState.preparedScripts = null;
+                this._removalState.preparedScripts = null;
                 this._removalState.preparedIndexFilter = null;
             } catch (e) {
                 vscode.window.showErrorMessage(`Invalid repository path: ${e.message}`);
@@ -2110,7 +2110,7 @@ class LeakLockPanel {
         }
         this._removalState.targets = [];
         this._removalState.preparedCommand = null;
-            this._removalState.preparedScripts = null;
+        this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._removalState.details = [];
@@ -2235,7 +2235,7 @@ class LeakLockPanel {
                 this._removalState.blockedBranches = preflight.ahead;
                 this._removalState.blockedReason = preflight.reason;
                 this._removalState.preparedCommand = null;
-            this._removalState.preparedScripts = null;
+                this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 return;
             }
@@ -2270,7 +2270,7 @@ class LeakLockPanel {
         this._removalState.combineMode = mode;
         // Invalidate prepared command to force regeneration with new mode
         this._removalState.preparedCommand = null;
-            this._removalState.preparedScripts = null;
+        this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._updateWebviewContent();
@@ -2313,7 +2313,7 @@ class LeakLockPanel {
         this._removalState.deletionMode = mode;
         // Clear previous prepared command/preview when switching
         this._removalState.preparedCommand = null;
-            this._removalState.preparedScripts = null;
+        this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._updateWebviewContent();
@@ -2484,7 +2484,7 @@ class LeakLockPanel {
                 this._removalState.blockedBranches = preflight.ahead;
                 this._removalState.blockedReason = preflight.reason;
                 this._removalState.preparedCommand = null;
-            this._removalState.preparedScripts = null;
+                this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 return;
             }
@@ -2663,7 +2663,7 @@ class LeakLockPanel {
                 this._removalState.repoDir = validated;
                 this._removalState.targets = [];
                 this._removalState.preparedCommand = null;
-            this._removalState.preparedScripts = null;
+                this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 this._removalState.preview = null;
                 this._removalState.details = [];
@@ -3313,7 +3313,7 @@ class LeakLockPanel {
             this._isScanning = true;
             this._scanResults = [];
             this._scanCleanup.preparedCommand = null;
-        this._scanCleanup.preparedScripts = null;
+            this._scanCleanup.preparedScripts = null;
             this._scanCleanup.preparedMode = null;
             this._scanCleanup.replacements = null;
             this._scanCleanup.replacementsFile = null;
@@ -7019,7 +7019,7 @@ class LeakLockPanel {
                 this._scanCleanup.blockedBranches = preflight.ahead;
                 this._scanCleanup.blockedReason = preflight.reason;
                 this._scanCleanup.preparedCommand = null;
-        this._scanCleanup.preparedScripts = null;
+                this._scanCleanup.preparedScripts = null;
                 this._scanCleanup.preparedMode = null;
                 this._scanCleanup.remoteError = preflight.remoteError || null;
                 if (preflight.remoteError) {
