@@ -52,9 +52,10 @@ const RAW_OBJECT_ENV = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' };
 /**
  * git(), with object replacement disabled. Use for anything that verifies.
  *
- * The env is merged rather than defaulted, and GIT_NO_REPLACE_OBJECTS is applied
- * last: a caller passing its own `env` must not be able to drop the one setting
- * that keeps a rewritten-alias from reading as a clean ref.
+ * A caller's `env` keeps child_process semantics - it is the environment, not an
+ * overlay on this process's - but GIT_NO_REPLACE_OBJECTS is written on top of it
+ * afterwards, so no call site can drop the one setting that stops a rewrite's
+ * replacement alias from making a still-dirty ref read as clean.
  */
 async function gitRaw(repoDir, args, options = {}) {
     const { env, ...rest } = options;
