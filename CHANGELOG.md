@@ -8,6 +8,7 @@
 - **The generated script restores the branch it checked out again.** A second `trap ... EXIT` installed for the push log replaced the first one outright, so after a push the repository was left on a detached HEAD. There is now a single `cleanup_on_exit` handler that restores the branch, removes the push log, and reports a retained rule file.
 - **"Generate Fix Command" no longer deletes the file its own command reads.** It wrote `secrets-replacements.txt` into the workspace root — one `git add .` from committing the secrets — and unlinked it immediately, so the command shown to the user always failed. It is written to the git directory and kept, and the generated document says to delete it once the rewrite is done.
 - Fall back to the standalone `git-filter-repo` launcher for cleanup.
+- **Attributing findings to their repository no longer scales with the number of findings.** Resolving the owning repository walked the tree up to `.git` once per finding, on the scan's critical path; findings cluster in a handful of directories, so the walk is now memoised per directory and a few thousand rows cost one lookup each instead.
 - Fix Git Info commit links for findings in child repositories and VS Code webviews.
 - Make each scan-result checkbox cell clickable.
 - Speed up result processing for large scans.

@@ -1317,12 +1317,8 @@ class LeakLockPanel {
                 
                 <script>
                     const vscode = acquireVsCodeApi();
-                    function openCommitUrl(findingIndex) {
-                        vscode.postMessage({ command: "openCommitUrl", findingIndex: findingIndex });
-                    }
 
-
-                    // Dependency installation and directory selection 
+                    // Dependency installation and directory selection
                     // is now handled by the sidebar panel
                     
                     function collectReplacements() {
@@ -3515,12 +3511,27 @@ class LeakLockPanel {
             this._remoteInfo = null;
         }
     }
-    /** Attach the owning repository and recognised remote to each finding. */
+    /**
+     * Attach the owning repository and recognised remote to each finding.
+     *
+     * findGitRoot walks up the tree with a `.git` existsSync per level, and this
+     * runs on the scan's critical path, so the lookup is memoised per directory:
+     * findings cluster in a handful of directories, and repeating the walk for
+     * every one of a few thousand rows is a scan-time cost for an answer already
+     * known.
+     */
     async _primeFindingRepoInfo(results, scanPath) {
         if (!Array.isArray(results) || !scanPath) {
             return;
         }
         const roots = new Map();
+        const rootByDir = new Map();
+        const rootForDir = (dir) => {
+            if (!rootByDir.has(dir)) {
+                rootByDir.set(dir, findGitRoot(dir));
+            }
+            return rootByDir.get(dir);
+        };
         for (const finding of results) {
             if (!finding || typeof finding.file !== "string" || !finding.file) {
                 continue;
@@ -3528,7 +3539,7 @@ class LeakLockPanel {
             const absoluteFile = path.isAbsolute(finding.file)
                 ? finding.file
                 : path.resolve(scanPath, finding.file);
-            const repoRoot = findGitRoot(path.dirname(absoluteFile));
+            const repoRoot = rootForDir(path.dirname(absoluteFile));
             if (!repoRoot) {
                 continue;
             }
@@ -3554,9 +3565,16 @@ class LeakLockPanel {
 
 
     /**
-     * The webview sends an index, never a URL. The host rebuilds the address
-     * from its own state and re-validates it, so a crafted message cannot turn
-     * `openExternal` into a launcher for an arbitrary address.
+     * Whether a permalink can be built for a finding at render time, used to
+     * decide if its hash is rendered as clickable. The URL itself is never given
+     * to the webview: clicking sends the index back, and _resolveCommitUrlVerified
+     * rebuilds the address, so a crafted message cannot turn `openExternal` into a
+     * launcher for an arbitrary address.
+     *
+     * Rendering cannot await git to disambiguate path candidates, so when the
+     * scanner repeats the repository directory this takes the de-prefixed reading
+     * — the one that does not produce /<repo>/<repo>/... — purely to answer
+     * "linkable or not". The opened link comes from the verified resolver.
      */
     _resolveCommitUrl(findingIndex) {
         const results = Array.isArray(this._scanResults) ? this._scanResults : [];
@@ -3566,9 +3584,6 @@ class LeakLockPanel {
         const finding = results[findingIndex];
         const repoRoot = finding.repoRoot || this._scanRepoRoot;
         const remoteInfo = finding.remoteInfo || this._remoteInfo;
-        // The inline href cannot await git to disambiguate candidates. When the
-        // scanner repeats the repository directory, use the de-prefixed URL
-        // reading; this avoids /<repo>/<repo>/... permalinks.
         const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoRoot);
         const file = candidates.length > 1 ? candidates[1] : candidates[0];
         if (!file) {
