@@ -69,4 +69,49 @@ suite('openCommitUrl resolution', () => {
             `https://github.com/o/r/blob/${SHA}/leaklock-fixture/experiment.py#L1`
         );
     });
+
+    test('priming repository info walks the tree once per directory, not once per finding', async () => {
+        // findGitRoot does an existsSync per level, and this runs on the scan's
+        // critical path. A 2,000-row scan through five directories must cost five
+        // walks, not two thousand.
+        const fs = require('fs');
+        const os = require('os');
+        const cp = require('child_process');
+
+        const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-prime-'));
+        try {
+            cp.execFileSync('git', ['init', '--quiet', repo]);
+            const dirs = ['a', 'b', 'c', 'd', 'e'];
+            for (const dir of dirs) {
+                fs.mkdirSync(path.join(repo, dir));
+            }
+            const results = [];
+            for (let i = 0; i < 2000; i++) {
+                results.push({ file: path.join(dirs[i % dirs.length], `f${i}.js`), commitHash: SHA, line: 1 });
+            }
+
+            const realExistsSync = fs.existsSync;
+            let gitLookups = 0;
+            fs.existsSync = (target) => {
+                if (String(target).endsWith(`${path.sep}.git`)) {
+                    gitLookups++;
+                }
+                return realExistsSync(target);
+            };
+            const panel = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'extension') });
+            try {
+                await panel._primeFindingRepoInfo(results, repo);
+            } finally {
+                fs.existsSync = realExistsSync;
+            }
+
+            assert.ok(gitLookups <= dirs.length * 2,
+                `expected one walk per directory, saw ${gitLookups} .git probes for ${results.length} findings`);
+            // Memoising must not change the answer.
+            assert.ok(results.every(r => r.repoRoot === repo),
+                'every finding is still attributed to the repository that owns it');
+        } finally {
+            fs.rmSync(repo, { recursive: true, force: true });
+        }
+    });
 });
