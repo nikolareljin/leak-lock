@@ -142,7 +142,7 @@ Example use case:
 - Option B (safe): Git path-based, exact paths across branches
 - Click "🔎 Preview matches" for path-based mode to see exact files across branches, remotes, and tags
 - Remotes are fetched automatically to avoid missing references
-- Prepare and review the generated script (copy it, or "💾 Save as .sh")
+- Prepare and review the generated script (copy it, or save it with "💾 Save as .sh" for bash — Linux, macOS, WSL, Git Bash — or "💾 Save as .ps1" for PowerShell; both are generated on every platform)
 - Final step (red): confirm to run (BFG or Git) and rewrite history
 
 ### 8. Ref-Complete History Rewrites (New in 0.6.0)
