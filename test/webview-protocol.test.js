@@ -77,6 +77,17 @@ suite('webview message protocol', () => {
             'showReportDialog must set it');
     });
 
+    test('commit clicks use the verified host resolver rather than an inline URL', () => {
+        assert.ok(PANEL.includes('class="commit-link" data-finding-index="'),
+            'the Git Info item must carry its finding index to the host');
+        assert.ok(PANEL.includes("event.target.closest('.commit-link[data-finding-index]')"),
+            'the delegated click handler must handle Git Info items');
+        assert.ok(PANEL.includes("vscode.postMessage({ command: 'openCommitUrl', findingIndex: idx })"),
+            'the click handler must ask the host to resolve and open the URL');
+        assert.ok(!PANEL.includes('<a class="commit-link" href='),
+            'an inline href bypasses Git-backed path verification');
+    });
+
     test('the commands this feature added are actually handled', () => {
         const handled = handledCommands(PANEL);
         assert.ok(handled, 'could not locate the message switch');
