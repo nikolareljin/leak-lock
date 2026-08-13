@@ -433,6 +433,49 @@ python3 -m pip install --user git-filter-repo
 Then reload the VS Code window so its `PATH` picks up the new binary. Leak Lock
 reports this case by name rather than passing the Python traceback through.
 
+**The secret keeps coming back after a cleanup**
+
+The cleanup is two separate steps: it rewrites your **local** history first, and the
+force-push to the remote is a **second, explicitly confirmed** step. If the second
+step never ran, or was rejected, the remote still holds the secret — and every
+`git fetch` or `git pull` brings those commits back into your clone. Preparing
+another cleanup does the same, because it force-resets each local branch to its
+remote counterpart before rewriting. This looks identical to "the rewrite did not
+work", including on the default branch, and no branch protection is involved.
+
+Check what the remote actually has:
+
+```bash
+git fetch --prune --tags origin
+git --no-replace-objects grep -F "<the secret>" $(git for-each-ref --format='%(refname)' refs/remotes)
+```
+
+`--no-replace-objects` matters. `git filter-repo` writes a `refs/replace/<old>`
+entry for every commit it rewrites, and git honours those refs everywhere: ask
+about the original commit and git answers with the rewritten one, so a branch that
+still carries the secret reads as clean. Leak Lock now deletes those refs after a
+rewrite and verifies past them regardless; a repository rewritten with `git
+filter-repo` directly may still have them:
+
+```bash
+git for-each-ref refs/replace          # anything here masks the original commits
+git for-each-ref --format='delete %(refname)' refs/replace | git update-ref --stdin
+```
+
+Two more reasons a secret survives a *successful* force-push, both outside the
+extension's reach:
+
+- **The hosting provider keeps the old commits.** On GitHub, any commit that was
+  ever part of a pull request stays reachable at its URL through `refs/pull/*`
+  after a force-push, and forks keep their own copy. Ask GitHub Support to run a
+  garbage collection on the repository, and delete forks first.
+- **Another clone pushes it back.** A colleague's working copy, a CI job, or a
+  second machine of yours still has the pre-rewrite history; the next push from
+  there restores it. Everyone must re-clone after a rewrite.
+
+Rotate the credential regardless. A secret that reached a remote must be treated
+as compromised, whatever the history now says.
+
 **A cleanup failed and I do not want to re-select every secret**
 
 Nothing is lost. The replacement rules are written to

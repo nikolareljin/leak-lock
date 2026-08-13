@@ -306,6 +306,17 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(!out.includes("for cmd in 'git' 'git-filter-repo'"), 'does not reject a valid PATH launcher before trying it');
 	});
 
+	test('drops the alias refs a rewrite leaves behind, and verifies past them', () => {
+		const out = script({ verifyRulesFile: '"$replacement_file"' });
+		// refs/replace/* makes git answer for the original commit with the rewritten
+		// one, so leaving them behind turns a still-leaking ref into a clean-looking
+		// one — for this script and for every later scan.
+		assert.ok(out.includes('refs/original/ refs/replace/'), 'both ref namespaces are deleted');
+		assert.ok(!/[^-]git grep --quiet/.test(out), 'verification greps must bypass replacement refs');
+		assert.ok(out.includes('git --no-replace-objects grep --quiet'));
+		assert.ok(out.includes('git --no-replace-objects ls-tree -r --name-only'));
+	});
+
 	test('one EXIT trap survives the whole script', () => {
 		const out = script();
 		// A second `trap ... EXIT` for the push log used to replace the first one, so
@@ -358,7 +369,7 @@ suite('Ref-complete rewrite script', () => {
 
 	test('verifies every remote ref after pushing', () => {
 		const out = script();
-		const verifyIndex = out.indexOf('git ls-tree -r --name-only');
+		const verifyIndex = out.indexOf('ls-tree -r --name-only');
 		const pushIndex = out.indexOf('git push --force --atomic');
 		assert.ok(verifyIndex > -1, 'emits a verification loop');
 		assert.ok(verifyIndex > pushIndex, 'verification runs after the push');
@@ -2785,6 +2796,36 @@ suite('Fourth review pass', () => {
 			assert.strictEqual(offenders.length, 1);
 			assert.strictEqual(offenders[0].reason, 'secret still present');
 			assert.ok(!offenders[0].notVerified, 'a genuine hit is not a not-verified marker');
+		});
+
+		test('a replacement ref cannot make a still-leaking remote read as clean', async () => {
+			// git filter-repo writes refs/replace/<old> -> <new>, and every git read
+			// honours them: ask about the original commit and git answers with the
+			// rewritten one. Verification used to inherit that, so a remote that still
+			// held the secret was reported "verified clean on every remote ref" — the
+			// false all-clear this product exists to prevent. Reproduced by hand here,
+			// because the alias is what does the damage, not how it got written.
+			const run = (args) => cp.execFileSync('git', args, { cwd: work, env, stdio: 'pipe' })
+				.toString().trim();
+			const dirty = run(['rev-parse', 'refs/remotes/origin/main']);
+			fs.writeFileSync(path.join(work, 'app.conf'), 'password = REDACTED\n');
+			run(['add', '-A']);
+			run(['commit', '--quiet', '-m', 'redacted']);
+			const clean = run(['rev-parse', 'HEAD']);
+			run(['update-ref', `refs/replace/${dirty}`, clean]);
+			try {
+				assert.match(run(['show', `${dirty}:app.conf`]), /REDACTED/,
+					'precondition: plain git now answers for the dirty commit with the clean one');
+				const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', {
+					literals: ['SUPERSECRETVALUE123']
+				});
+				assert.strictEqual(offenders.length, 1,
+					'the remote still carries the secret, so verification must not report clean');
+				assert.strictEqual(offenders[0].reason, 'secret still present');
+			} finally {
+				run(['update-ref', '-d', `refs/replace/${dirty}`]);
+				run(['reset', '--hard', dirty]);
+			}
 		});
 
 		test('empty criteria report not-verified rather than clean', async () => {
