@@ -655,7 +655,11 @@ suite("Prepared cleanup scripts", () => {
 				assert.strictEqual(handle.insideGitDir, true);
 				// fs.realpathSync: git answers with the resolved path, and the OS temp
 				// directory is a symlink on macOS.
-				assert.ok(handle.file.startsWith(path.join(fs.realpathSync(repo), ".git") + path.sep), handle.file);
+				// One location for both producers: the generated scripts write
+				// <git dir>/leak-lock/replacements.*, so a panel run must not invent a
+				// sibling directory the error messages and the guide do not mention.
+				assert.ok(handle.file.startsWith(path.join(fs.realpathSync(repo), ".git", "leak-lock") + path.sep),
+					handle.file);
 				assert.strictEqual(fs.readFileSync(handle.file, "utf8"), "a==>b");
 			} finally {
 				gitRewrite.removeRulesFile(handle);

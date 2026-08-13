@@ -478,8 +478,9 @@ as compromised, whatever the history now says.
 
 **A cleanup failed and I do not want to re-select every secret**
 
-Nothing is lost. The replacement rules are written to
-`<repo>/.git/leak-lock/replacements.*` and are deleted **only after** the rewrite,
+Nothing is lost. The replacement rules are written under `<repo>/.git/leak-lock/`
+— `run-*/replacements.txt` for a cleanup run from the panel, `replacements.*` for
+one run from a generated script — and are deleted **only after** the rewrite,
 the force-push and the verification have all succeeded. A failed run keeps the
 file and the error message names its path, so the same cleanup can be retried
 unchanged. The file holds the raw secret values, so delete it once you are done.

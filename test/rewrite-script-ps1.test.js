@@ -121,7 +121,10 @@ suite('buildRewriteScriptPs1', () => {
         assert.match(out, /& git filter-repo --version/, 'tries Git\'s subcommand first');
         assert.match(out, /Get-Command git-filter-repo/, 'then looks for pip\'s PATH launcher');
         assert.match(out, /function Invoke-GitFilterRepo \{ & git-filter-repo @args \}/);
-        assert.match(out, /pip install git-filter-repo/, 'and should say how to install it');
+        // One install line everywhere — python3, and --user — so a machine without a
+        // `python` shim is not told to run a command it does not have.
+        assert.match(out, /python3 -m pip install --user git-filter-repo/,
+            'and should say how to install it');
     });
 
     test('secret replacements go to a rule file, never inline in the script', () => {

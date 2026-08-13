@@ -247,8 +247,8 @@ Generates BFG commands for secret remediation.
 ```
 
 **Generated Files:**
-- Creates an owner-only `replacements.txt` under `<repo>/.git/leak-lock-*/` for BFG and
-  `git filter-repo`
+- Creates an owner-only `replacements.txt` under `<repo>/.git/leak-lock/run-*/` for BFG
+  and `git filter-repo` (generated scripts write `<repo>/.git/leak-lock/replacements.*`)
 - Format: `original_secret==>replacement_value` (a `regex:` prefix marks a pattern rule)
 - The git directory, never `$TMPDIR`: a snap-packaged `git-filter-repo` runs confined
   with a private `/tmp` and cannot open a host temp path, and the git directory is
