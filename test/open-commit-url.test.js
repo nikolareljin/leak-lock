@@ -1,5 +1,7 @@
 const assert = require('assert');
+const path = require('path');
 const { buildCommitUrl, isPermalinkUrl } = require('../git-permalink');
+const LeakLockPanel = require('../leakLockPanel');
 
 // _resolveCommitUrl is a small method on the panel class. Rather than boot a
 // webview, exercise the same resolution the handler performs, against the same
@@ -48,5 +50,23 @@ suite('openCommitUrl resolution', () => {
 
     test('a finding with no commit resolves to null', () => {
         assert.strictEqual(resolveCommitUrl([{ file: 'a.js', line: 1 }], REMOTE, 0), null);
+    });
+
+    test('omits a scanner-repeated repository directory from an inline permalink', () => {
+        const repoRoot = path.join(path.sep, 'tmp', 'damn-vulnerable-repo');
+        const panel = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'extension') });
+        panel._scanPath = repoRoot;
+        panel._scanRepoRoot = repoRoot;
+        panel._remoteInfo = REMOTE;
+        panel._scanResults = [{
+            commitHash: SHA,
+            file: 'damn-vulnerable-repo/leaklock-fixture/experiment.py',
+            line: 1
+        }];
+
+        assert.strictEqual(
+            panel._resolveCommitUrl(0),
+            `https://github.com/o/r/blob/${SHA}/leaklock-fixture/experiment.py#L1`
+        );
     });
 });
