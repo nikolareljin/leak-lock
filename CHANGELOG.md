@@ -1,6 +1,10 @@
 # Change Log
 
 ## 2026-08-12 — v0.8.1
+### Added
+- **Both script flavours are generated for every prepared cleanup, on every platform.** The prepared script used to be whatever the host runs — PowerShell on Windows, bash everywhere else — which is wrong for the very common case of a Windows user running the rewrite in WSL or Git Bash, where a `.ps1` is useless. **Save as .sh** and **Save as .ps1** are both offered; the platform decides which is listed first and which one the copy button and the preview show, not which one exists. Applies to the scan cleanup (BFG and Git-only) and to Remove Files (name-based and path-based).
+- **The bash script is checked against what macOS actually ships.** It targets bash 3.2 and avoids GNU-only tool flags, and a test now asserts that: no `mapfile`, no associative arrays, no `${var,,}`, no `grep -P`, no GNU `sed -i`, no `readlink -f`, no `mktemp -p`.
+
 ### Fixed
 - **"Run Git-only cleanup" failed before it touched a commit on any machine with the `git-filter-repo` snap.** The rewrite died with `FileNotFoundError: /tmp/leak-lock-XXXXXX/replacements.txt`, which read like a Leak Lock bug but is snap confinement: the snap gets a private `/tmp` and cannot open a path under the host's. The replacement rule file is now created inside the repository's `.git` directory instead — reachable by definition for the tool rewriting that repository, and outside the working tree, so the raw secret values still cannot be staged or committed. Applies to every rewrite path: the in-panel Git-only and BFG cleanups, the generated `.sh`, and the generated `.ps1` for Windows.
 - **A snap-confined `git-filter-repo` is now named as the problem.** A snap cannot read a repository stored outside `$HOME` at all, so the Python traceback is translated into the one action that fixes it: `python3 -m pip install --user git-filter-repo`, then reload the window.

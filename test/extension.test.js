@@ -682,6 +682,44 @@ suite("Prepared cleanup scripts", () => {
 		assert.match(hint, /pip install --user git-filter-repo/);
 		assert.strictEqual(gitRewrite.describeSandboxedFilterRepo("some other failure", "/x"), null);
 	});
+	test("every builder can emit either flavour, whatever the host platform is", () => {
+		const p = panel();
+		const rules = { "secret-value": "redacted" };
+		const cases = [
+			["scan git", (flavor) => p._buildScanGitReplaceCommand("/repo", rules, "git@example.com:r.git", flavor)],
+			["scan bfg", (flavor) => p._buildScanBfgReplaceCommand("/repo", rules, flavor)],
+			["removal bfg", (flavor) => p._buildBfgCommand("/repo", [{ path: "a.env", base: "a.env", type: "file" }], flavor)],
+			["removal bfg per-target", (flavor) => p._buildIndividualBfgCommands("/repo", [{ path: "a.env", base: "a.env", type: "file" }], flavor)],
+			["removal git", (flavor) => p._buildGitFilterBranchCommandForDisplay("/repo", "git rm -r --cached --ignore-unmatch \"a.env\"", [{ path: "a.env", base: "a.env", type: "file" }], flavor)]
+		];
+		for (const [name, build] of cases) {
+			const sh = build("sh");
+			const ps1 = build("ps1");
+			assert.ok(sh.startsWith("#!/usr/bin/env bash"), `${name}: sh flavour is a bash script`);
+			assert.ok(ps1.includes("$ErrorActionPreference"), `${name}: ps1 flavour is a PowerShell script`);
+			assert.notStrictEqual(sh, ps1, `${name}: the two flavours are not the same text`);
+		}
+	});
+
+	test("the bash script stays within what macOS ships (bash 3.2)", () => {
+		const full = panel()._buildScanGitReplaceCommand("/repo", { "secret-value": "redacted" }, null, "sh");
+		// Comments are stripped: the header documents the very constructs this test
+		// forbids, and matching them there would fail on the documentation.
+		const script = full.split("\n").filter(line => !/^\s*#/.test(line)).join("\n");
+		// macOS ships bash 3.2 for licensing reasons, and it is what /usr/bin/env bash
+		// resolves to there unless the user installed a newer one. These are the 4.x
+		// constructs that would work on Linux and fail on a stock Mac.
+		assert.ok(!/\bmapfile\b|\breadarray\b/.test(script), "no mapfile/readarray (bash 4)");
+		assert.ok(!/declare\s+-A|local\s+-A/.test(script), "no associative arrays (bash 4)");
+		assert.ok(!/\$\{[A-Za-z_][A-Za-z0-9_]*\^\^|\$\{[A-Za-z_][A-Za-z0-9_]*,,/.test(script), "no ${var^^}/${var,,} (bash 4)");
+		assert.ok(!/&>>|\|&/.test(script), "no |& or &>> (bash 4)");
+		assert.ok(!/\bgrep\s+-P\b/.test(script), "no grep -P: BSD grep has no PCRE support");
+		assert.ok(!/\bsed\s+-i\s+[^']/.test(script), "no GNU-style sed -i: BSD sed needs an argument");
+		assert.ok(!/\breadlink\s+-f\b/.test(script), "no readlink -f: not in BSD readlink");
+		assert.ok(!/\bmktemp\s+-p\b|--tmpdir/.test(script), "no GNU-only mktemp flags");
+		assert.ok(full.startsWith("#!/usr/bin/env bash"), "found through PATH, not assumed at /bin/bash");
+	});
+
 	test("both prepared modes show save and local-run instructions", () => {
 		const p = panel();
 		p._scanResults = [{ file: "config.env", line: 1, secret: "secret", fullSecret: "secret", severity: "high", description: "test" }];
@@ -691,9 +729,15 @@ suite("Prepared cleanup scripts", () => {
 			p._scanCleanup.preparedCommand = "#!/bin/bash\necho prepared";
 			p._scanCleanup.preparedMode = mode;
 			const html = p._getResultsHtml();
+			// Both flavours, on every platform: a Windows user may run the rewrite in
+			// WSL or Git Bash, where only the bash script is any use.
 			assert.ok(html.includes("Save as .sh"));
+			assert.ok(html.includes("Save as .ps1"));
+			assert.ok(html.includes("saveScanScript('sh')"));
+			assert.ok(html.includes("saveScanScript('ps1')"));
 			assert.ok(html.includes("chmod 700 leak-lock-cleanup.sh"));
-			assert.ok(html.includes("owner-only OS temporary directory"));
+			assert.ok(html.includes("ExecutionPolicy Bypass"));
+			assert.ok(html.includes("owner-only directory inside the repository"));
 			assert.ok(html.includes(`copyScanCommand(&quot;scan-prepared-command-${mode}&quot;)`));
 		}
 	});

@@ -380,6 +380,8 @@ class LeakLockPanel {
         this._credentialStates = [];
         this._scanCleanup = {
             preparedCommand: null,
+            preparedScripts: null, // { sh, ps1 } - both are generated, the user picks
+            preparedFlavor: null,  // which of the two the panel is showing
             preparedMode: null, // 'bfg' | 'git'
             replacements: null,
             replacementsFile: null,
@@ -429,6 +431,8 @@ class LeakLockPanel {
             repoDir: null,
             targets: [], // { path, type: 'file'|'directory', base }
             preparedCommand: null,
+            preparedScripts: null, // { sh, ps1 } - both are generated, the user picks
+            preparedFlavor: null,
             preparedIndexFilter: null, // For git filter-branch execution
             preparedMode: null,
             preparing: false,
@@ -585,7 +589,7 @@ class LeakLockPanel {
                         LeakLockPanel.currentPanel._previewCustomRule(message.id);
                         break;
                     case 'scan.saveScript':
-                        LeakLockPanel.currentPanel._saveCleanupScript();
+                        LeakLockPanel.currentPanel._saveCleanupScript(message.flavor);
                         break;
                     case 'scan.exportJson':
                         LeakLockPanel.currentPanel._exportScanResultsJson();
@@ -1517,8 +1521,8 @@ class LeakLockPanel {
                     document.addEventListener('DOMContentLoaded', refreshSelectionUi);
                     refreshSelectionUi();
 
-                    function saveScanScript() {
-                        vscode.postMessage({ command: 'scan.saveScript' });
+                    function saveScanScript(flavor) {
+                        vscode.postMessage({ command: 'scan.saveScript', flavor: flavor });
                     }
 
                     function prepareBfgCommand() {
@@ -2026,6 +2030,7 @@ class LeakLockPanel {
                 }
                 this._removalState.repoDir = validated;
                 this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
                 this._removalState.preparedIndexFilter = null;
             } catch (e) {
                 vscode.window.showErrorMessage(`Invalid repository path: ${e.message}`);
@@ -2077,6 +2082,7 @@ class LeakLockPanel {
             for (const t of newTargets) existing.set(t.path, t);
             this._removalState.targets = Array.from(existing.values());
             this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
             this._removalState.preparedIndexFilter = null;
             this._updateWebviewContent();
         }
@@ -2090,6 +2096,7 @@ class LeakLockPanel {
         this._removalState.targets = this._removalState.targets.filter(t => t.path !== targetPath);
         if (this._removalState.targets.length !== beforeCount) {
             this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
             this._removalState.preparedIndexFilter = null;
             this._removalState.preparedMode = null;
             this._removalState.details = [];
@@ -2103,6 +2110,7 @@ class LeakLockPanel {
         }
         this._removalState.targets = [];
         this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._removalState.details = [];
@@ -2169,9 +2177,25 @@ class LeakLockPanel {
             : `(^|/)(${parts.join('|')})(/|$)`;
     }
 
-    _buildBfgCommand(repoDir, targets) {
+    /**
+     * Which script a machine runs by default. Both are always generated: a Windows
+     * user may well run the cleanup in WSL or Git Bash, where the `.ps1` is useless
+     * and the `.sh` is exactly right, and the reverse never comes up only because
+     * PowerShell is rarer elsewhere. The platform decides what is offered *first*,
+     * not what exists.
+     */
+    _defaultScriptFlavor() {
+        return process.platform === 'win32' ? 'ps1' : 'sh';
+    }
+
+    /** Both script flavours for one prepared cleanup, keyed by extension. */
+    _buildBothFlavors(build) {
+        return { sh: build('sh'), ps1: build('ps1') };
+    }
+
+    _buildBfgCommand(repoDir, targets, flavor = this._defaultScriptFlavor()) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-        if (process.platform === 'win32') {
+        if (flavor === 'ps1') {
             const args = this._buildBfgArgs(targets).map(a => gitRewrite.psQuote(a)).join(' ');
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir,
@@ -2211,6 +2235,7 @@ class LeakLockPanel {
                 this._removalState.blockedBranches = preflight.ahead;
                 this._removalState.blockedReason = preflight.reason;
                 this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 return;
             }
@@ -2218,12 +2243,12 @@ class LeakLockPanel {
             this._removalState.pushPlan = preflight.pushPlan;
 
             const mode = this._removalState.combineMode;
-            let cmd;
-            if (mode === 'combined') {
-                cmd = this._buildBfgCommand(validatedRepo, targets);
-            } else {
-                cmd = this._buildIndividualBfgCommands(validatedRepo, targets);
-            }
+            const scripts = this._buildBothFlavors((flavor) => mode === 'combined'
+                ? this._buildBfgCommand(validatedRepo, targets, flavor)
+                : this._buildIndividualBfgCommands(validatedRepo, targets, flavor));
+            const cmd = scripts[this._defaultScriptFlavor()];
+            this._removalState.preparedScripts = scripts;
+            this._removalState.preparedFlavor = this._defaultScriptFlavor();
             // Build details for granular feedback
             this._removalState.details = targets.map(t => ({
                 display: t.path,
@@ -2245,6 +2270,7 @@ class LeakLockPanel {
         this._removalState.combineMode = mode;
         // Invalidate prepared command to force regeneration with new mode
         this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._updateWebviewContent();
@@ -2254,9 +2280,9 @@ class LeakLockPanel {
         return String(s).replace(/"/g, '\\"');
     }
 
-    _buildIndividualBfgCommands(repoDir, targets) {
+    _buildIndividualBfgCommands(repoDir, targets, flavor = this._defaultScriptFlavor()) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-        if (process.platform === 'win32') {
+        if (flavor === 'ps1') {
             const rewriteLines = targets.map(t => {
                 const flag = t.type === 'directory' ? '--delete-folders' : '--delete-files';
                 const pattern = gitRewrite.psQuote(this._escapeRegex(t.base));
@@ -2287,6 +2313,7 @@ class LeakLockPanel {
         this._removalState.deletionMode = mode;
         // Clear previous prepared command/preview when switching
         this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._updateWebviewContent();
@@ -2413,10 +2440,10 @@ class LeakLockPanel {
         return rmCmds.length ? rmCmds : 'echo no-op';
     }
 
-    _buildGitFilterBranchCommandForDisplay(repoDir, indexFilter, targets = []) {
+    _buildGitFilterBranchCommandForDisplay(repoDir, indexFilter, targets = [], flavor = this._defaultScriptFlavor()) {
         // Display/copy version of the command. Execution goes through
         // gitRewrite.runRewrite(), which follows the exact same sequence.
-        if (process.platform === 'win32') {
+        if (flavor === 'ps1') {
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir,
                 rewriteLines: [
@@ -2457,6 +2484,7 @@ class LeakLockPanel {
                 this._removalState.blockedBranches = preflight.ahead;
                 this._removalState.blockedReason = preflight.reason;
                 this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 return;
             }
@@ -2468,7 +2496,11 @@ class LeakLockPanel {
             this._removalState.preparedIndexFilter = indexFilter;
             this._removalState.repoDir = validatedRepo;
             // Build display-only command for UI
-            const displayCmd = this._buildGitFilterBranchCommandForDisplay(validatedRepo, indexFilter, targets);
+            const scripts = this._buildBothFlavors((flavor) =>
+                this._buildGitFilterBranchCommandForDisplay(validatedRepo, indexFilter, targets, flavor));
+            this._removalState.preparedScripts = scripts;
+            this._removalState.preparedFlavor = this._defaultScriptFlavor();
+            const displayCmd = scripts[this._removalState.preparedFlavor];
             this._removalState.preparedCommand = displayCmd;
             this._removalState.preparedMode = 'git';
         } catch (e) {
@@ -2631,6 +2663,7 @@ class LeakLockPanel {
                 this._removalState.repoDir = validated;
                 this._removalState.targets = [];
                 this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 this._removalState.preview = null;
                 this._removalState.details = [];
@@ -2890,17 +2923,27 @@ class LeakLockPanel {
         const gitCommandText = prepared && this._scanCleanup.preparedMode === 'git'
             ? prepared
             : 'Git-only command will appear here after preparation.';
+        // Both scripts are generated for every prepared cleanup. Windows shows the
+        // PowerShell one first and the bash one second (WSL, Git Bash); everywhere
+        // else the order is reversed. Neither is hidden: the shell that runs the
+        // rewrite is not necessarily the one that prepared it.
+        const nativeFirst = this._defaultScriptFlavor() === 'ps1';
+        const saveButtons = [
+            `<button class="scan-button" onclick="saveScanScript('sh')" title="bash: Linux, macOS, WSL or Git Bash">💾 Save as .sh</button>`,
+            `<button class="scan-button" onclick="saveScanScript('ps1')" title="PowerShell on Windows">💾 Save as .ps1</button>`
+        ];
         const renderPreparedActions = (id) => `
             <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
                 <button class="scan-button" onclick="copyScanCommand(&quot;${id}&quot;)">📋 Copy command</button>
-                <button class="scan-button" onclick="saveScanScript()">💾 Save as .sh</button>
+                ${(nativeFirst ? saveButtons.slice().reverse() : saveButtons).join('\n                ')}
             </div>
             <div class="hint" style="margin-top:8px;">
                 <strong>Run manually:</strong>
                 <ol style="margin:6px 0 0 20px; padding:0;">
-                    <li>Choose <strong>Save as .sh</strong> (or copy the script into <code>leak-lock-cleanup.sh</code>).</li>
-                    <li>In a local terminal run <code>chmod 700 leak-lock-cleanup.sh</code>, then <code>./leak-lock-cleanup.sh</code>. The script changes to the selected repository itself.</li>
-                    <li>Or use the red <strong>Run cleanup</strong> button below. Leak Lock stores replacement data in an owner-only OS temporary directory, removes it on success or failure, and asks separately before force-pushing.</li>
+                    <li><strong>Save as .sh</strong> for bash — Linux, macOS, and on Windows for WSL or Git Bash. Then <code>chmod 700 leak-lock-cleanup.sh</code> and <code>./leak-lock-cleanup.sh</code>.</li>
+                    <li><strong>Save as .ps1</strong> for PowerShell on Windows: <code>powershell -ExecutionPolicy Bypass -File .\\leak-lock-cleanup.ps1</code>.</li>
+                    <li>Either script changes to the selected repository itself, and the copy button above copies the ${nativeFirst ? 'PowerShell' : 'bash'} version shown here.</li>
+                    <li>Or use the red <strong>Run cleanup</strong> button below. Leak Lock keeps the replacement rules in an owner-only directory inside the repository's <code>.git</code>, removes them once the cleanup completed, and asks separately before force-pushing.</li>
                 </ol>
             </div>`;
         const preparedBlockBfg = `
@@ -3031,17 +3074,31 @@ class LeakLockPanel {
     }
 
     /** Write the prepared rewrite script to a file the user picks. */
-    async _saveCleanupScript() {
-        const script = this._scanCleanup.preparedCommand || this._removalState.preparedCommand;
+    /**
+     * Save the prepared cleanup as a runnable script.
+     *
+     * Both flavours exist for every prepared cleanup, so this takes the one the user
+     * asked for rather than the one this machine happens to prefer: a Windows user
+     * running the rewrite in WSL or Git Bash needs the bash script, and saving them
+     * a `.ps1` there is useless.
+     */
+    async _saveCleanupScript(flavor) {
+        const wanted = flavor === 'sh' || flavor === 'ps1' ? flavor : this._defaultScriptFlavor();
+        const scripts = this._scanCleanup.preparedScripts || this._removalState.preparedScripts;
+        const script = (scripts && scripts[wanted])
+            || this._scanCleanup.preparedCommand || this._removalState.preparedCommand;
         if (!script) {
             vscode.window.showWarningMessage('Prepare a cleanup command first.');
             return;
         }
+        const isPowerShell = wanted === 'ps1';
         // Wrap the whole flow, including showSaveDialog, so a dialog rejection can
         // never surface as an unhandled promise rejection from the message handler.
         try {
             const target = await vscode.window.showSaveDialog({
-                filters: { 'Shell script': ['sh'] },
+                filters: isPowerShell
+                    ? { 'PowerShell script': ['ps1'] }
+                    : { 'Shell script': ['sh'] },
                 saveLabel: 'Save cleanup script'
             });
             if (!target) {
@@ -3057,7 +3114,10 @@ class LeakLockPanel {
                 }
                 permissionNote = " (permissions are managed by Windows ACLs)";
             }
-            vscode.window.showInformationMessage(`Cleanup script saved${permissionNote} to ${target.fsPath}. Run it locally with: bash ${gitRewrite.shellQuote(target.fsPath)}`);
+            const runHint = isPowerShell
+                ? `powershell -ExecutionPolicy Bypass -File ${gitRewrite.psQuote(target.fsPath)}`
+                : `bash ${gitRewrite.shellQuote(target.fsPath)}`;
+            vscode.window.showInformationMessage(`Cleanup script saved${permissionNote} to ${target.fsPath}. Run it locally with: ${runHint}`);
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to save script: ${e.message}`);
         }
@@ -3253,6 +3313,7 @@ class LeakLockPanel {
             this._isScanning = true;
             this._scanResults = [];
             this._scanCleanup.preparedCommand = null;
+        this._scanCleanup.preparedScripts = null;
             this._scanCleanup.preparedMode = null;
             this._scanCleanup.replacements = null;
             this._scanCleanup.replacementsFile = null;
@@ -6592,9 +6653,9 @@ class LeakLockPanel {
             'they contain the values you asked to redact, so delete that file once you are done.';
     }
 
-    _buildScanBfgReplaceCommand(scanPath, replacements) {
+    _buildScanBfgReplaceCommand(scanPath, replacements, flavor = this._defaultScriptFlavor()) {
         const bfgPath = path.join(this._extensionUri.fsPath, "bfg.jar");
-        if (process.platform === 'win32') {
+        if (flavor === 'ps1') {
             const { replacementsContent } = this._buildReplacementScriptSetupPs1(replacements);
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir: scanPath,
@@ -6620,8 +6681,8 @@ class LeakLockPanel {
         });
     }
 
-    _buildScanGitReplaceCommand(scanPath, replacements, remoteUrl = null) {
-        if (process.platform === 'win32') {
+    _buildScanGitReplaceCommand(scanPath, replacements, remoteUrl = null, flavor = this._defaultScriptFlavor()) {
+        if (flavor === 'ps1') {
             const { replacementsContent } = this._buildReplacementScriptSetupPs1(replacements);
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir: scanPath,
@@ -6958,6 +7019,7 @@ class LeakLockPanel {
                 this._scanCleanup.blockedBranches = preflight.ahead;
                 this._scanCleanup.blockedReason = preflight.reason;
                 this._scanCleanup.preparedCommand = null;
+        this._scanCleanup.preparedScripts = null;
                 this._scanCleanup.preparedMode = null;
                 this._scanCleanup.remoteError = preflight.remoteError || null;
                 if (preflight.remoteError) {
@@ -6978,10 +7040,15 @@ class LeakLockPanel {
             this._scanCleanup.blockedBranches = preflight.ahead.length ? preflight.ahead : null;
             this._scanCleanup.blockedReason = preflight.ahead.length ? 'unpushed-commits' : null;
 
-            const command = mode === "git"
-                ? this._buildScanGitReplaceCommand(scanPath, resolvedReplacements, preflight.remoteUrl)
-                : this._buildScanBfgReplaceCommand(scanPath, resolvedReplacements);
-            this._scanCleanup.preparedCommand = command;
+            // Both flavours, every time: the machine that prepares a cleanup is not
+            // necessarily the shell that runs it (WSL and Git Bash on Windows, and a
+            // script saved for a colleague on another OS).
+            const scripts = this._buildBothFlavors((flavor) => mode === "git"
+                ? this._buildScanGitReplaceCommand(scanPath, resolvedReplacements, preflight.remoteUrl, flavor)
+                : this._buildScanBfgReplaceCommand(scanPath, resolvedReplacements, flavor));
+            this._scanCleanup.preparedScripts = scripts;
+            this._scanCleanup.preparedFlavor = this._defaultScriptFlavor();
+            this._scanCleanup.preparedCommand = scripts[this._scanCleanup.preparedFlavor];
             this._scanCleanup.preparedMode = mode;
             this._scanCleanup.replacements = resolvedReplacements;
             this._scanCleanup.replacementsFile = null;
@@ -7113,6 +7180,7 @@ class LeakLockPanel {
             await this._executeBFGCleanup(replacements);
         }
         this._scanCleanup.preparedCommand = null;
+        this._scanCleanup.preparedScripts = null;
         this._scanCleanup.preparedMode = null;
         this._scanCleanup.replacements = null;
         // `replacementsFile` is NOT cleared here: a failed cleanup leaves the rule
