@@ -682,6 +682,25 @@ suite("Prepared cleanup scripts", () => {
 		assert.match(hint, /pip install --user git-filter-repo/);
 		assert.strictEqual(gitRewrite.describeSandboxedFilterRepo("some other failure", "/x"), null);
 	});
+
+	test("a Buffer stderr still produces the snap hint, not a raw traceback", async () => {
+		// execFile yields a string under its default encoding, but a caller passing
+		// `encoding: 'buffer'` yields a Buffer, and the hint must not depend on which.
+		const gitRewrite = require("../git-rewrite");
+		const traceback = [
+			'  File "/snap/git-filter-repo/50/bin/git-filter-repo", line 2131, in get_replace_text',
+			"FileNotFoundError: [Errno 2] No such file or directory: '/x/replacements.txt'"
+		].join("\n");
+		for (const stderr of [traceback, Buffer.from(traceback)]) {
+			const error = new Error("Command failed: git filter-repo --replace-text /x/replacements.txt --force");
+			error.stderr = stderr;
+			const output = [error.message, error.stderr]
+				.map(part => (typeof part === "string" ? part : String(part)))
+				.join("\n");
+			assert.match(gitRewrite.describeSandboxedFilterRepo(output, "/x/replacements.txt"),
+				/installed as a snap/, `stderr as ${typeof stderr === "string" ? "string" : "Buffer"}`);
+		}
+	});
 	test("every builder can emit either flavour, whatever the host platform is", () => {
 		const p = panel();
 		const rules = { "secret-value": "redacted" };

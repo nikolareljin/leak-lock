@@ -188,6 +188,24 @@ function describeSandboxedFilterRepo(output, rulesPath) {
 }
 
 /**
+ * Everything git-filter-repo said, as text.
+ *
+ * `stderr` is a string under execFile's default encoding, but a caller passing
+ * `encoding: 'buffer'` makes it a Buffer, and both matchers below decide whether
+ * the user sees an actionable message or a raw Python traceback. Normalise once
+ * rather than depending on where implicit stringification happens to apply.
+ */
+function failureText(error) {
+    if (!error) {
+        return '';
+    }
+    return [error.message, error.stderr]
+        .filter(Boolean)
+        .map(part => (typeof part === 'string' ? part : String(part)))
+        .join('\n');
+}
+
+/**
  * Run git-filter-repo regardless of how pip installed it. Git discovers
  * subcommands from its exec-path, while pip commonly installs the standalone
  * `git-filter-repo` launcher on PATH. The latter is fully supported by the
@@ -199,8 +217,7 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
     const replaceTextAt = args.indexOf('--replace-text');
     const rulesPath = replaceTextAt >= 0 ? (args[replaceTextAt + 1] || null) : null;
     const withSandboxHint = (error) => {
-        const output = [error.message, error.stderr].filter(Boolean).join('\n');
-        const hint = describeSandboxedFilterRepo(output, rulesPath);
+        const hint = describeSandboxedFilterRepo(failureText(error), rulesPath);
         if (!hint) {
             return error;
         }
@@ -213,8 +230,7 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
     try {
         return await git(repoDir, ['filter-repo', ...args], options);
     } catch (gitError) {
-        const output = [gitError.message, gitError.stderr].filter(Boolean).join('\n');
-        if (!/['"]filter-repo['"] is not a git command|git: filter-repo:.*not a git command/i.test(output)) {
+        if (!/['"]filter-repo['"] is not a git command|git: filter-repo:.*not a git command/i.test(failureText(gitError))) {
             throw withSandboxHint(gitError);
         }
 
