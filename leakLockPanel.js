@@ -723,7 +723,6 @@ class LeakLockPanel {
                     }
                     .results-table {
                         width: 100%;
-                        height: 100%;
                         border-collapse: collapse;
                         margin-top: 10px;
                         table-layout: fixed;
@@ -740,7 +739,6 @@ class LeakLockPanel {
                     }
                     .replacement-input {
                         width: 100%;
-                        height: 100%;
                         box-sizing: border-box;
                         background-color: var(--vscode-input-background);
                         color: var(--vscode-input-foreground);
@@ -751,25 +749,6 @@ class LeakLockPanel {
                     }
                     .checkbox {
                         margin-right: 5px;
-                    }
-                    .scan-selection-cell {
-                        padding: 0 !important;
-                        text-align: center !important;
-                        vertical-align: middle;
-                    }
-                    .scan-selection-label {
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        width: 100%;
-                        height: 100%;
-                        min-height: 100%;
-                        box-sizing: border-box;
-                        padding: 8px 12px;
-                        cursor: pointer;
-                    }
-                    .scan-selection-label.disabled {
-                        cursor: not-allowed;
                     }
                     .selection-counter {
                         margin-top: 6px;
@@ -1298,7 +1277,6 @@ class LeakLockPanel {
                         }
                         .results-table {
                             width: 100%;
-                        height: 100%;
                             border-collapse: collapse;
                             table-layout: fixed;
                         }
@@ -1339,10 +1317,10 @@ class LeakLockPanel {
                 
                 <script>
                     const vscode = acquireVsCodeApi();
-                    
                     function openCommitUrl(findingIndex) {
                         vscode.postMessage({ command: "openCommitUrl", findingIndex: findingIndex });
                     }
+
 
                     // Dependency installation and directory selection 
                     // is now handled by the sidebar panel
@@ -1741,6 +1719,7 @@ class LeakLockPanel {
                                 showReportDialog('Credential details', '<div class="cred-loading">Inspecting…</div>');
                                 vscode.postMessage({ command: 'inspectCredential', findingIndex: idx });
                             }
+                        }
 
 
                         // Close dialog on overlay click (outside dialog box)
@@ -2795,12 +2774,12 @@ class LeakLockPanel {
                     parts.push(branchHtml);
                 }
                 if (result.commitBranches && result.commitBranches.length > 0) {
-                    tooltipParts.push('Branch(es): ' + result.commitBranches.join(', '));
+                    tooltipParts.push("Branch(es): " + result.commitBranches.join(", "));
                 }
                 if (shortHash) {
                     const commitUrl = this._resolveCommitUrl(index);
                     if (commitUrl) {
-                        parts.push(`<button type="button" class="commit-link" onclick="openCommitUrl(${index})" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="appearance: none; border: 0; background: transparent; padding: 0; font: inherit; font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</button>`);
+                        parts.push(`<a class="commit-link" href="${escapeHtml(commitUrl)}" target="_blank" rel="noreferrer" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</a>`);
                     } else {
                         parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
                     }
@@ -2833,7 +2812,7 @@ class LeakLockPanel {
 
             return `
                 <tr data-finding-index="${index}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="border-left: 3px solid ${severityColors[result.severity] || '#666'}; ${rowStyle}">
-                    <td class="scan-selection-cell"><label class="scan-selection-label${cleanupDisabled ? ' disabled' : ''}"${cleanupDisabled ? ` title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''}><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" aria-label="Select finding ${index + 1}" ${cleanupDisabled ? `disabled title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></label></td>
+                    <td><input type="checkbox" class="secret-checkbox checkbox" data-finding-index="${index}" ${cleanupDisabled ? `disabled title="${escapeHtml(this._cleanupIneligibleReason(result))}"` : ''} ${!cleanupDisabled && isSelected ? 'checked' : ''}></td>
                     <td title="${escapeHtml(pathInfo.tooltip)}${contextNote}${cleanupNote}">
                         <span class="file-link ${isGitHistory ? 'disabled' : 'clickable'}" data-file="${escapeHtml(result.file)}" data-line="${result.line}" style="font-family: monospace; font-size: 0.9em; color: var(--vscode-textLink-foreground); ${isGitHistory ? 'cursor: default;' : 'cursor: pointer; text-decoration: underline;'}" title="${escapeHtml(pathInfo.tooltip)}&#10;${iconTooltip}">
                             ${icon} ${escapeHtml(result.file)}
@@ -2869,8 +2848,8 @@ class LeakLockPanel {
                             <span style="font-size: 0.9em;">
                                 ${escapeHtml(result.description)}
                                 ${Array.isArray(result.ruleNames) && result.ruleNames.length > 1
-                                    ? ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.85em;" title="Every rule that matched this secret">— also matched: ${escapeHtml(result.ruleNames.filter(r => r !== result.ruleName).join(', '))}</span>`
-                                    : ''}
+                    ? ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.85em;" title="Every rule that matched this secret">— also matched: ${escapeHtml(result.ruleNames.filter(r => r !== result.ruleName).join(', '))}</span>`
+                    : ''}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">— in a third-party dependency, not your code (not selectable)</span>' : ''}
                                 ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
                                 ${!includeInCleanup ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(excluded from cleanup)</span>' : ''}
@@ -3426,11 +3405,10 @@ class LeakLockPanel {
             let allResults = this._deduplicateScanResults(
                 engineResults.concat(keywordHistoryResults)
             );
-            // A scan can start above several repositories (for example a workspace of
-            // projects). Discover the Git root and remote for every finding rather than
-            // treating the scan directory as one repository and producing 404 links.
-            await this._primeFindingRepoInfo(allResults, scanPath);
 
+            // Resolve each finding against its owning repository before rendering
+            // permalinks. A workspace scan can include several child repos.
+            await this._primeFindingRepoInfo(allResults, scanPath);
             // Only Nosey Parker accepts an ignore file, so without this the setting
             // meant different things depending on which engines were enabled.
             if (this._shouldExcludeDependencies()) {
@@ -3524,32 +3502,20 @@ class LeakLockPanel {
             this._remoteInfo = null;
         }
     }
-
-    /**
-     * Attach the owning repository context to each finding. The scan root is enough
-     * when it is one repository, but a workspace parent has no .git of its own while
-     * its child projects do.
-     */
+    /** Attach the owning repository and recognised remote to each finding. */
     async _primeFindingRepoInfo(results, scanPath) {
         if (!Array.isArray(results) || !scanPath) {
             return;
         }
-
         const roots = new Map();
-        const rootByDirectory = new Map();
         for (const finding of results) {
-            if (!finding || typeof finding.file !== 'string' || !finding.file) {
+            if (!finding || typeof finding.file !== "string" || !finding.file) {
                 continue;
             }
             const absoluteFile = path.isAbsolute(finding.file)
                 ? finding.file
                 : path.resolve(scanPath, finding.file);
-            const directory = path.dirname(absoluteFile);
-            let repoRoot = rootByDirectory.get(directory);
-            if (repoRoot === undefined) {
-                repoRoot = findGitRoot(directory);
-                rootByDirectory.set(directory, repoRoot);
-            }
+            const repoRoot = findGitRoot(path.dirname(absoluteFile));
             if (!repoRoot) {
                 continue;
             }
@@ -3558,22 +3524,21 @@ class LeakLockPanel {
                 roots.set(repoRoot, null);
             }
         }
-
         await Promise.all([...roots.keys()].map(async (repoRoot) => {
             try {
                 roots.set(repoRoot, parseRemote(await gitRewrite.getRemoteUrl(repoRoot)));
             } catch {
-                // An unrecognised or local remote simply keeps its commit hash as text.
                 roots.set(repoRoot, null);
             }
         }));
-
         for (const finding of results) {
-            if (finding && finding.repoRoot) {
+            if (finding?.repoRoot) {
                 finding.remoteInfo = roots.get(finding.repoRoot) || null;
             }
         }
     }
+
+
 
     /**
      * The webview sends an index, never a URL. The host rebuilds the address
@@ -3588,9 +3553,8 @@ class LeakLockPanel {
         const finding = results[findingIndex];
         const repoRoot = finding.repoRoot || this._scanRepoRoot;
         const remoteInfo = finding.remoteInfo || this._remoteInfo;
-        // Repo-relative, not scan-relative: see repoRelativePath. Scanning a
-        // folder above the repository otherwise puts the repository's own
-        // directory name into the URL and every link 404s.
+        // Repo-relative, not scan-relative: scanning a workspace parent must
+        // not put the child repository name into its own permalink.
         const file = repoRelativePath(finding.file, this._scanPath, repoRoot);
         if (!file) {
             return null;
@@ -3615,16 +3579,29 @@ class LeakLockPanel {
             return null;
         }
         const finding = results[findingIndex];
-        const repoRoot = finding.repoRoot || this._scanRepoRoot;
-        const remoteInfo = finding.remoteInfo || this._remoteInfo;
-        const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoRoot);
-        if (candidates.length === 0) {
+        const absoluteFile = path.isAbsolute(finding.file)
+            ? finding.file
+            : (this._scanPath ? path.resolve(this._scanPath, finding.file) : null);
+        // Resolve the repository only after the user asks to open a permalink.
+        // A workspace scan can contain many repositories, so doing this during
+        // result processing makes the scan unnecessarily slow.
+        const repoDir = absoluteFile ? findGitRoot(path.dirname(absoluteFile)) : this._scanRepoRoot;
+        const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoDir);
+        if (candidates.length === 0 || !repoDir) {
             return null;
         }
 
+        let remoteInfo = repoDir === this._scanRepoRoot ? this._remoteInfo : null;
+        if (!remoteInfo) {
+            try {
+                remoteInfo = parseRemote(await gitRewrite.getRemoteUrl(repoDir));
+            } catch {
+                remoteInfo = null;
+            }
+        }
+
         let file = candidates[0];
-        const repoDir = repoRoot || this._scanPath;
-        if (candidates.length > 1 && repoDir && finding.commitHash) {
+        if (candidates.length > 1 && finding.commitHash) {
             try {
                 const found = await gitRewrite.findPathInCommit(repoDir, finding.commitHash, candidates);
                 if (found) {
@@ -3645,30 +3622,28 @@ class LeakLockPanel {
     }
 
     async _openCommitUrl(findingIndex) {
-        const url = await this._resolveCommitUrl(findingIndex);
+        const url = await this._resolveCommitUrlVerified(findingIndex);
         if (!url) {
             vscode.window.showWarningMessage(
-                'Leak Lock could not build a link for that commit. The repository has no recognised remote, or the finding has no commit.'
+                "Leak Lock could not build a link for that commit. The repository has no recognised remote, or the finding has no commit."
             );
             return;
         }
-
         try {
             const opened = await vscode.env.openExternal(vscode.Uri.parse(url));
             if (opened) {
                 return;
             }
         } catch (error) {
-            console.warn('Could not open commit permalink:', error);
+            console.warn("Could not open commit permalink:", error);
         }
-
         const action = await vscode.window.showWarningMessage(
-            'VS Code could not open the commit permalink in your browser.',
-            'Copy permalink'
+            "VS Code could not open the commit permalink in your browser.",
+            "Copy permalink"
         );
-        if (action === 'Copy permalink') {
+        if (action === "Copy permalink") {
             await vscode.env.clipboard.writeText(url);
-            vscode.window.showInformationMessage('Commit permalink copied to the clipboard.');
+            vscode.window.showInformationMessage("Commit permalink copied to the clipboard.");
         }
     }
 
@@ -4362,8 +4337,8 @@ class LeakLockPanel {
                         const requestedMaxCount = Math.max(
                             100,
                             Math.max(1, keywordConfig.maxMatchesPerKeyword) *
-                                Math.max(1, passKeywords.length) *
-                                commitSafetyFactor
+                            Math.max(1, passKeywords.length) *
+                            commitSafetyFactor
                         );
                         let gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
                         if (Number.isFinite(options.maxCountCap) && options.maxCountCap > 0) {
@@ -4707,8 +4682,8 @@ class LeakLockPanel {
      * git commands are used for branch resolution and as a date fallback.
      * Batch-processes unique commit hashes to avoid redundant git calls.
      */
-    async _enrichResultsWithGitInfo(results, _scanPath) {
-        if (!this._scanRepoRoot || !results || results.length === 0) {
+    async _enrichResultsWithGitInfo(results, scanPath) {
+        if (!scanPath || !results || results.length === 0) {
             return;
         }
 
@@ -4732,7 +4707,7 @@ class LeakLockPanel {
         }
 
         // Limit enrichment work to keep git calls bounded on large result sets.
-        const MAX_HASHES_TO_ENRICH = 50;
+        const MAX_HASHES_TO_ENRICH = 200;
         const hashArray = [...uniqueHashes].slice(0, MAX_HASHES_TO_ENRICH);
         if (uniqueHashes.size > MAX_HASHES_TO_ENRICH) {
             console.warn(
@@ -4740,7 +4715,7 @@ class LeakLockPanel {
                 `${uniqueHashes.size} unique commit hashes. Some findings may not include branch/date metadata.`
             );
         }
-        const repoDir = this._scanRepoRoot;
+        const repoDir = this._scanRepoRoot || scanPath;
         const commitInfo = new Map(); // hash -> { branches, fallbackDate }
 
         // Resolve commit metadata in parallel with limited concurrency
@@ -4909,9 +4884,9 @@ class LeakLockPanel {
                 previewHtml = `
                     <div style="font-size: 0.85em; margin-top: 4px; ${zero ? 'color: var(--vscode-editorWarning-foreground);' : 'color: var(--vscode-descriptionForeground);'}">
                         ${zero
-                            ? '⚠️ Matches nothing in history. A rule that matches nothing is almost always a typo — check it before running a rewrite for it.'
-                            : `Touches <strong>${preview.commitCount}${preview.truncated ? '+' : ''}</strong> commit(s), ${preview.files.length} file(s)${preview.branches.length ? `, on: <code>${escapeHtml(preview.branches.slice(0, 6).join(', '))}</code>` : ''}${preview.truncated ? ` — capped at ${preview.maxCount} commits, the real total is higher` : ''}`
-                        }
+                        ? '⚠️ Matches nothing in history. A rule that matches nothing is almost always a typo — check it before running a rewrite for it.'
+                        : `Touches <strong>${preview.commitCount}${preview.truncated ? '+' : ''}</strong> commit(s), ${preview.files.length} file(s)${preview.branches.length ? `, on: <code>${escapeHtml(preview.branches.slice(0, 6).join(', '))}</code>` : ''}${preview.truncated ? ` — capped at ${preview.maxCount} commits, the real total is higher` : ''}`
+                    }
                         ${preview.files.length ? `<div style="margin-top: 2px;">Files: <code>${escapeHtml(preview.files.slice(0, 8).join(', '))}</code>${preview.files.length > 8 ? ` and ${preview.files.length - 8} more` : ''}</div>` : ''}
                     </div>`;
             }
@@ -4960,8 +4935,8 @@ class LeakLockPanel {
                     <button class="scan-button" id="custom-rule-add">➕ Add rule</button>
                 </div>
                 ${rules.length === 0
-                    ? '<p style="font-size: 0.85em; color: var(--vscode-descriptionForeground);">No manual rules yet. Rules persist across re-scans, because they are not tied to a scan result.</p>'
-                    : `<table class="results-table">
+                ? '<p style="font-size: 0.85em; color: var(--vscode-descriptionForeground);">No manual rules yet. Rules persist across re-scans, because they are not tied to a scan result.</p>'
+                : `<table class="results-table">
                         <thead><tr><th>Source text</th><th style="width: 80px;">Match</th><th style="width: 20%;">Replace with</th><th style="width: 250px; white-space: nowrap;">Actions</th></tr></thead>
                         <tbody>${ruleRows}</tbody>
                        </table>
@@ -5198,23 +5173,23 @@ class LeakLockPanel {
      * them ends up saying "clean" while the other says nothing was scanned.
      */
     _renderEmptyScanState() {
-            // Zero findings means nothing at all if nothing ran. Reporting "no issues"
-            // when every engine failed is a false all-clear — the single worst output
-            // this product can produce, and the failure the coverage panel exists to
-            // prevent. Say what happened instead.
-            // Keyed on "a scan produced coverage" rather than "at least one engine was
-            // reported": an empty engine list — leakLock.scan.engines set to [], or to
-            // values that filter to nothing — examined the repository just as little as
-            // three failing engines did, and must not read differently.
-            const engines = this._scanCoverage?.engines || [];
-            const ranSuccessfully = engines.filter(engine => engine.ok);
-            // `ok` is false for an engine that ran but did not finish — a timeout sets
-            // it via `ok: !scanRun.incomplete`. That engine *did* examine part of the
-            // repository, so claiming "no detection engine ran" would be wrong, and
-            // would contradict the incomplete banner rendered just below. The
-            // incomplete state has its own accurate message; leave it to it.
-            if (this._scanCoverage && !this._scanCoverage.incomplete && ranSuccessfully.length === 0) {
-                return `
+        // Zero findings means nothing at all if nothing ran. Reporting "no issues"
+        // when every engine failed is a false all-clear — the single worst output
+        // this product can produce, and the failure the coverage panel exists to
+        // prevent. Say what happened instead.
+        // Keyed on "a scan produced coverage" rather than "at least one engine was
+        // reported": an empty engine list — leakLock.scan.engines set to [], or to
+        // values that filter to nothing — examined the repository just as little as
+        // three failing engines did, and must not read differently.
+        const engines = this._scanCoverage?.engines || [];
+        const ranSuccessfully = engines.filter(engine => engine.ok);
+        // `ok` is false for an engine that ran but did not finish — a timeout sets
+        // it via `ok: !scanRun.incomplete`. That engine *did* examine part of the
+        // repository, so claiming "no detection engine ran" would be wrong, and
+        // would contradict the incomplete banner rendered just below. The
+        // incomplete state has its own accurate message; leave it to it.
+        if (this._scanCoverage && !this._scanCoverage.incomplete && ranSuccessfully.length === 0) {
+            return `
                 <div class="scan-section">
                     <div class="empty-results scan-not-run">
                         <div class="empty-icon">🚫</div>
@@ -5224,14 +5199,14 @@ class LeakLockPanel {
                             your repository has not been checked at all.
                         </p>
                         ${engines.length > 0
-                            ? `<ul class="not-run-reasons">
+                    ? `<ul class="not-run-reasons">
                                 ${engines.map(engine => `
                                     <li><strong>${escapeHtml(engine.displayName)}</strong> — ${escapeHtml(engine.note || 'did not run')}</li>
                                 `).join('')}
                             </ul>`
-                            // An empty list here would render as an empty bullet list, which
-                            // reads as "no problems" — the opposite of what it means.
-                            : `<ul class="not-run-reasons">
+                    // An empty list here would render as an empty bullet list, which
+                    // reads as "no problems" — the opposite of what it means.
+                    : `<ul class="not-run-reasons">
                                 <li>No engines were enabled, so there was nothing to run.</li>
                             </ul>`}
                         <p class="hint">
@@ -5246,17 +5221,17 @@ class LeakLockPanel {
                 ${this._renderScanCoverage()}
                 ${this._renderCustomRules()}
             `;
-            }
+        }
 
-            return `
+        return `
                 <div class="scan-section">
                     <div class="empty-results">
                         <div class="empty-icon">🛡️</div>
                         <h2>No Security Issues Found!</h2>
                         <p>Great news! Your repository scan completed successfully with no secrets or credentials detected.</p>
                         ${engines.some(engine => !engine.ok)
-                            ? `<p class="partial-warning">⚠️ ${engines.filter(e => !e.ok).length} of ${engines.length} engines did not run, so this result is narrower than it looks. See the coverage below.</p>`
-                            : ''}
+                ? `<p class="partial-warning">⚠️ ${engines.filter(e => !e.ok).length} of ${engines.length} engines did not run, so this result is narrower than it looks. See the coverage below.</p>`
+                : ''}
 
 
                         <div class="scan-summary">
@@ -7280,10 +7255,10 @@ class LeakLockPanel {
                 '<strong>Restore the restriction</strong> once the push succeeds.'
             ]
         }[blocked.provider] || [
-            `Ask whoever administers this remote to allow a force-push to ${refList}, or to lift the protection temporarily.`,
-            'Come back here and press <strong>Confirm force-push</strong> again — the rewrite is already done, only the push is left.',
-            '<strong>Restore the protection</strong> once the push succeeds.'
-        ];
+                `Ask whoever administers this remote to allow a force-push to ${refList}, or to lift the protection temporarily.`,
+                'Come back here and press <strong>Confirm force-push</strong> again — the rewrite is already done, only the push is left.',
+                '<strong>Restore the protection</strong> once the push succeeds.'
+            ];
 
         return `
             <div class="rewrite-blocked">

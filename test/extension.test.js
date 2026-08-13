@@ -4913,6 +4913,8 @@ suite('PR #105 eighth review pass', () => {
 		// Nosey Parker deliberately absent from the enabled set.
 		vscode.workspace.getConfiguration = () => ({ get: (key) => (key === 'scan.engines' ? ['gitleaks', 'trufflehog'] : undefined) });
 		p._checkDependencies = async () => {};
+		p._installBfg = async () => {};
+		p._reportSetupOutcome = () => {};
 
 		try {
 			await p._installDependencies();
