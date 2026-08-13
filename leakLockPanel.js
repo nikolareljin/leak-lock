@@ -1717,11 +1717,14 @@ class LeakLockPanel {
                             : null;
                         if (commitLink) {
                             const idx = parseInt(commitLink.getAttribute('data-finding-index'), 10);
+                            // Return only once the click was actually handled: an
+                            // unparseable index must fall through to the handlers below
+                            // rather than swallow the click.
                             if (!isNaN(idx)) {
                                 event.preventDefault();
                                 vscode.postMessage({ command: 'openCommitUrl', findingIndex: idx });
+                                return;
                             }
-                            return;
                         }
 
                         // Credential report click
