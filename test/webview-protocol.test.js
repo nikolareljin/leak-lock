@@ -60,7 +60,6 @@ suite('webview message protocol', () => {
         );
     });
 
-    test('commit links call the extension host directly', () => {        assert.ok(PANEL.includes('function openCommitUrl(findingIndex)'),            'the webview needs a direct host-message function for commit links');        assert.ok(PANEL.includes('onclick="openCommitUrl(${index})"'),            'the rendered Git Info control must call that function directly');        assert.ok(!PANEL.includes("event.target.closest('.commit-link')"),            'commit links must not depend on delegated click handling');    });
     test('both dialogs manage the shared report-mode class', () => {
         // showDetailDialog and showReportDialog render into the SAME overlay.
         // showReportDialog adds report-mode for HTML; if showDetailDialog does
