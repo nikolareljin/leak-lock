@@ -111,23 +111,35 @@ function resolveGitDir(repoDir) {
  * On failure the file is deliberately kept so the run can be retried without
  * re-deriving every rule.
  *
- * @returns {{dir: string, file: string, insideGitDir: boolean}}
+ * Everything lands under `<git dir>/leak-lock/`, the same directory the generated
+ * scripts use, so the path quoted in an error and the path documented in the user
+ * guide are one place, not two.
+ *
+ * @returns {{dir: string, file: string, parent: string, insideGitDir: boolean}}
  */
+const RULES_DIR_NAME = 'leak-lock';
+
 function createRulesFile(repoDir, contents, options = {}) {
-    const prefix = options.prefix || 'leak-lock-';
+    const prefix = options.prefix || 'run-';
     const fileName = options.fileName || 'replacements.txt';
     const gitDir = resolveGitDir(repoDir);
-    const dir = fs.mkdtempSync(path.join(gitDir || os.tmpdir(), prefix));
-    try {
-        fs.chmodSync(dir, 0o700);
-    } catch (permissionError) {
-        if (process.platform !== 'win32') {
-            throw permissionError;
+    const parent = gitDir ? path.join(gitDir, RULES_DIR_NAME) : os.tmpdir();
+    if (gitDir) {
+        fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    }
+    const dir = fs.mkdtempSync(path.join(parent, prefix));
+    for (const target of gitDir ? [parent, dir] : [dir]) {
+        try {
+            fs.chmodSync(target, 0o700);
+        } catch (permissionError) {
+            if (process.platform !== 'win32') {
+                throw permissionError;
+            }
         }
     }
     const file = path.join(dir, fileName);
     fs.writeFileSync(file, contents, { mode: 0o600, flag: 'wx' });
-    return { dir, file, insideGitDir: Boolean(gitDir) };
+    return { dir, file, parent: gitDir ? parent : null, insideGitDir: Boolean(gitDir) };
 }
 
 /** Remove a createRulesFile() handle. Never throws - cleanup is best effort. */
@@ -137,6 +149,13 @@ function removeRulesFile(handle) {
     }
     try {
         fs.rmSync(handle.dir, { recursive: true, force: true });
+        if (handle.parent) {
+            // Only when this was the last run: another cleanup may have kept its
+            // own rules after failing, and those are deliberately not ours to drop.
+            try {
+                fs.rmdirSync(handle.parent);
+            } catch { /* not empty, or already gone */ }
+        }
         return true;
     } catch (cleanupError) {
         console.warn('Failed to remove secure replacement directory:', cleanupError);
@@ -175,10 +194,13 @@ function describeSandboxedFilterRepo(output, rulesPath) {
  * upstream tool but `git filter-repo` cannot always see it.
  */
 async function runGitFilterRepo(repoDir, args, options = {}) {
-    const rulesPath = args[args.indexOf('--replace-text') + 1] || null;
+    // indexOf returns -1 when the flag is absent, and args[0] is not the rule file,
+    // so the lookup is guarded rather than offset-adjusted.
+    const replaceTextAt = args.indexOf('--replace-text');
+    const rulesPath = replaceTextAt >= 0 ? (args[replaceTextAt + 1] || null) : null;
     const withSandboxHint = (error) => {
         const output = [error.message, error.stderr].filter(Boolean).join('\n');
-        const hint = describeSandboxedFilterRepo(output, args.includes('--replace-text') ? rulesPath : null);
+        const hint = describeSandboxedFilterRepo(output, rulesPath);
         if (!hint) {
             return error;
         }
@@ -207,7 +229,7 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
                 throw withSandboxHint(launcherError);
             }
             throw new Error(
-                'git-filter-repo is not installed or is not on PATH. Install it with "python -m pip install git-filter-repo", ' +
+                'git-filter-repo is not installed or is not on PATH. Install it with "python3 -m pip install --user git-filter-repo", ' +
                 'then restart VS Code so its environment picks up the installation.'
             );
         }
@@ -743,7 +765,7 @@ function buildRewriteScriptPs1(options) {
         ...(requiredCommands.includes('git-filter-repo') ? [
             '#',
             '# Requires git filter-repo (Python). Install if needed:',
-            '#   pip install git-filter-repo',
+            '#   python3 -m pip install --user git-filter-repo',
         ] : []),
         '',
         '$ErrorActionPreference = \'Stop\'',
@@ -779,7 +801,7 @@ function buildRewriteScriptPs1(options) {
             '    Write-Host "git filter-repo is not installed." -ForegroundColor Red',
             '    Write-Host ""',
             '    Write-Host "Install it with pip (requires Python 3):"',
-            '    Write-Host "    pip install git-filter-repo"',
+            '    Write-Host "    python3 -m pip install --user git-filter-repo"',
             '    Write-Host ""',
             '    Write-Host "Or download the script and place it in git\'s exec-path:"',
             '    Write-Host "    https://github.com/newren/git-filter-repo"',
@@ -1138,7 +1160,7 @@ function buildRewriteScript(options) {
                 '\t\tgit-filter-repo "$@"',
                 '\telse',
                 '\t\techo "git-filter-repo is not installed or is not on PATH." >&2',
-                '\t\techo "Install it with: python -m pip install git-filter-repo" >&2',
+                '\t\techo "Install it with: python3 -m pip install --user git-filter-repo" >&2',
                 '\t\texit 1',
                 '\tfi',
                 '}',

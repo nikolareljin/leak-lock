@@ -3612,16 +3612,19 @@ class LeakLockPanel {
         const absoluteFile = path.isAbsolute(finding.file)
             ? finding.file
             : (this._scanPath ? path.resolve(this._scanPath, finding.file) : null);
-        // Resolve the repository only after the user asks to open a permalink.
-        // A workspace scan can contain many repositories, so doing this during
-        // result processing makes the scan unnecessarily slow.
-        const repoDir = absoluteFile ? findGitRoot(path.dirname(absoluteFile)) : this._scanRepoRoot;
+        // _primeFindingRepoInfo already attached the owning repository during the
+        // scan; this recomputes it because a finding can also arrive from a path
+        // that priming skipped (no scanPath, or a result added afterwards), and
+        // one user click is not worth a cache-invalidation rule.
+        const repoDir = finding.repoRoot
+            || (absoluteFile ? findGitRoot(path.dirname(absoluteFile)) : this._scanRepoRoot);
         const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoDir);
         if (candidates.length === 0 || !repoDir) {
             return null;
         }
 
-        let remoteInfo = repoDir === this._scanRepoRoot ? this._remoteInfo : null;
+        let remoteInfo = finding.remoteInfo
+            || (repoDir === this._scanRepoRoot ? this._remoteInfo : null);
         if (!remoteInfo) {
             try {
                 remoteInfo = parseRemote(await gitRewrite.getRemoteUrl(repoDir));
