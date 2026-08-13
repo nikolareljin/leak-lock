@@ -88,6 +88,28 @@ suite('webview message protocol', () => {
             'an inline href bypasses Git-backed path verification');
     });
 
+    test('keyboard activation matches each element\'s ARIA role', () => {
+        // A role="button" activates on Enter AND Space; a role="link" on Enter only,
+        // where Space belongs to scrolling. Making them uniform broke one or the
+        // other twice, so both directions are pinned here.
+        const handlers = PANEL.split('\n')
+            .filter(line => /role="(button|link)"/.test(line) && line.includes('onkeydown="'))
+            .map(line => ({
+                role: line.match(/role="(button|link)"/)[1],
+                handler: line.match(/onkeydown="([^"]+)"/)[1]
+            }));
+        assert.ok(handlers.length >= 3, `expected the keyboard-activated spans, found ${handlers.length}`);
+        for (const { role, handler } of handlers) {
+            const acceptsSpace = /=== ?' '/.test(handler) || handler.includes("'Spacebar'");
+            assert.ok(handler.includes("'Enter'"), `a role="${role}" activates on Enter`);
+            if (role === 'button') {
+                assert.ok(acceptsSpace, 'a role="button" must accept Space');
+            } else {
+                assert.ok(!acceptsSpace, 'a role="link" must not swallow Space');
+            }
+        }
+    });
+
     test('the commands this feature added are actually handled', () => {
         const handled = handledCommands(PANEL);
         assert.ok(handled, 'could not locate the message switch');

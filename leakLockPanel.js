@@ -2787,7 +2787,7 @@ class LeakLockPanel {
                     branchHtml = `<span title="${escapeHtml(branches.join(', '))}" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)}</span>`;
                 } else {
                     branchDataMap[index] = branches;
-                    branchHtml = `<span class="branch-link" data-branch-idx="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'){this.click();event.preventDefault();}" title="Click to see all ${branches.length} branches/tags" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
+                    branchHtml = `<span class="branch-link" data-branch-idx="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Click to see all ${branches.length} branches/tags" style="color: var(--vscode-gitDecoration-modifiedResourceForeground);">&#x1F33F; ${escapeHtml(firstBranch)} <span style="font-size: 0.8em; opacity: 0.8;">(+${branches.length - 1} more)</span></span>`;
                 }
             }
 
@@ -2869,7 +2869,7 @@ class LeakLockPanel {
                         </span>
                     </td>
                     <td title="${escapeHtml(result.secret)}">
-                        <span class="${credState.clickable ? 'credential-link' : ''}"${credState.clickable ? ` data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'){this.click();event.preventDefault();}" title="Click to inspect this credential"` : ''} style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;${credState.clickable ? ' cursor: pointer; text-decoration: underline;' : ''}">
+                        <span class="${credState.clickable ? 'credential-link' : ''}"${credState.clickable ? ` data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Click to inspect this credential"` : ''} style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px;${credState.clickable ? ' cursor: pointer; text-decoration: underline;' : ''}">
                             ${escapeHtml(result.secret)}
                         </span>${credState.badge}
                     </td>
