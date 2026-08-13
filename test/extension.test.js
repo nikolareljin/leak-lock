@@ -5174,8 +5174,11 @@ suite('PR #105 eighth review pass', () => {
 		const getConfiguration = vscode.workspace.getConfiguration;
 		let progressRan = false;
 
+		// writable: true, or the property is left read-only for the rest of the
+		// process and a later test patching it by assignment silently does nothing.
 		Object.defineProperty(vscode.window, 'withProgress', {
 			configurable: true,
+			writable: true,
 			value: async () => {
 				progressRan = true;
 				throw new Error('docker unavailable in test');
@@ -5195,6 +5198,7 @@ suite('PR #105 eighth review pass', () => {
 		} finally {
 			Object.defineProperty(vscode.window, 'withProgress', {
 				configurable: true,
+				writable: true,
 				value: withProgress
 			});
 			vscode.window.showInformationMessage = showInfo;
