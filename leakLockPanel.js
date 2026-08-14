@@ -6961,6 +6961,37 @@ class LeakLockPanel {
      * click time — this beats the debounced state, so a value typed immediately
      * before clicking Prepare is never stale.
      */
+    /**
+     * Selected findings that will NOT be rewritten, and why.
+     *
+     * _resolveScanReplacements drops them silently, which is how a cleanup can
+     * report success while one selected value stays in history: the row looked
+     * chosen, the rewrite ran, and that value was never in the rule file. The
+     * reasons are knowable up front, so they are stated up front.
+     */
+    _droppedFromCleanup() {
+        const dropped = [];
+        for (const idx of this._ensureScanSelection()) {
+            const result = this._scanResults[idx];
+            if (!result) {
+                continue;
+            }
+            if (!this._isCleanupEligible(result)) {
+                dropped.push({ index: idx, file: result.file, reason: this._cleanupIneligibleReason(result) });
+                continue;
+            }
+            if (!(result.fullSecret || result.secret)) {
+                dropped.push({
+                    index: idx,
+                    file: result.file,
+                    reason: 'The scanner reported no value for this finding, so there is nothing to search for. '
+                        + 'Add a manual redaction rule with the exact text instead.'
+                });
+            }
+        }
+        return dropped;
+    }
+
     _resolveScanReplacements(replacements) {
         const resolved = {};
         const payloadByIdx = {};
@@ -7003,6 +7034,19 @@ class LeakLockPanel {
         // selected findings is the exact case the feature exists for, and used to be
         // refused here.
         const resolvedReplacements = this._resolveCleanupRules(replacements);
+        // Say what will NOT be rewritten before anything irreversible is prepared.
+        // These findings are dropped from the rule list by design; silently doing so
+        // is what let a cleanup report success with a selected value still in history.
+        const dropped = this._droppedFromCleanup();
+        if (dropped.length > 0) {
+            const listed = dropped.slice(0, 3)
+                .map(d => `${d.file || 'finding ' + d.index}: ${d.reason}`)
+                .join(' ');
+            vscode.window.showWarningMessage(
+                `${dropped.length} selected finding(s) will NOT be included in this cleanup. ${listed}`
+                + (dropped.length > 3 ? ` (+${dropped.length - 3} more)` : '')
+            );
+        }
         if (!resolvedReplacements || resolvedReplacements.length === 0) {
             vscode.window.showWarningMessage('Nothing selected for removal. Select a finding or add a manual redaction rule.');
             return;
@@ -7197,6 +7241,34 @@ class LeakLockPanel {
         this._updateWebviewContent();
     }
 
+    /**
+     * After a rewrite that reported success, check that each rule actually took
+     * effect. filter-repo and BFG both exit 0 when a rule matches nothing, so
+     * without this a value can stay in history behind a green result - which is
+     * exactly how one selected secret survived a cleanup that removed the rest.
+     */
+    async _reportRulesThatDidNotApply(repoDir, replacements, label) {
+        let remaining = [];
+        try {
+            remaining = await gitRewrite.findUnremovedRules(repoDir, this._toRuleList(replacements));
+        } catch (error) {
+            console.warn('Could not check which rules applied:', error);
+            return false;
+        }
+        if (remaining.length === 0) {
+            return false;
+        }
+        this._scanCleanup.unappliedRules = remaining;
+        const named = remaining.slice(0, 3).map(r => `"${r.source}" (still in ${r.commit})`).join(', ');
+        vscode.window.showErrorMessage(
+            `${label} rewrote your history, but ${remaining.length} rule(s) matched nothing and their values are `
+            + `STILL in local history: ${named}${remaining.length > 3 ? ', …' : ''}. `
+            + 'The rule text must match the bytes in the commit exactly - check for a truncated value, a trailing '
+            + 'carriage return, or surrounding quotes, then add a manual redaction rule with the exact text and run again.'
+        );
+        return true;
+    }
+
     async _executeGitCleanup(replacements) {
         if (!replacements || Object.keys(replacements).length === 0) {
             vscode.window.showWarningMessage('No secrets selected for removal.');
@@ -7246,6 +7318,7 @@ class LeakLockPanel {
                 );
             });
 
+            await this._reportRulesThatDidNotApply(scanPath, replacements, 'Git-only cleanup');
             this._stagePushForConfirmation(
                 'Git-only cleanup', scanPath, report,
                 redactionRules.partitionForVerification(this._toRuleList(replacements))
@@ -7625,6 +7698,7 @@ class LeakLockPanel {
                 );
             });
 
+            await this._reportRulesThatDidNotApply(scanPath, replacements, 'BFG cleanup');
             this._stagePushForConfirmation(
                 'BFG cleanup', scanPath, report,
                 redactionRules.partitionForVerification(this._toRuleList(replacements))

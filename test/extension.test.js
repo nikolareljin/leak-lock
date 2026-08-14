@@ -682,6 +682,61 @@ suite("Prepared cleanup scripts", () => {
 		}
 	});
 
+	test("a rule that matched nothing is reported, not counted as removed", async () => {
+		// filter-repo and BFG both exit 0 when a rule matches nothing. Without this
+		// check a selected value stays in history behind a successful-looking run —
+		// the failure mode where every other secret disappears and one does not.
+		const gitRewrite = require("../git-rewrite");
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "leaklock-unapplied-"));
+		try {
+			const git = (...args) => cp.execFileSync("git", ["-C", repo, ...args], {
+				stdio: "pipe",
+				env: {
+					...process.env,
+					GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null",
+					GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e.com",
+					GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e.com"
+				}
+			});
+			cp.execFileSync("git", ["init", "--quiet", repo]);
+			fs.writeFileSync(path.join(repo, "app.env"), "token=AKIAIOSFODNN7EXAMPLE\n");
+			git("add", "-A");
+			git("commit", "--quiet", "-m", "seed");
+
+			const remaining = await gitRewrite.findUnremovedRules(repo, [
+				{ source: "AKIAIOSFODNN7EXAMPLE", mode: "literal" },   // still there
+				{ source: "NEVER-IN-THIS-REPO-XYZ", mode: "literal" }, // genuinely absent
+				{ source: "AKIA[A-Z0-9]+", mode: "regex" }             // regex form
+			]);
+
+			const sources = remaining.map(r => r.source);
+			assert.ok(sources.includes("AKIAIOSFODNN7EXAMPLE"), "a value still in history is reported");
+			assert.ok(sources.includes("AKIA[A-Z0-9]+"), "regex rules are checked with -G");
+			assert.ok(!sources.includes("NEVER-IN-THIS-REPO-XYZ"), "an absent value is not reported");
+			assert.ok(remaining[0].commit, "the reporting names a commit the value survives in");
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	test("selected findings that cannot be cleaned are named, not dropped in silence", () => {
+		const p = panel();
+		p._scanResults = [
+			{ file: "a.env", secret: "real-secret", fullSecret: "real-secret", severity: "high", description: "x" },
+			{ file: "node_modules/pkg/b.env", secret: "dep-secret", fullSecret: "dep-secret", isDependency: true, severity: "high", description: "x" },
+			{ file: "c.env", secret: "", fullSecret: "", severity: "high", description: "x" }
+		];
+		p._scanCleanup.selection = new Set([0, 1, 2]);
+
+		const dropped = p._droppedFromCleanup();
+		assert.strictEqual(dropped.length, 2, "the dependency row and the valueless row are both reported");
+		assert.deepStrictEqual(dropped.map(d => d.file).sort(), ["c.env", "node_modules/pkg/b.env"]);
+		assert.match(dropped.find(d => d.file === "node_modules/pkg/b.env").reason, /dependency/i);
+		assert.match(dropped.find(d => d.file === "c.env").reason, /no value/i);
+		// And the rule list really does exclude them, which is why saying so matters.
+		assert.deepStrictEqual(Object.keys(p._resolveScanReplacements({})), ["real-secret"]);
+	});
+
 	test("a snap-confined git-filter-repo failure is reported as a snap problem", () => {
 		const gitRewrite = require("../git-rewrite");
 		const traceback = [

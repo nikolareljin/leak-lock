@@ -199,6 +199,76 @@ function describeSandboxedFilterRepo(output, rulesPath) {
 }
 
 /**
+ * Which form of git-filter-repo this machine has, if any.
+ *
+ * Two installations are both valid and neither implies the other: pip drops a
+ * `git-filter-repo` launcher on PATH, while a distribution package usually puts
+ * it in git's exec-path so `git filter-repo` resolves. Probing both is the only
+ * way to answer "can a Git-only cleanup run here", which is what the setup panel
+ * needs to state before the user selects anything.
+ *
+ * @returns {Promise<{installed: boolean, form: string|null, version: string|null,
+ *                    path: string|null, confined: boolean, error: string|null}>}
+ */
+async function detectFilterRepo() {
+    const readVersion = async (command, args) => {
+        const { stdout, stderr } = await execFileAsync(command, args, { maxBuffer: MAX_BUFFER });
+        return String(stdout || stderr || '').trim().split('\n')[0] || null;
+    };
+
+    let subcommandError = null;
+    try {
+        const version = await readVersion('git', ['filter-repo', '--version']);
+        return { installed: true, form: 'git subcommand', version, path: null, confined: false, error: null };
+    } catch (error) {
+        subcommandError = failureText(error);
+    }
+
+    try {
+        const version = await readVersion('git-filter-repo', ['--version']);
+        let resolved = null;
+        try {
+            const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where' : 'which',
+                ['git-filter-repo'], { maxBuffer: MAX_BUFFER });
+            resolved = String(stdout).trim().split('\n')[0] || null;
+        } catch { /* the launcher answered --version; its path is a nicety */ }
+        return {
+            installed: true,
+            form: 'PATH launcher',
+            version,
+            path: resolved,
+            // A snap build runs confined: it cannot read a repository outside $HOME,
+            // so "installed" alone would overstate what it can do here.
+            confined: Boolean(resolved && resolved.startsWith('/snap/')),
+            error: null
+        };
+    } catch (launcherError) {
+        const output = failureText(launcherError);
+        return {
+            installed: false,
+            form: null,
+            version: null,
+            path: null,
+            confined: false,
+            error: /ENOENT|not found/i.test(output)
+                ? 'git-filter-repo is not installed or is not on PATH'
+                : (output.split('\n')[0] || subcommandError || 'git-filter-repo could not be run')
+        };
+    }
+}
+
+/**
+ * The command that installs git-filter-repo, as argv rather than a shell string.
+ *
+ * `--user` keeps it out of a system prefix, so no elevation is needed and a
+ * managed Python (Debian's PEP 668 marker) does not refuse the install.
+ */
+function buildFilterRepoInstallCommand(python = null) {
+    const interpreter = python || (process.platform === 'win32' ? 'python' : 'python3');
+    return { command: interpreter, args: ['-m', 'pip', 'install', '--user', '--upgrade', 'git-filter-repo'] };
+}
+
+/**
  * Everything git-filter-repo said, as text.
  *
  * `stderr` is a string under execFile's default encoding, but a caller passing
@@ -692,6 +762,46 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
     }
 
     return offenders;
+}
+
+/**
+ * Which rules did NOT take effect, after a rewrite that reported success.
+ *
+ * `git filter-repo --replace-text` exits 0 whether it replaced ten thousand
+ * occurrences or none: a rule whose text does not match the bytes in history is
+ * not an error to it. So the only way to know a value is actually gone is to look
+ * for it afterwards, with replacement refs disabled, across every ref.
+ *
+ * @param {string} repoDir
+ * @param {Array<{source: string, mode?: string}>} rules
+ * @returns {Promise<Array<{source: string, mode: string, commit: string}>>}
+ */
+async function findUnremovedRules(repoDir, rules) {
+    const remaining = [];
+    for (const rule of Array.isArray(rules) ? rules : []) {
+        if (!rule || !rule.source) {
+            continue;
+        }
+        const selector = rule.mode === 'regex' ? `-G${rule.source}` : `-S${rule.source}`;
+        try {
+            const { stdout } = await gitRaw(repoDir, [
+                'log', '--all', '--oneline', '--max-count=1', selector
+            ]);
+            const hit = String(stdout).trim().split('\n')[0];
+            if (hit) {
+                remaining.push({ source: rule.source, mode: rule.mode || 'literal', commit: hit });
+            }
+        } catch (error) {
+            // A failed search is not a clean result. Report it as unremoved with the
+            // reason attached, so it cannot be mistaken for "this rule worked".
+            remaining.push({
+                source: rule.source,
+                mode: rule.mode || 'literal',
+                commit: `could not be checked: ${failureText(error).split('\n')[0]}`
+            });
+        }
+    }
+    return remaining;
 }
 
 /**
@@ -1569,6 +1679,8 @@ module.exports = {
     removeRulesFile,
     describeSandboxedFilterRepo,
     runGitFilterRepo,
+    detectFilterRepo,
+    buildFilterRepoInstallCommand,
     hasRemote,
     getRemoteUrl,
     ensureRemote,
@@ -1586,6 +1698,7 @@ module.exports = {
     expireReflogAndGc,
     pushRewritten,
     verifyRemoteRefs,
+    findUnremovedRules,
     parseProtectedRefRejection,
     detectRemoteProvider,
     buildRewriteScript,
