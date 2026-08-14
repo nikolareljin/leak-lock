@@ -34,7 +34,10 @@ const ALL_PRESENT = {
     docker: { installed: true },
     noseyparker: { installed: true },
     java: { installed: true },
-    bfg: { installed: true }
+    bfg: { installed: true },
+    // Required for the Git-only cleanup, optional for scanning. A confined snap
+    // build counts as missing here: it cannot rewrite a repo outside $HOME.
+    filterRepo: { installed: true, confined: false }
 };
 
 // Docker plus the pulled image is itself a runnable scanner, so "nothing can
@@ -43,7 +46,8 @@ const NOTHING_RUNNABLE = {
     docker: { installed: false },
     noseyparker: { installed: false },
     java: { installed: true },
-    bfg: { installed: true }
+    bfg: { installed: true },
+    filterRepo: { installed: true, confined: false }
 };
 
 suite('optional dependencies', () => {
@@ -62,7 +66,8 @@ suite('optional dependencies', () => {
             docker: { installed: false },
             noseyparker: { installed: false },
             java: { installed: false },
-            bfg: { installed: false }
+            bfg: { installed: false },
+            filterRepo: { installed: true, confined: false }
         }, undefined);
         try {
             assert.deepStrictEqual(
@@ -104,7 +109,8 @@ suite('optional dependencies', () => {
             docker: { installed: true },
             noseyparker: { installed: false },
             java: { installed: false },
-            bfg: { installed: false }
+            bfg: { installed: false },
+            filterRepo: { installed: true, confined: false }
         }, undefined, ['gitleaks', 'trufflehog']);
         try {
             assert.deepStrictEqual(
@@ -175,7 +181,8 @@ suite('optional dependencies', () => {
             docker: { installed: false },
             noseyparker: { installed: false },
             java: { installed: true },
-            bfg: { installed: true }
+            bfg: { installed: true },
+            filterRepo: { installed: true, confined: false }
         }, ['gitleaks', 'noseyparker'], ['gitleaks']);
         try {
             assert.deepStrictEqual(p._missingRequiredDependencies(), [],
@@ -290,12 +297,31 @@ suite('optional dependencies', () => {
         } finally { p._restore(); }
     });
 
+    test('git-filter-repo is optional for scanning, and a confined snap counts as missing', () => {
+        // It is what the Git-only cleanup runs, so setup has to state it — but a
+        // machine without it can still scan, so it must not block anything.
+        const absent = provider({ ...ALL_PRESENT, filterRepo: { installed: false, confined: false } },
+            undefined, ALL_ENGINES);
+        try {
+            assert.deepStrictEqual(absent._missingRequiredDependencies(), [], 'scanning is unaffected');
+            assert.deepStrictEqual(absent._missingOptionalDependencies(), ['git-filter-repo']);
+        } finally { absent._restore(); }
+
+        const snap = provider({ ...ALL_PRESENT, filterRepo: { installed: true, confined: true } },
+            undefined, ALL_ENGINES);
+        try {
+            assert.deepStrictEqual(snap._missingOptionalDependencies(), ['git-filter-repo'],
+                'a confined snap cannot rewrite a repo outside $HOME, so "installed" is not "ready"');
+        } finally { snap._restore(); }
+    });
+
     test('optional absences never gate scanning', () => {
         const p = provider({
             docker: { installed: false },
             noseyparker: { installed: false },
             java: { installed: false },
-            bfg: { installed: false }
+            bfg: { installed: false },
+            filterRepo: { installed: true, confined: false }
         }, undefined, ['gitleaks']);
         try {
             // No enabled engine is missing, so nothing blocks.

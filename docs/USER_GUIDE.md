@@ -476,6 +476,37 @@ extension's reach:
 Rotate the credential regardless. A secret that reached a remote must be treated
 as compromised, whatever the history now says.
 
+**One value survived a cleanup that removed all the others**
+
+Two causes, both now reported by the extension rather than silent, and both worth
+checking by hand on an older build:
+
+1. **The finding never entered the rule list.** Rows that are third-party
+   dependencies, rows marked *(excluded from cleanup)*, and rows the scanner
+   reported without a value are skipped — they can look selected while taking no
+   part in the rewrite. Hover the checkbox for the reason, and use a **manual
+   redaction rule** instead: those are keyed on the text you type, so eligibility
+   never applies.
+2. **The rule matched nothing.** `--replace-text` is a literal substring match, and
+   `git filter-repo` exits 0 whether it replaced ten thousand occurrences or none.
+   A value copied from the panel can differ from the bytes in the commit: truncated
+   for display, carrying a trailing `\r`, or including the surrounding quotes. Take
+   it from the blob instead, and look at the raw bytes:
+
+```bash
+git show <commit>:<path> | grep -n '<fragment>'
+git show <commit>:<path> | sed -n '<line>p' | cat -A     # ^M, tabs, trailing spaces
+```
+
+   Rules containing `==>`, or starting with `regex:`, `glob:` or `literal:`, are
+   parsed as syntax by filter-repo and will not match as text.
+
+Check what is actually left, across every ref, with replacement refs bypassed:
+
+```bash
+git --no-replace-objects log --all --oneline -S '<value>'
+```
+
 **A cleanup failed and I do not want to re-select every secret**
 
 Nothing is lost. The replacement rules are written under `<repo>/.git/leak-lock/`
