@@ -38,6 +38,11 @@
         "title": "Fix Secrets"
       },
       {
+        "command": "leak-lock.purgeValue",
+        "title": "Leak Lock: Purge a value from git history",
+        "icon": "$(trash)"
+      },
+      {
         "command": "leak-lock.openPanel",
         "title": "Open Leak Lock Scanner",
         "icon": "$(shield)"

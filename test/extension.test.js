@@ -5636,3 +5636,116 @@ suite('PR #105 sixteenth review pass', () => {
 		assert.match(html, /Docker fallback also failed: Docker is not installed/, 'and so is the fallback');
 	});
 });
+
+// One exact string, out of every commit, without going through a finding row.
+// This is the path that exists because the findings pipeline could not be trusted
+// for it: a row can be ineligible for cleanup, and a row's value can be a
+// truncated display value that matches nothing while filter-repo still exits 0.
+suite('Purge a value from history', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const gitRewrite = require('../git-rewrite');
+	const vscode = require('vscode');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let base, origin, work, available;
+
+	function git(...args) {
+		return cp.execFileSync('git', ['-C', work, ...args], { env, stdio: 'pipe' }).toString();
+	}
+
+	suiteSetup(() => {
+		try {
+			cp.execFileSync('git', ['filter-repo', '--version'], { env, stdio: 'ignore' });
+			available = true;
+		} catch {
+			available = false;
+			return;
+		}
+		base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-purge-'));
+		origin = path.join(base, 'origin.git');
+		work = path.join(base, 'work');
+		cp.execFileSync('git', ['init', '--quiet', '--bare', '-b', 'master', origin], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['clone', '--quiet', origin, work], { env, stdio: 'pipe' });
+		// The reported shape: the value lives in an older commit and in a second
+		// file, and a later commit "fixes" only the first one.
+		fs.writeFileSync(path.join(work, 'app.env'), `token=${SECRET}\n`);
+		fs.mkdirSync(path.join(work, 'deploy'), { recursive: true });
+		fs.writeFileSync(path.join(work, 'deploy', 'config.yml'), `key: ${SECRET}\n`);
+		git('add', '-A');
+		git('commit', '--quiet', '-m', 'add config');
+		fs.writeFileSync(path.join(work, 'app.env'), 'token=REDACTED\n');
+		git('add', '-A');
+		git('commit', '--quiet', '-m', 'replace the value in the working tree only');
+		git('push', '--quiet', 'origin', 'HEAD:refs/heads/master');
+	});
+
+	suiteTeardown(() => {
+		if (base) { try { fs.rmSync(base, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function panelFor(repo, answers) {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		p._updateWebviewContent = () => {};
+		const inputs = [...answers.inputs];
+		vscode.window.showInputBox = async () => inputs.shift();
+		p._lastWarning = null;
+		vscode.window.showWarningMessage = async (...args) => {
+			if (args.length > 1) { return answers.confirm; }
+			p._lastWarning = args[0];
+			return undefined;
+		};
+		p._lastInfo = null;
+		vscode.window.showInformationMessage = async (message) => { p._lastInfo = message; };
+		p._lastError = null;
+		vscode.window.showErrorMessage = async (message) => { p._lastError = message; };
+		return p;
+	}
+
+	test('removes every occurrence, in every file, and proves it afterwards', async function () {
+		if (!available) { this.skip(); return; }
+		this.timeout(60000);
+
+		// Precondition: two files, and the tip only "fixed" one of them.
+		assert.ok(git('log', '--all', '--oneline', `-S${SECRET}`).trim(), 'the fixture starts dirty');
+
+		const p = panelFor(work, { inputs: [SECRET, 'REDACTED'], confirm: 'Rewrite history' });
+		await p._purgeValueFromHistory();
+
+		assert.strictEqual(p._lastError, null, `unexpected error: ${p._lastError}`);
+		assert.strictEqual(
+			cp.execFileSync('git', ['-C', work, '--no-replace-objects', 'log', '--all', '--oneline', `-S${SECRET}`],
+				{ env }).toString().trim(),
+			'',
+			'no commit reachable from any ref still contains the value'
+		);
+		assert.strictEqual(git('show', 'HEAD:deploy/config.yml').includes(SECRET), false,
+			'the second file is cleaned too, not only the one that was opened');
+		assert.strictEqual(
+			(await gitRewrite.findUnremovedRules(work, [{ source: SECRET, mode: 'literal' }])).length,
+			0,
+			'the rule is verified as applied'
+		);
+		// The remote is untouched until the staged push is confirmed.
+		assert.ok(p._scanCleanup.pendingPush, 'the force-push is staged for confirmation');
+		assert.ok(git('show', 'HEAD:app.env').includes('REDACTED'));
+	});
+
+	test('a value that is in no commit is refused instead of rewriting nothing', async function () {
+		if (!available) { this.skip(); return; }
+		const p = panelFor(work, { inputs: ['NOT-IN-THIS-REPOSITORY-AT-ALL', 'REDACTED'], confirm: 'Rewrite history' });
+		await p._purgeValueFromHistory();
+		assert.match(p._lastWarning || '', /no commit/i);
+	});
+});
