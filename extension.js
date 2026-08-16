@@ -202,6 +202,15 @@ function activate(context) {
 	});
 
 	// Register fix secrets command
+	// Removing one known string from history is its own task: it must not depend on
+	// a scan having produced a row for it, since a row can be ineligible for cleanup
+	// or carry a value the scanner truncated.
+	const purgeValueCommand = vscode.commands.registerCommand('leak-lock.purgeValue', async function (options) {
+		const { LeakLockPanel } = require('./leakLockPanel');
+		LeakLockPanel.createOrShow(context.extensionUri);
+		await LeakLockPanel.currentPanel._purgeValueFromHistory(options && options.value);
+	});
+
 	const fixSecretsCommand = vscode.commands.registerCommand('leak-lock.fixSecrets', function () {
 		LeakLockPanel.createOrShow(context.extensionUri);
 		vscode.window.showInformationMessage('Fix secrets functionality available in the Leak Lock panel.');
@@ -266,6 +275,7 @@ function activate(context) {
 		disposable,
 		scanRepositoryCommand,
 		fixSecretsCommand,
+		purgeValueCommand,
 		openPanelCommand,
 		openRemoveFilesCommand,
 		updateRemoveFilesRepoCommand,

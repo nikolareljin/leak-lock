@@ -476,6 +476,27 @@ extension's reach:
 Rotate the credential regardless. A secret that reached a remote must be treated
 as compromised, whatever the history now says.
 
+**Removing one known string from history, directly**
+
+When you already know the exact text — a credential you can see in a file, at a
+commit — you do not need a finding row for it. Run **Leak Lock: Purge a value from
+git history** from the Command Palette, or **🧹 Purge a value from history** in the
+results section:
+
+1. Paste the exact text. Take it from the file rather than from a finding row: rows
+   show a display value the scanner may have shortened, and a rule built from a
+   shortened value matches nothing while the rewrite still reports success.
+2. Choose what it becomes (default `*****`).
+3. Leak Lock shows how many commits contain it and which files, and asks once.
+4. It rewrites every branch and tag, then verifies the value is gone from history
+   before offering the force-push. If any occurrence survived, it says so and names
+   the commit instead of reporting success.
+5. Confirm the force-push separately, as with any other cleanup.
+
+The replacement is repository-wide: the same string is removed from every file it
+appears in, not only the one you were looking at. A credential that sits in two
+files is one credential, and the confirmation lists every file before anything runs.
+
 **One value survived a cleanup that removed all the others**
 
 Two causes, both now reported by the extension rather than silent, and both worth
