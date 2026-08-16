@@ -588,9 +588,6 @@ class LeakLockPanel {
                     case 'scan.previewCustomRule':
                         LeakLockPanel.currentPanel._previewCustomRule(message.id);
                         break;
-                    case 'scan.purgeValue':
-                        LeakLockPanel.currentPanel._purgeValueFromHistory(message.value);
-                        break;
                     case 'scan.saveScript':
                         LeakLockPanel.currentPanel._saveCleanupScript(message.flavor);
                         break;
@@ -1523,10 +1520,6 @@ class LeakLockPanel {
 
                     document.addEventListener('DOMContentLoaded', refreshSelectionUi);
                     refreshSelectionUi();
-
-                    function purgeValue() {
-                        vscode.postMessage({ command: 'scan.purgeValue' });
-                    }
 
                     function saveScanScript(flavor) {
                         vscode.postMessage({ command: 'scan.saveScript', flavor: flavor });
@@ -2994,7 +2987,6 @@ class LeakLockPanel {
                         <button class="scan-button" id="ll-clear-all" type="button">☐ Clear all</button>
                         <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
                         <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
-                        <button class="scan-button" onclick="purgeValue()" title="Remove one exact string from every commit, without going through a finding row">🧹 Purge a value from history</button>
                     </div>
                     <div id="selection-counter" class="selection-counter" data-selected="${selectedCount}" data-total="${eligibleIndexes.length}">
                         ${selectedCount} of ${eligibleIndexes.length} cleanable finding${eligibleIndexes.length === 1 ? '' : 's'} selected
@@ -7100,6 +7092,28 @@ class LeakLockPanel {
             this._scanCleanup.blockedBranches = preflight.ahead.length ? preflight.ahead : null;
             this._scanCleanup.blockedReason = preflight.ahead.length ? 'unpushed-commits' : null;
 
+            // A rule that matches nothing rewrites nothing, and both tools call that
+            // success. Say so now: discovered after the rewrite it reads as "the
+            // cleanup did not work", which is the report that prompted this check.
+            const unmatched = await this._rulesMatchingNothing(scanPath, resolvedReplacements);
+            this._scanCleanup.unmatchedRules = unmatched;
+            if (unmatched.length === resolvedReplacements.length) {
+                vscode.window.showErrorMessage(
+                    'Nothing was prepared: none of these rules match anything in this repository\'s history, so a '
+                    + 'rewrite would change nothing. The text has to match the bytes in the commit exactly - check for '
+                    + 'a value the scanner shortened, a trailing carriage return, or quotes copied along with it. '
+                    + '`git show <commit>:<path> | cat -A` shows the raw bytes.'
+                );
+                return;
+            }
+            if (unmatched.length > 0) {
+                const named = unmatched.slice(0, 3).map(rule => `"${rule.source}"`).join(', ');
+                vscode.window.showWarningMessage(
+                    `${unmatched.length} of ${resolvedReplacements.length} rules match nothing in history and will `
+                    + `rewrite nothing: ${named}${unmatched.length > 3 ? ', …' : ''}. The rest are still applied.`
+                );
+            }
+
             // Both flavours, every time: the machine that prepares a cleanup is not
             // necessarily the shell that runs it (WSL and Git Bash on Windows, and a
             // script saved for a colleague on another OS).
@@ -7250,6 +7264,33 @@ class LeakLockPanel {
     }
 
     /**
+     * Which rules would rewrite nothing, asked before the rewrite rather than after.
+     *
+     * `--replace-text` is a literal substring match and both rewrite tools exit 0
+     * when a rule matches no blob, so a rule built from a truncated value, from a
+     * line with a trailing carriage return, or from text that includes its
+     * surrounding quotes is indistinguishable from a rule that worked - until the
+     * secret is still there afterwards. This is the last moment before an
+     * irreversible operation, and the cheapest place to answer it.
+     */
+    async _rulesMatchingNothing(repoDir, rules) {
+        const list = this._toRuleList(rules).filter(rule => rule && rule.source);
+        if (!repoDir || list.length === 0) {
+            return [];
+        }
+        let present;
+        try {
+            present = await gitRewrite.findUnremovedRules(repoDir, list, { timeoutMs: 30000 });
+        } catch (error) {
+            // Never block a cleanup because the check itself failed.
+            console.warn('Could not pre-check the rewrite rules:', error);
+            return [];
+        }
+        const found = new Set(present.map(entry => entry.source));
+        return list.filter(rule => !found.has(rule.source));
+    }
+
+    /**
      * After a rewrite that reported success, check that each rule actually took
      * effect. filter-repo and BFG both exit 0 when a rule matches nothing, so
      * without this a value can stay in history behind a green result - which is
@@ -7275,160 +7316,6 @@ class LeakLockPanel {
             + 'carriage return, or surrounding quotes, then add a manual redaction rule with the exact text and run again.'
         );
         return true;
-    }
-
-    /**
-     * Remove one exact string from every commit in this repository.
-     *
-     * The findings pipeline could not do this reliably. A row can be dropped from
-     * the rule list (dependency, excluded, no value recorded), and the value shown
-     * in a row is a display value that the scanner may have truncated — a rule
-     * built from it matches nothing, and `git filter-repo` reports success anyway.
-     * This path takes the bytes the user confirms, from the blob rather than from a
-     * row, and proves the result afterwards instead of assuming it.
-     *
-     * The replacement is repository-wide on purpose. A credential that appears in
-     * two files is one credential; removing it from the file you happened to open
-     * and leaving the copy next to it is not a cleanup. The confirmation states
-     * every path it will touch, so "everywhere" is never a surprise.
-     */
-    async _purgeValueFromHistory(seed = null) {
-        const repoDir = this._scanCleanupRepo();
-        if (!repoDir) {
-            vscode.window.showErrorMessage('Open or select the repository to clean first.');
-            return;
-        }
-
-        const value = await vscode.window.showInputBox({
-            title: 'Purge a value from git history',
-            prompt: 'The exact text to remove from every commit. Copy it from the file, not from a truncated preview.',
-            value: typeof seed === 'string' ? seed : '',
-            ignoreFocusOut: true,
-            validateInput: (candidate) => {
-                const check = redactionRules.validateRule({ source: candidate, mode: 'literal', replaceWith: '' });
-                return check.valid ? null : check.errors[0];
-            }
-        });
-        if (!value) {
-            return;
-        }
-
-        const replaceWith = await vscode.window.showInputBox({
-            title: 'Replace it with',
-            prompt: 'What each occurrence becomes in the rewritten history.',
-            value: redactionRules.DEFAULT_REPLACEMENT,
-            ignoreFocusOut: true
-        });
-        if (replaceWith === undefined) {
-            return;
-        }
-
-        const rule = { source: value, mode: 'literal', replaceWith: replaceWith || redactionRules.DEFAULT_REPLACEMENT };
-
-        // What would this touch? Never ask for an irreversible rewrite without it.
-        let preview;
-        try {
-            preview = await this._previewValueInHistory(repoDir, rule);
-        } catch (error) {
-            vscode.window.showErrorMessage(`Could not inspect history: ${error.message}`);
-            return;
-        }
-        if (preview.commits.length === 0) {
-            vscode.window.showWarningMessage(
-                'That exact text is in no commit in this repository, so a rewrite would change nothing. '
-                + 'Check for a truncated value, a trailing carriage return, or surrounding quotes — '
-                + '`git show <commit>:<path> | cat -A` shows the raw bytes.'
-            );
-            return;
-        }
-
-        const fileList = preview.files.slice(0, 8).join(', ')
-            + (preview.files.length > 8 ? `, +${preview.files.length - 8} more` : '');
-        const proceed = await vscode.window.showWarningMessage(
-            `⚠️ Rewrite this repository's history?\n\n`
-            + `• ${preview.commits.length}${preview.truncated ? '+' : ''} commit(s) contain this text\n`
-            + `• File(s): ${fileList || 'none reported'}\n`
-            + `• Every occurrence becomes "${rule.replaceWith}", in every file and on every branch and tag\n\n`
-            + 'Your remote is not touched by this step; the force-push is confirmed separately.',
-            { modal: true },
-            'Rewrite history',
-            'Cancel'
-        );
-        if (proceed !== 'Rewrite history') {
-            return;
-        }
-
-        let report = null;
-        try {
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: 'Purging value from history...',
-                cancellable: false
-            }, async (progress) => {
-                report = await this._withSecureReplacementsFile(repoDir, [rule], async (replacementsFile) =>
-                    gitRewrite.runRewrite({
-                        repoDir,
-                        push: false,
-                        progress: (message) => progress.report({ increment: 10, message }),
-                        rewrite: async () => {
-                            await gitRewrite.runGitFilterRepo(
-                                repoDir,
-                                ['--replace-text', replacementsFile, '--force'],
-                                { maxBuffer: GIT_MAX_BUFFER }
-                            );
-                        }
-                    })
-                );
-            });
-        } catch (error) {
-            if (error instanceof gitRewrite.AheadBranchesError) {
-                this._scanCleanup.blockedBranches = error.branches;
-                this._updateWebviewContent();
-            }
-            vscode.window.showErrorMessage(
-                'The purge did not complete, and your remote was not touched — this step only rewrites local '
-                + `history. Reason: ${error.message}` + this._retainedReplacementsNote(error)
-            );
-            return;
-        }
-
-        // Prove it rather than report it: filter-repo exits 0 for a rule that
-        // matched nothing, so success here means "the value is gone", verified.
-        const stillThere = await this._reportRulesThatDidNotApply(repoDir, [rule], 'The purge');
-        if (stillThere) {
-            return;
-        }
-
-        vscode.window.showInformationMessage(
-            `Removed from ${preview.commits.length}${preview.truncated ? '+' : ''} commit(s) in local history. `
-            + 'Confirm the force-push below to apply it to the remote.'
-        );
-        this._scanCleanup.replacements = [rule];
-        this._stagePushForConfirmation(
-            'Purge from history', repoDir, report,
-            redactionRules.partitionForVerification([rule])
-        );
-        this._updateWebviewContent();
-    }
-
-    /** Commits and files that contain a rule's text, read straight from history. */
-    async _previewValueInHistory(repoDir, rule, maxCount = 200) {
-        const util = require('util');
-        const execFileAsync = util.promisify(execFile);
-        const { stdout } = await execFileAsync(
-            'git',
-            ['-C', repoDir, ...redactionRules.buildPreviewArgs(rule, { maxCount })],
-            {
-                timeout: 120000,
-                maxBuffer: GIT_MAX_BUFFER,
-                // Replacement refs from an earlier rewrite would answer for the
-                // original commits with their rewritten ones, hiding the very
-                // occurrences this preview exists to count.
-                env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
-            }
-        );
-        const parsed = redactionRules.parsePreviewOutput(stdout);
-        return { ...parsed, truncated: parsed.commits.length >= maxCount };
     }
 
     async _executeGitCleanup(replacements) {

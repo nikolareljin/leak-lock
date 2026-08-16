@@ -776,7 +776,11 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
  * @param {Array<{source: string, mode?: string}>} rules
  * @returns {Promise<Array<{source: string, mode: string, commit: string}>>}
  */
-async function findUnremovedRules(repoDir, rules) {
+async function findUnremovedRules(repoDir, rules, options = {}) {
+    // A rule that matches nothing walks the whole history before saying so, which is
+    // the slow case and the one worth bounding. A timeout is reported as "could not
+    // be checked" rather than as "clean" - the safe direction for both callers.
+    const timeout = options.timeoutMs || 60000;
     const remaining = [];
     for (const rule of Array.isArray(rules) ? rules : []) {
         if (!rule || !rule.source) {
@@ -786,7 +790,7 @@ async function findUnremovedRules(repoDir, rules) {
         try {
             const { stdout } = await gitRaw(repoDir, [
                 'log', '--all', '--oneline', '--max-count=1', selector
-            ]);
+            ], { timeout });
             const hit = String(stdout).trim().split('\n')[0];
             if (hit) {
                 remaining.push({ source: rule.source, mode: rule.mode || 'literal', commit: hit });
