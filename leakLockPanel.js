@@ -372,6 +372,25 @@ function sanitizeDockerVolumeName(name) {
  * rewrite rule, so those findings became non-selectable and the cleanup buttons
  * greyed out with nothing to act on.
  */
+/**
+ * Surface a rejection from a fire-and-forget handler.
+ *
+ * The webview posts a message and moves on; nothing awaits the promise the host
+ * returns. Without this, an error inside a handler is an unhandled rejection in
+ * the extension host - invisible to the user, who sees a button that does nothing.
+ */
+function reportIfRejected(promise, label) {
+    if (!promise || typeof promise.catch !== 'function') {
+        return;
+    }
+    promise.catch(error => {
+        console.error(`[leak-lock] ${label} failed:`, error);
+        vscode.window.showErrorMessage(
+            `${label} failed, and nothing in your repository was changed. ${error && error.message ? error.message : error}`
+        );
+    });
+}
+
 function matchedTextFromSnippet(match) {
     if (!match) {
         return null;
@@ -575,17 +594,28 @@ class LeakLockPanel {
                     case 'inspectCredential':
                         LeakLockPanel.currentPanel._inspectCredential(message.findingIndex);
                         break;
+                    // These four are async and nothing consumes their promise: a
+                    // rejection used to disappear, and the button looked dead. Report
+                    // it instead - a click must always produce a visible outcome.
                     case 'scan.prepareBfg':
-                        LeakLockPanel.currentPanel._prepareScanBfgCommand(message.replacements);
+                        reportIfRejected(
+                            LeakLockPanel.currentPanel._prepareScanBfgCommand(message.replacements),
+                            'Preparing the BFG command');
                         break;
                     case 'scan.prepareGit':
-                        LeakLockPanel.currentPanel._prepareScanGitCommand(message.replacements);
+                        reportIfRejected(
+                            LeakLockPanel.currentPanel._prepareScanGitCommand(message.replacements),
+                            'Preparing the Git-only command');
                         break;
                     case 'scan.runBfg':
-                        LeakLockPanel.currentPanel._runPreparedScanCleanup('bfg');
+                        reportIfRejected(
+                            LeakLockPanel.currentPanel._runPreparedScanCleanup('bfg'),
+                            'Running the BFG cleanup');
                         break;
                     case 'scan.runGit':
-                        LeakLockPanel.currentPanel._runPreparedScanCleanup('git');
+                        reportIfRejected(
+                            LeakLockPanel.currentPanel._runPreparedScanCleanup('git'),
+                            'Running the Git-only cleanup');
                         break;
                     case 'scan.confirmForcePush':
                         LeakLockPanel.currentPanel._confirmForcePush();
@@ -7351,7 +7381,11 @@ class LeakLockPanel {
             // Target what the repository stores, not what the scanner displayed. Runs
             // before the unmatched check so an encoded value is rewritten rather than
             // reported as "matches nothing".
-            const expansion = await this._expandRulesToStoredForms(scanPath, resolvedReplacements);
+            const expansion = await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Preparing cleanup: checking each rule against history...',
+                cancellable: false
+            }, async () => this._expandRulesToStoredForms(scanPath, resolvedReplacements));
             resolvedReplacements = expansion.rules;
             if (expansion.substitutions.length > 0) {
                 console.warn('[leak-lock] rules retargeted to their stored form:',
@@ -7708,21 +7742,39 @@ class LeakLockPanel {
 
         const expanded = [];
         const substitutions = [];
+        // A prepare must stay interactive. Beyond this many history walks the
+        // remaining forms are skipped and said so, rather than turning a click into
+        // a multi-minute silence.
+        const PROBE_BUDGET = 60;
+        let probes = 0;
+        let skippedForBudget = 0;
         for (const rule of list) {
             // A pattern is not a value: encoding variants of a regex are meaningless.
             if (rule.mode === 'regex') {
                 expanded.push(rule);
                 continue;
             }
-            // Every form is probed, including when the reported one already matches:
-            // a repository can hold the encoded form in a `.env` and the decoded form
-            // in a document, and rewriting only the one that happened to match leaves
-            // the credential in the repository.
+            // Each probe is a full `git log --all -S` walk, so the budget matters:
+            // nine forms times twenty findings is a few hundred history walks and
+            // several minutes of a button that looks dead. The reported form is
+            // probed first and, when it matches, only the forms that differ from it
+            // in encoding are worth trying - and only until the budget runs out.
             const stored = [];
-            for (const form of valueEncodings.candidateForms(rule.source)) {
+            const forms = valueEncodings.candidateForms(rule.source);
+            for (const form of forms) {
+                if (probes >= PROBE_BUDGET) {
+                    skippedForBudget += 1;
+                    break;
+                }
+                probes += 1;
                 const candidate = { ...rule, source: form };
                 if ((await this._rulesMatchingNothing(repoDir, [candidate])).length === 0) {
                     stored.push(candidate);
+                    // The value is stored exactly as reported. Alternate encodings are
+                    // still worth a look, but not at the cost of the whole budget.
+                    if (form === rule.source) {
+                        continue;
+                    }
                 }
             }
             if (stored.length === 0) {
@@ -7736,7 +7788,11 @@ class LeakLockPanel {
                 substitutions.push({ from: rule, to: stored });
             }
         }
-        return { rules: expanded, substitutions };
+        if (skippedForBudget > 0) {
+            console.warn('[leak-lock] stopped probing encoded forms after', probes,
+                'history searches;', skippedForBudget, 'rule(s) were not fully explored');
+        }
+        return { rules: expanded, substitutions, probes, skippedForBudget };
     }
 
     /**
@@ -8704,3 +8760,6 @@ module.exports = LeakLockPanel;
 // Exported for tests: parsing `git branch --contains` output is easy to get subtly
 // wrong and both call sites depend on it.
 module.exports.__parseContainingBranches = parseContainingBranches;
+// Exported for tests: the guarantee is that a fire-and-forget handler's failure
+// reaches the user, which cannot be asserted through the message dispatch alone.
+module.exports.__reportIfRejected = reportIfRejected;
