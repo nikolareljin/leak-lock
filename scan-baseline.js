@@ -94,8 +94,23 @@ function parseImportedReport(text, options = {}) {
             'It may have been edited or truncated.'
         );
     }
-    if (raw.redacted) {
-        warnings.push('This report was exported with redaction, so its values cannot be searched for. Findings from it are reported as unverifiable, not resolved.');
+    // What the file says about itself and what it contains are different facts, and a
+    // hand-edited one can disagree. Statuses were always derived from the values
+    // themselves; the warnings now are too, so the text on screen cannot claim values
+    // are unsearchable while the file carries them in plaintext, or the reverse.
+    const redactedFindings = findings.filter(f => f.secret === REDACTED_SECRET).length;
+    const declaredRedacted = Boolean(raw.redacted);
+    if (redactedFindings > 0) {
+        warnings.push(
+            `${redactedFindings} of ${findings.length} finding(s) carry a redacted value, which cannot be searched for. `
+            + 'Those are reported as unverifiable, never as resolved.'
+        );
+    }
+    if (declaredRedacted && redactedFindings === 0 && findings.length > 0) {
+        warnings.push('This report is marked as redacted but carries readable values. Treat the file as holding secrets, whatever it says about itself.');
+    }
+    if (!declaredRedacted && redactedFindings > 0) {
+        warnings.push('This report is not marked as redacted, yet some of its values are. It may have been edited after export.');
     }
     if (raw.coverage && raw.coverage.incomplete) {
         warnings.push('The scan behind this report did not complete, so it is not a full list of what was there.');
@@ -108,7 +123,9 @@ function parseImportedReport(text, options = {}) {
             generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : null,
             scanPath: typeof raw.scanPath === 'string' ? raw.scanPath : null,
             selectedDirectory: typeof raw.selectedDirectory === 'string' ? raw.selectedDirectory : null,
-            redacted: Boolean(raw.redacted),
+            redacted: declaredRedacted,
+            // Counted from the values, not from the flag: this is what the UI states.
+            redactedFindings,
             // Which repository this report is about. Recorded since 0.9.0; an older
             // report has none, which is an unknown identity rather than a mismatch.
             repository: raw.repository && typeof raw.repository === 'object'

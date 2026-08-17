@@ -5423,7 +5423,7 @@ class LeakLockPanel {
             <div class="scan-section" id="imported-report-section" style="margin-top: 16px;">
                 <h3 style="margin-bottom: 4px;">📥 Imported report${report.sourceName ? `: ${escapeHtml(report.sourceName)}` : ''}</h3>
                 <p style="font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-top: 0;">
-                    ${report.totalFindings} finding(s), scanned ${escapeHtml(generatedAt)}${report.redacted ? ' · exported with redaction' : ''}.
+                    ${report.totalFindings} finding(s), scanned ${escapeHtml(generatedAt)}${report.redactedFindings ? ` · ${report.redactedFindings} value(s) redacted` : ''}.
                     These are a record of a past scan. They are never cleanup targets and are not selectable.
                 </p>
                 ${warnings}
@@ -5745,6 +5745,11 @@ class LeakLockPanel {
             const entries = [];
             let checked = 0;
             let bounded = false;
+            // Cancelling has to stop the work that follows the loop as well. The
+            // "new since" pass is up to 25 full-history walks of its own, and a cancel
+            // that only ended the part with a progress bar would leave the user
+            // watching nothing happen for exactly as long as before.
+            let cancelled = false;
 
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
@@ -5760,6 +5765,7 @@ class LeakLockPanel {
                             presence = { checked: false, reason: 'no repository is open to search' };
                         } else if (token.isCancellationRequested) {
                             bounded = true;
+                            cancelled = true;
                             presence = { checked: false, reason: 'verification was cancelled' };
                         } else if (checked >= limit) {
                             bounded = true;
@@ -5779,9 +5785,10 @@ class LeakLockPanel {
                         currentIndex: currentMatch ? currentMatch.position : null
                     });
                 }
+                cancelled = cancelled || token.isCancellationRequested;
             });
 
-            const newFindings = await this._describeFindingsNewSince(report, repoDir);
+            const newFindings = await this._describeFindingsNewSince(report, repoDir, { lookupCommits: !cancelled });
             this._importedComparison = {
                 entries,
                 newFindings,
@@ -5865,7 +5872,8 @@ class LeakLockPanel {
      * "When did this appear?" is the other half of comparing two scans, and the pickaxe
      * with `--reverse` answers it exactly.
      */
-    async _describeFindingsNewSince(report, repoDir) {
+    async _describeFindingsNewSince(report, repoDir, options = {}) {
+        const lookupCommits = options.lookupCommits !== false;
         const fresh = scanBaseline.findingsNewSince(report.findings, this._scanResults);
         if (fresh.length === 0) {
             return [];
@@ -5885,7 +5893,7 @@ class LeakLockPanel {
                 && value !== scanBaseline.REDACTED_SECRET
                 && result.valueIsLiteral !== false
                 && !result.decoder;
-            if (repoDir && searchable && position < LOOKUP_LIMIT) {
+            if (lookupCommits && repoDir && searchable && position < LOOKUP_LIMIT) {
                 try {
                     const { stdout } = await execFileAsync(
                         'git', scanBaseline.buildFirstCommitArgs(repoDir, value),

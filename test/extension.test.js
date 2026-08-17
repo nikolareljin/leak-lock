@@ -6806,7 +6806,7 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
 		assert.strictEqual(comparison.summary.resolved, 0);
 		assert.strictEqual(comparison.summary.unverifiable, 1);
-		assert.ok(panel._importedReport.warnings.some(w => /redaction/.test(w)));
+		assert.ok(panel._importedReport.warnings.some(w => /cannot be searched for/.test(w)));
 	});
 
 	test('a decoded value is unverifiable, because it is not the bytes the blob holds', async () => {
@@ -7177,6 +7177,55 @@ suite('Importing a previous report and checking what was resolved', () => {
 			assert.strictEqual(panel._scanResults.length, 1, 'a declined switch changes nothing');
 		} finally {
 			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	// Copilot review: the warnings described the file's own `redacted` flag, which a
+	// hand-edited file can set while carrying plaintext values.
+	test('redaction is described from the values, not from the flag', () => {
+		const carriesPlaintext = scanBaseline.parseImportedReport(reportJson([finding()], { redacted: true }));
+		assert.ok(carriesPlaintext.ok);
+		assert.strictEqual(carriesPlaintext.report.redactedFindings, 0);
+		assert.ok(carriesPlaintext.report.warnings.some(w => /carries readable values/.test(w)),
+			'a report claiming redaction while holding secrets must say so');
+		assert.ok(!carriesPlaintext.report.warnings.some(w => /cannot be searched for/.test(w)));
+
+		const actuallyRedacted = scanBaseline.parseImportedReport(reportJson(
+			[finding({ secret: '[REDACTED_SECRET]' })], { redacted: false }
+		));
+		assert.strictEqual(actuallyRedacted.report.redactedFindings, 1);
+		assert.ok(actuallyRedacted.report.warnings.some(w => /cannot be searched for/.test(w)));
+		assert.ok(actuallyRedacted.report.warnings.some(w => /may have been edited/.test(w)));
+	});
+
+	// Copilot review: cancelling stopped the loop with the progress bar and then ran up
+	// to 25 full-history walks anyway.
+	test('cancelling verification also stops the new-since lookups', async () => {
+		const panel = panelFor(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000' })]), [
+			{ file: 'app.py', line: 1, secret: 'AKIA…', fullSecret: LEAKED, severity: 'high', ruleName: 'r' }
+		]);
+		let lookups = 0;
+		const realDescribe = panel._describeFindingsNewSince.bind(panel);
+		panel._describeFindingsNewSince = (report, repoDir, options) => {
+			lookups = options && options.lookupCommits === false ? 0 : 1;
+			return realDescribe(report, repoDir, options);
+		};
+		const originalProgress = vscode.window.withProgress;
+		vscode.window.withProgress = async (opts, task) => task(
+			{ report() {} },
+			{ isCancellationRequested: true, onCancellationRequested() { return { dispose() {} }; } }
+		);
+		try {
+			const comparison = await panel._verifyImportedReport();
+			assert.strictEqual(lookups, 0, 'a cancelled run must not start a fresh history walk');
+			assert.strictEqual(comparison.summary.bounded, true);
+			assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+			assert.match(comparison.entries[0].reason, /cancelled/);
+			// The new findings are still listed; only their dating is skipped.
+			assert.strictEqual(comparison.newFindings.length, 1);
+			assert.strictEqual(comparison.newFindings[0].firstCommit, null);
+		} finally {
+			vscode.window.withProgress = originalProgress;
 		}
 	});
 
