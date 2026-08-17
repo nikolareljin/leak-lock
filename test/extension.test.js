@@ -6332,3 +6332,89 @@ suite('Preparing a script for a decoded value', () => {
 		}
 	});
 });
+
+// Display, export and rewrite must all show the bytes the repository holds. An
+// engine that decodes before reporting made all three wrong in the same way, and
+// the difference only surfaced when someone opened the file.
+suite('Displayed values follow the stored bytes', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const DECODED = 'sk_live_abc123==';
+	const STORED = 'sk_live_abc123%3d%3d';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo, sha;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-align-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, '.env'), `CALLBACK=https://x/cb?token=${STORED}\n`);
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+		sha = cp.execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { env }).toString().trim();
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function decodedFinding() {
+		return {
+			file: '.env', line: 1, secret: DECODED, fullSecret: DECODED, commitHash: sha,
+			repoRoot: repo, valueIsLiteral: false, decoder: 'BASE64',
+			severity: 'high', description: 'x', isGitHistory: true
+		};
+	}
+
+	test('a decoded value is replaced by the form the file stores', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const findings = [decodedFinding()];
+		const aligned = await p._alignValuesWithStoredBytes(findings, repo);
+
+		assert.strictEqual(aligned, 1);
+		assert.strictEqual(findings[0].fullSecret, STORED, 'the finding now carries the stored bytes');
+		assert.strictEqual(findings[0].reportedSecret, DECODED, 'what the engine said is kept, not discarded');
+		assert.strictEqual(findings[0].valueIsLiteral, true, 'it is now usable as a rewrite rule');
+		assert.strictEqual(findings[0].storedFormRecovered, true);
+	});
+
+	test('display and export both show the stored form, and say why', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		p._scanRepoRoot = repo;
+		p._scanResults = [decodedFinding()];
+		await p._alignValuesWithStoredBytes(p._scanResults, repo);
+		p._resetScanSelection();
+
+		const html = p._getResultsHtml();
+		assert.ok(html.includes(STORED), 'the table shows the value as stored');
+		assert.ok(html.includes('shown as stored'), 'and states that the engine decoded it');
+
+		const payload = p._buildScanExportPayload({});
+		assert.strictEqual(payload.findings[0].secret, STORED, 'the export agrees with the file');
+	});
+
+	test('a value stored exactly as reported is left untouched', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const findings = [{ ...decodedFinding(), secret: STORED, fullSecret: STORED }];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(findings, repo), 0);
+		assert.strictEqual(findings[0].fullSecret, STORED);
+		assert.strictEqual(findings[0].valueIsLiteral, true, 'and it is confirmed literal');
+		assert.ok(!findings[0].storedFormRecovered, 'nothing was recovered, so nothing is claimed');
+	});
+
+	test('findings no engine flagged as decoded cost nothing', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const plain = [{ file: '.env', secret: 'x', fullSecret: 'x', commitHash: sha, repoRoot: repo }];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(plain, repo), 0, 'no blob reads for ordinary findings');
+	});
+});
