@@ -5749,3 +5749,24 @@ suite('The cleanup targets the repository the findings live in', () => {
 			'a row that cannot be cleaned must not drag a second repository into the decision');
 	});
 });
+
+suite('The refusal message can be acted on', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	test('summarises rules without pasting whole credentials into a toast', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const described = p._describeRules([
+			{ source: 'AKIAIOSFODNN7EXAMPLE', mode: 'literal', replaceWith: '*****' },
+			{ source: 'short', mode: 'regex', replaceWith: '*****' }
+		]);
+		// Long values are elided: enough to recognise the rule and to spot a
+		// shortened value or copied quotes, not enough to leak the secret.
+		assert.ok(!described.includes('AKIAIOSFODNN7EXAMPLE'), 'the full value is not printed');
+		assert.match(described, /AKIAIOSF…MPLE/);
+		assert.match(described, /20 chars/, 'the length exposes a truncated copy');
+		assert.match(described, /literal/);
+		// Short sources are not worth eliding — they are already unrecognisable.
+		assert.match(described, /"short" \(regex, 5 chars\)/);
+	});
+});
