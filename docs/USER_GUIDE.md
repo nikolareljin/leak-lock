@@ -488,6 +488,32 @@ Leak Lock now takes the repository from the finding itself, and refuses a select
 that spans two repositories rather than cleaning one of them. If you are on an
 older build, scan the repository directly rather than its parent folder.
 
+**The scanner shows one value and the file contains another**
+
+Engines report what they *understood*, which is not always what the file *stores*:
+
+| Engine | What its value is |
+|---|---|
+| Gitleaks | The bytes matched in the file — usable as a rewrite rule |
+| TruffleHog | The **decoded** credential: its decoders (base64, UTF-16, escaped/percent) run before detection, so `…%3d%3d` in the file is reported as `…==` |
+| Nosey Parker | The matched snippet, or the surrounding context when the match itself is unavailable |
+
+A rewrite rule built from a decoded value matches nothing, and both rewrite tools
+report success anyway — so the credential survives a cleanup that looked complete.
+
+Leak Lock handles this for you: a rule that is not found is retried in the forms the
+value may be stored as, and every form actually present in the repository becomes a
+rule, so a `.env` holding `%3d%3d` and a document holding `==` are both rewritten. A
+value the engine says it decoded is excluded from rule-building outright, with the
+transform named — copy the value as it appears in the file and add it as a manual
+redaction rule instead.
+
+To see which form your repository holds:
+
+```bash
+git show <commit>:<path> | cat -A | sed -n '<line>p'
+```
+
 **The secret is in a commit message, not in a file**
 
 `--replace-text` rewrites file contents; commit messages need `--replace-message`.

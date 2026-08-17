@@ -10,6 +10,7 @@ const gitRewrite = require('./git-rewrite');
 const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
 const redactionRules = require('./redaction-rules');
+const valueEncodings = require('./value-encodings');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
@@ -6102,11 +6103,14 @@ class LeakLockPanel {
                             match.location?.line ||
                             match.line_number ||
                             1;
-                        const secretText = match.snippet?.matching ||
-                            match.snippet?.before ||
-                            match.content ||
-                            match.text ||
-                            'content_unavailable';
+                        // `snippet.matching` is the matched bytes. `snippet.before` is
+                        // the text *around* the match, and the placeholder is not a
+                        // value at all - either one used as a rewrite rule would
+                        // rewrite the wrong text or nothing. Kept for display, marked
+                        // as not-literal so the cleanup refuses to build a rule.
+                        const matchedText = match.snippet?.matching || match.content || match.text || null;
+                        const secretText = matchedText || match.snippet?.before || 'content_unavailable';
+                        const secretIsLiteral = Boolean(matchedText);
 
                         // Debug logging for path extraction
                         if (filePath === 'file_path_not_found') {
@@ -6138,7 +6142,8 @@ class LeakLockPanel {
                             secretText,
                             finding.rule_name || 'Secret detected',
                             finding.rule_name,
-                            match
+                            match,
+                            { extraFields: { valueIsLiteral: secretIsLiteral } }
                         );
                         results.push(result);
                     });
@@ -6493,7 +6498,11 @@ class LeakLockPanel {
                     authorEmail: finding.authorEmail,
                     commitMessage: finding.commitMessage,
                     verified: finding.verified,
-                    verifiedAt: finding.verifiedAt
+                    verifiedAt: finding.verifiedAt,
+                    // Whether the reported value is the stored value. A decoded
+                    // value cannot be used as a rewrite rule as-is.
+                    valueIsLiteral: finding.valueIsLiteral !== false,
+                    decoder: finding.decoder || null
                 }
             }
         );
@@ -6735,7 +6744,15 @@ class LeakLockPanel {
     _isCleanupEligible(result) {
         return !!result
             && !result.isDependency
-            && result.includeInCleanup !== false;
+            && result.includeInCleanup !== false
+            // A value the engine derived rather than read - TruffleHog's decoded
+            // Raw, Nosey Parker's surrounding-context fallback - is not the byte
+            // sequence any blob holds. Used as a rewrite rule it matches nothing,
+            // and both rewrite tools call that success. The cleanup recovers the
+            // stored form where it can (see _expandRulesToStoredForms); a finding
+            // whose value cannot be trusted at all is excluded here, with a reason,
+            // rather than quietly contributing a rule that does nothing.
+            && result.valueIsLiteral !== false;
     }
 
     /** Why a finding's checkbox is disabled - shown as its tooltip so the user
@@ -6749,6 +6766,14 @@ class LeakLockPanel {
         }
         if (result.includeInCleanup === false) {
             return 'Excluded from cleanup.';
+        }
+        if (result.valueIsLiteral === false) {
+            return result.decoder
+                ? `The engine decoded this value (${result.decoder}) before reporting it, so it is not the text `
+                    + 'stored in the file and cannot be used as a rewrite rule. Copy the value as it appears in the '
+                    + 'file and add it as a manual redaction rule.'
+                : 'The engine did not report the matched text itself, so there is nothing exact to search for. '
+                    + 'Copy the value from the file and add it as a manual redaction rule.';
         }
         return 'Not cleanable.';
     }
@@ -7093,7 +7118,7 @@ class LeakLockPanel {
         // Manual rules count toward the cleanup: a user with three rules and no
         // selected findings is the exact case the feature exists for, and used to be
         // refused here.
-        const resolvedReplacements = this._resolveCleanupRules(replacements);
+        let resolvedReplacements = this._resolveCleanupRules(replacements);
         // Say what will NOT be rewritten before anything irreversible is prepared.
         // These findings are dropped from the rule list by design; silently doing so
         // is what let a cleanup report success with a selected value still in history.
@@ -7160,6 +7185,24 @@ class LeakLockPanel {
             // A rule that matches nothing rewrites nothing, and both tools call that
             // success. Say so now: discovered after the rewrite it reads as "the
             // cleanup did not work", which is the report that prompted this check.
+            // Target what the repository stores, not what the scanner displayed. Runs
+            // before the unmatched check so an encoded value is rewritten rather than
+            // reported as "matches nothing".
+            const expansion = await this._expandRulesToStoredForms(scanPath, resolvedReplacements);
+            resolvedReplacements = expansion.rules;
+            if (expansion.substitutions.length > 0) {
+                console.warn('[leak-lock] rules retargeted to their stored form:',
+                    expansion.substitutions.map(entry => ({
+                        from: this._describeRules([entry.from]),
+                        to: this._describeRules(entry.to)
+                    })));
+                vscode.window.showInformationMessage(
+                    `${expansion.substitutions.length} value(s) are stored encoded in this repository `
+                    + '(percent-encoded, escaped or base64). The cleanup targets the stored form, '
+                    + 'not the decoded value the scan displayed.'
+                );
+            }
+
             const unmatched = await this._rulesMatchingNothing(scanPath, resolvedReplacements);
             this._scanCleanup.unmatchedRules = unmatched;
             if (unmatched.length === resolvedReplacements.length) {
@@ -7438,6 +7481,62 @@ class LeakLockPanel {
         }
         channel.appendLine('');
         channel.show(true);
+    }
+
+    /**
+     * Rewrite rules so they target the value as STORED, not as reported.
+     *
+     * A scanner reports the value it understood. TruffleHog decodes before
+     * detecting - percent, base64, UTF-16 - so a token written `…%3d%3d` in the
+     * file is reported as `…==`, and a rule built from that matches no blob. Both
+     * rewrite tools exit 0 on a rule that matches nothing, so the secret survives a
+     * cleanup that reports success, and the next scan finds it again because the
+     * scanner decodes again. Multiply that by every finding whose value travels
+     * through a URL, a query string or a JSON document and a cleanup can look
+     * complete while leaving most of its targets in place.
+     *
+     * So: any rule that matches nothing is retried in the forms the same value may
+     * be stored as, and every form that is actually present becomes a rule. All of
+     * them, not the first - a repository can hold the encoded form in a `.env` and
+     * the decoded form in a document, and removing one is not a cleanup.
+     */
+    async _expandRulesToStoredForms(repoDir, rules) {
+        const list = this._toRuleList(rules);
+        if (!repoDir || list.length === 0) {
+            return { rules: list, substitutions: [] };
+        }
+
+        const expanded = [];
+        const substitutions = [];
+        for (const rule of list) {
+            // A pattern is not a value: encoding variants of a regex are meaningless.
+            if (rule.mode === 'regex') {
+                expanded.push(rule);
+                continue;
+            }
+            // Every form is probed, including when the reported one already matches:
+            // a repository can hold the encoded form in a `.env` and the decoded form
+            // in a document, and rewriting only the one that happened to match leaves
+            // the credential in the repository.
+            const stored = [];
+            for (const form of valueEncodings.candidateForms(rule.source)) {
+                const candidate = { ...rule, source: form };
+                if ((await this._rulesMatchingNothing(repoDir, [candidate])).length === 0) {
+                    stored.push(candidate);
+                }
+            }
+            if (stored.length === 0) {
+                // In no form. Kept as written so it is reported as unmatched rather
+                // than silently replaced by a variant that matches nothing either.
+                expanded.push(rule);
+                continue;
+            }
+            expanded.push(...stored);
+            if (stored.length > 1 || stored[0].source !== rule.source) {
+                substitutions.push({ from: rule, to: stored });
+            }
+        }
+        return { rules: expanded, substitutions };
     }
 
     /**
