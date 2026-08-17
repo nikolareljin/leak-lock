@@ -100,6 +100,17 @@ function parseImportedReport(text, options = {}) {
             scanPath: typeof raw.scanPath === 'string' ? raw.scanPath : null,
             selectedDirectory: typeof raw.selectedDirectory === 'string' ? raw.selectedDirectory : null,
             redacted: Boolean(raw.redacted),
+            // Which repository this report is about. Recorded since 0.9.0; an older
+            // report has none, which is an unknown identity rather than a mismatch.
+            repository: raw.repository && typeof raw.repository === 'object'
+                ? {
+                    remote: typeof raw.repository.remote === 'string' ? raw.repository.remote : null,
+                    rootCommits: Array.isArray(raw.repository.rootCommits)
+                        ? raw.repository.rootCommits.filter(hash => typeof hash === 'string')
+                        : [],
+                    path: typeof raw.repository.path === 'string' ? raw.repository.path : null
+                }
+                : null,
             totalFindings: findings.length,
             coverage: raw.coverage && typeof raw.coverage === 'object' ? raw.coverage : null,
             findings,
@@ -366,6 +377,70 @@ function describeRepoMatch(report, repoDir) {
     };
 }
 
+/**
+ * Reduce a remote URL to the thing that identifies the repository.
+ *
+ * `git@github.com:acme/app.git`, `https://github.com/acme/app.git` and
+ * `ssh://git@github.com/acme/app` are the same repository, and a comparison that said
+ * otherwise would refuse an import that is perfectly valid.
+ */
+function normalizeRemoteUrl(url) {
+    if (typeof url !== 'string' || !url.trim()) {
+        return null;
+    }
+    let value = url.trim();
+    value = value.replace(/^[a-z+]+:\/\//i, '');   // scheme
+    value = value.replace(/^[^/@]+@/, '');          // user
+    value = value.replace(/:(?=[^/])/, '/');        // scp-style host:path
+    value = value.replace(/\.git$/i, '');
+    value = value.replace(/\/+$/, '');
+    return value.toLowerCase() || null;
+}
+
+/**
+ * The identity of a repository, as recorded in an export and as read from disk.
+ *
+ * Root commits are the strong signal: every clone, fork and mirror of a repository
+ * shares them, and no two unrelated repositories do. The remote is the second signal,
+ * for the case where a report predates root-commit recording. The path is deliberately
+ * *not* identity - a clone lives wherever the user put it, and two different
+ * repositories can occupy the same path at different times.
+ */
+function describeRepositoryIdentity(recorded, current) {
+    const rootsA = Array.isArray(recorded?.rootCommits) ? recorded.rootCommits.filter(Boolean) : [];
+    const rootsB = Array.isArray(current?.rootCommits) ? current.rootCommits.filter(Boolean) : [];
+    if (rootsA.length && rootsB.length) {
+        const shared = rootsA.some(hash => rootsB.includes(hash));
+        return {
+            verdict: shared ? 'match' : 'mismatch',
+            basis: 'root commit',
+            recorded: rootsA[0],
+            current: rootsB[0]
+        };
+    }
+
+    const remoteA = normalizeRemoteUrl(recorded?.remote);
+    const remoteB = normalizeRemoteUrl(current?.remote);
+    if (remoteA && remoteB) {
+        return {
+            verdict: remoteA === remoteB ? 'match' : 'mismatch',
+            basis: 'remote',
+            recorded: recorded.remote,
+            current: current.remote
+        };
+    }
+
+    // Nothing comparable. A report exported before identity was recorded, or a
+    // repository with no remote and no readable roots: say so rather than guessing,
+    // because both a false match and a false mismatch are worse than an honest unknown.
+    return {
+        verdict: 'unknown',
+        basis: null,
+        recorded: recorded?.remote || (rootsA[0] || null),
+        current: current?.remote || (rootsB[0] || null)
+    };
+}
+
 module.exports = {
     REDACTED_SECRET,
     REDACTED_PATH,
@@ -383,5 +458,7 @@ module.exports = {
     buildFirstCommitArgs,
     buildWorkingTreePresenceArgs,
     parseFirstCommit,
-    describeRepoMatch
+    describeRepoMatch,
+    normalizeRemoteUrl,
+    describeRepositoryIdentity
 };

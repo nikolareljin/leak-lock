@@ -6868,7 +6868,9 @@ suite('Importing a previous report and checking what was resolved', () => {
 		}
 	});
 
-	test('a report from another repository is called out before its statuses are read', async () => {
+	// A different path is not a different repository, so it is stated as information
+	// rather than as a warning. Identity is checked at import time instead.
+	test('a report exported from another path is reported as the same repository, moved', async () => {
 		const panel = panelFor(JSON.stringify({
 			generatedAt: '2026-08-01T10:00:00.000Z',
 			scanPath: '/somewhere/else',
@@ -6877,7 +6879,9 @@ suite('Importing a previous report and checking what was resolved', () => {
 		}));
 		const comparison = await panel._verifyImportedReport();
 		assert.strictEqual(comparison.repoMatch.matches, false);
-		assert.match(panel._renderImportedReport(), /not the repository being checked/);
+		const html = panel._renderImportedReport();
+		assert.match(html, /different location on disk/);
+		assert.doesNotMatch(html, /from a different repository/);
 	});
 
 	test('imported findings are rendered but never selectable for cleanup', async () => {
@@ -6891,6 +6895,113 @@ suite('Importing a previous report and checking what was resolved', () => {
 		// scan, not a rewrite input.
 		assert.strictEqual(panel._eligibleFindingIndexes().length, 0);
 		assert.strictEqual(panel._ensureScanSelection().size, 0);
+	});
+
+	test('a report from a clone at another path is still the same repository', () => {
+		// Path is not identity: a clone lives wherever the user put it.
+		const verdict = scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111'], remote: 'git@github.com:acme/app.git', path: '/home/a/app' },
+			{ rootCommits: ['aaa111'], remote: 'https://github.com/acme/app.git', path: '/srv/build/app' }
+		);
+		assert.strictEqual(verdict.verdict, 'match');
+	});
+
+	test('the same remote written three ways is one repository', () => {
+		const forms = [
+			'git@github.com:acme/app.git',
+			'https://github.com/acme/app.git',
+			'ssh://git@github.com/acme/app'
+		].map(scanBaseline.normalizeRemoteUrl);
+		assert.deepStrictEqual(new Set(forms).size, 1, forms.join(' | '));
+	});
+
+	test('a different repository is a mismatch, on roots and on remote alike', () => {
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111'] }, { rootCommits: ['bbb222'] }
+		).verdict, 'mismatch');
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ remote: 'git@github.com:acme/app.git' }, { remote: 'git@github.com:acme/other.git' }
+		).verdict, 'mismatch');
+		// Roots win: they are the signal that survives a fork or a renamed remote.
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111'], remote: 'git@github.com:acme/app.git' },
+			{ rootCommits: ['aaa111'], remote: 'git@github.com:fork/app.git' }
+		).verdict, 'match');
+	});
+
+	test('a report with no recorded identity is unknown, not a mismatch', () => {
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(null, { rootCommits: ['aaa111'] }).verdict, 'unknown');
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity({ rootCommits: ['aaa111'] }, null).verdict, 'unknown');
+	});
+
+	test("a report from repository B is refused against repository A", async () => {
+		const panel = panelFor(reportJson([finding()], {
+			repository: { rootCommits: ['0000000000000000000000000000000000000000'], remote: 'git@github.com:acme/other.git', path: '/elsewhere' }
+		}));
+		const report = panel._importedReport;
+		panel._importedReport = null;
+
+		const original = vscode.window.showWarningMessage;
+		let asked = null;
+		vscode.window.showWarningMessage = async (message) => { asked = message; return undefined; };
+		try {
+			const gate = await panel._checkImportBelongsHere(report);
+			assert.strictEqual(gate.allowed, false, 'a foreign report must not be imported by default');
+			assert.match(asked || '', /different repository/);
+			assert.match(asked || '', /reported as resolved/);
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	test('overriding the refusal labels the comparison rather than hiding it', async () => {
+		const panel = panelFor(reportJson([finding()], {
+			repository: { rootCommits: ['0000000000000000000000000000000000000000'], remote: 'git@github.com:acme/other.git' }
+		}));
+		const report = panel._importedReport;
+
+		const original = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = async () => 'Compare anyway';
+		try {
+			const gate = await panel._checkImportBelongsHere(report);
+			assert.strictEqual(gate.allowed, true);
+			assert.strictEqual(gate.crossRepository, true);
+			report.identity = gate.identity;
+			report.crossRepository = true;
+			await panel._verifyImportedReport();
+			assert.match(panel._renderImportedReport(), /from a different repository/);
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	test('a report from this repository imports without a prompt', async () => {
+		const identity = await new (require('../leakLockPanel'))({ fsPath: '/tmp/ext' })._readRepositoryIdentity(repo);
+		assert.ok(identity && identity.rootCommits.length, 'the repository identifies itself by its root commit');
+		const panel = panelFor(reportJson([finding()], { repository: identity }));
+		const report = panel._importedReport;
+
+		const original = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = async () => { throw new Error('must not prompt for the same repository'); };
+		try {
+			const gate = await panel._checkImportBelongsHere(report);
+			assert.strictEqual(gate.allowed, true);
+			assert.strictEqual(gate.crossRepository, false);
+			assert.strictEqual(gate.identity.verdict, 'match');
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	test('the export records the repository it is about', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanRepoRoot = repo;
+		panel._scanResults = [];
+		const repository = await panel._readRepositoryIdentity(repo);
+		const payload = panel._buildScanExportPayload({ repository });
+		assert.ok(payload.repository, 'without this an import cannot tell which repository a report is about');
+		assert.ok(payload.repository.rootCommits.length > 0);
 	});
 
 	test('the imported card is reachable with no scan on screen', () => {

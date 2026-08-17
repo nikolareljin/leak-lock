@@ -5346,11 +5346,20 @@ class LeakLockPanel {
             <div class="coverage-note coverage-warn">⚠️ ${escapeHtml(warning)}</div>
         `).join('');
 
-        // A report from another repository would produce meaningless "resolved" rows,
-        // so the mismatch is stated before any status is read.
+        // A report from another repository would produce meaningless "resolved" rows.
+        // Importing one is refused; when the user overrode that refusal, the fact stays
+        // on screen for as long as the comparison does, because a status read out of
+        // context is exactly what the refusal exists to prevent.
+        const identity = report.identity || null;
+        const repoNote = report.crossRepository
+            ? `<div class="coverage-note coverage-warn">⚠️ <strong>This report is from a different repository</strong>${identity && identity.basis ? ` (${escapeHtml(identity.basis)} <code>${escapeHtml(String(identity.recorded))}</code> against <code>${escapeHtml(String(identity.current))}</code>)` : ''}. You chose to compare anyway. A finding that never existed here reads as resolved, which says nothing about the repository it came from.</div>`
+            : '';
+
+        // The recorded path is shown as information, never as identity: a clone lives
+        // wherever the user put it.
         const repoMatch = comparison ? comparison.repoMatch : null;
-        const repoNote = repoMatch && repoMatch.known && repoMatch.matches === false
-            ? `<div class="coverage-note coverage-warn">⚠️ This report was generated against <code>${escapeHtml(repoMatch.recorded)}</code>, which is not the repository being checked (<code>${escapeHtml(comparison.repoDir || 'none')}</code>). Every status below is about the current repository.</div>`
+        const pathNote = !report.crossRepository && repoMatch && repoMatch.known && repoMatch.matches === false
+            ? `<div class="coverage-note">Exported from <code>${escapeHtml(repoMatch.recorded)}</code>; checked against <code>${escapeHtml(comparison.repoDir || 'none')}</code>. Same repository, different location on disk.</div>`
             : '';
 
         const summaryLine = summary
@@ -5414,6 +5423,7 @@ class LeakLockPanel {
                 </p>
                 ${warnings}
                 ${repoNote}
+                ${pathNote}
                 ${summaryLine}
                 <div class="export-actions" style="margin-bottom: 10px;">
                     <button class="scan-button" onclick="verifyImportedReport()" ${this._verifyingImport ? 'disabled' : ''}>${this._verifyingImport ? '⏳ Verifying…' : '🔁 Re-verify'}</button>
@@ -5445,6 +5455,55 @@ class LeakLockPanel {
     }
 
     /**
+     * Identify a repository in a way that survives being cloned elsewhere.
+     *
+     * Root commits are the strong signal: every clone, fork and mirror shares them and
+     * two unrelated repositories do not. The origin URL is the second. The path is
+     * recorded for a human reading the file and is never compared, because a repository
+     * is not where it happens to sit on one machine.
+     */
+    async _readRepositoryIdentity(repoDir, options = {}) {
+        if (!repoDir) {
+            return null;
+        }
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+
+        let rootCommits = [];
+        try {
+            const { stdout } = await execFileAsync(
+                'git', ['-C', repoDir, 'rev-list', '--max-parents=0', '--all'],
+                { timeout: 30000, maxBuffer: GIT_MAX_BUFFER }
+            );
+            // A repository can have several roots (grafted or merged histories). Keep a
+            // bounded, sorted set so two exports of the same repository agree.
+            rootCommits = String(stdout || '').split('\n').map(line => line.trim()).filter(Boolean).sort().slice(0, 20);
+        } catch (error) {
+            console.warn('Could not read root commits:', error.message);
+        }
+
+        let remote = null;
+        try {
+            const { stdout } = await execFileAsync(
+                'git', ['-C', repoDir, 'remote', 'get-url', gitRewrite.DEFAULT_REMOTE],
+                { timeout: 15000 }
+            );
+            remote = String(stdout || '').trim() || null;
+        } catch {
+            // A repository with no origin is normal; identity then rests on the roots.
+        }
+
+        if (!rootCommits.length && !remote) {
+            return null;
+        }
+        return {
+            remote,
+            rootCommits,
+            path: options.redactPath ? null : repoDir
+        };
+    }
+
+    /**
      * Read a report back in.
      *
      * A wrong file is an expected outcome here, not an exceptional one, so parse
@@ -5471,6 +5530,17 @@ class LeakLockPanel {
                 return;
             }
 
+            // Repository A's report says nothing about repository B. Comparing them
+            // would answer "resolved" for every value that simply never existed here,
+            // which is the most dangerous wrong answer this feature can give, so a
+            // known mismatch stops the import rather than annotating it.
+            const gate = await this._checkImportBelongsHere(parsed.report);
+            if (!gate.allowed) {
+                return;
+            }
+            parsed.report.identity = gate.identity;
+            parsed.report.crossRepository = gate.crossRepository;
+
             this._importedReport = parsed.report;
             this._importedComparison = null;
             this._updateWebviewContent();
@@ -5479,6 +5549,53 @@ class LeakLockPanel {
             console.error('Failed to import scan report:', error);
             vscode.window.showErrorMessage(`Failed to import scan report: ${error.message}`);
         }
+    }
+
+    /**
+     * Decide whether this report is about this repository.
+     *
+     * Three outcomes, and they are deliberately not the same:
+     *
+     *  - **match** - the identities agree; import proceeds silently.
+     *  - **mismatch** - they disagree, and the identities are strong enough to be sure.
+     *    Refused by default. A rewrite log from another repository would mark every one
+     *    of its values resolved here, because they were never in this repository at all.
+     *    An override exists, because a legitimate case does exist (a split repository, a
+     *    re-created history), and it labels the result rather than hiding the fact.
+     *  - **unknown** - a report exported before identity was recorded, or a repository
+     *    with no remote and no readable roots. Allowed, with the uncertainty stated:
+     *    refusing on a guess would block a valid import as often as it caught a wrong one.
+     */
+    async _checkImportBelongsHere(report) {
+        const repoDir = this._resolveCleanupRepo().repo
+            || this._scanRepoRoot
+            || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+            || null;
+
+        const current = await this._readRepositoryIdentity(repoDir);
+        const identity = scanBaseline.describeRepositoryIdentity(report.repository, current);
+
+        if (identity.verdict !== 'mismatch') {
+            if (identity.verdict === 'unknown') {
+                report.warnings.push(
+                    'This report records no repository identity, or this repository has none to compare against, '
+                    + 'so Leak Lock cannot confirm the report is about this repository. Check it is before trusting a "resolved".'
+                );
+            }
+            return { allowed: true, crossRepository: false, identity };
+        }
+
+        const choice = await vscode.window.showWarningMessage(
+            `This report is from a different repository. It records ${identity.basis} `
+            + `${identity.recorded}, and this repository has ${identity.current}. `
+            + 'Every finding that never existed here would be reported as resolved.',
+            { modal: true },
+            'Compare anyway'
+        );
+        if (choice !== 'Compare anyway') {
+            return { allowed: false, crossRepository: true, identity };
+        }
+        return { allowed: true, crossRepository: true, identity };
     }
 
     _clearImportedReport() {
@@ -8918,6 +9035,11 @@ class LeakLockPanel {
 
         return {
             generatedAt: new Date().toISOString(),
+            // Which repository this report is about, by an identity that survives being
+            // cloned somewhere else: the root commits, plus the origin URL. The path is
+            // recorded for readers, never used as identity - a clone lives wherever the
+            // user put it, and two different repositories can occupy one path over time.
+            repository: options.repository || null,
             scanPath: redactSensitive ? '[REDACTED_PATH]' : (this._scanPath || null),
             selectedDirectory: redactSensitive ? '[REDACTED_PATH]' : (this._selectedDirectory || null),
             totalFindings: this._scanResults.length,
@@ -9040,7 +9162,10 @@ class LeakLockPanel {
                 return;
             }
 
-            const exportPayload = this._buildScanExportPayload({ redactSensitive });
+            const exportPayload = this._buildScanExportPayload({
+                redactSensitive,
+                repository: await this._readRepositoryIdentity(this._resolveCleanupRepo().repo, { redactPath: redactSensitive })
+            });
             await vscode.workspace.fs.writeFile(
                 targetUri,
                 Buffer.from(`${JSON.stringify(exportPayload, null, 2)}\n`, 'utf8')

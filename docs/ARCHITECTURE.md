@@ -199,6 +199,13 @@ Identity is matched by `fingerprint`, then value plus file plus rule, then value
 never by file and line, which drift. A value that cannot be searched for (redacted export,
 or an engine-decoded value) is reported unverifiable, never resolved.
 
+**Repository identity** is recorded in the export (`repository.rootCommits`,
+`repository.remote`) and checked on import. Root commits are the strong signal: every clone,
+fork and mirror shares them, and two unrelated repositories do not. The remote is the
+fallback for reports that predate it. The path is recorded for a human reader and never
+compared, because a repository is not where it happens to sit on one machine. A known
+mismatch refuses the import; an unknown identity allows it with the uncertainty stated.
+
 ```javascript
 // Nosey Parker — pinned image, no inherited truncation.
 // The image was previously :latest; the report flags were previously absent, and the

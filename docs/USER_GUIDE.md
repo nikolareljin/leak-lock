@@ -159,6 +159,16 @@ search for, and a value an engine decoded out of a blob is not the bytes the blo
 Both are reported as unverifiable rather than resolved, because a tick that means "we could
 not check" is worse than no tick.
 
+**Reports do not cross repositories.** An export records which repository it is about, by
+its root commits and its origin URL. Importing repository B's report while repository A is
+open is refused, because every value that was never in A would come back "resolved" and the
+report would look cleaner than the repository it actually describes. Identity is not the
+path: a clone at `/srv/build/app` and one at `~/code/app` are the same repository and import
+fine, while two unrelated repositories at the same path do not. A report exported before
+0.9.0 carries no identity; those still import, with the uncertainty stated on screen. If you
+genuinely need to compare across repositories, the refusal offers **Compare anyway**, and
+the result stays labelled as a cross-repository comparison for as long as it is on screen.
+
 When a current scan is also on screen, the section additionally lists what is **new since**
 the report was written, with the commit that first introduced each value, so repeated scans
 become a history rather than unrelated snapshots.
