@@ -6608,9 +6608,6 @@ class LeakLockPanel {
                     commitMessage: finding.commitMessage,
                     verified: finding.verified,
                     verifiedAt: finding.verifiedAt,
-                    // Named in the export as well: a value that reads oddly there is
-                    // then traceable to the engine that transformed it.
-                    decoderName: finding.decoder || null,
                     // Whether the reported value is the stored value. A decoded
                     // value cannot be used as a rewrite rule as-is.
                     valueIsLiteral: finding.valueIsLiteral !== false,
