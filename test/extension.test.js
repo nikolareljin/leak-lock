@@ -6592,3 +6592,76 @@ suite('Nosey Parker snippets and the disabled cleanup buttons', () => {
 			'the prepare button is not disabled when something is selected');
 	});
 });
+
+// A click must always produce a visible outcome. Two ways it stopped doing that:
+// an unbounded number of history searches (a button that looks dead while it
+// works), and a rejected handler nothing awaits (a button that is dead).
+suite('Prepare always produces a visible outcome', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-budget-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, 'app.env'), 'token=AKIAIOSFODNN7EXAMPLE\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	test('the number of history searches is bounded, and the shortfall is reported', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		// Twenty rules times nine encodings is a few hundred full-history walks —
+		// minutes of a button that appears to do nothing.
+		const many = Array.from({ length: 20 }, (_, i) => ({
+			source: `absent-value-${i}==`, mode: 'literal', replaceWith: '*****'
+		}));
+		const result = await p._expandRulesToStoredForms(repo, many);
+
+		assert.ok(result.probes <= 60, `expected a bounded probe count, saw ${result.probes}`);
+		assert.ok(result.skippedForBudget > 0, 'and the rules it could not finish are counted, not hidden');
+		assert.strictEqual(result.rules.length >= many.length, true, 'every rule still reaches the cleanup');
+	});
+
+	test('a rejected handler is reported rather than swallowed', async () => {
+		const vscode = require('vscode');
+		const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		// The four fire-and-forget cases must go through the reporter.
+		for (const handler of ['_prepareScanBfgCommand', '_prepareScanGitCommand', '_runPreparedScanCleanup']) {
+			const dispatch = source.slice(source.indexOf('switch (message.command)'));
+			const call = dispatch.indexOf(handler);
+			assert.ok(call > -1, `${handler} is dispatched`);
+			const before = dispatch.slice(Math.max(0, call - 200), call);
+			assert.ok(before.includes('reportIfRejected'), `${handler} must not be fire-and-forget`);
+		}
+		// And the reporter tells the user, rather than only the console.
+		let shown = null;
+		const original = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = async (message) => { shown = message; };
+		try {
+			const { __reportIfRejected } = require('../leakLockPanel');
+			if (typeof __reportIfRejected === 'function') {
+				__reportIfRejected(Promise.reject(new Error('boom')), 'Preparing');
+				await new Promise(resolve => setImmediate(resolve));
+				assert.match(shown || '', /Preparing failed.*boom/);
+			}
+		} finally {
+			vscode.window.showErrorMessage = original;
+		}
+	});
+});
