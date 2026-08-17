@@ -406,9 +406,16 @@ function normalizeRemoteUrl(url) {
         return null;
     }
     let value = url.trim();
-    value = value.replace(/^[a-z+]+:\/\//i, '');   // scheme
+    // Whether a scheme was present decides what a `:` after the host means, and getting
+    // that wrong is not cosmetic: `ssh://git@host:2222/acme/app` read as scp-style
+    // becomes `host/2222/acme/app`, which no longer matches `git@host:acme/app` and
+    // would refuse a perfectly valid import as a different repository.
+    const hadScheme = /^[a-z+]+:\/\//i.test(value);
+    value = value.replace(/^[a-z+]+:\/\//i, '');    // scheme
     value = value.replace(/^[^/@]+@/, '');          // user
-    value = value.replace(/:(?=[^/])/, '/');        // scp-style host:path
+    value = hadScheme
+        ? value.replace(/^([^/:]+):\d+(?=\/|$)/, '$1')  // port, which is not identity
+        : value.replace(/:(?=[^/])/, '/');              // scp-style host:path
     value = value.replace(/\.git$/i, '');
     value = value.replace(/\/+$/, '');
     return value.toLowerCase() || null;
