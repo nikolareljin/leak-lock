@@ -488,6 +488,24 @@ Leak Lock now takes the repository from the finding itself, and refuses a select
 that spans two repositories rather than cleaning one of them. If you are on an
 older build, scan the repository directly rather than its parent folder.
 
+**The secret is in a commit message, not in a file**
+
+`--replace-text` rewrites file contents; commit messages need `--replace-message`.
+Leak Lock passes both, so a value quoted in a commit message is removed like any
+other. If you are running the rewrite by hand, pass the same rule file twice:
+
+```bash
+git filter-repo --replace-text rules.txt --replace-message rules.txt --force
+```
+
+Note that BFG cannot rewrite commit messages at all — use the Git-only route for
+those. To check which surface a value is on:
+
+```bash
+git --no-replace-objects log --all --oneline -S '<value>'                 # file contents
+git --no-replace-objects log --all --oneline --fixed-strings --grep '<value>'   # commit messages
+```
+
 **One value survived a cleanup that removed all the others**
 
 Leak Lock now catches both causes for you — preparation refuses a cleanup whose
