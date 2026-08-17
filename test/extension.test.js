@@ -5691,3 +5691,61 @@ suite('Rules that match nothing are caught before the rewrite', () => {
 		assert.deepStrictEqual(await panel()._rulesMatchingNothing(repo, []), []);
 	});
 });
+
+// A scan can cover a folder that merely contains a repository, or a repository
+// with others nested inside it. Every finding records the repository that owns it
+// — that is why its commit link resolves — and the cleanup has to use that, not
+// the scanned path, or the rewrite runs where the value does not exist.
+suite('The cleanup targets the repository the findings live in', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	const OUTER = path.join(path.sep, 'work', 'projects');
+	const REPO_A = path.join(OUTER, 'service-a');
+	const REPO_B = path.join(OUTER, 'service-b');
+
+	function panelWith(results, selection, scanPath = OUTER, scanRepoRoot = null) {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanResults = results;
+		p._scanPath = scanPath;
+		p._scanRepoRoot = scanRepoRoot;
+		p._scanCleanup.selection = new Set(selection);
+		return p;
+	}
+
+	const finding = (file, repoRoot) => ({
+		file, repoRoot, secret: 'AKIAIOSFODNN7EXAMPLE', fullSecret: 'AKIAIOSFODNN7EXAMPLE',
+		severity: 'high', description: 'x', commitHash: 'a'.repeat(40)
+	});
+
+	test('uses the finding\'s own repository, not the scanned folder', () => {
+		const p = panelWith([finding('service-a/app.env', REPO_A)], [0]);
+		const target = p._resolveCleanupRepo();
+		assert.strictEqual(target.repo, REPO_A,
+			'rewriting the scanned folder would run against a repository without the value in it');
+		assert.strictEqual(target.reason, null);
+	});
+
+	test('refuses when the selection spans two repositories', () => {
+		const p = panelWith([finding('service-a/app.env', REPO_A), finding('service-b/app.env', REPO_B)], [0, 1]);
+		const target = p._resolveCleanupRepo();
+		assert.strictEqual(target.repo, null, 'one rewrite cannot span two repositories');
+		assert.match(target.reason, /more than one repository/);
+		assert.ok(target.reason.includes(REPO_A) && target.reason.includes(REPO_B), 'both are named');
+	});
+
+	test('falls back to the scanned repository for manual rules with nothing selected', () => {
+		const p = panelWith([], [], OUTER, REPO_A);
+		assert.strictEqual(p._resolveCleanupRepo().repo, REPO_A);
+
+		const noRoot = panelWith([], [], OUTER, null);
+		assert.strictEqual(noRoot._resolveCleanupRepo().repo, OUTER);
+	});
+
+	test('ignores the repository of a finding that is not cleanup-eligible', () => {
+		const dependency = { ...finding('service-b/node_modules/x/app.env', REPO_B), isDependency: true };
+		const p = panelWith([finding('service-a/app.env', REPO_A), dependency], [0, 1]);
+		assert.strictEqual(p._resolveCleanupRepo().repo, REPO_A,
+			'a row that cannot be cleaned must not drag a second repository into the decision');
+	});
+});

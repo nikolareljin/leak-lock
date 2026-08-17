@@ -2941,6 +2941,7 @@ class LeakLockPanel {
                 ${(nativeFirst ? saveButtons.slice().reverse() : saveButtons).join('\n                ')}
             </div>
             <div class="hint" style="margin-top:8px;">
+                ${this._scanCleanup.preparedRepo ? `<div style="margin-bottom:6px;"><strong>Repository:</strong> <code>${escapeHtml(this._scanCleanup.preparedRepo)}</code></div>` : ''}
                 <strong>Run manually:</strong>
                 <ol style="margin:6px 0 0 20px; padding:0;">
                     <li><strong>Save as .sh</strong> for bash — Linux, macOS, and on Windows for WSL or Git Bash. Then <code>chmod 700 leak-lock-cleanup.sh</code> and <code>./leak-lock-cleanup.sh</code>.</li>
@@ -6863,7 +6864,10 @@ class LeakLockPanel {
         if (!rule) {
             return null;
         }
-        const repoDir = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        // Preview against the repository the cleanup will actually rewrite, not the
+        // folder that was scanned - otherwise a rule reads as matching nothing here
+        // while matching plenty where it will run, or the reverse.
+        const repoDir = this._resolveCleanupRepo().repo;
         if (!repoDir) {
             vscode.window.showErrorMessage('No repository selected to preview against.');
             return null;
@@ -7029,6 +7033,50 @@ class LeakLockPanel {
         return resolved;
     }
 
+    /**
+     * The repository a cleanup must run in.
+     *
+     * Not the scanned folder. A scan can cover a directory that merely contains a
+     * repository, or a repository with others nested inside it, and each finding
+     * already records the repository that owns it - that is why its commit link
+     * resolves. Rewriting the scanned path instead runs `git filter-repo` against a
+     * repository where the value does not exist: it succeeds, changes nothing, and
+     * every check afterwards agrees the value is still in "the" history, because it
+     * is - in the other repository.
+     *
+     * @returns {{repo: string|null, repos: string[], reason: string|null}}
+     */
+    _resolveCleanupRepo() {
+        const scanned = this._scanPath || this._selectedDirectory
+            || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+
+        const roots = new Set();
+        for (const idx of this._ensureScanSelection()) {
+            const finding = this._scanResults[idx];
+            if (finding && this._isCleanupEligible(finding) && finding.repoRoot) {
+                roots.add(finding.repoRoot);
+            }
+        }
+
+        if (roots.size === 1) {
+            return { repo: [...roots][0], repos: [...roots], reason: null };
+        }
+        if (roots.size > 1) {
+            // One rewrite cannot span two repositories, and picking one silently
+            // would clean one and leave the other reporting the same secret.
+            return {
+                repo: null,
+                repos: [...roots],
+                reason: 'The selected findings belong to more than one repository, and a rewrite applies to one '
+                    + 'repository at a time. Select the findings from a single repository and run the cleanup once '
+                    + `per repository. Repositories involved: ${[...roots].join(', ')}`
+            };
+        }
+        // Manual rules with nothing selected, or findings with no recorded root:
+        // the repository containing the scanned path, falling back to the path.
+        return { repo: this._scanRepoRoot || scanned, repos: [], reason: null };
+    }
+
     async _prepareScanReplacementCommand(mode, replacements) {
         // Manual rules count toward the cleanup: a user with three rules and no
         // selected findings is the exact case the feature exists for, and used to be
@@ -7051,7 +7099,12 @@ class LeakLockPanel {
             vscode.window.showWarningMessage('Nothing selected for removal. Select a finding or add a manual redaction rule.');
             return;
         }
-        const scanPath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const target = this._resolveCleanupRepo();
+        if (target.reason) {
+            vscode.window.showErrorMessage(`Nothing was prepared. ${target.reason}`);
+            return;
+        }
+        const scanPath = target.repo;
         if (!scanPath) {
             vscode.window.showErrorMessage('No directory selected or workspace available.');
             return;
