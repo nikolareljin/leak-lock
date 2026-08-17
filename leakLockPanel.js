@@ -5485,8 +5485,15 @@ class LeakLockPanel {
         let rootCommits = [];
         try {
             const { stdout } = await execFileAsync(
-                'git', ['-C', repoDir, 'rev-list', '--max-parents=0', '--all'],
-                { timeout: 30000, maxBuffer: GIT_MAX_BUFFER }
+                'git', [...scanBaseline.RAW_OBJECT_FLAGS, '-C', repoDir, 'rev-list', '--max-parents=0', '--all'],
+                {
+                    timeout: 30000,
+                    maxBuffer: GIT_MAX_BUFFER,
+                    // Identity must come from the real objects too. A cleanup leaves
+                    // replace refs behind, and reading roots through them would report
+                    // a different repository than the same read a moment earlier did.
+                    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+                }
             );
             // A repository can have several roots (grafted or merged histories). Keep a
             // bounded, sorted set so two exports of the same repository agree.
