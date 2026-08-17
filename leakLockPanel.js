@@ -6754,14 +6754,13 @@ class LeakLockPanel {
         return !!result
             && !result.isDependency
             && result.includeInCleanup !== false
-            // A value the engine derived rather than read - TruffleHog's decoded
-            // Raw, Nosey Parker's surrounding-context fallback - is not the byte
-            // sequence any blob holds. Used as a rewrite rule it matches nothing,
-            // and both rewrite tools call that success. The cleanup recovers the
-            // stored form where it can (see _expandRulesToStoredForms); a finding
-            // whose value cannot be trusted at all is excluded here, with a reason,
-            // rather than quietly contributing a rule that does nothing.
-            && result.valueIsLiteral !== false
+            // A decoded value (TruffleHog names the transform in `decoder`) IS the
+            // secret - just written differently in the file - so it stays selectable
+            // and _expandRulesToStoredForms recovers the stored form. A value with no
+            // named transform is a different thing entirely: Nosey Parker's fallback
+            // is the text *around* the match, and rewriting that would replace the
+            // wrong text wherever it appears. Only the latter is excluded.
+            && !(result.valueIsLiteral === false && !result.decoder)
             // Display truncation appends "..." to the shortened value. That string is
             // for the table; a rule built from it would search history for text that
             // ends in three literal dots and match nothing. Only reachable when the
@@ -6785,13 +6784,9 @@ class LeakLockPanel {
             return 'Only a shortened form of this value was recorded, and the shortened form is not in any commit. '
                 + 'Copy the value from the file and add it as a manual redaction rule.';
         }
-        if (result.valueIsLiteral === false) {
-            return result.decoder
-                ? `The engine decoded this value (${result.decoder}) before reporting it, so it is not the text `
-                    + 'stored in the file and cannot be used as a rewrite rule. Copy the value as it appears in the '
-                    + 'file and add it as a manual redaction rule.'
-                : 'The engine did not report the matched text itself, so there is nothing exact to search for. '
-                    + 'Copy the value from the file and add it as a manual redaction rule.';
+        if (result.valueIsLiteral === false && !result.decoder) {
+            return 'The engine reported the text around this match rather than the match itself, so rewriting it '
+                + 'would replace the wrong text. Copy the value from the file and add it as a manual redaction rule.';
         }
         return 'Not cleanable.';
     }

@@ -6024,26 +6024,29 @@ suite('Engine value semantics', () => {
 		assert.strictEqual(scanEngines.mapTruffleHogFinding({ Raw: 'tok' }).valueIsLiteral, true);
 	});
 
-	test('a decoded TruffleHog value is not eligible for cleanup, and says why', () => {
+	test('a decoded value stays selectable, because the stored form is recoverable', () => {
+		// The decoded value IS the secret, written differently in the file. Excluding
+		// it would drop the finding from the cleanup entirely; keeping it lets
+		// _expandRulesToStoredForms retarget the rule at the encoding actually stored.
 		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
 		const decoded = {
 			file: 'a.env', secret: 'tok==', fullSecret: 'tok==',
 			valueIsLiteral: false, decoder: 'BASE64', severity: 'high', description: 'x'
 		};
-		assert.strictEqual(p._isCleanupEligible(decoded), false,
-			'a decoded value used as a rule matches nothing and the rewrite still reports success');
-		assert.match(p._cleanupIneligibleReason(decoded), /decoded this value \(BASE64\)/);
-		assert.match(p._cleanupIneligibleReason(decoded), /manual redaction rule/);
+		assert.strictEqual(p._isCleanupEligible(decoded), true);
 	});
 
-	test('a snippet that is context rather than the match is refused too', () => {
+	test('a snippet that is context rather than the match is still refused', () => {
+		// No named transform means the value is not a rewritten form of the secret -
+		// it is the text around it, and rewriting that replaces the wrong text
+		// wherever it appears. Not recoverable, so not selectable.
 		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
 		const contextOnly = {
 			file: 'a.env', secret: 'export TOKEN=', fullSecret: 'export TOKEN=',
 			valueIsLiteral: false, severity: 'high', description: 'x'
 		};
 		assert.strictEqual(p._isCleanupEligible(contextOnly), false);
-		assert.match(p._cleanupIneligibleReason(contextOnly), /did not report the matched text/);
+		assert.match(p._cleanupIneligibleReason(contextOnly), /text around this match/);
 	});
 
 	test('an ordinary finding is unaffected', () => {
@@ -6259,5 +6262,73 @@ suite('Value provenance travels with the finding', () => {
 		p._rawEngineOutput = {};
 		await p._saveRawEngineOutput();
 		assert.match(warned || '', /No engine output was captured/);
+	});
+});
+
+// The question this all serves: a scanner reports a decoded value, and the user
+// presses Prepare. A script must come out, and it must contain the encoding the
+// repository actually stores — otherwise it is a script that runs and does nothing.
+suite('Preparing a script for a decoded value', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const redactionRules = require('../redaction-rules');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const DECODED = 'sk_live_abc123==';
+	const STORED = 'sk_live_abc123%3d%3d';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-script-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, '.env'), `CALLBACK=https://x/cb?token=${STORED}\n`);
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	test('a TruffleHog-decoded finding still reaches the rule list', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		p._scanResults = [{
+			file: '.env', line: 1, secret: DECODED, fullSecret: DECODED,
+			valueIsLiteral: false, decoder: 'BASE64', severity: 'high', description: 'x'
+		}];
+		p._resetScanSelection();
+		assert.deepStrictEqual(Object.keys(p._resolveScanReplacements({})), [DECODED],
+			'excluding it would drop the secret from the cleanup entirely');
+	});
+
+	test('the generated script searches for the stored encoding', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+
+		const { rules } = await p._expandRulesToStoredForms(repo, [
+			{ source: DECODED, mode: 'literal', replaceWith: '*****' }
+		]);
+		const script = p._buildScanGitReplaceCommand(repo, rules, null, 'sh');
+
+		// The rule file the script writes must carry the bytes in the blob.
+		assert.ok(script.includes(`${STORED}==>*****`),
+			'the script rewrites the percent-encoded form the repository holds');
+		assert.ok(script.includes('--replace-text'), 'and it is a --replace-text rewrite');
+		assert.ok(script.includes('--replace-message'), 'commit messages included');
+
+		// And the rule file content is exactly the formatted rules, unescaped.
+		for (const rule of rules) {
+			assert.ok(script.includes(redactionRules.formatRuleLine(rule)));
+		}
 	});
 });
