@@ -58,6 +58,7 @@ Leak Lock is a powerful VS Code extension that helps developers secure their rep
 - **Remove Files Flow**: Sidebar button opens guided removal UI in main area
  - **Path-Based Safe Removal**: Exact path deletion across branches with preview
 - **Results Export**: Export findings to JSON or print/save as PDF directly from the results view
+- **Resolution Check**: Import a report exported earlier and see, per finding, whether it was resolved, is still present, or could not be checked
 
 ### 🤖 **Automated Workflow**
 - **One-Click Dependency Install**: the scan engines, plus the optional Docker, Nosey Parker image and BFG
@@ -105,6 +106,7 @@ code --install-extension leak-lock-*.vsix
 - **Export JSON**: Save all current findings and metadata to a `.json` file
 - **Print / Save as PDF**: Use the print-friendly view from scan results for PDF reports
 - **Share Findings**: Attach exports to tickets, audits, or remediation docs
+- **Import JSON**: Read a report back in and check each of its findings against the repository now, marked **Resolved**, **Still present** or **Unverifiable**, plus what is new since the report and the commit that introduced it
 
 <img width="942" height="1307" alt="image" src="https://github.com/user-attachments/assets/1c0ca6c4-1254-4337-b893-ee26c94f95e3" />
 

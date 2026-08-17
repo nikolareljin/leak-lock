@@ -133,6 +133,40 @@ After a scan completes, use the export actions in the results section:
 
 Use exports to share findings in incidents, tickets, or audit reports.
 
+### Checking a Previous Report Was Resolved
+
+An export is also the input to the next question: after a cleanup, did every finding it
+listed actually go away?
+
+Click **📥 Import JSON** in the results section, or run **Leak Lock: Import Scan Report and
+Check What Was Resolved** from the Command Palette, and pick a report you exported earlier.
+The report is shown as its own section with a status against the repository as it stands
+now:
+
+| Status | What it means |
+|---|---|
+| **Resolved** | The value is in neither git history nor the working tree |
+| **Still present** | The value is still there, and the row says where |
+| **Unverifiable** | The report cannot answer the question, and the row says why |
+
+Presence is checked directly against the repository, with a pickaxe search across every
+ref (`git log --all -S`) plus a working-tree search that includes untracked files. That
+covers a value which was added and later deleted, which is the shape of most leaks, and it
+needs no scan engine installed.
+
+**Unverifiable is never a pass.** A report exported with redaction carries no value to
+search for, and a value an engine decoded out of a blob is not the bytes the blob holds.
+Both are reported as unverifiable rather than resolved, because a tick that means "we could
+not check" is worse than no tick.
+
+When a current scan is also on screen, the section additionally lists what is **new since**
+the report was written, with the commit that first introduced each value, so repeated scans
+become a history rather than unrelated snapshots.
+
+Imported findings describe a past scan. They are never selectable for cleanup. To remove
+something the import shows as still present, scan again, or add it as a manual redaction
+rule.
+
 ---
 
 ## 🔧 Removing Secrets
