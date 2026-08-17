@@ -6943,6 +6943,37 @@ suite('Importing a previous report and checking what was resolved', () => {
 		).verdict, 'match');
 	});
 
+	// Copilot review: a rewrite that touches the initial commit gives the root a new
+	// hash, so a report exported before the cleanup has different roots afterwards.
+	// Refusing there would break the one workflow this feature is for.
+	test('a rewritten history is still the same repository when the remote agrees', () => {
+		const verdict = scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['before00'], remote: 'git@github.com:acme/app.git' },
+			{ rootCommits: ['after001'], remote: 'https://github.com/acme/app.git' }
+		);
+		assert.strictEqual(verdict.verdict, 'match');
+		assert.match(verdict.basis, /rewritten/);
+		// A different remote is still a different repository, rewrite or not.
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['before00'], remote: 'git@github.com:acme/app.git' },
+			{ rootCommits: ['after001'], remote: 'git@github.com:acme/other.git' }
+		).verdict, 'mismatch');
+		// With no remote to fall back on, differing roots are all there is.
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['before00'] }, { rootCommits: ['after001'] }
+		).verdict, 'mismatch');
+	});
+
+	test('repository identity is read from the real objects', async () => {
+		const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const fn = source.slice(source.indexOf('async _readRepositoryIdentity('));
+		const revList = fn.indexOf("'rev-list'");
+		assert.ok(revList > -1);
+		const call = fn.slice(Math.max(0, revList - 300), revList + 600);
+		assert.ok(call.includes('RAW_OBJECT_FLAGS'), 'roots read through replace refs report the wrong repository');
+		assert.ok(call.includes('GIT_NO_REPLACE_OBJECTS'));
+	});
+
 	test('a report with no recorded identity is unknown, not a mismatch', () => {
 		assert.strictEqual(scanBaseline.describeRepositoryIdentity(null, { rootCommits: ['aaa111'] }).verdict, 'unknown');
 		assert.strictEqual(scanBaseline.describeRepositoryIdentity({ rootCommits: ['aaa111'] }, null).verdict, 'unknown');

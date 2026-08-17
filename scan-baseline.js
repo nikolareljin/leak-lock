@@ -478,25 +478,30 @@ function normalizeRemoteUrl(url) {
 function describeRepositoryIdentity(recorded, current) {
     const rootsA = Array.isArray(recorded?.rootCommits) ? recorded.rootCommits.filter(Boolean) : [];
     const rootsB = Array.isArray(current?.rootCommits) ? current.rootCommits.filter(Boolean) : [];
-    if (rootsA.length && rootsB.length) {
-        const shared = rootsA.some(hash => rootsB.includes(hash));
-        return {
-            verdict: shared ? 'match' : 'mismatch',
-            basis: 'root commit',
-            recorded: rootsA[0],
-            current: rootsB[0]
-        };
+    if (rootsA.length && rootsB.length && rootsA.some(hash => rootsB.includes(hash))) {
+        return { verdict: 'match', basis: 'root commit', recorded: rootsA[0], current: rootsB[0] };
     }
 
     const remoteA = normalizeRemoteUrl(recorded?.remote);
     const remoteB = normalizeRemoteUrl(current?.remote);
     if (remoteA && remoteB) {
+        // Roots that disagree are not conclusive on their own. A rewrite that touched
+        // the initial commit gives every commit after it a new hash, including the root,
+        // so the repository a report was exported from an hour ago legitimately has
+        // different roots now - and refusing there would break the one workflow this
+        // feature exists for, importing a report straight after a cleanup. The remote
+        // settles it: same remote, same repository.
         return {
             verdict: remoteA === remoteB ? 'match' : 'mismatch',
-            basis: 'remote',
+            basis: rootsA.length && rootsB.length ? 'remote (its history was rewritten)' : 'remote',
             recorded: recorded.remote,
             current: current.remote
         };
+    }
+
+    if (rootsA.length && rootsB.length) {
+        // No remote to fall back on, so the differing roots are all there is.
+        return { verdict: 'mismatch', basis: 'root commit', recorded: rootsA[0], current: rootsB[0] };
     }
 
     // Nothing comparable. A report exported before identity was recorded, or a
