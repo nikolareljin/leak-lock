@@ -5657,7 +5657,14 @@ class LeakLockPanel {
         } catch {
             return null;
         }
-        if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
+        // The path comes from an imported file, so it can be a broken symlink or a
+        // directory this user cannot stat. That is "no switch target", not a crashed
+        // import.
+        try {
+            if (!fs.statSync(candidate).isDirectory()) {
+                return null;
+            }
+        } catch {
             return null;
         }
         const root = findGitRoot(candidate) || candidate;
@@ -5838,8 +5845,10 @@ class LeakLockPanel {
             );
             inHistory = Boolean(String(stdout || '').trim());
         } catch (error) {
-            // A search that could not run has not shown the value to be absent.
-            return { checked: false, reason: `the history search failed: ${error.message}` };
+            // A search that could not run has not shown the value to be absent. The
+            // reason names the exit status only: execFile puts the whole command line
+            // into error.message, and that command line carries the secret.
+            return { checked: false, reason: `the history search failed (${scanBaseline.describeGitFailure(error)})` };
         }
 
         let inWorkingTree = false;
@@ -5857,7 +5866,7 @@ class LeakLockPanel {
                     checked: inHistory,
                     inHistory,
                     inWorkingTree: false,
-                    reason: inHistory ? null : `the working-tree search failed: ${error.message}`
+                    reason: inHistory ? null : `the working-tree search failed (${scanBaseline.describeGitFailure(error)})`
                 };
             }
         }
@@ -5907,7 +5916,9 @@ class LeakLockPanel {
                     );
                     firstCommit = scanBaseline.parseFirstCommit(stdout);
                 } catch (error) {
-                    console.warn('First-commit lookup failed:', error.message);
+                    // Same reason as the presence checks: the message would carry the
+                    // value the pickaxe was searching for, and this one goes to a log.
+                    console.warn('First-commit lookup failed:', scanBaseline.describeGitFailure(error));
                 }
             }
             described.push({

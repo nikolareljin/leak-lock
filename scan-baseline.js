@@ -365,6 +365,34 @@ function buildWorkingTreePresenceArgs(repoDir, value) {
     return [...RAW_OBJECT_FLAGS, '-C', repoDir, 'grep', '--fixed-strings', '--quiet', '--untracked', '-e', value];
 }
 
+/**
+ * Describe a failed git call without repeating what it was searching for.
+ *
+ * `child_process.execFile` puts the whole command line into `error.message`, and these
+ * commands carry the secret as `-S<value>` or `-e <value>`. Interpolating that into a
+ * status would print the full value into the results table, past the truncation every
+ * other surface applies. Only the exit status is reported, which is what a reader can
+ * act on anyway.
+ */
+function describeGitFailure(error) {
+    if (!error) {
+        return 'unknown error';
+    }
+    if (error.killed || error.signal) {
+        return error.signal ? `stopped by ${error.signal}` : 'stopped before it finished';
+    }
+    if (error.code === 'ENOENT') {
+        return 'git was not found on this machine';
+    }
+    if (typeof error.code === 'number') {
+        return `git exited with code ${error.code}`;
+    }
+    if (typeof error.code === 'string') {
+        return `git failed with ${error.code}`;
+    }
+    return 'git failed';
+}
+
 /** Parse `<hash> <iso-date>` from the first-commit query. Tolerates an empty result. */
 function parseFirstCommit(stdout) {
     const line = String(stdout || '').trim().split('\n')[0];
@@ -500,6 +528,7 @@ module.exports = {
     buildFirstCommitArgs,
     buildWorkingTreePresenceArgs,
     parseFirstCommit,
+    describeGitFailure,
     describeRepoMatch,
     normalizeRemoteUrl,
     describeRepositoryIdentity
