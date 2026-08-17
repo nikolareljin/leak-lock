@@ -205,7 +205,8 @@ function activate(context) {
 	// Diagnostics: the engine's own bytes, so "did the scanner report it this way?"
 	// is answered by looking rather than by reasoning about the pipeline.
 	const saveRawEngineOutputCommand = vscode.commands.registerCommand('leak-lock.saveRawEngineOutput', async function () {
-		const { LeakLockPanel } = require('./leakLockPanel');
+		// The module exports the class directly; destructuring it yields undefined and
+		// the command throws on its first use. The import already in scope is the one.
 		if (!LeakLockPanel.currentPanel) {
 			vscode.window.showWarningMessage('Open Leak Lock and run a scan first.');
 			return;

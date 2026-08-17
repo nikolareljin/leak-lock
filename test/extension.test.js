@@ -6446,3 +6446,27 @@ suite('Displayed values follow the stored bytes', () => {
 		assert.strictEqual(absent[0].fullSecret, 'NOT-IN-THIS-FILE', 'nothing invented');
 	});
 });
+
+// leakLockPanel exports the class directly. Destructuring it yields undefined, and
+// the failure only appears when the command is first invoked — a shape mismatch
+// that no unit test touching the class itself can catch.
+suite('Command handlers import the panel correctly', () => {
+	const fs = require('fs');
+	const path = require('path');
+
+	test('the panel module exports the class itself', () => {
+		const exported = require('../leakLockPanel');
+		assert.strictEqual(typeof exported, 'function', 'module.exports is the class, not a namespace');
+		assert.strictEqual(typeof exported.createOrShow, 'function', 'and its statics are reachable');
+	});
+
+	test('no call site destructures that export', () => {
+		const root = path.join(__dirname, '..');
+		const offenders = fs.readdirSync(root)
+			.filter(name => name.endsWith('.js'))
+			.filter(name => /\{\s*LeakLockPanel\s*\}\s*=\s*require/.test(
+				fs.readFileSync(path.join(root, name), 'utf8')));
+		assert.deepStrictEqual(offenders, [],
+			'destructuring the direct export yields undefined and throws when the command runs');
+	});
+});
