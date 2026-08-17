@@ -7004,6 +7004,34 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.ok(payload.repository.rootCommits.length > 0);
 	});
 
+	// Copilot review: an unverified report rendered "no findings to check", which
+	// reads as an empty report rather than as work not done.
+	test('an unverified report says its findings were not checked, not that there are none', () => {
+		const panel = panelFor(reportJson([finding()]));
+		const html = panel._renderImportedReport();
+		assert.match(html, /have not been checked/);
+		assert.doesNotMatch(html, /contains no findings to check/);
+		assert.match(html, /Not verified yet/);
+	});
+
+	test('a genuinely empty report is still described as empty', () => {
+		const panel = panelFor(reportJson([]));
+		panel._importedComparison = { entries: [], newFindings: [], summary: { total: 0, resolved: 0, present: 0, unverifiable: 0, newFindings: 0, bounded: false, verifyLimit: 250 }, repoMatch: { known: false, matches: null, recorded: null }, repoDir: repo };
+		assert.match(panel._renderImportedReport(), /contains no findings to check/);
+	});
+
+	// Copilot review: a report exported on Windows is read back on another host, and
+	// `C:\\repo` against `C:/repo` claimed the repository had moved.
+	test('a Windows path is not reported as a different location because of its separators', () => {
+		const report = { scanPath: 'C:\\Users\\dev\\app' };
+		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'C:/Users/dev/app').matches, true);
+		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'c:/users/dev/app').matches, true);
+		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'C:/Users/dev/app/sub').matches, true);
+		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'C:/Users/dev/other').matches, false);
+		// POSIX paths keep their case sensitivity.
+		assert.strictEqual(scanBaseline.describeRepoMatch({ scanPath: '/home/dev/App' }, '/home/dev/app').matches, false);
+	});
+
 	test('the imported card is reachable with no scan on screen', () => {
 		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
 		panel._updateWebviewContent = () => {};

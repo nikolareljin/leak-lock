@@ -5439,7 +5439,15 @@ class LeakLockPanel {
                         </tr></thead>
                         <tbody>${rows}</tbody>
                        </table>`
-                : '<p style="font-size: 0.9em; color: var(--vscode-descriptionForeground);">This report contains no findings to check.</p>'}
+                // An empty table has two very different causes, and reading one as the
+                // other is the whole failure mode this feature exists to avoid: a report
+                // with nothing in it, versus one whose findings have not been checked.
+                : (report.totalFindings > 0
+                    ? `<p style="font-size: 0.9em; color: var(--vscode-editorWarning-foreground);">
+                            ⚠️ ${report.totalFindings} finding(s) in this report have not been checked${this._verifyingImport ? ' yet' : ''}.
+                            Nothing here says they were resolved. ${this._verifyingImport ? '' : 'Use Re-verify.'}
+                       </p>`
+                    : '<p style="font-size: 0.9em; color: var(--vscode-descriptionForeground);">This report contains no findings to check.</p>')}
                 ${newRows
                 ? `<h4 style="margin: 14px 0 4px 0;">New since this report</h4>
                        <p style="font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 0;">
