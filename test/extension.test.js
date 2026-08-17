@@ -6470,3 +6470,48 @@ suite('Command handlers import the panel correctly', () => {
 			'destructuring the direct export yields undefined and throws when the command runs');
 	});
 });
+
+// findUnremovedRules reports a search it could not run as an entry rather than
+// throwing. Counting those as matches made a timeout or an unreadable repository
+// look like "every rule matched", which suppresses the warning and the refusal.
+suite('An unrunnable rule check is neither matched nor unmatched', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const gitRewrite = require('../git-rewrite');
+	const path = require('path');
+
+	const RULES = [
+		{ source: 'present-value', mode: 'literal', replaceWith: '*' },
+		{ source: 'absent-value', mode: 'literal', replaceWith: '*' },
+		{ source: 'unreadable-value', mode: 'literal', replaceWith: '*' }
+	];
+
+	test('only a search that ran and found nothing counts as unmatched', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const original = gitRewrite.findUnremovedRules;
+		gitRewrite.findUnremovedRules = async () => ([
+			{ source: 'present-value', mode: 'literal', commit: 'abc1234 seed' },
+			{ source: 'unreadable-value', mode: 'literal', commit: 'could not be checked: timeout' }
+		]);
+		try {
+			const unmatched = await p._rulesMatchingNothing(path.join(path.sep, 'repo'), RULES);
+			assert.deepStrictEqual(unmatched.map(rule => rule.source), ['absent-value'],
+				'the found rule is matched, the errored one is unknown, only the third is unmatched');
+		} finally {
+			gitRewrite.findUnremovedRules = original;
+		}
+	});
+
+	test('a check that failed for every rule refuses nothing', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const original = gitRewrite.findUnremovedRules;
+		gitRewrite.findUnremovedRules = async () => RULES.map(rule => ({
+			source: rule.source, mode: rule.mode, commit: 'could not be checked: not a git repository'
+		}));
+		try {
+			assert.deepStrictEqual(await p._rulesMatchingNothing(path.join(path.sep, 'repo'), RULES), [],
+				'an unrunnable check must not be reported as "nothing matches"');
+		} finally {
+			gitRewrite.findUnremovedRules = original;
+		}
+	});
+});

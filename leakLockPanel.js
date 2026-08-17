@@ -7837,8 +7837,21 @@ class LeakLockPanel {
         if (!Array.isArray(present)) {
             return [];
         }
-        const found = new Set(present.map(entry => entry.source));
-        return list.filter(rule => !found.has(rule.source));
+        // Three states, not two. findUnremovedRules reports a search it could not run
+        // as an entry whose commit reads "could not be checked", and counting those as
+        // matches let a timeout or an unreadable repository look like "everything
+        // matched" - suppressing the very warning this exists to raise. A rule is only
+        // reported as matching nothing when the search ran and found nothing; one that
+        // could not be checked is neither, and is named in the log rather than guessed
+        // at in either direction.
+        const couldNotCheck = (entry) => /could not be checked/.test(entry.commit || '');
+        const found = new Set(present.filter(entry => !couldNotCheck(entry)).map(entry => entry.source));
+        const unchecked = new Set(present.filter(couldNotCheck).map(entry => entry.source));
+        if (unchecked.size > 0) {
+            console.warn('[leak-lock] could not check', unchecked.size, 'rule(s) against',
+                repoDir, '- they are treated as neither matched nor unmatched');
+        }
+        return list.filter(rule => !found.has(rule.source) && !unchecked.has(rule.source));
     }
 
     /**
