@@ -7151,11 +7151,21 @@ class LeakLockPanel {
             const unmatched = await this._rulesMatchingNothing(scanPath, resolvedReplacements);
             this._scanCleanup.unmatchedRules = unmatched;
             if (unmatched.length === resolvedReplacements.length) {
+                // Name the repository and describe each rule. "No rule matches" is
+                // two very different problems - the wrong text, or the right text in
+                // the wrong repository - and without these the message cannot be
+                // acted on, which is exactly the loop this check was added to end.
+                console.warn('[leak-lock] no rule matched. Repository:', scanPath,
+                    'Rules:', this._toRuleList(resolvedReplacements));
                 vscode.window.showErrorMessage(
-                    'Nothing was prepared: none of these rules match anything in this repository\'s history, so a '
-                    + 'rewrite would change nothing. The text has to match the bytes in the commit exactly - check for '
-                    + 'a value the scanner shortened, a trailing carriage return, or quotes copied along with it. '
-                    + '`git show <commit>:<path> | cat -A` shows the raw bytes.'
+                    `Nothing was prepared: none of these ${resolvedReplacements.length} rule(s) match anything in `
+                    + `${scanPath}, so a rewrite there would change nothing. `
+                    + `Searched for: ${this._describeRules(resolvedReplacements)}. `
+                    + 'If that repository is not the one holding the secret, re-scan the repository itself rather '
+                    + 'than a folder containing it. If it is, the text has to match the bytes in the commit exactly '
+                    + '— check for a value the scanner shortened, a trailing carriage return, or quotes copied along '
+                    + 'with it: `git show <commit>:<path> | cat -A` shows the raw bytes. The full rules are in the '
+                    + 'Developer Tools console.'
                 );
                 return;
             }
@@ -7314,6 +7324,23 @@ class LeakLockPanel {
         // file on disk, and this is the pointer to it. Preparing a new cleanup
         // replaces it (_prepareScanCleanup), which is when it stops being current.
         this._updateWebviewContent();
+    }
+
+    /**
+     * Rules as a short, non-leaking summary for a message.
+     *
+     * Enough to recognise which rule is meant and to spot the two mistakes that
+     * cause a silent no-op - a shortened value and copied-along quotes - without
+     * pasting whole credentials into a notification that may be screenshotted.
+     */
+    _describeRules(rules) {
+        return this._toRuleList(rules).map(rule => {
+            const source = String(rule.source || '');
+            const shown = source.length <= 14
+                ? source
+                : `${source.slice(0, 8)}…${source.slice(-4)}`;
+            return `"${shown}" (${rule.mode}, ${source.length} chars)`;
+        }).join(', ');
     }
 
     /**
