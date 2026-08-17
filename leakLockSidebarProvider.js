@@ -1356,9 +1356,16 @@ class LeakLockSidebarProvider {
         // pip put it somewhere this process cannot see - almost always ~/.local/bin
         // missing from PATH, and a VS Code window started from the desktop never
         // picks up a PATH change made in a terminal.
+        // The user scripts directory differs per platform, and naming the wrong one
+        // sends people editing a PATH entry that was never involved.
+        const scriptsDir = process.platform === 'win32'
+            ? 'your Python user Scripts directory (%APPDATA%\\Python\\PythonXY\\Scripts) — '
+                + '`python -m site --user-base` prints its parent'
+            : 'your user scripts directory (usually ~/.local/bin) — '
+                + '`python3 -m site --user-base` prints its parent';
         vscode.window.showWarningMessage(
-            'pip reported success, but git-filter-repo is still not on this window\'s PATH. '
-            + 'Add your user scripts directory (usually ~/.local/bin) to PATH, then reload the window.'
+            `pip reported success, but git-filter-repo is still not on this window's PATH. Add ${scriptsDir} `
+            + 'to PATH, then reload the window.'
         );
     }
 
