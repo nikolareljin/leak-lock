@@ -6152,3 +6152,73 @@ suite('Rules follow the stored encoding, not the reported value', () => {
 		assert.deepStrictEqual(rules.map(r => r.source), ['sk_live_[a-z0-9]+']);
 	});
 });
+
+// The value must survive the round trip from engine output to rewrite rule
+// byte-for-byte. Rendering escapes for HTML, and the table shortens long values —
+// neither may reach the rule file, and neither may mutate what is stored.
+suite('A scanner value is never altered on its way to a rule', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const redactionRules = require('../redaction-rules');
+	const path = require('path');
+
+	// Every character that HTML escaping, URL decoding or JSON escaping would touch,
+	// including the percent-encoding that produced the reported failure.
+	const RAW = `tok%3d%3d&x<y>"z'q\\/end`;
+
+	function panelWithFinding(secret) {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = path.join(path.sep, 'repo');
+		p._scanResults = [p._createResult('app.env', 1, secret, 'test', 'rule-1')];
+		p._resetScanSelection();
+		return p;
+	}
+
+	test('the stored value is byte-identical to what the engine reported', () => {
+		const p = panelWithFinding(RAW);
+		assert.strictEqual(p._scanResults[0].fullSecret, RAW, 'no escaping, decoding or trimming on the way in');
+	});
+
+	test('the rule file line carries the raw bytes, not the rendered ones', () => {
+		const p = panelWithFinding(RAW);
+		const rules = p._toRuleList(p._resolveScanReplacements({}));
+		assert.strictEqual(rules.length, 1);
+		assert.strictEqual(rules[0].source, RAW);
+
+		const line = redactionRules.formatRuleLine(rules[0]);
+		assert.ok(line.startsWith(RAW + '==>'), 'the rewrite searches for exactly what the engine reported');
+		assert.ok(!line.includes('&amp;'), 'HTML entities never reach the rule file');
+		assert.ok(!line.includes('&quot;'));
+	});
+
+	test('rendering escapes for HTML without changing the stored value', () => {
+		const p = panelWithFinding(RAW);
+		const html = p._getResultsHtml();
+		// The table escapes, as it must — a raw `<` there would be markup.
+		assert.ok(html.includes('&amp;') || html.includes('&lt;'), 'the rendered cell is escaped');
+		assert.strictEqual(p._scanResults[0].fullSecret, RAW, 'rendering did not mutate the finding');
+		assert.strictEqual(p._toRuleList(p._resolveScanReplacements({}))[0].source, RAW);
+	});
+
+	test('the webview never sends a secret back, only its index', () => {
+		const source = require('fs').readFileSync(require('path').join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const collect = source.slice(source.indexOf('function collectReplacements'));
+		const body = collect.slice(0, collect.indexOf('\n                    }'));
+		assert.ok(body.includes("'idx:' + findingIndex"), 'findings are identified by index');
+		assert.ok(!/secret/i.test(body.replace(/secret-checkbox/g, '')),
+			'no secret text is read out of the DOM, so escaped markup cannot become a rule');
+	});
+
+	test('a value shortened for display cannot become a rule', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const long = 'x'.repeat(400);
+		const result = p._createResult('app.env', 1, long, 'test', 'rule-1');
+		assert.ok(result.secret.endsWith('...'), 'the table shows a shortened value');
+		assert.strictEqual(result.fullSecret, long, 'the full value is kept for the rewrite');
+		assert.strictEqual(p._isCleanupEligible(result), true, 'and the finding is usable');
+
+		// The only way the shortened form could reach a rule: the full value missing.
+		const lost = { ...result, fullSecret: '' };
+		assert.strictEqual(p._isCleanupEligible(lost), false);
+		assert.match(p._cleanupIneligibleReason(lost), /shortened form/);
+	});
+});
