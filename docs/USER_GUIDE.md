@@ -476,6 +476,18 @@ extension's reach:
 Rotate the credential regardless. A secret that reached a remote must be treated
 as compromised, whatever the history now says.
 
+**The cleanup ran but the secret is still there, and the commit link works**
+
+Check which repository the cleanup targeted. The prepared script block names it,
+above the script. If you scanned a folder that *contains* the repository — a
+workspace with several projects in it, or a repository with others nested inside —
+older builds rewrote the scanned path rather than the repository the finding came
+from, so the rewrite ran somewhere the value does not exist and reported success.
+
+Leak Lock now takes the repository from the finding itself, and refuses a selection
+that spans two repositories rather than cleaning one of them. If you are on an
+older build, scan the repository directly rather than its parent folder.
+
 **One value survived a cleanup that removed all the others**
 
 Leak Lock now catches both causes for you — preparation refuses a cleanup whose
