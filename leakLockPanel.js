@@ -471,6 +471,9 @@ class LeakLockPanel {
         // past state, are never cleanup targets, and must survive a re-scan, since
         // comparing them against a fresh scan is the entire point.
         this._importedReport = null; // see scan-baseline.parseImportedReport()
+        // Which verification run owns the panel. Bumped by every import, clear and
+        // re-verify, so an older run cannot write its answer over a newer report.
+        this._importRun = 0;
         this._importedComparison = null; // { entries, newFindings, summary, repoMatch, repoDir, verifiedAt }
         this._verifyingImport = false;
         this._dependenciesInstalled = false;
@@ -5726,6 +5729,11 @@ class LeakLockPanel {
     }
 
     _clearImportedReport() {
+        // Abandon whatever verification is in flight. It reads a report this panel no
+        // longer holds, and letting it finish would write a comparison for a report the
+        // user has cleared - statuses on screen with nothing to attach them to.
+        this._importRun += 1;
+        this._verifyingImport = false;
         this._importedReport = null;
         this._importedComparison = null;
         this._updateWebviewContent();
@@ -5740,9 +5748,18 @@ class LeakLockPanel {
      */
     async _verifyImportedReport() {
         const report = this._importedReport;
-        if (!report || this._verifyingImport) {
+        if (!report) {
             return null;
         }
+
+        // Each run claims a number. Importing another report, clearing, or asking for a
+        // re-verify starts a newer one, and an older run that is still walking history
+        // must not write its answer afterwards: those statuses would describe a report
+        // that is no longer on screen. Deliberately not a "refuse while busy" flag - a
+        // verification can take minutes, and refusing to import during it is the same
+        // dead end as refusing to import into the wrong repository was.
+        const run = ++this._importRun;
+        const superseded = () => run !== this._importRun || this._importedReport !== report;
 
         const repoDir = this._resolveCleanupRepo().repo
             || this._scanRepoRoot
@@ -5771,6 +5788,9 @@ class LeakLockPanel {
                 cancellable: true
             }, async (progress, token) => {
                 for (const finding of report.findings) {
+                    if (superseded()) {
+                        break;
+                    }
                     const currentMatch = scanBaseline.matchInCurrentScan(finding, currentIndex);
                     let presence = null;
 
@@ -5802,7 +5822,14 @@ class LeakLockPanel {
                 cancelled = cancelled || token.isCancellationRequested;
             });
 
+            if (superseded()) {
+                return null;
+            }
+
             const newFindings = await this._describeFindingsNewSince(report, repoDir, { lookupCommits: !cancelled });
+            if (superseded()) {
+                return null;
+            }
             this._importedComparison = {
                 entries,
                 newFindings,
@@ -5821,8 +5848,12 @@ class LeakLockPanel {
             vscode.window.showErrorMessage(`Could not verify the imported report: ${error.message}`);
             return null;
         } finally {
-            this._verifyingImport = false;
-            this._updateWebviewContent();
+            // A superseded run must not clear the flag or repaint: a newer verification
+            // is running, and the panel belongs to it.
+            if (run === this._importRun) {
+                this._verifyingImport = false;
+                this._updateWebviewContent();
+            }
         }
     }
 

@@ -7299,6 +7299,58 @@ suite('Importing a previous report and checking what was resolved', () => {
 		}
 	});
 
+	// Copilot review: a verification still walking history when the report is cleared
+	// or replaced used to write its answer anyway.
+	test('clearing during verification discards the run in flight', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		let release;
+		const gate = new Promise(resolve => { release = resolve; });
+		const originalProgress = vscode.window.withProgress;
+		vscode.window.withProgress = async (opts, task) => {
+			await gate;
+			return task({ report() {} }, { isCancellationRequested: false, onCancellationRequested() { return { dispose() {} }; } });
+		};
+		try {
+			const running = panel._verifyImportedReport();
+			panel._clearImportedReport();
+			release();
+			assert.strictEqual(await running, null, 'a superseded run reports nothing');
+			assert.strictEqual(panel._importedReport, null);
+			assert.strictEqual(panel._importedComparison, null, 'a cleared report must not gain statuses afterwards');
+		} finally {
+			vscode.window.withProgress = originalProgress;
+		}
+	});
+
+	test('a second report is verified rather than blocked by the first run', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		let release;
+		const gate = new Promise(resolve => { release = resolve; });
+		const originalProgress = vscode.window.withProgress;
+		let first = true;
+		vscode.window.withProgress = async (opts, task) => {
+			if (first) {
+				first = false;
+				await gate;
+			}
+			return task({ report() {} }, { isCancellationRequested: false, onCancellationRequested() { return { dispose() {} }; } });
+		};
+		try {
+			const stale = panel._verifyImportedReport();
+			// The user imports another report while the first is still running.
+			const second = scanBaseline.parseImportedReport(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000', fingerprint: 'fp-2' })]));
+			panel._importedReport = second.report;
+			const fresh = await panel._verifyImportedReport();
+			release();
+			assert.strictEqual(await stale, null, 'the older run does not report');
+			assert.ok(fresh, 'the newer report is verified rather than refused');
+			assert.strictEqual(panel._importedComparison.entries[0].status, scanBaseline.STATUS.RESOLVED);
+			assert.strictEqual(panel._verifyingImport, false);
+		} finally {
+			vscode.window.withProgress = originalProgress;
+		}
+	});
+
 	test('the imported card is reachable with no scan on screen', () => {
 		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
 		panel._updateWebviewContent = () => {};
