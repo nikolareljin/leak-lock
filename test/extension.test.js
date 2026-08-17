@@ -6515,3 +6515,80 @@ suite('An unrunnable rule check is neither matched nor unmatched', () => {
 		}
 	});
 });
+
+// A finding whose value is unusable is correctly not selectable — but if that is
+// every finding, both cleanup buttons disable with nothing on screen explaining it,
+// which reads as a broken button.
+suite('Nosey Parker snippets and the disabled cleanup buttons', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = path.join(path.sep, 'repo');
+		return p;
+	}
+
+	const npFinding = (snippet, file) => JSON.stringify([{
+		rule_name: 'AWS API Key',
+		matches: [{
+			provenance: [{ kind: 'file', path: path.join(path.sep, 'repo', file) }],
+			location: { source_span: { start: { line: 1 } } },
+			snippet
+		}]
+	}]);
+
+	test('a snippet emitted as a plain string is the matched value', () => {
+		// Reading `.matching` off a string yields undefined, which fell through to the
+		// placeholder — so the finding carried "content_unavailable" and, once values
+		// were checked, became non-selectable.
+		const [result] = panel()._parseNoseyParkerResults(npFinding(SECRET, 'b.env'));
+		assert.strictEqual(result.fullSecret, SECRET);
+		assert.strictEqual(panel()._isCleanupEligible(result), true);
+	});
+
+	test('the object form still works', () => {
+		const [result] = panel()._parseNoseyParkerResults(
+			npFinding({ before: 'token=', matching: SECRET, after: '' }, 'a.env'));
+		assert.strictEqual(result.fullSecret, SECRET);
+		assert.strictEqual(panel()._isCleanupEligible(result), true);
+	});
+
+	test('context without a match is still refused, because it is not the secret', () => {
+		const [result] = panel()._parseNoseyParkerResults(
+			npFinding({ before: 'token=AKIA...' }, 'c.env'));
+		assert.strictEqual(panel()._isCleanupEligible(result), false);
+	});
+
+	test('when nothing is selectable the panel says so, per reason', () => {
+		const p = panel();
+		p._scanResults = [
+			{ file: 'c.env', line: 1, secret: 'token=', fullSecret: 'token=', valueIsLiteral: false,
+				severity: 'high', description: 'x' },
+			{ file: 'node_modules/x/d.env', line: 1, secret: SECRET, fullSecret: SECRET, isDependency: true,
+				severity: 'high', description: 'x' }
+		];
+		p._resetScanSelection();
+
+		const html = p._getResultsHtml();
+		assert.ok(html.includes('No finding here can be cleaned automatically'),
+			'a disabled button with no explanation reads as a broken button');
+		assert.ok(html.includes('text around this match'), 'the per-finding reasons are counted and shown');
+		assert.ok(html.includes('manual redaction rule'), 'and the way forward is named');
+	});
+
+	test('with selectable findings the buttons are enabled and no notice is shown', () => {
+		const p = panel();
+		p._scanResults = [{ file: 'a.env', line: 1, secret: SECRET, fullSecret: SECRET,
+			severity: 'high', description: 'x' }];
+		p._resetScanSelection();
+
+		const html = p._getResultsHtml();
+		assert.ok(!html.includes('No finding here can be cleaned automatically'));
+		assert.ok(html.includes('id="prepare-git-button" onclick="prepareGitCommand()" >')
+			|| html.includes('id="prepare-git-button" onclick="prepareGitCommand()">'),
+			'the prepare button is not disabled when something is selected');
+	});
+});

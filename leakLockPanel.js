@@ -362,6 +362,26 @@ function sanitizeDockerVolumeName(name) {
 }
 
 // Webview panel provider for main area display
+/**
+ * The matched text out of a Nosey Parker match, whatever shape it arrived in.
+ *
+ * `snippet` is `{ before, matching, after }` in the report format, but some builds
+ * and the JSONL path emit the matched text as a plain string. Reading `.matching`
+ * off a string yields undefined, which fell through to the surrounding context or
+ * to a placeholder - and a finding whose value is context is not usable as a
+ * rewrite rule, so those findings became non-selectable and the cleanup buttons
+ * greyed out with nothing to act on.
+ */
+function matchedTextFromSnippet(match) {
+    if (!match) {
+        return null;
+    }
+    if (typeof match.snippet === 'string' && match.snippet) {
+        return match.snippet;
+    }
+    return match.snippet?.matching || match.content || match.text || null;
+}
+
 class LeakLockPanel {
     constructor(extensionUri) {
         this._extensionUri = extensionUri;
@@ -2967,6 +2987,34 @@ class LeakLockPanel {
         // toward whether there is anything to prepare.
         const customRuleCount = this._getCustomRules().length;
         const noneSelected = selectedCount === 0 && customRuleCount === 0;
+        // A disabled button with no explanation reads as a broken button. Say which
+        // of the two situations it is - nothing ticked, or nothing tickable - and for
+        // the second one, why each finding was refused.
+        const notSelectableBlock = (() => {
+            if (!noneSelected || this._scanResults.length === 0) {
+                return '';
+            }
+            if (eligibleIndexes.length > 0) {
+                return `<div class="hint" style="margin-top:8px;">Select at least one finding above, or add a manual
+                    redaction rule, to enable the cleanup buttons.</div>`;
+            }
+            const reasons = new Map();
+            for (const result of this._scanResults) {
+                const reason = this._cleanupIneligibleReason(result);
+                reasons.set(reason, (reasons.get(reason) || 0) + 1);
+            }
+            const listed = [...reasons.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 3)
+                .map(([reason, count]) => `<li>${count} × ${escapeHtml(reason)}</li>`)
+                .join('');
+            return `<div class="hint" style="margin-top:8px;">
+                    <strong>No finding here can be cleaned automatically</strong>, so the buttons below are disabled:
+                    <ul style="margin:6px 0 0 20px; padding:0;">${listed}</ul>
+                    A <strong>manual redaction rule</strong> takes the text you type and is not affected by any of
+                    these, so it is the way to clean a value the scanner could not report exactly.
+                </div>`;
+        })();
         const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
         const refreshBlock = this._renderRemoteError(this._scanCleanup.remoteError);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
@@ -3050,6 +3098,7 @@ class LeakLockPanel {
                         BFG is faster, but it will remove files/directories with the same name everywhere in history. Git-only cleanup does not.
                     </p>
                     <div style="margin-top: 8px;">
+                        ${notSelectableBlock}
                         <button class="scan-button" id="prepare-bfg-button" onclick="prepareBfgCommand()" ${noneSelected ? 'disabled' : ''}>⚙️ Prepare BFG command</button>
                     </div>
                     ${preparedBlockBfg}
@@ -6212,12 +6261,13 @@ class LeakLockPanel {
                             match.location?.line ||
                             match.line_number ||
                             1;
-                        // `snippet.matching` is the matched bytes. `snippet.before` is
-                        // the text *around* the match, and the placeholder is not a
-                        // value at all - either one used as a rewrite rule would
-                        // rewrite the wrong text or nothing. Kept for display, marked
-                        // as not-literal so the cleanup refuses to build a rule.
-                        const matchedText = match.snippet?.matching || match.content || match.text || null;
+                        // `snippet.matching` is the matched bytes, and some builds emit
+                        // the snippet as that string directly. `snippet.before` is the
+                        // text *around* the match, and the placeholder is not a value at
+                        // all - either one used as a rewrite rule would rewrite the wrong
+                        // text or nothing, so they are kept for display and marked
+                        // not-literal, which keeps them out of the rule list.
+                        const matchedText = matchedTextFromSnippet(match);
                         const secretText = matchedText || match.snippet?.before || 'content_unavailable';
                         const secretIsLiteral = Boolean(matchedText);
 
@@ -6274,7 +6324,7 @@ class LeakLockPanel {
                                 match.line_number ||
                                 match.location?.source_span?.start?.line ||
                                 1;
-                            const secretText = match.snippet ||
+                            const secretText = matchedTextFromSnippet(match) || match.snippet ||
                                 match.content ||
                                 match.text ||
                                 'content_unavailable';
