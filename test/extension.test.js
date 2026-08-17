@@ -5754,19 +5754,36 @@ suite('The refusal message can be acted on', () => {
 	const LeakLockPanel = require('../leakLockPanel');
 	const path = require('path');
 
-	test('summarises rules without pasting whole credentials into a toast', () => {
+	test('identifies rules without revealing any part of them', () => {
 		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const secret = 'AKIAIOSFODNN7EXAMPLE';
 		const described = p._describeRules([
-			{ source: 'AKIAIOSFODNN7EXAMPLE', mode: 'literal', replaceWith: '*****' },
-			{ source: 'short', mode: 'regex', replaceWith: '*****' }
+			{ source: secret, mode: 'literal', replaceWith: '*****' },
+			{ source: 'pw1', mode: 'regex', replaceWith: '*****' }
 		]);
-		// Long values are elided: enough to recognise the rule and to spot a
-		// shortened value or copied quotes, not enough to leak the secret.
-		assert.ok(!described.includes('AKIAIOSFODNN7EXAMPLE'), 'the full value is not printed');
-		assert.match(described, /AKIAIOSF…MPLE/);
-		assert.match(described, /20 chars/, 'the length exposes a truncated copy');
-		assert.match(described, /literal/);
-		// Short sources are not worth eliding — they are already unrecognisable.
-		assert.match(described, /"short" \(regex, 5 chars\)/);
+
+		// A notification gets screenshotted and pasted into tickets. No part of the
+		// value may appear — not a prefix, not a suffix, not a short value whole.
+		assert.ok(!described.includes(secret), 'the value is not printed');
+		assert.ok(!described.includes('pw1'), 'a short value is not printed either');
+		for (let i = 0; i + 4 <= secret.length; i++) {
+			assert.ok(!described.includes(secret.slice(i, i + 4)),
+				`no 4-character fragment of the value leaks (${secret.slice(i, i + 4)})`);
+		}
+
+		// What it does carry: a stable digest to tell rules apart, plus the two
+		// facts that diagnose a silent no-op.
+		assert.match(described, /rule [0-9a-f]{8} \(literal, 20 chars\)/);
+		assert.match(described, /rule [0-9a-f]{8} \(regex, 3 chars\)/);
+		assert.strictEqual(
+			p._describeRules([{ source: secret, mode: 'literal' }]),
+			p._describeRules([{ source: secret, mode: 'literal' }]),
+			'the fingerprint is stable, so it can be matched against the rules table'
+		);
+		assert.notStrictEqual(
+			p._describeRules([{ source: secret, mode: 'literal' }]),
+			p._describeRules([{ source: secret + 'X', mode: 'literal' }]),
+			'a different value fingerprints differently'
+		);
 	});
 });

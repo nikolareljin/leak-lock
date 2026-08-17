@@ -7156,7 +7156,7 @@ class LeakLockPanel {
                 // the wrong repository - and without these the message cannot be
                 // acted on, which is exactly the loop this check was added to end.
                 console.warn('[leak-lock] no rule matched. Repository:', scanPath,
-                    'Rules:', this._toRuleList(resolvedReplacements));
+                    'Rules:', this._describeRules(resolvedReplacements));
                 vscode.window.showErrorMessage(
                     `Nothing was prepared: none of these ${resolvedReplacements.length} rule(s) match anything in `
                     + `${scanPath}, so a rewrite there would change nothing. `
@@ -7164,13 +7164,13 @@ class LeakLockPanel {
                     + 'If that repository is not the one holding the secret, re-scan the repository itself rather '
                     + 'than a folder containing it. If it is, the text has to match the bytes in the commit exactly '
                     + '— check for a value the scanner shortened, a trailing carriage return, or quotes copied along '
-                    + 'with it: `git show <commit>:<path> | cat -A` shows the raw bytes. The full rules are in the '
-                    + 'Developer Tools console.'
+                    + 'with it: `git show <commit>:<path> | cat -A` shows the raw bytes. The character count above '
+                    + 'is the quickest way to spot both.'
                 );
                 return;
             }
             if (unmatched.length > 0) {
-                const named = unmatched.slice(0, 3).map(rule => `"${rule.source}"`).join(', ');
+                const named = this._describeRules(unmatched.slice(0, 3));
                 vscode.window.showWarningMessage(
                     `${unmatched.length} of ${resolvedReplacements.length} rules match nothing in history and will `
                     + `rewrite nothing: ${named}${unmatched.length > 3 ? ', …' : ''}. The rest are still applied.`
@@ -7327,19 +7327,21 @@ class LeakLockPanel {
     }
 
     /**
-     * Rules as a short, non-leaking summary for a message.
+     * Rules as a summary that identifies them without revealing them.
      *
-     * Enough to recognise which rule is meant and to spot the two mistakes that
-     * cause a silent no-op - a shortened value and copied-along quotes - without
-     * pasting whole credentials into a notification that may be screenshotted.
+     * A notification gets screenshotted, pasted into tickets and captured by log
+     * collectors, so it must never carry the secret - not even a few characters of
+     * it, which for a short token is most of it. The fingerprint is a digest, so
+     * two rules can be told apart and matched against the rules table; the length
+     * and mode are what actually diagnose the two silent no-ops (a value the
+     * scanner shortened, and quotes copied along with the text).
      */
     _describeRules(rules) {
+        const crypto = require('crypto');
         return this._toRuleList(rules).map(rule => {
             const source = String(rule.source || '');
-            const shown = source.length <= 14
-                ? source
-                : `${source.slice(0, 8)}…${source.slice(-4)}`;
-            return `"${shown}" (${rule.mode}, ${source.length} chars)`;
+            const fingerprint = crypto.createHash('sha256').update(source).digest('hex').slice(0, 8);
+            return `rule ${fingerprint} (${rule.mode}, ${source.length} chars)`;
         }).join(', ');
     }
 
@@ -7388,7 +7390,9 @@ class LeakLockPanel {
             return false;
         }
         this._scanCleanup.unappliedRules = remaining;
-        const named = remaining.slice(0, 3).map(r => `"${r.source}" (still in ${r.commit})`).join(', ');
+        const named = remaining.slice(0, 3)
+            .map(r => `${this._describeRules([r])} — still in ${r.commit}`)
+            .join(', ');
         vscode.window.showErrorMessage(
             `${label} rewrote your history, but ${remaining.length} rule(s) matched nothing and their values are `
             + `STILL in local history: ${named}${remaining.length > 3 ? ', …' : ''}. `
