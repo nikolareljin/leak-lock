@@ -202,6 +202,17 @@ function activate(context) {
 	});
 
 	// Register fix secrets command
+	// Diagnostics: the engine's own bytes, so "did the scanner report it this way?"
+	// is answered by looking rather than by reasoning about the pipeline.
+	const saveRawEngineOutputCommand = vscode.commands.registerCommand('leak-lock.saveRawEngineOutput', async function () {
+		const { LeakLockPanel } = require('./leakLockPanel');
+		if (!LeakLockPanel.currentPanel) {
+			vscode.window.showWarningMessage('Open Leak Lock and run a scan first.');
+			return;
+		}
+		await LeakLockPanel.currentPanel._saveRawEngineOutput();
+	});
+
 	const fixSecretsCommand = vscode.commands.registerCommand('leak-lock.fixSecrets', function () {
 		LeakLockPanel.createOrShow(context.extensionUri);
 		vscode.window.showInformationMessage('Fix secrets functionality available in the Leak Lock panel.');
@@ -266,6 +277,7 @@ function activate(context) {
 		disposable,
 		scanRepositoryCommand,
 		fixSecretsCommand,
+		saveRawEngineOutputCommand,
 		openPanelCommand,
 		openRemoveFilesCommand,
 		updateRemoveFilesRepoCommand,

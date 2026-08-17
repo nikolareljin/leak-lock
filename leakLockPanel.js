@@ -3320,6 +3320,7 @@ class LeakLockPanel {
             // Show scanning in progress
             this._isScanning = true;
             this._scanResults = [];
+            this._rawEngineOutput = {};
             this._scanCleanup.preparedCommand = null;
             this._scanCleanup.preparedScripts = null;
             this._scanCleanup.preparedMode = null;
@@ -5755,6 +5756,11 @@ class LeakLockPanel {
                 : engine.capabilities;
 
             const outcome = await engine.scan(scanOptions);
+            // The engine's own bytes, before anything here touches them. Kept so a
+            // question like "did the scanner report this decoded, or did we change
+            // it?" is answered by looking at the output rather than by argument.
+            this._rawEngineOutput = this._rawEngineOutput || {};
+            this._rawEngineOutput[engine.id] = outcome.rawOutput || null;
             const results = (outcome.findings || []).map(finding =>
                 this._createResultFromEngineFinding(finding, engine.id, version, capabilities)
             );
@@ -6499,6 +6505,9 @@ class LeakLockPanel {
                     commitMessage: finding.commitMessage,
                     verified: finding.verified,
                     verifiedAt: finding.verifiedAt,
+                    // Named in the export as well: a value that reads oddly there is
+                    // then traceable to the engine that transformed it.
+                    decoderName: finding.decoder || null,
                     // Whether the reported value is the stored value. A decoded
                     // value cannot be used as a rewrite rule as-is.
                     valueIsLiteral: finding.valueIsLiteral !== false,
@@ -7493,6 +7502,43 @@ class LeakLockPanel {
     }
 
     /**
+     * Write the last scan's untouched engine output to a file.
+     *
+     * When a value on screen disagrees with the value in the repository, the only
+     * way to settle where it changed is the engine's own bytes. This writes them
+     * verbatim - no escaping, no truncation, no re-encoding - so the comparison can
+     * be made locally, without anything being pasted anywhere.
+     */
+    async _saveRawEngineOutput() {
+        const captured = Object.entries(this._rawEngineOutput || {}).filter(([, output]) => output);
+        if (captured.length === 0) {
+            vscode.window.showWarningMessage(
+                'No engine output was captured. Run a scan first; Nosey Parker findings are not covered.'
+            );
+            return;
+        }
+        try {
+            const target = await vscode.window.showSaveDialog({
+                filters: { 'Engine output': ['txt', 'json', 'jsonl'] },
+                saveLabel: 'Save raw engine output'
+            });
+            if (!target) {
+                return;
+            }
+            const body = captured
+                .map(([engineId, output]) => `===== ${engineId} (verbatim) =====\n${output}\n`)
+                .join('\n');
+            fs.writeFileSync(target.fsPath, body, { mode: 0o600 });
+            vscode.window.showInformationMessage(
+                `Raw output from ${captured.map(([id]) => id).join(', ')} saved to ${target.fsPath}. `
+                + 'It contains the secrets exactly as each engine reported them — delete it when done.'
+            );
+        } catch (error) {
+            vscode.window.showErrorMessage(`Could not save engine output: ${error.message}`);
+        }
+    }
+
+    /**
      * Rewrite rules so they target the value as STORED, not as reported.
      *
      * A scanner reports the value it understood. TruffleHog decodes before
@@ -8232,6 +8278,12 @@ class LeakLockPanel {
                 line: result.line,
                 secret: redactSensitive ? '[REDACTED_SECRET]' : (result.fullSecret || result.secret),
                 secretDisplay: redactSensitive ? '[REDACTED_SECRET]' : result.secret,
+                // Provenance for the value itself: whether it is the bytes the file
+                // holds, and which transform the engine applied if not. A value that
+                // reads oddly in this export is then traceable to its engine rather
+                // than assumed to be Leak Lock's doing.
+                valueIsLiteral: result.valueIsLiteral !== false,
+                decoder: result.decoder || null,
                 // Avoid leaking secret-length hints in redacted exports.
                 isSecretDisplayTruncated: redactSensitive ? null : Boolean(result.isSecretTruncated),
                 description: result.description,
