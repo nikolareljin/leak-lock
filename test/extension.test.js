@@ -7092,6 +7092,94 @@ suite('Importing a previous report and checking what was resolved', () => {
 		}
 	});
 
+	// Rather than sending the user away to reopen a folder and start over, a report
+	// whose repository is on this machine offers to switch to it.
+	test('a report for another repository on this machine offers to switch to it', async () => {
+		const cpx = require('child_process');
+		const env = {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+			GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+			GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+		};
+		const other = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-other-'));
+		try {
+			cpx.execFileSync('git', ['-C', other, 'init', '-q', '-b', 'main']);
+			fs.writeFileSync(path.join(other, 'x.txt'), 'nothing\n');
+			cpx.execFileSync('git', ['-C', other, 'add', '-A'], { env });
+			cpx.execFileSync('git', ['-C', other, 'commit', '-qm', 'init'], { env });
+
+			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+			panel._updateWebviewContent = () => {};
+			panel._scanRepoRoot = repo;
+			panel._scanResults = [];
+			panel._resetScanSelection();
+
+			const otherIdentity = await panel._readRepositoryIdentity(other);
+			const parsed = scanBaseline.parseImportedReport(JSON.stringify({
+				generatedAt: '2026-08-01T10:00:00.000Z',
+				scanPath: other,
+				repository: otherIdentity,
+				totalFindings: 1,
+				findings: [finding()]
+			}));
+			assert.ok(parsed.ok);
+
+			const original = vscode.window.showWarningMessage;
+			let offered = null;
+			vscode.window.showWarningMessage = async (message, options, ...choices) => {
+				offered = { message, choices };
+				return choices[0];
+			};
+			try {
+				const gate = await panel._checkImportBelongsHere(parsed.report);
+				assert.match(offered.message, new RegExp('on this machine'));
+				assert.strictEqual(offered.choices[0], `Switch to ${path.basename(other)}`);
+				assert.strictEqual(gate.allowed, true);
+				// Switching resolves the mismatch, so the result is not a
+				// cross-repository comparison.
+				assert.strictEqual(gate.crossRepository, false);
+				assert.strictEqual(panel._scanRepoRoot, other);
+				assert.strictEqual(panel._selectedDirectory, other);
+			} finally {
+				vscode.window.showWarningMessage = original;
+			}
+		} finally {
+			try { fs.rmSync(other, { recursive: true, force: true }); } catch (e) { void e; }
+		}
+	});
+
+	test('no switch is offered when the recorded repository is not on this machine', async () => {
+		const panel = panelFor(reportJson([finding()], {
+			repository: { rootCommits: ['0000000000000000000000000000000000000000'], remote: 'git@github.com:acme/other.git', path: '/no/such/place/app' }
+		}));
+		const report = panel._importedReport;
+		const original = vscode.window.showWarningMessage;
+		let offered = null;
+		vscode.window.showWarningMessage = async (message, options, ...choices) => { offered = choices; return undefined; };
+		try {
+			const gate = await panel._checkImportBelongsHere(report);
+			assert.deepStrictEqual(offered, ['Compare anyway'], 'offering to switch somewhere that does not exist helps nobody');
+			assert.strictEqual(gate.allowed, false);
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	test('switching away from a scan asks first, and keeps the results when refused', async () => {
+		const panel = panelFor(reportJson([finding()]), [
+			{ file: 'app.py', line: 1, secret: 'x', fullSecret: LEAKED, severity: 'high', ruleName: 'r' }
+		]);
+		const original = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = async () => undefined; // declines
+		try {
+			assert.strictEqual(await panel._switchToRepository(repo), false);
+			assert.strictEqual(panel._scanResults.length, 1, 'a declined switch changes nothing');
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
 	test('the imported card is reachable with no scan on screen', () => {
 		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
 		panel._updateWebviewContent = () => {};
