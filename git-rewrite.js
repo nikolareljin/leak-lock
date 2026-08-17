@@ -325,8 +325,14 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
             if (launcherError.code !== 'ENOENT') {
                 throw withSandboxHint(launcherError);
             }
+            // Named for the platform this is actually running on: Windows has no
+            // python3 shim by default, so quoting one turns a missing dependency
+            // into a second dead end.
+            const installHint = process.platform === 'win32'
+                ? 'py -3 -m pip install --user git-filter-repo'
+                : 'python3 -m pip install --user git-filter-repo';
             throw new Error(
-                'git-filter-repo is not installed or is not on PATH. Install it with "python3 -m pip install --user git-filter-repo", ' +
+                `git-filter-repo is not installed or is not on PATH. Install it with "${installHint}", ` +
                 'then restart VS Code so its environment picks up the installation.'
             );
         }
@@ -924,7 +930,8 @@ function buildRewriteScriptPs1(options) {
         ...(requiredCommands.includes('git-filter-repo') ? [
             '#',
             '# Requires git filter-repo (Python). Install if needed:',
-            '#   python3 -m pip install --user git-filter-repo',
+            '#   py -3 -m pip install --user git-filter-repo',
+            '# (or "python -m pip ..." - Windows has no python3 shim by default)',
         ] : []),
         '',
         '$ErrorActionPreference = \'Stop\'',
@@ -960,7 +967,8 @@ function buildRewriteScriptPs1(options) {
             '    Write-Host "git filter-repo is not installed." -ForegroundColor Red',
             '    Write-Host ""',
             '    Write-Host "Install it with pip (requires Python 3):"',
-            '    Write-Host "    python3 -m pip install --user git-filter-repo"',
+            '    Write-Host "    py -3 -m pip install --user git-filter-repo"',
+            '    Write-Host "    (or: python -m pip install --user git-filter-repo)"',
             '    Write-Host ""',
             '    Write-Host "Or download the script and place it in git\'s exec-path:"',
             '    Write-Host "    https://github.com/newren/git-filter-repo"',
