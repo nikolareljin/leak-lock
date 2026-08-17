@@ -6700,3 +6700,204 @@ suite('Prepare always produces a visible outcome', () => {
 		}
 	});
 });
+
+suite('Importing a previous report and checking what was resolved', () => {
+	const scanBaseline = require('../scan-baseline');
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const LEAKED = 'AKIAIOSFODNN7EXAMPLE';
+	let repo;
+
+	function git(args) {
+		cp.execFileSync('git', ['-C', repo, ...args], {
+			env: {
+				...process.env,
+				GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+				GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+				GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+			}
+		});
+	}
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-import-'));
+		cp.execFileSync('git', ['-C', repo, 'init', '-q', '-b', 'main']);
+		fs.writeFileSync(path.join(repo, 'app.py'), `KEY = "${LEAKED}"\n`);
+		git(['add', '-A']); git(['commit', '-qm', 'add key']);
+		// Deleted from the working tree, still in history: the shape of every value
+		// a cleanup is supposed to remove and a working-tree grep would miss.
+		fs.writeFileSync(path.join(repo, 'app.py'), 'KEY = os.environ["KEY"]\n');
+		git(['add', '-A']); git(['commit', '-qm', 'read from env']);
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	function reportJson(findings, extra = {}) {
+		return JSON.stringify({
+			generatedAt: '2026-08-01T10:00:00.000Z',
+			scanPath: repo,
+			totalFindings: findings.length,
+			redacted: false,
+			findings,
+			...extra
+		});
+	}
+
+	function finding(overrides = {}) {
+		return {
+			file: 'app.py', line: 1, secret: LEAKED, secretDisplay: 'AKIAIOSFODNN7…',
+			description: 'AWS Access Token', severity: 'high', ruleName: 'aws-access-token',
+			engine: 'gitleaks', engines: ['gitleaks'], fingerprint: 'fp-1',
+			valueIsLiteral: true, decoder: null, isGitHistory: true,
+			...overrides
+		};
+	}
+
+	function panelFor(reportText, results = []) {
+		const parsed = scanBaseline.parseImportedReport(reportText, { sourceName: 'report.json' });
+		assert.ok(parsed.ok, parsed.error);
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanRepoRoot = repo;
+		panel._scanResults = results;
+		panel._resetScanSelection();
+		panel._importedReport = parsed.report;
+		return panel;
+	}
+
+	test('a file that is not a Leak Lock report is refused, not half-read', () => {
+		assert.strictEqual(scanBaseline.parseImportedReport('{ not json').ok, false);
+		assert.strictEqual(scanBaseline.parseImportedReport('[]').ok, false);
+		const noFindings = scanBaseline.parseImportedReport('{"generatedAt":"x"}');
+		assert.strictEqual(noFindings.ok, false);
+		assert.match(noFindings.error, /findings/);
+	});
+
+	test('a value still in history is reported present, not resolved', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries.length, 1);
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.PRESENT);
+		assert.match(comparison.entries[0].reason, /git history/);
+		assert.strictEqual(comparison.summary.resolved, 0);
+	});
+
+	test('a value that is nowhere in the repository is reported resolved', async () => {
+		const panel = panelFor(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000', fingerprint: 'fp-gone' })]));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.RESOLVED);
+		assert.strictEqual(comparison.summary.resolved, 1);
+	});
+
+	// The rule this feature turns on: a check that could not run never renders as a
+	// tick. A redacted report carries no value to search for.
+	test('a redacted report is unverifiable, never resolved', async () => {
+		const panel = panelFor(reportJson(
+			[finding({ secret: '[REDACTED_SECRET]', fingerprint: null })],
+			{ redacted: true }
+		));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+		assert.strictEqual(comparison.summary.resolved, 0);
+		assert.strictEqual(comparison.summary.unverifiable, 1);
+		assert.ok(panel._importedReport.warnings.some(w => /redaction/.test(w)));
+	});
+
+	test('a decoded value is unverifiable, because it is not the bytes the blob holds', async () => {
+		const panel = panelFor(reportJson([finding({
+			secret: 'decoded-value', valueIsLiteral: false, decoder: 'base64', fingerprint: null
+		})]));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+		assert.match(comparison.entries[0].reason, /base64/);
+	});
+
+	test('a finding the current scan still reports is present even without a repository search', async () => {
+		const panel = panelFor(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000' })]), [
+			{ file: 'other.py', line: 99, secret: 'AKIAGONE…', fullSecret: 'AKIAGONEGONEGONE0000',
+				severity: 'high', ruleName: 'aws-access-token', fingerprint: 'fp-1' }
+		]);
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.PRESENT);
+		assert.match(comparison.entries[0].reason, /current scan/);
+	});
+
+	// A moved line is not a resolved finding. Identity comes from the fingerprint or
+	// the value, never from file and line alone.
+	test('a finding that only moved is still matched', () => {
+		const previous = scanBaseline.normalizeImportedFinding(finding({ line: 1 }), 0);
+		const index = scanBaseline.indexCurrentFindings([
+			{ file: 'app.py', line: 412, fullSecret: LEAKED, ruleName: 'aws-access-token', fingerprint: null }
+		]);
+		assert.ok(scanBaseline.matchInCurrentScan(previous, index), 'the value matches across a line move');
+	});
+
+	test('findings absent from the report are listed as new, with the commit that introduced them', async () => {
+		const panel = panelFor(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000', fingerprint: 'fp-gone' })]), [
+			{ file: 'app.py', line: 1, secret: 'AKIAIOSFO…', fullSecret: LEAKED,
+				severity: 'high', ruleName: 'aws-access-token', fingerprint: 'fp-new' }
+		]);
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.newFindings.length, 1);
+		assert.strictEqual(comparison.summary.newFindings, 1);
+		assert.ok(comparison.newFindings[0].firstCommit, 'the introducing commit is looked up');
+		assert.match(comparison.newFindings[0].firstCommit.hash, /^[0-9a-f]{7,40}$/);
+	});
+
+	test('a bounded verification says so instead of reporting the remainder as resolved', async () => {
+		const original = scanBaseline.DEFAULT_VERIFY_LIMIT;
+		Object.defineProperty(scanBaseline, 'DEFAULT_VERIFY_LIMIT', { value: 1, configurable: true });
+		try {
+			const panel = panelFor(reportJson([
+				finding({ secret: 'AKIAGONEGONEGONE0001', fingerprint: 'a' }),
+				finding({ secret: 'AKIAGONEGONEGONE0002', fingerprint: 'b' })
+			]));
+			const comparison = await panel._verifyImportedReport();
+			assert.strictEqual(comparison.summary.bounded, true);
+			assert.strictEqual(comparison.summary.resolved, 1);
+			assert.strictEqual(comparison.summary.unverifiable, 1);
+			assert.match(comparison.entries[1].reason, /limit/);
+		} finally {
+			Object.defineProperty(scanBaseline, 'DEFAULT_VERIFY_LIMIT', { value: original, configurable: true });
+		}
+	});
+
+	test('a report from another repository is called out before its statuses are read', async () => {
+		const panel = panelFor(JSON.stringify({
+			generatedAt: '2026-08-01T10:00:00.000Z',
+			scanPath: '/somewhere/else',
+			totalFindings: 1,
+			findings: [finding()]
+		}));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.repoMatch.matches, false);
+		assert.match(panel._renderImportedReport(), /not the repository being checked/);
+	});
+
+	test('imported findings are rendered but never selectable for cleanup', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		await panel._verifyImportedReport();
+		const html = panel._renderImportedReport();
+		assert.match(html, /Imported report/);
+		assert.match(html, /Still present/);
+		assert.match(html, /disabled/);
+		// The cleanup model is untouched: an imported finding is a record of a past
+		// scan, not a rewrite input.
+		assert.strictEqual(panel._eligibleFindingIndexes().length, 0);
+		assert.strictEqual(panel._ensureScanSelection().size, 0);
+	});
+
+	test('the imported card is reachable with no scan on screen', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		const html = panel._getScanResultsSection();
+		assert.match(html, /Verify a previous report/);
+		assert.match(html, /importScanResultsJson\(\)/);
+	});
+});

@@ -10,6 +10,7 @@ const gitRewrite = require('./git-rewrite');
 const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
 const redactionRules = require('./redaction-rules');
+const scanBaseline = require('./scan-baseline');
 const valueEncodings = require('./value-encodings');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
@@ -465,6 +466,13 @@ class LeakLockPanel {
         // What the last scan actually covered. "No findings" is only meaningful
         // alongside this, so it is rendered with the results rather than logged.
         this._scanCoverage = null; // see _buildScanCoverage()
+        // A previously exported report read back in, and what it looks like against the
+        // repository now. Deliberately outside _scanCleanup: these findings describe a
+        // past state, are never cleanup targets, and must survive a re-scan, since
+        // comparing them against a fresh scan is the entire point.
+        this._importedReport = null; // see scan-baseline.parseImportedReport()
+        this._importedComparison = null; // { entries, newFindings, summary, repoMatch, repoDir, verifiedAt }
+        this._verifyingImport = false;
         this._dependenciesInstalled = false;
         this._panel = null;
 
@@ -647,6 +655,15 @@ class LeakLockPanel {
                         break;
                     case 'scan.exportJson':
                         LeakLockPanel.currentPanel._exportScanResultsJson();
+                        break;
+                    case 'scan.importJson':
+                        LeakLockPanel.currentPanel._importScanResultsJson();
+                        break;
+                    case 'scan.verifyImported':
+                        LeakLockPanel.currentPanel._verifyImportedReport();
+                        break;
+                    case 'scan.clearImported':
+                        LeakLockPanel.currentPanel._clearImportedReport();
                         break;
                     case 'scan.printPdf':
                         LeakLockPanel.currentPanel._printScanResultsPdf();
@@ -1617,6 +1634,29 @@ class LeakLockPanel {
                         vscode.postMessage({ command: 'scan.printPdf' });
                     }
 
+                    function importScanResultsJson() {
+                        vscode.postMessage({ command: 'scan.importJson' });
+                    }
+
+                    function verifyImportedReport() {
+                        vscode.postMessage({ command: 'scan.verifyImported' });
+                    }
+
+                    function clearImportedReport() {
+                        vscode.postMessage({ command: 'scan.clearImported' });
+                    }
+
+                    // A checkbox has no "unknown" state in HTML, and rendering an
+                    // unverifiable finding as unchecked would read as "still present"
+                    // when the truth is that nothing was checked. The rows are rendered
+                    // after this script, so wait for the document like the selection UI
+                    // does rather than querying an empty DOM.
+                    document.addEventListener('DOMContentLoaded', function () {
+                        document.querySelectorAll('.import-status-unknown').forEach(function (box) {
+                            box.indeterminate = true;
+                        });
+                    });
+
                     function copyScanCommand(id) {
                         try {
                             const el = document.getElementById(id);
@@ -1835,6 +1875,13 @@ class LeakLockPanel {
             </body>
             </html>
         `;
+    }
+
+    // Public: import a previously exported report from the Command Palette. The scan
+    // view owns the comparison, so make sure that is the view being shown.
+    importScanReport() {
+        this._viewMode = 'scan';
+        return this._importScanResultsJson();
     }
 
     // Public: switch to Remove Files UI
@@ -3081,6 +3128,7 @@ class LeakLockPanel {
                         <button class="scan-button" id="ll-select-all" type="button">☑️ Select all</button>
                         <button class="scan-button" id="ll-clear-all" type="button">☐ Clear all</button>
                         <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
+                        <button class="scan-button" onclick="importScanResultsJson()" title="Import a report exported earlier and check whether each of its findings was resolved.">📥 Import JSON</button>
                         <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
                     </div>
                     <div id="selection-counter" class="selection-counter" data-selected="${selectedCount}" data-total="${eligibleIndexes.length}">
@@ -5265,6 +5313,366 @@ class LeakLockPanel {
     }
 
     /**
+     * A previously exported report, read back and checked against the repository now.
+     *
+     * The card is rendered even with nothing imported: the question it answers - did
+     * the cleanup actually remove what the last report listed - comes up after a
+     * rewrite, when there may be no current scan on screen at all.
+     */
+    _renderImportedReport() {
+        const report = this._importedReport;
+        const comparison = this._importedComparison;
+
+        if (!report) {
+            return `
+                <div class="scan-section" id="imported-report-section" style="margin-top: 16px;">
+                    <h3 style="margin-bottom: 4px;">📥 Verify a previous report</h3>
+                    <p style="font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                        Import a report exported earlier and Leak Lock checks each of its findings against this
+                        repository as it stands now: resolved, still present, or impossible to check. It also lists
+                        what has appeared since the report was written, and the commit that introduced it.
+                    </p>
+                    <button class="scan-button" onclick="importScanResultsJson()">📥 Import JSON</button>
+                </div>
+            `;
+        }
+
+        const summary = comparison ? comparison.summary : null;
+        const generatedAt = report.generatedAt
+            ? new Date(report.generatedAt).toLocaleString()
+            : 'an unrecorded time';
+
+        const warnings = (report.warnings || []).map(warning => `
+            <div class="coverage-note coverage-warn">⚠️ ${escapeHtml(warning)}</div>
+        `).join('');
+
+        // A report from another repository would produce meaningless "resolved" rows,
+        // so the mismatch is stated before any status is read.
+        const repoMatch = comparison ? comparison.repoMatch : null;
+        const repoNote = repoMatch && repoMatch.known && repoMatch.matches === false
+            ? `<div class="coverage-note coverage-warn">⚠️ This report was generated against <code>${escapeHtml(repoMatch.recorded)}</code>, which is not the repository being checked (<code>${escapeHtml(comparison.repoDir || 'none')}</code>). Every status below is about the current repository.</div>`
+            : '';
+
+        const summaryLine = summary
+            ? `<div class="import-summary" style="margin: 10px 0; font-size: 0.95em;">
+                    <strong>${summary.resolved} of ${summary.total}</strong> resolved
+                    · ${summary.present} still present
+                    · ${summary.unverifiable} unverifiable
+                    ${summary.newFindings ? `· <strong>${summary.newFindings}</strong> new since this report` : ''}
+               </div>
+               ${summary.bounded ? `<div class="coverage-note coverage-warn">⚠️ Verification stopped at ${summary.verifyLimit} values. The rest are reported as unverifiable, not resolved.</div>` : ''}`
+            : '<div class="coverage-note">Not verified yet.</div>';
+
+        const rows = (comparison ? comparison.entries : []).map(entry => {
+            const finding = entry.finding;
+            const isResolved = entry.status === scanBaseline.STATUS.RESOLVED;
+            const isUnknown = entry.status === scanBaseline.STATUS.UNVERIFIABLE;
+            const label = isResolved ? 'Resolved' : (isUnknown ? 'Unverifiable' : 'Still present');
+            const colour = isResolved
+                ? 'var(--vscode-testing-iconPassed, #4caf50)'
+                : (isUnknown ? 'var(--vscode-descriptionForeground)' : 'var(--vscode-testing-iconFailed, #d73a49)');
+            const value = finding.secretDisplay || '';
+            const shown = value.length > SECRET_TRUNCATE_LENGTH ? `${value.substring(0, SECRET_TRUNCATE_LENGTH)}…` : value;
+
+            return `
+                <tr>
+                    <td style="white-space: nowrap;">
+                        <input type="checkbox" ${isResolved ? 'checked' : ''} disabled
+                            class="${isUnknown ? 'import-status-unknown' : ''}"
+                            aria-label="${escapeHtml(label)}"
+                            title="${escapeHtml(entry.reason || label)}">
+                        <span style="color: ${colour}; font-size: 0.9em;">${escapeHtml(label)}</span>
+                    </td>
+                    <td style="word-break: break-all;">${escapeHtml(finding.file || 'unknown')}</td>
+                    <td>${escapeHtml(String(finding.line ?? ''))}</td>
+                    <td style="font-family: monospace; word-break: break-all;">${escapeHtml(shown)}</td>
+                    <td>${escapeHtml(finding.severity || '')}</td>
+                    <td>${escapeHtml((finding.engines || []).join(', ') || finding.engine || '—')}</td>
+                    <td style="font-size: 0.9em; color: var(--vscode-descriptionForeground);">${escapeHtml(entry.reason || '')}</td>
+                </tr>
+            `;
+        }).join('');
+
+        const newRows = (comparison ? comparison.newFindings : []).map(item => `
+            <tr>
+                <td style="word-break: break-all;">${escapeHtml(item.file || 'unknown')}</td>
+                <td>${escapeHtml(String(item.line ?? ''))}</td>
+                <td style="font-family: monospace; word-break: break-all;">${escapeHtml(item.secretDisplay || '')}</td>
+                <td>${escapeHtml(item.severity || '')}</td>
+                <td style="font-size: 0.9em;">${item.firstCommit
+            ? `${escapeHtml(item.firstCommit.hash.substring(0, 7))}${item.firstCommit.date ? ` · ${escapeHtml(new Date(item.firstCommit.date).toLocaleDateString())}` : ''}`
+            : '<span style="color: var(--vscode-descriptionForeground);">not looked up</span>'}</td>
+            </tr>
+        `).join('');
+
+        return `
+            <div class="scan-section" id="imported-report-section" style="margin-top: 16px;">
+                <h3 style="margin-bottom: 4px;">📥 Imported report${report.sourceName ? `: ${escapeHtml(report.sourceName)}` : ''}</h3>
+                <p style="font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                    ${report.totalFindings} finding(s), scanned ${escapeHtml(generatedAt)}${report.redacted ? ' · exported with redaction' : ''}.
+                    These are a record of a past scan. They are never cleanup targets and are not selectable.
+                </p>
+                ${warnings}
+                ${repoNote}
+                ${summaryLine}
+                <div class="export-actions" style="margin-bottom: 10px;">
+                    <button class="scan-button" onclick="verifyImportedReport()" ${this._verifyingImport ? 'disabled' : ''}>${this._verifyingImport ? '⏳ Verifying…' : '🔁 Re-verify'}</button>
+                    <button class="scan-button" onclick="importScanResultsJson()">📥 Import another</button>
+                    <button class="scan-button" onclick="clearImportedReport()">✕ Clear</button>
+                </div>
+                ${rows
+                ? `<table class="results-table">
+                        <thead><tr>
+                            <th style="width: 150px;">Resolved?</th><th>File</th><th style="width: 60px;">Line</th>
+                            <th style="width: 22%;">Value</th><th style="width: 90px;">Severity</th>
+                            <th style="width: 130px;">Engine</th><th style="width: 22%;">Evidence</th>
+                        </tr></thead>
+                        <tbody>${rows}</tbody>
+                       </table>`
+                : '<p style="font-size: 0.9em; color: var(--vscode-descriptionForeground);">This report contains no findings to check.</p>'}
+                ${newRows
+                ? `<h4 style="margin: 14px 0 4px 0;">New since this report</h4>
+                       <p style="font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                           Reported by the current scan and absent from the imported report.
+                       </p>
+                       <table class="results-table">
+                        <thead><tr><th>File</th><th style="width: 60px;">Line</th><th style="width: 25%;">Value</th><th style="width: 90px;">Severity</th><th style="width: 180px;">Introduced by</th></tr></thead>
+                        <tbody>${newRows}</tbody>
+                       </table>`
+                : ''}
+            </div>
+        `;
+    }
+
+    /**
+     * Read a report back in.
+     *
+     * A wrong file is an expected outcome here, not an exceptional one, so parse
+     * failures are reported and nothing is rendered half-read.
+     */
+    async _importScanResultsJson() {
+        try {
+            const picked = await vscode.window.showOpenDialog({
+                canSelectMany: false,
+                openLabel: 'Import scan report',
+                filters: { 'JSON files': ['json'] }
+            });
+            if (!picked || picked.length === 0) {
+                return;
+            }
+
+            const uri = picked[0];
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const parsed = scanBaseline.parseImportedReport(Buffer.from(bytes).toString('utf8'), {
+                sourceName: path.basename(uri.fsPath)
+            });
+            if (!parsed.ok) {
+                vscode.window.showErrorMessage(`Could not import that file. ${parsed.error}`);
+                return;
+            }
+
+            this._importedReport = parsed.report;
+            this._importedComparison = null;
+            this._updateWebviewContent();
+            await this._verifyImportedReport();
+        } catch (error) {
+            console.error('Failed to import scan report:', error);
+            vscode.window.showErrorMessage(`Failed to import scan report: ${error.message}`);
+        }
+    }
+
+    _clearImportedReport() {
+        this._importedReport = null;
+        this._importedComparison = null;
+        this._updateWebviewContent();
+    }
+
+    /**
+     * Check every imported finding against the repository as it stands now.
+     *
+     * Two signals, kept separate because they answer different questions: whether the
+     * value is still anywhere in history or on disk, which needs no engine and is what
+     * a rewrite actually changes; and whether the current scan still reports it.
+     */
+    async _verifyImportedReport() {
+        const report = this._importedReport;
+        if (!report || this._verifyingImport) {
+            return null;
+        }
+
+        const repoDir = this._resolveCleanupRepo().repo
+            || this._scanRepoRoot
+            || this._scanPath
+            || this._selectedDirectory
+            || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+            || null;
+
+        this._verifyingImport = true;
+        this._updateWebviewContent();
+        try {
+            const currentIndex = scanBaseline.indexCurrentFindings(this._scanResults);
+            const limit = scanBaseline.DEFAULT_VERIFY_LIMIT;
+            const entries = [];
+            let checked = 0;
+            let bounded = false;
+
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Checking the imported report against this repository',
+                cancellable: true
+            }, async (progress, token) => {
+                for (const finding of report.findings) {
+                    const currentMatch = scanBaseline.matchInCurrentScan(finding, currentIndex);
+                    let presence = null;
+
+                    if (!currentMatch && finding.verifiable) {
+                        if (!repoDir) {
+                            presence = { checked: false, reason: 'no repository is open to search' };
+                        } else if (token.isCancellationRequested) {
+                            bounded = true;
+                            presence = { checked: false, reason: 'verification was cancelled' };
+                        } else if (checked >= limit) {
+                            bounded = true;
+                            presence = { checked: false, reason: `the ${limit}-value verification limit was reached` };
+                        } else {
+                            checked += 1;
+                            progress.report({ message: `${checked} of ${Math.min(report.findings.length, limit)} value(s)` });
+                            presence = await this._checkValuePresence(repoDir, finding.secret);
+                        }
+                    }
+
+                    const outcome = scanBaseline.resolveStatus(finding, { presence, currentMatch });
+                    entries.push({
+                        finding,
+                        status: outcome.status,
+                        reason: outcome.reason,
+                        currentIndex: currentMatch ? currentMatch.position : null
+                    });
+                }
+            });
+
+            const newFindings = await this._describeFindingsNewSince(report, repoDir);
+            this._importedComparison = {
+                entries,
+                newFindings,
+                summary: scanBaseline.summarize(entries, {
+                    newFindings: newFindings.length,
+                    bounded,
+                    verifyLimit: limit
+                }),
+                repoMatch: scanBaseline.describeRepoMatch(report, repoDir),
+                repoDir,
+                verifiedAt: new Date().toISOString()
+            };
+            return this._importedComparison;
+        } catch (error) {
+            console.error('Failed to verify the imported report:', error);
+            vscode.window.showErrorMessage(`Could not verify the imported report: ${error.message}`);
+            return null;
+        } finally {
+            this._verifyingImport = false;
+            this._updateWebviewContent();
+        }
+    }
+
+    /**
+     * Is this exact value still anywhere in the repository?
+     *
+     * History is searched with the pickaxe over `--all`, which finds content that was
+     * added and later removed - the shape of every leaked value - and covers refs that
+     * are not reachable from HEAD. The working tree is searched separately, including
+     * untracked files, because a value that was never committed is removed by deleting
+     * the file rather than by rewriting history, and must not read as resolved.
+     */
+    async _checkValuePresence(repoDir, value) {
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+
+        let inHistory = false;
+        try {
+            const { stdout } = await execFileAsync(
+                'git', scanBaseline.buildHistoryPresenceArgs(repoDir, value),
+                { timeout: 120000, maxBuffer: GIT_MAX_BUFFER }
+            );
+            inHistory = Boolean(String(stdout || '').trim());
+        } catch (error) {
+            // A search that could not run has not shown the value to be absent.
+            return { checked: false, reason: `the history search failed: ${error.message}` };
+        }
+
+        let inWorkingTree = false;
+        try {
+            await execFileAsync(
+                'git', scanBaseline.buildWorkingTreePresenceArgs(repoDir, value),
+                { timeout: 60000, maxBuffer: GIT_MAX_BUFFER }
+            );
+            inWorkingTree = true;
+        } catch (error) {
+            // `git grep --quiet` exits 1 for "no match", which is an answer, not a
+            // failure. Anything else is a failure and must not be read as absence.
+            if (error.code !== 1) {
+                return {
+                    checked: inHistory,
+                    inHistory,
+                    inWorkingTree: false,
+                    reason: inHistory ? null : `the working-tree search failed: ${error.message}`
+                };
+            }
+        }
+
+        return { checked: true, inHistory, inWorkingTree };
+    }
+
+    /**
+     * Findings the current scan reports and the imported report does not, each with the
+     * commit that first introduced the value.
+     *
+     * "When did this appear?" is the other half of comparing two scans, and the pickaxe
+     * with `--reverse` answers it exactly.
+     */
+    async _describeFindingsNewSince(report, repoDir) {
+        const fresh = scanBaseline.findingsNewSince(report.findings, this._scanResults);
+        if (fresh.length === 0) {
+            return [];
+        }
+
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        // Each lookup is a full history walk, so only the first few are dated. The rest
+        // say "not looked up" rather than implying nothing was found.
+        const LOOKUP_LIMIT = 25;
+
+        const described = [];
+        for (const [position, { result }] of fresh.entries()) {
+            const value = result.fullSecret || result.secret;
+            let firstCommit = null;
+            const searchable = value
+                && value !== scanBaseline.REDACTED_SECRET
+                && result.valueIsLiteral !== false
+                && !result.decoder;
+            if (repoDir && searchable && position < LOOKUP_LIMIT) {
+                try {
+                    const { stdout } = await execFileAsync(
+                        'git', scanBaseline.buildFirstCommitArgs(repoDir, value),
+                        { timeout: 120000, maxBuffer: GIT_MAX_BUFFER }
+                    );
+                    firstCommit = scanBaseline.parseFirstCommit(stdout);
+                } catch (error) {
+                    console.warn('First-commit lookup failed:', error.message);
+                }
+            }
+            described.push({
+                file: result.file,
+                line: result.line,
+                secretDisplay: result.secret,
+                severity: result.severity,
+                firstCommit
+            });
+        }
+        return described;
+    }
+
+    /**
      * Per-finding engine attribution.
      *
      * Names the engines that found it and, just as importantly, the enabled engines
@@ -5615,13 +6023,15 @@ class LeakLockPanel {
             `;
         }
 
-        // Show results or empty state
+        // Show results or empty state. The imported-report card is appended to both:
+        // "did the cleanup remove what the last report listed" is asked after a
+        // rewrite, when a current scan may show nothing at all.
         if (!this._scanResults || this._scanResults.length === 0) {
-            return this._renderEmptyScanState();
+            return `${this._renderEmptyScanState()}${this._renderImportedReport()}`;
         }
 
         // Show actual results (existing logic)
-        return this._getResultsHtml();
+        return `${this._getResultsHtml()}${this._renderImportedReport()}`;
     }
 
     _generateFixCommand(replacements) {
