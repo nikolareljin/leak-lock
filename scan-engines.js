@@ -264,6 +264,22 @@ async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform 
 /**
  * Read a report file an engine wrote, tolerating "no findings, no file".
  */
+/**
+ * The report file as text, bounded, for diagnostics only.
+ *
+ * Deliberately not the parsed value: keeping the parse alive and stringifying it
+ * again is two copies of a report that can be tens of megabytes, held in the
+ * extension host, to write one file. Failure here is never fatal - diagnostics
+ * must not be able to fail a scan.
+ */
+function readReportText(reportPath) {
+    try {
+        return fs.readFileSync(reportPath, 'utf8').slice(0, RAW_OUTPUT_LIMIT);
+    } catch {
+        return '';
+    }
+}
+
 function readJsonReport(reportPath) {
     try {
         if (!fs.existsSync(reportPath)) {
@@ -504,8 +520,11 @@ const gitleaksEngine = {
                     await invoke(execution, args, { mounts, timeoutMs });
                     const raw = readJsonReport(hostReportPath);
                     surfaces[surface] = raw.length;
-                    // Keep the engine's own report, untouched, for diagnostics.
-                    rawReports[surface] = raw;
+                    // Diagnostics keep the report's own text, read back and bounded,
+                    // rather than the parsed array: holding the parse and then
+                    // stringifying it again doubles peak memory on a large scan, in
+                    // the extension host, for something only ever written to a file.
+                    rawReports[surface] = readReportText(hostReportPath);
                     for (const item of raw) {
                         findings.push(mapGitleaksFinding(item, surface, scanRoot));
                     }
@@ -539,7 +558,10 @@ const gitleaksEngine = {
 
         return {
             findings, surfaces, warnings, dialect, runtime: execution.mode,
-            rawOutput: JSON.stringify(rawReports, null, 2).slice(0, RAW_OUTPUT_LIMIT)
+            rawOutput: Object.entries(rawReports)
+                .map(([surface, text]) => `----- ${surface} -----\n${text}`)
+                .join('\n')
+                .slice(0, RAW_OUTPUT_LIMIT)
         };
     }
 };
