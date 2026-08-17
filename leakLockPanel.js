@@ -3603,9 +3603,12 @@ class LeakLockPanel {
      * one blob read per (commit, path), so an ordinary scan does no extra work.
      */
     async _alignValuesWithStoredBytes(results, scanPath) {
+        // Every finding with something to compare against, whichever engine produced
+        // it. Gating this on an engine declaring a decoder was too narrow: an engine
+        // that normalises without saying so - or a build whose JSON omits the field -
+        // produced exactly the same wrong value with no flag to trigger the check.
         const candidates = (results || []).filter(result =>
-            result && result.valueIsLiteral === false && result.decoder
-            && result.commitHash && result.file && (result.fullSecret || result.secret));
+            result && result.file && (result.fullSecret || result.secret));
         if (candidates.length === 0) {
             return 0;
         }
@@ -3615,30 +3618,41 @@ class LeakLockPanel {
         const blobs = new Map();
         let aligned = 0;
 
-        for (const result of candidates.slice(0, 200)) {
+        for (const result of candidates.slice(0, 500)) {
             const repoDir = result.repoRoot || this._scanRepoRoot || scanPath;
-            if (!repoDir) {
-                continue;
-            }
             const reported = result.fullSecret || result.secret;
-            const key = `${repoDir}\u0000${result.commitHash}\u0000${result.file}`;
+            const key = `${repoDir}\u0000${result.commitHash || 'worktree'}\u0000${result.file}`;
             if (!blobs.has(key)) {
                 let text = null;
-                for (const candidate of repoRelativeCandidates(result.file, scanPath, repoDir)) {
+                // A history finding names a commit; a working-tree finding is the file
+                // on disk. Both are read, because an engine that normalises does so
+                // regardless of which surface the finding came from.
+                if (result.commitHash && repoDir) {
+                    for (const candidate of repoRelativeCandidates(result.file, scanPath, repoDir)) {
+                        try {
+                            const { stdout } = await execFileAsync(
+                                'git',
+                                ['-C', repoDir, 'show', `${result.commitHash}:${candidate}`],
+                                {
+                                    maxBuffer: GIT_MAX_BUFFER,
+                                    timeout: 20000,
+                                    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+                                }
+                            );
+                            text = stdout;
+                            break;
+                        } catch {
+                            continue;
+                        }
+                    }
+                } else {
+                    const absolute = path.isAbsolute(result.file)
+                        ? result.file
+                        : path.resolve(scanPath || repoDir || '.', result.file);
                     try {
-                        const { stdout } = await execFileAsync(
-                            'git',
-                            ['-C', repoDir, 'show', `${result.commitHash}:${candidate}`],
-                            {
-                                maxBuffer: GIT_MAX_BUFFER,
-                                timeout: 20000,
-                                env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
-                            }
-                        );
-                        text = stdout;
-                        break;
+                        text = fs.readFileSync(absolute, 'utf8');
                     } catch {
-                        continue;
+                        text = null;
                     }
                 }
                 blobs.set(key, text);

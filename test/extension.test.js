@@ -6412,9 +6412,37 @@ suite('Displayed values follow the stored bytes', () => {
 		assert.ok(!findings[0].storedFormRecovered, 'nothing was recovered, so nothing is claimed');
 	});
 
-	test('findings no engine flagged as decoded cost nothing', async () => {
+	test('a finding no engine flagged is aligned too', async () => {
+		// The gate used to be "the engine declared a decoder". An engine that
+		// normalises without saying so - or a build whose JSON omits the field -
+		// produced the same wrong value with nothing to trigger the check.
 		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
-		const plain = [{ file: '.env', secret: 'x', fullSecret: 'x', commitHash: sha, repoRoot: repo }];
-		assert.strictEqual(await p._alignValuesWithStoredBytes(plain, repo), 0, 'no blob reads for ordinary findings');
+		const unflagged = [{
+			file: '.env', line: 1, secret: DECODED, fullSecret: DECODED,
+			commitHash: sha, repoRoot: repo, severity: 'high', description: 'x'
+		}];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(unflagged, repo), 1);
+		assert.strictEqual(unflagged[0].fullSecret, STORED);
+	});
+
+	test('a working-tree finding is compared against the file on disk', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const worktree = [{
+			file: '.env', line: 1, secret: DECODED, fullSecret: DECODED,
+			repoRoot: repo, severity: 'high', description: 'x'
+		}];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(worktree, repo), 1,
+			'an engine that normalises does so on every surface, not only history');
+		assert.strictEqual(worktree[0].fullSecret, STORED);
+	});
+
+	test('a value genuinely absent from the file is left exactly as reported', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const absent = [{
+			file: '.env', line: 1, secret: 'NOT-IN-THIS-FILE', fullSecret: 'NOT-IN-THIS-FILE',
+			commitHash: sha, repoRoot: repo, severity: 'high', description: 'x'
+		}];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(absent, repo), 0);
+		assert.strictEqual(absent[0].fullSecret, 'NOT-IN-THIS-FILE', 'nothing invented');
 	});
 });
