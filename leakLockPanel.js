@@ -2901,6 +2901,7 @@ class LeakLockPanel {
                     : ''}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">— in a third-party dependency, not your code (not selectable)</span>' : ''}
                                 ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
+                                ${result.storedFormRecovered ? ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;" title="${escapeHtml(result.decoder || 'the engine')} decoded this value before reporting it. The value shown is the one stored in the file, which is what a cleanup has to search for.">— shown as stored (${escapeHtml(result.decoder || 'decoded')} by the engine)</span>` : ''}
                                 ${!includeInCleanup ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(excluded from cleanup)</span>' : ''}
                             </span>
                         </div>
@@ -3489,6 +3490,9 @@ class LeakLockPanel {
             // Resolve each finding against its owning repository before rendering
             // permalinks. A workspace scan can include several child repos.
             await this._primeFindingRepoInfo(allResults, scanPath);
+            // Show, export and rewrite the bytes the repository holds, not the
+            // decoding an engine performed before reporting.
+            await this._alignValuesWithStoredBytes(allResults, scanPath);
             // Only Nosey Parker accepts an ignore file, so without this the setting
             // meant different things depending on which engines were enabled.
             if (this._shouldExcludeDependencies()) {
@@ -3582,6 +3586,88 @@ class LeakLockPanel {
             this._remoteInfo = null;
         }
     }
+    /**
+     * Replace a reported value with the bytes the repository actually stores.
+     *
+     * TruffleHog decodes before it detects, so a token written `…%3d%3d` in the file
+     * is reported - and therefore displayed, exported and rewritten - as `…==`. All
+     * three are then wrong in the same way, and the disagreement only surfaces when
+     * someone opens the file and sees different characters.
+     *
+     * Reading the blob the finding names settles it: if the reported value is not
+     * there but one of its encodings is, that encoding is what the repository holds,
+     * and it becomes the finding's value. The reported form is kept alongside, so the
+     * row can say why the two differ rather than appearing to change the scan result.
+     *
+     * Bounded deliberately: only findings an engine flagged as decoded are checked,
+     * one blob read per (commit, path), so an ordinary scan does no extra work.
+     */
+    async _alignValuesWithStoredBytes(results, scanPath) {
+        const candidates = (results || []).filter(result =>
+            result && result.valueIsLiteral === false && result.decoder
+            && result.commitHash && result.file && (result.fullSecret || result.secret));
+        if (candidates.length === 0) {
+            return 0;
+        }
+
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const blobs = new Map();
+        let aligned = 0;
+
+        for (const result of candidates.slice(0, 200)) {
+            const repoDir = result.repoRoot || this._scanRepoRoot || scanPath;
+            if (!repoDir) {
+                continue;
+            }
+            const reported = result.fullSecret || result.secret;
+            const key = `${repoDir}\u0000${result.commitHash}\u0000${result.file}`;
+            if (!blobs.has(key)) {
+                let text = null;
+                for (const candidate of repoRelativeCandidates(result.file, scanPath, repoDir)) {
+                    try {
+                        const { stdout } = await execFileAsync(
+                            'git',
+                            ['-C', repoDir, 'show', `${result.commitHash}:${candidate}`],
+                            {
+                                maxBuffer: GIT_MAX_BUFFER,
+                                timeout: 20000,
+                                env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+                            }
+                        );
+                        text = stdout;
+                        break;
+                    } catch {
+                        continue;
+                    }
+                }
+                blobs.set(key, text);
+            }
+            const blob = blobs.get(key);
+            if (!blob || blob.includes(reported)) {
+                // Either unreadable, or the engine's value is stored as reported and
+                // the decoder changed nothing that matters here.
+                if (blob && blob.includes(reported)) {
+                    result.valueIsLiteral = true;
+                }
+                continue;
+            }
+            const stored = valueEncodings.findStoredForms(reported, blob)
+                .find(form => form !== reported);
+            if (!stored) {
+                continue;
+            }
+            result.reportedSecret = reported;
+            result.fullSecret = stored;
+            result.secret = this._truncateSecret(stored);
+            result.isSecretTruncated = result.secret !== stored;
+            result.valueIsLiteral = true;
+            result.storedFormRecovered = true;
+            aligned++;
+        }
+        return aligned;
+    }
+
     /**
      * Attach the owning repository and recognised remote to each finding.
      *
