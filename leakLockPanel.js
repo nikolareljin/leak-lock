@@ -402,6 +402,25 @@ function matchedTextFromSnippet(match) {
     return match.snippet?.matching || match.content || match.text || null;
 }
 
+/**
+ * Render a date out of an imported report.
+ *
+ * The value comes from a file the user picked, which may have been hand-edited or
+ * written by an older format, and `new Date('whatever').toLocaleString()` renders the
+ * words "Invalid Date" into the panel. An unreadable date falls back to the raw string
+ * or to a neutral label, both of which tell the reader more than that does.
+ */
+function formatReportDate(value, fallback, options = {}) {
+    if (!value) {
+        return fallback;
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+        return fallback;
+    }
+    return options.dateOnly ? parsed.toLocaleDateString() : parsed.toLocaleString();
+}
+
 class LeakLockPanel {
     constructor(extensionUri) {
         this._extensionUri = extensionUri;
@@ -5341,9 +5360,7 @@ class LeakLockPanel {
         }
 
         const summary = comparison ? comparison.summary : null;
-        const generatedAt = report.generatedAt
-            ? new Date(report.generatedAt).toLocaleString()
-            : 'an unrecorded time';
+        const generatedAt = formatReportDate(report.generatedAt, 'an unrecorded time');
 
         const warnings = (report.warnings || []).map(warning => `
             <div class="coverage-note coverage-warn">⚠️ ${escapeHtml(warning)}</div>
@@ -5417,7 +5434,7 @@ class LeakLockPanel {
                 <td style="font-family: monospace; word-break: break-all;">${escapeHtml(item.secretDisplay || '')}</td>
                 <td>${escapeHtml(item.severity || '')}</td>
                 <td style="font-size: 0.9em;">${item.firstCommit
-            ? `${escapeHtml(item.firstCommit.hash.substring(0, 7))}${item.firstCommit.date ? ` · ${escapeHtml(new Date(item.firstCommit.date).toLocaleDateString())}` : ''}`
+            ? `${escapeHtml(item.firstCommit.hash.substring(0, 7))}${item.firstCommit.date ? ` · ${escapeHtml(formatReportDate(item.firstCommit.date, item.firstCommit.date, { dateOnly: true }))}` : ''}`
             : '<span style="color: var(--vscode-descriptionForeground);">not looked up</span>'}</td>
             </tr>
         `).join('');

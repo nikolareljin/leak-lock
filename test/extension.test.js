@@ -7351,6 +7351,21 @@ suite('Importing a previous report and checking what was resolved', () => {
 		}
 	});
 
+	// Copilot review: a hand-edited or older-format date rendered the words
+	// "Invalid Date" into the panel.
+	test('an unreadable date never renders as Invalid Date', async () => {
+		const panel = panelFor(JSON.stringify({
+			generatedAt: 'last tuesday',
+			scanPath: repo,
+			totalFindings: 1,
+			findings: [finding()]
+		}));
+		await panel._verifyImportedReport();
+		const html = panel._renderImportedReport();
+		assert.doesNotMatch(html, /Invalid Date/);
+		assert.match(html, /an unrecorded time/);
+	});
+
 	test('the imported card is reachable with no scan on screen', () => {
 		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
 		panel._updateWebviewContent = () => {};
