@@ -6752,7 +6752,12 @@ class LeakLockPanel {
             // stored form where it can (see _expandRulesToStoredForms); a finding
             // whose value cannot be trusted at all is excluded here, with a reason,
             // rather than quietly contributing a rule that does nothing.
-            && result.valueIsLiteral !== false;
+            && result.valueIsLiteral !== false
+            // Display truncation appends "..." to the shortened value. That string is
+            // for the table; a rule built from it would search history for text that
+            // ends in three literal dots and match nothing. Only reachable when the
+            // full value was never recorded.
+            && !(result.isSecretTruncated === true && !result.fullSecret);
     }
 
     /** Why a finding's checkbox is disabled - shown as its tooltip so the user
@@ -6766,6 +6771,10 @@ class LeakLockPanel {
         }
         if (result.includeInCleanup === false) {
             return 'Excluded from cleanup.';
+        }
+        if (result.isSecretTruncated === true && !result.fullSecret) {
+            return 'Only a shortened form of this value was recorded, and the shortened form is not in any commit. '
+                + 'Copy the value from the file and add it as a manual redaction rule.';
         }
         if (result.valueIsLiteral === false) {
             return result.decoder
