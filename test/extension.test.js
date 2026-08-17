@@ -5787,3 +5787,143 @@ suite('The refusal message can be acted on', () => {
 		);
 	});
 });
+
+// When a scan spans several repositories — backup clones, vendored copies, a
+// workspace of projects — a rule that matches nothing usually means the wrong
+// repository, not the wrong text. Locate it instead of blaming the user.
+suite('A rule that matches nothing points at the repository that has it', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let root, withSecret, without;
+
+	function makeRepo(dir, contents) {
+		fs.mkdirSync(dir, { recursive: true });
+		cp.execFileSync('git', ['init', '--quiet', dir], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(dir, 'app.env'), contents);
+		cp.execFileSync('git', ['-C', dir, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', dir, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	}
+
+	suiteSetup(() => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-whichrepo-'));
+		withSecret = path.join(root, 'real-project');
+		without = path.join(root, 'backup', 'repos', 'real-project');
+		makeRepo(withSecret, `token=${SECRET}\n`);
+		makeRepo(without, 'token=already-clean\n');
+	});
+
+	suiteTeardown(() => {
+		if (root) { try { fs.rmSync(root, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		// Both repositories were seen by the scan; the selected finding points at the
+		// backup copy, which is the case that produced a silent no-op.
+		p._scanResults = [
+			{ file: 'app.env', repoRoot: without, secret: SECRET, fullSecret: SECRET, severity: 'high', description: 'x' },
+			{ file: 'app.env', repoRoot: withSecret, secret: SECRET, fullSecret: SECRET, severity: 'high', description: 'x' }
+		];
+		p._scanPath = root;
+		return p;
+	}
+
+	test('locates the repository that contains the value', async () => {
+		const found = await panel()._findRepoContainingRules(
+			[{ source: SECRET, mode: 'literal', replaceWith: '*****' }],
+			without
+		);
+		assert.strictEqual(found, withSecret, 'the offer must name the repository that actually has it');
+	});
+
+	test('returns null when no scanned repository contains it', async () => {
+		const found = await panel()._findRepoContainingRules(
+			[{ source: 'NOT-IN-ANY-OF-THESE-REPOS', mode: 'literal', replaceWith: '*****' }],
+			without
+		);
+		assert.strictEqual(found, null, 'nothing to offer means the text really is the problem');
+	});
+
+	test('an accepted repository overrides the finding-derived one', () => {
+		const p = panel();
+		p._scanCleanup.selection = new Set([0]);
+		assert.strictEqual(p._resolveCleanupRepo().repo, without, 'without an override, the finding decides');
+		p._scanCleanup.repoOverride = withSecret;
+		assert.strictEqual(p._resolveCleanupRepo().repo, withSecret);
+	});
+});
+
+// A secret quoted in a commit message is in no blob. --replace-text alone leaves
+// it there, so the scan keeps reporting it while every cleanup looks successful.
+suite('Secrets in commit messages', () => {
+	const gitRewrite = require('../git-rewrite');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo, available;
+
+	suiteSetup(() => {
+		try {
+			cp.execFileSync('git', ['filter-repo', '--version'], { env, stdio: 'ignore' });
+			available = true;
+		} catch {
+			available = false;
+		}
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-message-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, 'notes.txt'), 'nothing sensitive here\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		// The value exists ONLY in the commit message, never in a file.
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', `rotate ${SECRET} out of staging`],
+			{ env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	test('a message-only secret is found, and reported as a message', async () => {
+		const found = await gitRewrite.findUnremovedRules(repo, [{ source: SECRET, mode: 'literal' }]);
+		assert.strictEqual(found.length, 1, 'searching blobs alone reports this as "matches nothing"');
+		assert.strictEqual(found[0].surface, 'message', 'the surface says which flag is needed to remove it');
+	});
+
+	test('--replace-message removes it, and the check then reports clean', async function () {
+		if (!available) { this.skip(); return; }
+		this.timeout(60000);
+		const rules = path.join(repo, '.git', 'rules.txt');
+		fs.writeFileSync(rules, `${SECRET}==>REDACTED\n`);
+		await gitRewrite.runGitFilterRepo(repo,
+			['--replace-text', rules, '--replace-message', rules, '--force'], {});
+		fs.rmSync(rules, { force: true });
+
+		assert.ok(!cp.execFileSync('git', ['-C', repo, 'log', '--all', '--format=%B'], { env })
+			.toString().includes(SECRET), 'the message no longer carries it');
+		assert.deepStrictEqual(
+			await gitRewrite.findUnremovedRules(repo, [{ source: SECRET, mode: 'literal' }]),
+			[]
+		);
+	});
+});

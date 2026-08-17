@@ -793,7 +793,22 @@ async function findUnremovedRules(repoDir, rules, options = {}) {
             ], { timeout });
             const hit = String(stdout).trim().split('\n')[0];
             if (hit) {
-                remaining.push({ source: rule.source, mode: rule.mode || 'literal', commit: hit });
+                remaining.push({ source: rule.source, mode: rule.mode || 'literal', commit: hit, surface: 'content' });
+                continue;
+            }
+            // A secret can be in a commit message rather than in a file, and the two
+            // need different flags: --replace-text rewrites blobs, --replace-message
+            // rewrites messages. Reporting "matches nothing" for a value that is
+            // plainly in the history - because only blobs were searched - is how a
+            // cleanup ends up doing nothing while the scan keeps finding it.
+            const { stdout: messageHit } = await gitRaw(repoDir, [
+                'log', '--all', '--oneline', '--max-count=1',
+                rule.mode === 'regex' ? '--extended-regexp' : '--fixed-strings',
+                '--grep', rule.source
+            ], { timeout });
+            const message = String(messageHit).trim().split('\n')[0];
+            if (message) {
+                remaining.push({ source: rule.source, mode: rule.mode || 'literal', commit: message, surface: 'message' });
             }
         } catch (error) {
             // A failed search is not a clean result. Report it as unremoved with the

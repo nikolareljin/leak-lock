@@ -383,6 +383,9 @@ class LeakLockPanel {
             preparedScripts: null, // { sh, ps1 } - both are generated, the user picks
             preparedFlavor: null,  // which of the two the panel is showing
             preparedMode: null, // 'bfg' | 'git'
+            // Set when the user accepts the repository Leak Lock located the value
+            // in; cleared by a new scan, which re-decides where findings live.
+            repoOverride: null,
             replacements: null,
             replacementsFile: null,
             preparing: false,
@@ -3321,6 +3324,7 @@ class LeakLockPanel {
             this._scanCleanup.preparedMode = null;
             this._scanCleanup.replacements = null;
             this._scanCleanup.replacementsFile = null;
+            this._scanCleanup.repoOverride = null;
             this._scanCleanup.pushPlan = null;
             this._scanCleanup.blockedBranches = null;
             this._scanCleanup.blockedReason = null;
@@ -6698,7 +6702,7 @@ class LeakLockPanel {
                 remote: gitRewrite.DEFAULT_REMOTE,
                 requiredCommands: ['git', 'git-filter-repo'],
                 rewriteLines: [
-                    '& Invoke-GitFilterRepo --replace-text $replacement_file --force'
+                    '& Invoke-GitFilterRepo --replace-text $replacement_file --replace-message $replacement_file --force'
                 ],
                 verifyRulesFile: '$replacement_file',
                 restoreRemote: true,
@@ -6712,7 +6716,9 @@ class LeakLockPanel {
             remote: gitRewrite.DEFAULT_REMOTE,
             requiredCommands: ['git', 'git-filter-repo'],
             rewriteLines: [
-                'git_filter_repo --replace-text "$replacement_file" --force'
+                // --replace-message as well: a secret quoted in a commit message is
+                // not in any blob, so --replace-text alone leaves it in history.
+                'git_filter_repo --replace-text "$replacement_file" --replace-message "$replacement_file" --force'
             ],
             verifyRulesFile: '"$replacement_file"',
             restoreRemote: true,
@@ -7050,6 +7056,12 @@ class LeakLockPanel {
         const scanned = this._scanPath || this._selectedDirectory
             || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
 
+        // An explicit choice wins: it is either the repository the user picked, or
+        // the one Leak Lock located the value in and the user accepted.
+        if (this._scanCleanup.repoOverride) {
+            return { repo: this._scanCleanup.repoOverride, repos: [this._scanCleanup.repoOverride], reason: null };
+        }
+
         const roots = new Set();
         for (const idx of this._ensureScanSelection()) {
             const finding = this._scanResults[idx];
@@ -7151,29 +7163,40 @@ class LeakLockPanel {
             const unmatched = await this._rulesMatchingNothing(scanPath, resolvedReplacements);
             this._scanCleanup.unmatchedRules = unmatched;
             if (unmatched.length === resolvedReplacements.length) {
-                // Name the repository and describe each rule. "No rule matches" is
-                // two very different problems - the wrong text, or the right text in
-                // the wrong repository - and without these the message cannot be
-                // acted on, which is exactly the loop this check was added to end.
-                console.warn('[leak-lock] no rule matched. Repository:', scanPath,
-                    'Rules:', this._describeRules(resolvedReplacements));
-                vscode.window.showErrorMessage(
-                    `Nothing was prepared: none of these ${resolvedReplacements.length} rule(s) match anything in `
-                    + `${scanPath}, so a rewrite there would change nothing. `
-                    + `Searched for: ${this._describeRules(resolvedReplacements)}. `
-                    + 'If that repository is not the one holding the secret, re-scan the repository itself rather '
-                    + 'than a folder containing it. If it is, the text has to match the bytes in the commit exactly '
-                    + '— check for a value the scanner shortened, a trailing carriage return, or quotes copied along '
-                    + 'with it: `git show <commit>:<path> | cat -A` shows the raw bytes. The character count above '
-                    + 'is the quickest way to spot both.'
+                // Look before blaming the text: when a scan spans several
+                // repositories - backup clones, vendored copies, a workspace of
+                // projects - the far likelier explanation is that the value is real
+                // and this is the wrong repository. Find where it is and offer it.
+                const elsewhere = await this._findRepoContainingRules(resolvedReplacements, scanPath);
+                this._scanCleanup.preparing = false;
+                if (elsewhere) {
+                    const action = await vscode.window.showWarningMessage(
+                        `Not found here. This value is in ${path.basename(elsewhere)}, not ${path.basename(scanPath)}.`,
+                        'Prepare there',
+                        'Show details'
+                    );
+                    if (action === 'Prepare there') {
+                        this._scanCleanup.repoOverride = elsewhere;
+                        return this._prepareScanReplacementCommand(mode, replacements);
+                    }
+                    if (action === 'Show details') {
+                        this._showCleanupDiagnostics(scanPath, resolvedReplacements, elsewhere);
+                    }
+                    return;
+                }
+                const action = await vscode.window.showErrorMessage(
+                    `Nothing prepared: no rule matches anything in ${path.basename(scanPath)}.`,
+                    'Show details'
                 );
+                if (action === 'Show details') {
+                    this._showCleanupDiagnostics(scanPath, resolvedReplacements, null);
+                }
                 return;
             }
             if (unmatched.length > 0) {
-                const named = this._describeRules(unmatched.slice(0, 3));
                 vscode.window.showWarningMessage(
-                    `${unmatched.length} of ${resolvedReplacements.length} rules match nothing in history and will `
-                    + `rewrite nothing: ${named}${unmatched.length > 3 ? ', …' : ''}. The rest are still applied.`
+                    `${unmatched.length} of ${resolvedReplacements.length} rules match nothing here and will rewrite `
+                    + 'nothing; the rest are still prepared.'
                 );
             }
 
@@ -7327,6 +7350,93 @@ class LeakLockPanel {
     }
 
     /**
+     * The long form of a failed preparation, on demand and out of the way.
+     *
+     * A notification is one line by design; the reasoning belongs in an output
+     * channel the user opens when they want it, where it can be read, scrolled and
+     * copied without a modal in the way. Rule text never appears here either.
+     */
+    _showCleanupDiagnostics(repoDir, rules, elsewhere) {
+        if (!this._diagnosticsChannel) {
+            this._diagnosticsChannel = vscode.window.createOutputChannel('Leak Lock');
+        }
+        const channel = this._diagnosticsChannel;
+        channel.appendLine('── Cleanup could not be prepared ──────────────────────────────');
+        channel.appendLine(`Repository searched : ${repoDir}`);
+        channel.appendLine(`Rules               : ${this._describeRules(rules)}`);
+        if (elsewhere) {
+            channel.appendLine(`Value located in    : ${elsewhere}`);
+            channel.appendLine('');
+            channel.appendLine('The rule text is right; the repository was not. Choose "Prepare there",');
+            channel.appendLine('or scan that repository directly.');
+        } else {
+            channel.appendLine('Value located in    : no scanned repository');
+            channel.appendLine('');
+            channel.appendLine('Nothing in this scan contains that text, so the rule cannot match the bytes');
+            channel.appendLine('in any commit. The usual causes, in order:');
+            channel.appendLine('  • the value was shortened for display and copied from there');
+            channel.appendLine('  • quotes around the value were copied with it');
+            channel.appendLine('  • a trailing carriage return in the file (CRLF)');
+            channel.appendLine('  • the rule is in regex mode and the text contains regex characters');
+            channel.appendLine('');
+            channel.appendLine('Compare the character count above with the value in the file:');
+            channel.appendLine('  git show <commit>:<path> | cat -A');
+        }
+        channel.appendLine('');
+        channel.show(true);
+    }
+
+    /**
+     * Every repository this scan touched, most likely first.
+     *
+     * A workspace scan can span a dozen repositories, and backup or vendored
+     * clones make several of them plausible homes for the same value.
+     */
+    _candidateRepos() {
+        const candidates = [];
+        for (const finding of this._scanResults || []) {
+            if (finding && finding.repoRoot && !candidates.includes(finding.repoRoot)) {
+                candidates.push(finding.repoRoot);
+            }
+        }
+        for (const extra of [this._scanRepoRoot, this._scanPath, this._selectedDirectory]) {
+            if (extra && !candidates.includes(extra)) {
+                candidates.push(extra);
+            }
+        }
+        return candidates;
+    }
+
+    /**
+     * The repository a rule actually matches in, when the chosen one does not.
+     *
+     * The alternative is telling the user their text must be wrong, which is only
+     * one of the two possibilities and the less likely one when a scan covered
+     * several repositories: the value is usually right and the repository is not.
+     */
+    async _findRepoContainingRules(rules, exclude) {
+        const list = this._toRuleList(rules);
+        for (const candidate of this._candidateRepos()) {
+            if (candidate === exclude) {
+                continue;
+            }
+            // A positive hit, asked directly: "fewer unmatched than rules" also holds
+            // when the check could not run at all, which would offer a directory that
+            // is not even a repository.
+            let present = [];
+            try {
+                present = await gitRewrite.findUnremovedRules(candidate, list, { timeoutMs: 30000 });
+            } catch {
+                continue;
+            }
+            if (present.some(entry => !/could not be checked/.test(entry.commit || ''))) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Rules as a summary that identifies them without revealing them.
      *
      * A notification gets screenshotted, pasted into tickets and captured by log
@@ -7364,8 +7474,13 @@ class LeakLockPanel {
         try {
             present = await gitRewrite.findUnremovedRules(repoDir, list, { timeoutMs: 30000 });
         } catch (error) {
-            // Never block a cleanup because the check itself failed.
+            // Unknown, not clean and not matched. Returning "nothing unmatched" would
+            // let a directory that is not a repository read as though every rule
+            // matched there, which is worse than not checking at all.
             console.warn('Could not pre-check the rewrite rules:', error);
+            return [];
+        }
+        if (!Array.isArray(present)) {
             return [];
         }
         const found = new Set(present.map(entry => entry.source));
@@ -7441,9 +7556,14 @@ class LeakLockPanel {
                         push: false,
                         progress: (message) => progress.report({ increment: 10, message }),
                         rewrite: async () => {
+                            // Both flags, one rule file: --replace-text rewrites blob
+                            // contents, --replace-message rewrites commit messages. A
+                            // secret quoted in a commit message is found by the scan
+                            // and is untouched by --replace-text alone.
                             await gitRewrite.runGitFilterRepo(
                                 scanPath,
-                                ["--replace-text", replacementsFile, "--force"],
+                                ["--replace-text", replacementsFile,
+                                    "--replace-message", replacementsFile, "--force"],
                                 { maxBuffer: GIT_MAX_BUFFER }
                             );
                         }
