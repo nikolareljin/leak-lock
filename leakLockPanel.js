@@ -5598,17 +5598,117 @@ class LeakLockPanel {
             return { allowed: true, crossRepository: false, identity };
         }
 
+        // The report usually names where it was scanned. If that repository is on this
+        // machine, offering to switch to it beats sending the user away to reopen a
+        // folder and start the import again - and it is the outcome they actually want,
+        // since the report is not wrong, it is just pointed at the wrong repository.
+        const recordedPath = report.repository?.path || report.scanPath || null;
+        const switchTarget = await this._resolveSwitchTarget(recordedPath, report);
+        const switchLabel = switchTarget ? `Switch to ${path.basename(switchTarget)}` : null;
+
+        const options = [switchLabel, 'Compare anyway'].filter(Boolean);
         const choice = await vscode.window.showWarningMessage(
             `This report is from a different repository. It records ${identity.basis} `
             + `${identity.recorded}, and this repository has ${identity.current}. `
-            + 'Every finding that never existed here would be reported as resolved.',
+            + 'Every finding that never existed here would be reported as resolved.'
+            + (switchTarget ? `\n\nThe repository it describes is on this machine at ${switchTarget}.` : ''),
             { modal: true },
-            'Compare anyway'
+            ...options
         );
+
+        if (switchLabel && choice === switchLabel) {
+            const switched = await this._switchToRepository(switchTarget);
+            if (!switched) {
+                return { allowed: false, crossRepository: true, identity };
+            }
+            // Re-check against the repository now in scope rather than assuming the
+            // switch fixed it: the path in the report may hold a different repository
+            // today, and that must refuse exactly as it would have before.
+            const after = scanBaseline.describeRepositoryIdentity(
+                report.repository,
+                await this._readRepositoryIdentity(switchTarget)
+            );
+            if (after.verdict === 'mismatch') {
+                vscode.window.showErrorMessage(
+                    `${switchTarget} is no longer the repository this report describes, so nothing was imported.`
+                );
+                return { allowed: false, crossRepository: true, identity: after };
+            }
+            return { allowed: true, crossRepository: false, identity: after };
+        }
+
         if (choice !== 'Compare anyway') {
             return { allowed: false, crossRepository: true, identity };
         }
         return { allowed: true, crossRepository: true, identity };
+    }
+
+    /**
+     * Is the repository a report names still on this machine, and is it the one the
+     * report describes? Both, or the offer to switch is worse than not making it.
+     */
+    async _resolveSwitchTarget(recordedPath, report) {
+        if (!recordedPath || recordedPath === scanBaseline.REDACTED_PATH) {
+            return null;
+        }
+        let candidate;
+        try {
+            candidate = validatePath(recordedPath);
+        } catch {
+            return null;
+        }
+        if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
+            return null;
+        }
+        const root = findGitRoot(candidate) || candidate;
+        const identity = scanBaseline.describeRepositoryIdentity(
+            report.repository,
+            await this._readRepositoryIdentity(root)
+        );
+        // Only offer the switch when it demonstrably fixes the problem. Offering to
+        // move to a repository that mismatches too would just relocate the refusal.
+        return identity.verdict === 'match' ? root : null;
+    }
+
+    /**
+     * Point the panel at another repository.
+     *
+     * Results, coverage and cleanup selection all describe the repository that was
+     * scanned, so they are cleared rather than carried across - a findings table from
+     * repository A beside an imported report about repository B is the mixing this
+     * whole check exists to prevent. Manual redaction rules are kept: they are not tied
+     * to a scan, and re-typing them is exactly what the user would not expect to do.
+     */
+    async _switchToRepository(repoDir) {
+        try {
+            const validated = validatePath(repoDir);
+            if (this._scanResults.length > 0) {
+                const confirmed = await vscode.window.showWarningMessage(
+                    `Switching to ${validated} clears the current scan results, which describe a different repository. Scan again there when you are ready.`,
+                    { modal: true },
+                    'Switch and clear results'
+                );
+                if (confirmed !== 'Switch and clear results') {
+                    return false;
+                }
+            }
+            this._selectedDirectory = validated;
+            this._scanPath = null;
+            this._scanRepoRoot = findGitRoot(validated) || validated;
+            this._scanResults = [];
+            this._scanCoverage = null;
+            this._resetScanSelection();
+            this._scanCleanup.repoOverride = null;
+            this._scanCleanup.preparedCommand = null;
+            this._scanCleanup.preparedScripts = null;
+            this._scanCleanup.preparedRepo = null;
+            this._viewMode = 'scan';
+            this._updateWebviewContent();
+            return true;
+        } catch (error) {
+            vscode.window.showErrorMessage(`Could not switch to ${repoDir}: ${error.message}`);
+            return false;
+        }
     }
 
     _clearImportedReport() {

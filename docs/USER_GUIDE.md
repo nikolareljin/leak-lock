@@ -169,6 +169,15 @@ fine, while two unrelated repositories at the same path do not. A report exporte
 genuinely need to compare across repositories, the refusal offers **Compare anyway**, and
 the result stays labelled as a cross-repository comparison for as long as it is on screen.
 
+If the repository the report describes is on this machine, the refusal also offers
+**Switch to `<name>`**, so you do not have to reopen a folder and start the import again.
+Choosing it points Leak Lock at that repository and imports the report there. Because scan
+results describe the repository they came from, switching clears them, and you are asked
+before that happens. Manual redaction rules are kept: they are not tied to a scan.
+The switch is offered only when that repository still matches the report, and the identity
+is re-checked after the switch, so a path that now holds something else refuses exactly as
+it would have before.
+
 When a current scan is also on screen, the section additionally lists what is **new since**
 the report was written, with the commit that first introduced each value, so repeated scans
 become a history rather than unrelated snapshots.
