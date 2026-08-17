@@ -30,8 +30,10 @@ This document explains the Remove Files feature that helps you remove unwanted f
 - BFG mode: Click "⚙️ Prepare the bfg command" (details show flags and patterns)
 - Git mode: Click "🔎 Preview matches (branches, remotes, tags)" to list exact matches, then "⚙️ Prepare the git command"
   - Note: The extension automatically runs `git fetch --prune --tags` before preview and execution.
-- Preparing produces a complete, reviewable script — bash on macOS and Linux, PowerShell on
-  Windows — which you can copy, or save with "💾 Save as .sh"
+- Preparing produces a complete, reviewable script in **both** flavours: bash (Linux, macOS,
+  and WSL or Git Bash on Windows) and PowerShell. Copy the one shown, or save either with
+  "💾 Save as .sh" / "💾 Save as .ps1" — the platform decides which is offered first, not
+  which exists
 
 6) Confirm and run
 - Final step is highlighted in red

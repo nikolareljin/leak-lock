@@ -9,8 +9,11 @@
 //
 // No `vscode` import on purpose - this module is unit-testable on its own.
 
-const { execFile, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const util = require('util');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const execFileAsync = util.promisify(execFile);
 
@@ -36,8 +39,308 @@ async function git(repoDir, args, options = {}) {
     return execFileAsync('git', args, { cwd: repoDir, maxBuffer: MAX_BUFFER, ...options });
 }
 
-async function gitLines(repoDir, args) {
-    const { stdout } = await git(repoDir, args);
+/**
+ * git filter-repo leaves `refs/replace/<old> -> <new>` behind, and every git read
+ * honours those refs: `git show`, `git log`, `git grep` and anything built on them
+ * silently answer with the REWRITTEN commit when asked about the ORIGINAL one. A
+ * verification that trusts plain git therefore reports a still-leaking ref as
+ * clean - the exact false all-clear this product exists to prevent. Every read
+ * that decides whether a secret is gone runs with replacement disabled.
+ */
+const RAW_OBJECT_ENV = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' };
+
+/**
+ * git(), with object replacement disabled. Use for anything that verifies.
+ *
+ * A caller's `env` keeps child_process semantics - it is the environment, not an
+ * overlay on this process's - but GIT_NO_REPLACE_OBJECTS is written on top of it
+ * afterwards, so no call site can drop the one setting that stops a rewrite's
+ * replacement alias from making a still-dirty ref read as clean.
+ */
+async function gitRaw(repoDir, args, options = {}) {
+    const { env, ...rest } = options;
+    return git(repoDir, args, {
+        ...rest,
+        env: { ...(env || process.env), GIT_NO_REPLACE_OBJECTS: '1' }
+    });
+}
+
+/**
+ * Absolute path of a repository's git directory. Git itself answers first: the
+ * scanned path may be a subdirectory rather than the repository root, and `.git`
+ * is a file, not a directory, in linked worktrees and submodules - a blind
+ * path.join is wrong in both cases. The filesystem lookup stays as a fallback for
+ * when git cannot be executed. Returns null when repoDir is not a repository.
+ */
+function resolveGitDir(repoDir) {
+    if (!repoDir) {
+        return null;
+    }
+    try {
+        const out = execFileSync('git', ['rev-parse', '--absolute-git-dir'],
+            { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        if (out) {
+            return out;
+        }
+    } catch {
+        // Not a repository, or no git on PATH - fall through to the filesystem.
+    }
+    const dotGit = path.join(repoDir, '.git');
+    let stats = null;
+    try {
+        stats = fs.statSync(dotGit);
+    } catch {
+        return null;
+    }
+    if (stats.isDirectory()) {
+        return dotGit;
+    }
+    try {
+        const pointer = fs.readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+)$/m);
+        if (!pointer) {
+            return null;
+        }
+        const target = pointer[1].trim();
+        return path.isAbsolute(target) ? target : path.resolve(repoDir, target);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Create the owner-only rule file that `--replace-text` reads.
+ *
+ * It lives inside the repository's git directory, never $TMPDIR. Sandboxed
+ * git-filter-repo builds - the snap ships strict confinement - get a private
+ * /tmp namespace and cannot open a path under the host's, which surfaced as
+ * `FileNotFoundError: /tmp/leak-lock-XXXXXX/replacements.txt` the moment
+ * "Run Git-only cleanup" was pressed. The git directory is by definition
+ * reachable by the tool rewriting that repository, and it is not part of the
+ * working tree, so the values can never be staged or committed by accident.
+ *
+ * The caller removes it with removeRulesFile() *after* the rewrite finished.
+ * On failure the file is deliberately kept so the run can be retried without
+ * re-deriving every rule.
+ *
+ * Everything lands under `<git dir>/leak-lock/`, the same directory the generated
+ * scripts use, so the path quoted in an error and the path documented in the user
+ * guide are one place, not two.
+ *
+ * @returns {{dir: string, file: string, parent: string, insideGitDir: boolean}}
+ */
+const RULES_DIR_NAME = 'leak-lock';
+
+function createRulesFile(repoDir, contents, options = {}) {
+    const prefix = options.prefix || 'run-';
+    const fileName = options.fileName || 'replacements.txt';
+    const gitDir = resolveGitDir(repoDir);
+    const parent = gitDir ? path.join(gitDir, RULES_DIR_NAME) : os.tmpdir();
+    if (gitDir) {
+        fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    }
+    const dir = fs.mkdtempSync(path.join(parent, prefix));
+    for (const target of gitDir ? [parent, dir] : [dir]) {
+        try {
+            fs.chmodSync(target, 0o700);
+        } catch (permissionError) {
+            if (process.platform !== 'win32') {
+                throw permissionError;
+            }
+        }
+    }
+    const file = path.join(dir, fileName);
+    fs.writeFileSync(file, contents, { mode: 0o600, flag: 'wx' });
+    return { dir, file, parent: gitDir ? parent : null, insideGitDir: Boolean(gitDir) };
+}
+
+/** Remove a createRulesFile() handle. Never throws - cleanup is best effort. */
+function removeRulesFile(handle) {
+    if (!handle || !handle.dir) {
+        return false;
+    }
+    try {
+        fs.rmSync(handle.dir, { recursive: true, force: true });
+        if (handle.parent) {
+            // Only when this was the last run: another cleanup may have kept its
+            // own rules after failing, and those are deliberately not ours to drop.
+            try {
+                fs.rmdirSync(handle.parent);
+            } catch { /* not empty, or already gone */ }
+        }
+        return true;
+    } catch (cleanupError) {
+        console.warn('Failed to remove secure replacement directory:', cleanupError);
+        return false;
+    }
+}
+
+/**
+ * A snap-packaged git-filter-repo runs under strict confinement: it sees a
+ * private /tmp and only non-hidden paths under $HOME, so it cannot read a rule
+ * file elsewhere - nor a repository outside $HOME at all. The Python traceback
+ * it prints ("FileNotFoundError", "PermissionError") reads like a Leak Lock bug,
+ * so translate it into the one action that fixes it.
+ */
+function describeSandboxedFilterRepo(output, rulesPath) {
+    if (!/\/snap\/[^\s]*git-filter-repo/.test(output || '')) {
+        return null;
+    }
+    if (!/(FileNotFoundError|PermissionError)/.test(output)) {
+        return null;
+    }
+    return [
+        'git-filter-repo is installed as a snap, and snaps are confined: this one cannot read',
+        rulesPath ? `the replacement rule file (${rulesPath})` : 'the replacement rule file',
+        'or any repository outside your home directory.',
+        'Install the unconfined tool instead: "python3 -m pip install --user git-filter-repo"',
+        '(optionally "sudo snap remove git-filter-repo" first), then restart VS Code so its',
+        'PATH picks up the new binary.'
+    ].join(' ');
+}
+
+/**
+ * Which form of git-filter-repo this machine has, if any.
+ *
+ * Two installations are both valid and neither implies the other: pip drops a
+ * `git-filter-repo` launcher on PATH, while a distribution package usually puts
+ * it in git's exec-path so `git filter-repo` resolves. Probing both is the only
+ * way to answer "can a Git-only cleanup run here", which is what the setup panel
+ * needs to state before the user selects anything.
+ *
+ * @returns {Promise<{installed: boolean, form: string|null, version: string|null,
+ *                    path: string|null, confined: boolean, error: string|null}>}
+ */
+async function detectFilterRepo() {
+    const readVersion = async (command, args) => {
+        const { stdout, stderr } = await execFileAsync(command, args, { maxBuffer: MAX_BUFFER });
+        return String(stdout || stderr || '').trim().split('\n')[0] || null;
+    };
+
+    let subcommandError = null;
+    try {
+        const version = await readVersion('git', ['filter-repo', '--version']);
+        return { installed: true, form: 'git subcommand', version, path: null, confined: false, error: null };
+    } catch (error) {
+        subcommandError = failureText(error);
+    }
+
+    try {
+        const version = await readVersion('git-filter-repo', ['--version']);
+        let resolved = null;
+        try {
+            const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where' : 'which',
+                ['git-filter-repo'], { maxBuffer: MAX_BUFFER });
+            resolved = String(stdout).trim().split('\n')[0] || null;
+        } catch { /* the launcher answered --version; its path is a nicety */ }
+        return {
+            installed: true,
+            form: 'PATH launcher',
+            version,
+            path: resolved,
+            // A snap build runs confined: it cannot read a repository outside $HOME,
+            // so "installed" alone would overstate what it can do here.
+            confined: Boolean(resolved && resolved.startsWith('/snap/')),
+            error: null
+        };
+    } catch (launcherError) {
+        const output = failureText(launcherError);
+        return {
+            installed: false,
+            form: null,
+            version: null,
+            path: null,
+            confined: false,
+            error: /ENOENT|not found/i.test(output)
+                ? 'git-filter-repo is not installed or is not on PATH'
+                : (output.split('\n')[0] || subcommandError || 'git-filter-repo could not be run')
+        };
+    }
+}
+
+/**
+ * The command that installs git-filter-repo, as argv rather than a shell string.
+ *
+ * `--user` keeps it out of a system prefix, so no elevation is needed and a
+ * managed Python (Debian's PEP 668 marker) does not refuse the install.
+ */
+function buildFilterRepoInstallCommand(python = null) {
+    const interpreter = python || (process.platform === 'win32' ? 'python' : 'python3');
+    return { command: interpreter, args: ['-m', 'pip', 'install', '--user', '--upgrade', 'git-filter-repo'] };
+}
+
+/**
+ * Everything git-filter-repo said, as text.
+ *
+ * `stderr` is a string under execFile's default encoding, but a caller passing
+ * `encoding: 'buffer'` makes it a Buffer, and both matchers below decide whether
+ * the user sees an actionable message or a raw Python traceback. Normalise once
+ * rather than depending on where implicit stringification happens to apply.
+ */
+function failureText(error) {
+    if (!error) {
+        return '';
+    }
+    return [error.message, error.stderr]
+        .filter(Boolean)
+        .map(part => (typeof part === 'string' ? part : String(part)))
+        .join('\n');
+}
+
+/**
+ * Run git-filter-repo regardless of how pip installed it. Git discovers
+ * subcommands from its exec-path, while pip commonly installs the standalone
+ * `git-filter-repo` launcher on PATH. The latter is fully supported by the
+ * upstream tool but `git filter-repo` cannot always see it.
+ */
+async function runGitFilterRepo(repoDir, args, options = {}) {
+    // indexOf returns -1 when the flag is absent, and args[0] is not the rule file,
+    // so the lookup is guarded rather than offset-adjusted.
+    const replaceTextAt = args.indexOf('--replace-text');
+    const rulesPath = replaceTextAt >= 0 ? (args[replaceTextAt + 1] || null) : null;
+    const withSandboxHint = (error) => {
+        const hint = describeSandboxedFilterRepo(failureText(error), rulesPath);
+        if (!hint) {
+            return error;
+        }
+        const wrapped = new Error(hint);
+        wrapped.cause = error;
+        wrapped.stderr = error.stderr;
+        return wrapped;
+    };
+
+    try {
+        return await git(repoDir, ['filter-repo', ...args], options);
+    } catch (gitError) {
+        if (!/['"]filter-repo['"] is not a git command|git: filter-repo:.*not a git command/i.test(failureText(gitError))) {
+            throw withSandboxHint(gitError);
+        }
+
+        try {
+            return await execFileAsync('git-filter-repo', args, {
+                cwd: repoDir,
+                maxBuffer: MAX_BUFFER,
+                ...options
+            });
+        } catch (launcherError) {
+            if (launcherError.code !== 'ENOENT') {
+                throw withSandboxHint(launcherError);
+            }
+            // Named for the platform this is actually running on: Windows has no
+            // python3 shim by default, so quoting one turns a missing dependency
+            // into a second dead end.
+            const installHint = process.platform === 'win32'
+                ? 'py -3 -m pip install --user git-filter-repo'
+                : 'python3 -m pip install --user git-filter-repo';
+            throw new Error(
+                `git-filter-repo is not installed or is not on PATH. Install it with "${installHint}", ` +
+                'then restart VS Code so its environment picks up the installation.'
+            );
+        }
+    }
+}
+
+async function gitLines(repoDir, args, options = {}) {
+    const { stdout } = await git(repoDir, args, options);
     // Strip only a trailing CR (Windows line endings), never trim: file paths
     // from `git ls-tree` can legitimately contain leading/trailing spaces, and
     // trimming them would corrupt the "verified clean" path check. Ref names
@@ -228,12 +531,26 @@ async function restoreBranch(repoDir, branch) {
     await git(repoDir, ['checkout', '--quiet', branch]);
 }
 
-/** Delete the refs/original/* backups that filter-branch leaves behind. */
+/**
+ * Delete the backup and alias refs a rewrite leaves behind.
+ *
+ * `refs/original/*` is filter-branch's backup: it keeps the pre-rewrite commits
+ * reachable, so the secret survives a rewrite that otherwise worked.
+ *
+ * `refs/replace/*` is worse, because it hides rather than keeps. git filter-repo
+ * writes one per rewritten commit, and every git read honours them: ask for the
+ * ORIGINAL commit and git hands back the REWRITTEN one. A repository whose remote
+ * still holds the leak then reads as clean locally - `git show`, `git log -S`,
+ * `git grep`, a re-scan, and the extension's own verification all agree that the
+ * secret is gone while it is still on the server. The rewrite is meant to remove
+ * the history, not to alias it, so both namespaces go.
+ */
 async function dropOriginalRefs(repoDir) {
     const { stdout } = await git(repoDir, [
         'for-each-ref',
         '--format=delete %(refname)',
-        'refs/original/'
+        'refs/original/',
+        'refs/replace/'
     ]);
     if (!stdout.trim()) {
         return 0;
@@ -397,12 +714,15 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
     }
 
     await fetchAllRefs(repoDir, remote);
+    // Every read below is a raw one: a leftover `refs/replace/*` from the rewrite
+    // makes plain git answer with the rewritten commit for a ref that still holds
+    // the original, and this loop would report the leak as cleaned.
     const refs = await gitLines(repoDir, [
         'for-each-ref',
         '--format=%(refname)',
         `refs/remotes/${remote}`,
         'refs/tags'
-    ]);
+    ], { env: RAW_OBJECT_ENV });
     const offenders = [];
     let examined = 0;
 
@@ -412,7 +732,7 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
         }
         examined++;
         if (pathRegex) {
-            const files = await gitLines(repoDir, ['ls-tree', '-r', '--name-only', ref]);
+            const files = await gitLines(repoDir, ['ls-tree', '-r', '--name-only', ref], { env: RAW_OBJECT_ENV });
             const hit = files.find(file => pathRegex.test(file));
             if (hit) {
                 offenders.push({ ref, reason: 'path still present', match: hit });
@@ -421,7 +741,7 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
         }
         for (const search of searches) {
             try {
-                await git(repoDir, ['grep', '--quiet', ...search.args, '-e', search.value, ref]);
+                await gitRaw(repoDir, ['grep', '--quiet', ...search.args, '-e', search.value, ref]);
                 offenders.push({ ref, reason: 'secret still present', match: search.value });
                 break;
             } catch (e) {
@@ -448,6 +768,195 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
     }
 
     return offenders;
+}
+
+/**
+ * Which of many strings occur at the tip of any ref - in ONE command.
+ *
+ * The pickaxe (`git log --all -S<value>`) walks the entire history per value, so
+ * checking twenty rules in nine encodings is a few hundred full walks and minutes
+ * of waiting. `git grep` takes many patterns at once and searches each ref's tree
+ * once, and `-o` makes it report which pattern matched - so a single invocation
+ * answers "which of these strings exist" for every rule and every encoding.
+ *
+ * It sees only what each ref currently contains, which is why it is a fast path
+ * rather than the answer: content that exists solely in an older commit needs the
+ * pickaxe. Callers use this first and fall back for whatever it does not find.
+ *
+ * @param {string} repoDir
+ * @param {string[]} needles
+ * @returns {Promise<Set<string>>} the needles that occur somewhere
+ */
+async function findStringsInRefs(repoDir, needles) {
+    const wanted = [...new Set((needles || []).filter(needle => typeof needle === 'string' && needle))];
+    if (wanted.length === 0) {
+        return new Set();
+    }
+    let refs = [];
+    try {
+        refs = await gitLines(repoDir, ['for-each-ref', '--format=%(refname)'], { env: RAW_OBJECT_ENV });
+    } catch {
+        return new Set();
+    }
+    if (refs.length === 0) {
+        return new Set();
+    }
+    const args = ['grep', '--no-color', '-I', '-F', '-o', '-h'];
+    for (const needle of wanted) {
+        args.push('-e', needle);
+    }
+    args.push(...refs);
+    try {
+        const { stdout } = await gitRaw(repoDir, args, { timeout: 120000 });
+        const found = new Set();
+        for (const line of String(stdout).split('\n')) {
+            // `-o -h` prints "<ref>:<path>:<match>" per hit; the match is what follows
+            // the last colon that precedes a known needle, so compare directly.
+            for (const needle of wanted) {
+                if (line.endsWith(needle)) {
+                    found.add(needle);
+                }
+            }
+        }
+        return found;
+    } catch (error) {
+        // Exit 1 is "no matches", which is an answer, not a failure.
+        if (error && error.code === 1) {
+            return new Set();
+        }
+        return new Set();
+    }
+}
+
+/**
+ * Which of many strings occur anywhere in the object store - in ONE pass.
+ *
+ * The pickaxe answers this per string by walking the whole history, so N strings
+ * cost N walks. `git cat-file --batch-all-objects --batch` streams every object
+ * once instead, and every needle is checked against that one stream: the cost is
+ * a single read of the repository regardless of how many values are being looked
+ * for. Commit messages are objects too, so a secret quoted in one is covered by
+ * the same pass.
+ *
+ * Chunks are joined by an overlap of the longest needle minus one byte, so a value
+ * split across a read boundary is still found. Search stops as soon as every needle
+ * is accounted for, and a time budget bounds a pathological repository - `complete`
+ * says which of the two happened, so a caller never reports a partial search as a
+ * clean one.
+ *
+ * @returns {Promise<{found: Set<string>, complete: boolean}>}
+ */
+function findStringsInObjects(repoDir, needles, options = {}) {
+    const wanted = [...new Set((needles || []).filter(needle => typeof needle === 'string' && needle))];
+    if (wanted.length === 0) {
+        return Promise.resolve({ found: new Set(), complete: true });
+    }
+    const timeoutMs = options.timeoutMs || 120000;
+    const overlap = Math.max(...wanted.map(needle => needle.length)) - 1;
+
+    return new Promise((resolve) => {
+        const found = new Set();
+        let complete = true;
+        let carry = '';
+        let settled = false;
+
+        const child = spawn('git', ['cat-file', '--batch-all-objects', '--batch', '--buffer'], {
+            cwd: repoDir,
+            env: RAW_OBJECT_ENV,
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+
+        const finish = (wasComplete) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            complete = wasComplete;
+            clearTimeout(timer);
+            try {
+                child.kill();
+            } catch { /* already gone */ }
+            resolve({ found, complete });
+        };
+
+        const timer = setTimeout(() => finish(false), timeoutMs);
+
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', (chunk) => {
+            const haystack = carry + chunk;
+            for (const needle of wanted) {
+                if (!found.has(needle) && haystack.includes(needle)) {
+                    found.add(needle);
+                }
+            }
+            if (found.size === wanted.length) {
+                finish(true);
+                return;
+            }
+            carry = overlap > 0 ? haystack.slice(-overlap) : '';
+        });
+        child.on('error', () => finish(false));
+        child.on('close', () => finish(true));
+    });
+}
+
+/**
+ * Which rules did NOT take effect, after a rewrite that reported success.
+ *
+ * `git filter-repo --replace-text` exits 0 whether it replaced ten thousand
+ * occurrences or none: a rule whose text does not match the bytes in history is
+ * not an error to it. So the only way to know a value is actually gone is to look
+ * for it afterwards, with replacement refs disabled, across every ref.
+ *
+ * @param {string} repoDir
+ * @param {Array<{source: string, mode?: string}>} rules
+ * @returns {Promise<Array<{source: string, mode: string, commit: string}>>}
+ */
+async function findUnremovedRules(repoDir, rules, options = {}) {
+    // A rule that matches nothing walks the whole history before saying so, which is
+    // the slow case and the one worth bounding. A timeout is reported as "could not
+    // be checked" rather than as "clean" - the safe direction for both callers.
+    const timeout = options.timeoutMs || 60000;
+    const remaining = [];
+    for (const rule of Array.isArray(rules) ? rules : []) {
+        if (!rule || !rule.source) {
+            continue;
+        }
+        const selector = rule.mode === 'regex' ? `-G${rule.source}` : `-S${rule.source}`;
+        try {
+            const { stdout } = await gitRaw(repoDir, [
+                'log', '--all', '--oneline', '--max-count=1', selector
+            ], { timeout });
+            const hit = String(stdout).trim().split('\n')[0];
+            if (hit) {
+                remaining.push({ source: rule.source, mode: rule.mode || 'literal', commit: hit, surface: 'content' });
+                continue;
+            }
+            // A secret can be in a commit message rather than in a file, and the two
+            // need different flags: --replace-text rewrites blobs, --replace-message
+            // rewrites messages. Reporting "matches nothing" for a value that is
+            // plainly in the history - because only blobs were searched - is how a
+            // cleanup ends up doing nothing while the scan keeps finding it.
+            const { stdout: messageHit } = await gitRaw(repoDir, [
+                'log', '--all', '--oneline', '--max-count=1',
+                rule.mode === 'regex' ? '--extended-regexp' : '--fixed-strings',
+                '--grep', rule.source
+            ], { timeout });
+            const message = String(messageHit).trim().split('\n')[0];
+            if (message) {
+                remaining.push({ source: rule.source, mode: rule.mode || 'literal', commit: message, surface: 'message' });
+            }
+        } catch (error) {
+            // A failed search is not a clean result. Report it as unremoved with the
+            // reason attached, so it cannot be mistaken for "this rule worked".
+            remaining.push({
+                source: rule.source,
+                mode: rule.mode || 'literal',
+                commit: `could not be checked: ${failureText(error).split('\n')[0]}`
+            });
+        }
+    }
+    return remaining;
 }
 
 /**
@@ -499,7 +1008,8 @@ function psQuote(value) {
 /**
  * Emit a PowerShell (.ps1) equivalent of buildRewriteScript() for Windows hosts.
  * Accepts the same conceptual options but uses `replacementsContent` instead of
- * `preambleLines`/`exitCleanupCommand` for the secure temp-file setup.
+ * `replacementsContent` for the rule-file setup instead of
+ * `preambleLines`/`finalCleanupCommand`.
  *
  * @param {object} options
  * @param {string} options.repoDir
@@ -533,6 +1043,8 @@ function buildRewriteScriptPs1(options) {
 
     const remoteQ = psQuote(remote);
     const hasReplacements = replacementsContent !== null;
+    const regularCmds = requiredCommands.filter(c => c !== 'git-filter-repo');
+    const needsFilterRepo = requiredCommands.includes('git-filter-repo');
 
     const lines = [
         '# Generated by Leak Lock - rewrites git history across ALL refs.',
@@ -542,10 +1054,14 @@ function buildRewriteScriptPs1(options) {
         '#   Set-ExecutionPolicy Bypass -Scope Process; .\\cleanup.ps1',
         '# or:',
         '#   powershell -ExecutionPolicy Bypass -File .\\cleanup.ps1',
+        '#',
+        '# Running the cleanup in WSL or Git Bash instead? Leak Lock generates the same',
+        '# cleanup as a bash .sh - save that one and run it there.',
         ...(requiredCommands.includes('git-filter-repo') ? [
             '#',
             '# Requires git filter-repo (Python). Install if needed:',
-            '#   pip install git-filter-repo',
+            '#   py -3 -m pip install --user git-filter-repo',
+            '# (or "python -m pip ..." - Windows has no python3 shim by default)',
         ] : []),
         '',
         '$ErrorActionPreference = \'Stop\'',
@@ -553,11 +1069,8 @@ function buildRewriteScriptPs1(options) {
         '',
     ];
 
-    // git-filter-repo lives in git's exec-path on Windows, not on the regular PATH,
-    // so Get-Command can't find it even when `git filter-repo` works. Check it via
-    // git itself and give actionable install instructions.
-    const regularCmds = requiredCommands.filter(c => c !== 'git-filter-repo');
-    const needsFilterRepo = requiredCommands.includes('git-filter-repo');
+    // `pip install git-filter-repo` commonly creates git-filter-repo on PATH rather
+    // than placing it in Git's exec-path. Support both upstream installation forms.
 
     if (regularCmds.length > 0) {
         lines.push(
@@ -574,13 +1087,18 @@ function buildRewriteScriptPs1(options) {
 
     if (needsFilterRepo) {
         lines.push(
-            '# git filter-repo is a git subcommand - check via git, not Get-Command.',
+            '# Prefer Git\'s subcommand, then fall back to pip\'s PATH launcher.',
             '& git filter-repo --version *>$null',
-            'if ($LASTEXITCODE -ne 0) {',
+            'if ($LASTEXITCODE -eq 0) {',
+            '    function Invoke-GitFilterRepo { & git filter-repo @args }',
+            '} elseif (Get-Command git-filter-repo -ErrorAction SilentlyContinue) {',
+            '    function Invoke-GitFilterRepo { & git-filter-repo @args }',
+            '} else {',
             '    Write-Host "git filter-repo is not installed." -ForegroundColor Red',
             '    Write-Host ""',
             '    Write-Host "Install it with pip (requires Python 3):"',
-            '    Write-Host "    pip install git-filter-repo"',
+            '    Write-Host "    py -3 -m pip install --user git-filter-repo"',
+            '    Write-Host "    (or: python -m pip install --user git-filter-repo)"',
             '    Write-Host ""',
             '    Write-Host "Or download the script and place it in git\'s exec-path:"',
             '    Write-Host "    https://github.com/newren/git-filter-repo"',
@@ -593,17 +1111,25 @@ function buildRewriteScriptPs1(options) {
 
     // Declared before `try` so the `finally` block can always read them.
     if (hasReplacements) {
-        lines.push(
-            '# Keep sensitive replacement data outside the repository.',
-            '$replacement_file = [System.IO.Path]::GetTempFileName()',
-            ''
-        );
+        lines.push('$replacement_file = \'\'', '');
     }
     lines.push('$current_branch = \'\'', '', 'try {');
 
+    lines.push(`    Set-Location ${psQuote(repoDir)}`, '');
+
     if (hasReplacements) {
         lines.push(
-            '    # Restrict the temp file to the current user only (equivalent to chmod 600).',
+            '    # The rule file lives in the repository\'s git directory, not $env:TEMP:',
+            '    # sandboxed git-filter-repo builds cannot read a host temp path, and the',
+            '    # git directory is never part of the working tree, so it cannot be committed.',
+            '    $git_dir = (& git rev-parse --absolute-git-dir)',
+            '    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+            '    $replacement_dir = Join-Path $git_dir \'leak-lock\'',
+            '    $null = New-Item -ItemType Directory -Force -Path $replacement_dir',
+            '    $replacement_file = Join-Path $replacement_dir "replacements-$([System.IO.Path]::GetRandomFileName()).txt"',
+            '    $null = New-Item -ItemType File -Force -Path $replacement_file',
+            '',
+            '    # Restrict the rule file to the current user only (equivalent to chmod 600).',
             '    $acl = Get-Acl $replacement_file',
             '    $acl.SetAccessRuleProtection($true, $false)',
             '    foreach ($rule in @($acl.Access)) { $null = $acl.RemoveAccessRule($rule) }',
@@ -617,8 +1143,6 @@ function buildRewriteScriptPs1(options) {
     }
 
     lines.push(
-        `    Set-Location ${psQuote(repoDir)}`,
-        '',
         '    # 1. Refresh every ref before planning the rewrite.',
         `    & git fetch --prune --tags ${remoteQ}`,
         '    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
@@ -663,7 +1187,11 @@ function buildRewriteScriptPs1(options) {
     lines.push(
         '',
         '    # 6. Drop the rewrite backup refs and repack.',
-        '    & git for-each-ref --format="delete %(refname)" refs/original/ | & git update-ref --stdin',
+        '    #    refs/original/* keeps the pre-rewrite commits reachable, and',
+        '    #    refs/replace/* (written by git filter-repo) makes git answer for the',
+        '    #    OLD commit with the REWRITTEN one - a ref that still carries the',
+        '    #    secret would then read as clean, here and in any later scan.',
+        '    & git for-each-ref --format="delete %(refname)" refs/original/ refs/replace/ | & git update-ref --stdin',
         '    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
         '    & git reflog expire --expire=now --all',
         '    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
@@ -734,7 +1262,7 @@ function buildRewriteScriptPs1(options) {
 
         if (verifyRegex) {
             lines.push(
-                '        $files = & git ls-tree -r --name-only $ref 2>$null',
+                '        $files = & git --no-replace-objects ls-tree -r --name-only $ref 2>$null',
                 '        $ls_rc = $LASTEXITCODE',
                 '        if ($ls_rc -ne 0) {',
                 '            Write-Host "VERIFY FAILED (git ls-tree exit $ls_rc): $ref"',
@@ -757,7 +1285,7 @@ function buildRewriteScriptPs1(options) {
                 '            }',
                 '            $needle = ($needle -split \'==>\')[0]',
                 '            if (-not $needle) { continue }',
-                '            & git grep --quiet $grep_flag -e $needle $ref 2>$null',
+                '            & git --no-replace-objects grep --quiet $grep_flag -e $needle $ref 2>$null',
                 '            $grep_rc = $LASTEXITCODE',
                 '            if ($grep_rc -eq 0) {',
                 '                Write-Host "STILL PRESENT (secret): $ref"',
@@ -778,7 +1306,7 @@ function buildRewriteScriptPs1(options) {
         ];
         for (const search of verifySearches) {
             lines.push(
-                `        & git grep --quiet ${search.flag} -e ${psQuote(search.value)} $ref 2>$null`,
+                `        & git --no-replace-objects grep --quiet ${search.flag} -e ${psQuote(search.value)} $ref 2>$null`,
                 '        $grep_rc = $LASTEXITCODE',
                 '        if ($grep_rc -eq 0) {',
                 '            Write-Host "STILL PRESENT (secret): $ref"',
@@ -805,6 +1333,19 @@ function buildRewriteScriptPs1(options) {
         );
     }
 
+    if (hasReplacements) {
+        lines.push(
+            '',
+            '    # 10. Everything above succeeded - only now is the rule file no longer',
+            '    #     needed. Any earlier exit keeps it; `finally` says where it is.',
+            '    Remove-Item $replacement_file -Force -ErrorAction SilentlyContinue',
+            '    if (-not (Get-ChildItem -Force $replacement_dir -ErrorAction SilentlyContinue)) {',
+            '        Remove-Item $replacement_dir -Force -ErrorAction SilentlyContinue',
+            '    }',
+            '    $replacement_file = \'\''
+        );
+    }
+
     lines.push(
         '',
         '} finally {',
@@ -814,7 +1355,14 @@ function buildRewriteScriptPs1(options) {
     );
 
     if (hasReplacements) {
-        lines.push('    Remove-Item $replacement_file -Force -ErrorAction SilentlyContinue');
+        // Never delete it here: on a failed run this file is the only copy of what
+        // still has to be redacted, so it is kept and reported instead.
+        lines.push(
+            '    if ($replacement_file -and (Test-Path $replacement_file)) {',
+            '        Write-Warning "Replacement rules kept for a retry: $replacement_file"',
+            '        Write-Warning "They contain the values you asked to redact - delete the file once you are done."',
+            '    }'
+        );
     }
 
     lines.push('}', '');
@@ -845,8 +1393,13 @@ function buildRewriteScriptPs1(options) {
  *   message instead of halfway through a rewrite.
  * @param {boolean} [options.restoreRemote] re-add the remote after the rewrite
  * @param {string} [options.remoteUrl]
- * @param {string[]} [options.preambleLines] setup lines run before entering the repository
- * @param {string} [options.exitCleanupCommand] cleanup run by the script's EXIT trap
+ * @param {string[]} [options.preambleLines] setup lines run inside the repository,
+ *   before the rewrite. They may call git: the script has already cd'd in.
+ * @param {string} [options.finalCleanupCommand] cleanup run once the rewrite, the
+ *   push and the verification have all succeeded - never from the EXIT trap, so a
+ *   failed run keeps the rule file for a retry instead of destroying it
+ * @param {string} [options.retainedPathExpr] shell expression naming a file the
+ *   failure path should point the user at (e.g. '"$replacement_file"')
  */
 function buildRewriteScript(options) {
     const {
@@ -861,28 +1414,34 @@ function buildRewriteScript(options) {
         restoreRemote = false,
         remoteUrl = null,
         preambleLines = [],
-        exitCleanupCommand = null
+        finalCleanupCommand = null,
+        retainedPathExpr = null
     } = options || {};
 
     const remoteQ = shellQuote(remote);
+    const regularCmds = requiredCommands.filter(c => c !== 'git-filter-repo');
+    const needsFilterRepo = requiredCommands.includes('git-filter-repo');
     const lines = [
         '#!/usr/bin/env bash',
         '# Generated by Leak Lock - rewrites git history across ALL refs.',
         '# Review before running. This is destructive and cannot be undone.',
         '#',
         '# Portability: bash 3.2+ (macOS ships 3.2, so no associative arrays, no',
-        '# mapfile, no ${var,,}). On Windows run it from Git Bash or WSL - it needs a',
-        '# POSIX shell, and cmd.exe/PowerShell will not do.',
+        '# mapfile, no ${var,,}), and no GNU-only tool flags - BSD grep, sed, mktemp',
+        '# and readlink behave differently, so nothing here depends on them.',
+        '# On Windows run this from WSL or Git Bash; cmd.exe and PowerShell cannot run',
+        '# it. Leak Lock also generates the same cleanup as a PowerShell .ps1 - use',
+        '# whichever matches the shell you actually run.',
         '# /usr/bin/env locates bash on macOS Homebrew and Git Bash, where it is not',
         '# necessarily at /bin/bash.',
         'set -euo pipefail',
         // Byte-wise matching, so verification does not depend on the user's locale.
         'export LC_ALL=C',
         '',
-        ...(requiredCommands.length > 0
+        ...(regularCmds.length > 0
             ? [
                 '# Fail immediately with a clear message rather than midway through a rewrite.',
-                `for cmd in ${requiredCommands.map(shellQuote).join(' ')}; do`,
+                `for cmd in ${regularCmds.map(shellQuote).join(' ')}; do`,
                 '\tif ! command -v "$cmd" >/dev/null 2>&1; then',
                 '\t\techo "Required command not found on PATH: $cmd" >&2',
                 '\t\texit 1',
@@ -891,10 +1450,41 @@ function buildRewriteScript(options) {
                 ''
             ]
             : []),
-        ...preambleLines,
-        ...(preambleLines.length > 0 ? [''] : []),
+        ...(needsFilterRepo
+            ? [
+                '# Prefer Git\'s subcommand, then fall back to pip\'s PATH launcher.',
+                'git_filter_repo() {',
+                '\tif git filter-repo --version >/dev/null 2>&1; then',
+                '\t\tgit filter-repo "$@"',
+                '\telif command -v git-filter-repo >/dev/null 2>&1; then',
+                '\t\tgit-filter-repo "$@"',
+                '\telse',
+                '\t\techo "git-filter-repo is not installed or is not on PATH." >&2',
+                '\t\techo "Install it with: python3 -m pip install --user git-filter-repo" >&2',
+                '\t\texit 1',
+                '\tfi',
+                '}',
+                '',
+                '# Probe it now, not at step 5. The `command -v` loop above cannot check',
+                '# this one - it is valid either as a git subcommand or as a PATH launcher -',
+                '# so without this the script would detach HEAD and force-reset every local',
+                '# branch to its remote before discovering the tool is missing.',
+                'if ! git filter-repo --version >/dev/null 2>&1 \\',
+                '\t&& ! command -v git-filter-repo >/dev/null 2>&1; then',
+                '\techo "git-filter-repo is not installed or is not on PATH." >&2',
+                '\techo "Install it with: python3 -m pip install --user git-filter-repo" >&2',
+                '\texit 1',
+                'fi',
+                ''
+            ]
+            : []),
         `cd ${shellQuote(repoDir)}`,
         '',
+        // The rule file is created here, inside the repository, rather than in
+        // $TMPDIR: a snap-packaged git-filter-repo has a private /tmp and cannot
+        // read a host temp path, which failed the rewrite before it started.
+        ...preambleLines,
+        ...(preambleLines.length > 0 ? [''] : []),
         '# 1. Refresh every ref before planning the rewrite.',
         `git fetch --prune --tags ${remoteQ}`,
         '',
@@ -920,8 +1510,30 @@ function buildRewriteScript(options) {
         '',
         '# 3. Detach HEAD: git refuses to force-update the checked-out branch.',
         `current_branch="$(git symbolic-ref --quiet --short HEAD || true)"`,
-        '# Restore the branch and remove sensitive temporary files on ANY exit.',
-        `trap ${shellQuote([exitCleanupCommand, 'if [ -n "${current_branch:-}" ]; then git checkout --quiet "$current_branch" 2>/dev/null || true; fi'].filter(Boolean).join('; '))} EXIT`,
+        'push_log=""',
+        '# One EXIT trap for the whole script. It restores the branch and removes the',
+        '# push log, but it deliberately does NOT remove the replacement rule file: on a',
+        '# failed run that file is the only copy of what still has to be redacted, so it',
+        '# is kept and reported, and removed only after the rewrite is verified.',
+        'cleanup_on_exit() {',
+        '\trc=$?',
+        '\tif [ -n "${push_log:-}" ]; then',
+        '\t\trm -f "$push_log"',
+        '\tfi',
+        '\tif [ -n "${current_branch:-}" ]; then',
+        '\t\tgit checkout --quiet "$current_branch" 2>/dev/null || true',
+        '\tfi',
+        ...(retainedPathExpr
+            ? [
+                `\tif [ "$rc" -ne 0 ] && [ -f ${retainedPathExpr} ]; then`,
+                `\t\techo "Replacement rules kept for a retry: ${retainedPathExpr.replace(/^"|"$/g, '')}" >&2`,
+                '\t\techo "They contain the values you asked to redact - delete the file once you are done." >&2',
+                '\tfi'
+            ]
+            : []),
+        '\treturn "$rc"',
+        '}',
+        'trap cleanup_on_exit EXIT',
         'if [ -n "$current_branch" ]; then',
         '\tgit checkout --detach --quiet',
         'fi',
@@ -942,7 +1554,12 @@ function buildRewriteScript(options) {
     lines.push(
         '',
         '# 6. Drop the rewrite backup refs and repack.',
-        'git for-each-ref --format="delete %(refname)" refs/original/ | git update-ref --stdin',
+        '#    refs/original/* keeps the pre-rewrite commits reachable. refs/replace/*',
+        '#    is what git filter-repo writes to alias each old commit to its rewritten',
+        '#    one: while those exist, git answers for the OLD commit with the NEW one,',
+        '#    so a ref that still carries the secret reads as clean - here and in any',
+        '#    later scan. A rewrite removes history; it must not alias it.',
+        'git for-each-ref --format="delete %(refname)" refs/original/ refs/replace/ | git update-ref --stdin',
         'git reflog expire --expire=now --all',
         'git gc --prune=now --aggressive'
     );
@@ -962,8 +1579,9 @@ function buildRewriteScript(options) {
         '#    the remote is never left with rewritten branches but stale tags.',
         '#    The flip side is that one protected branch rejects every ref, which',
         '#    reads as though the whole rewrite failed. Explain that if it happens.',
+        // Assigned, never re-trapped: a second `trap ... EXIT` here used to replace
+        // cleanup_on_exit outright, so the branch was never restored.
         'push_log="$(mktemp "${TMPDIR:-/tmp}/leaklock-push.XXXXXX")"',
-        'trap \'rm -f "$push_log"\' EXIT',
         'push_rc=0',
         `git push --force --atomic ${remoteQ} ${shellQuote('refs/heads/*:refs/heads/*')} ${shellQuote('refs/tags/*:refs/tags/*')} >"$push_log" 2>&1 || push_rc=$?`,
         'cat "$push_log"',
@@ -1017,7 +1635,7 @@ function buildRewriteScript(options) {
                 // must be reported, not mistaken for "clean" the way a bare
                 // `if git ls-tree | grep` under set -e would.
                 '\tls_rc=0',
-                '\tfiles="$(git ls-tree -r --name-only "$ref" 2>/dev/null)" || ls_rc=$?',
+                '\tfiles="$(git --no-replace-objects ls-tree -r --name-only "$ref" 2>/dev/null)" || ls_rc=$?',
                 '\tif [ "$ls_rc" -ne 0 ]; then',
                 '\t\techo "VERIFY FAILED (git ls-tree exit $ls_rc): $ref"',
                 '\t\tleftover=1',
@@ -1053,7 +1671,7 @@ function buildRewriteScript(options) {
                 // 128 for a bad ref) is a real failure and must be surfaced, not
                 // swallowed as clean.
                 '\t\tgrep_rc=0',
-                '\t\tgit grep --quiet "$grep_flag" -e "$needle" "$ref" 2>/dev/null || grep_rc=$?',
+                '\t\tgit --no-replace-objects grep --quiet "$grep_flag" -e "$needle" "$ref" 2>/dev/null || grep_rc=$?',
                 '\t\tif [ "$grep_rc" -eq 0 ]; then',
                 '\t\t\techo "STILL PRESENT (secret): $ref"',
                 '\t\t\tleftover=1',
@@ -1074,7 +1692,7 @@ function buildRewriteScript(options) {
         for (const search of verifySearches) {
             lines.push(
                 '\tgrep_rc=0',
-                `\tgit grep --quiet ${search.flag} -e ${shellQuote(search.value)} "$ref" 2>/dev/null || grep_rc=$?`,
+                `\tgit --no-replace-objects grep --quiet ${search.flag} -e ${shellQuote(search.value)} "$ref" 2>/dev/null || grep_rc=$?`,
                 '\tif [ "$grep_rc" -eq 0 ]; then',
                 '\t\techo "STILL PRESENT (secret): $ref"',
                 '\t\tleftover=1',
@@ -1098,6 +1716,15 @@ function buildRewriteScript(options) {
             '\techo "Verification failed: see STILL PRESENT / VERIFY FAILED above." >&2',
             '\texit 1',
             'fi'
+        );
+    }
+
+    if (finalCleanupCommand) {
+        lines.push(
+            '',
+            '# 10. Everything above succeeded - only now is the rule file no longer',
+            '#     needed. Any earlier exit keeps it, and the EXIT trap says where.',
+            finalCleanupCommand
         );
     }
 
@@ -1204,6 +1831,13 @@ module.exports = {
     AheadBranchesError,
     shellQuote,
     escapeRegex,
+    resolveGitDir,
+    createRulesFile,
+    removeRulesFile,
+    describeSandboxedFilterRepo,
+    runGitFilterRepo,
+    detectFilterRepo,
+    buildFilterRepoInstallCommand,
     hasRemote,
     getRemoteUrl,
     ensureRemote,
@@ -1221,6 +1855,9 @@ module.exports = {
     expireReflogAndGc,
     pushRewritten,
     verifyRemoteRefs,
+    findUnremovedRules,
+    findStringsInRefs,
+    findStringsInObjects,
     parseProtectedRefRejection,
     detectRemoteProvider,
     buildRewriteScript,

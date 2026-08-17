@@ -10,10 +10,11 @@ const gitRewrite = require('./git-rewrite');
 const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
 const redactionRules = require('./redaction-rules');
+const valueEncodings = require('./value-encodings');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
-const { describeFindingPath, repoRelativePath, repoRelativeCandidates } = require('./finding-paths');
+const { findGitRoot, describeFindingPath, repoRelativeCandidates } = require('./finding-paths');
 const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
 const credentialInspect = require('./credential-inspect');
 const { classifyFindings } = require('./credential-prepass');
@@ -361,6 +362,45 @@ function sanitizeDockerVolumeName(name) {
 }
 
 // Webview panel provider for main area display
+/**
+ * The matched text out of a Nosey Parker match, whatever shape it arrived in.
+ *
+ * `snippet` is `{ before, matching, after }` in the report format, but some builds
+ * and the JSONL path emit the matched text as a plain string. Reading `.matching`
+ * off a string yields undefined, which fell through to the surrounding context or
+ * to a placeholder - and a finding whose value is context is not usable as a
+ * rewrite rule, so those findings became non-selectable and the cleanup buttons
+ * greyed out with nothing to act on.
+ */
+/**
+ * Surface a rejection from a fire-and-forget handler.
+ *
+ * The webview posts a message and moves on; nothing awaits the promise the host
+ * returns. Without this, an error inside a handler is an unhandled rejection in
+ * the extension host - invisible to the user, who sees a button that does nothing.
+ */
+function reportIfRejected(promise, label) {
+    if (!promise || typeof promise.catch !== 'function') {
+        return;
+    }
+    promise.catch(error => {
+        console.error(`[leak-lock] ${label} failed:`, error);
+        vscode.window.showErrorMessage(
+            `${label} failed, and nothing in your repository was changed. ${error && error.message ? error.message : error}`
+        );
+    });
+}
+
+function matchedTextFromSnippet(match) {
+    if (!match) {
+        return null;
+    }
+    if (typeof match.snippet === 'string' && match.snippet) {
+        return match.snippet;
+    }
+    return match.snippet?.matching || match.content || match.text || null;
+}
+
 class LeakLockPanel {
     constructor(extensionUri) {
         this._extensionUri = extensionUri;
@@ -380,7 +420,12 @@ class LeakLockPanel {
         this._credentialStates = [];
         this._scanCleanup = {
             preparedCommand: null,
+            preparedScripts: null, // { sh, ps1 } - both are generated, the user picks
+            preparedFlavor: null,  // which of the two the panel is showing
             preparedMode: null, // 'bfg' | 'git'
+            // Set when the user accepts the repository Leak Lock located the value
+            // in; cleared by a new scan, which re-decides where findings live.
+            repoOverride: null,
             replacements: null,
             replacementsFile: null,
             preparing: false,
@@ -429,6 +474,8 @@ class LeakLockPanel {
             repoDir: null,
             targets: [], // { path, type: 'file'|'directory', base }
             preparedCommand: null,
+            preparedScripts: null, // { sh, ps1 } - both are generated, the user picks
+            preparedFlavor: null,
             preparedIndexFilter: null, // For git filter-branch execution
             preparedMode: null,
             preparing: false,
@@ -547,17 +594,28 @@ class LeakLockPanel {
                     case 'inspectCredential':
                         LeakLockPanel.currentPanel._inspectCredential(message.findingIndex);
                         break;
+                    // These four are async and nothing consumes their promise: a
+                    // rejection used to disappear, and the button looked dead. Report
+                    // it instead - a click must always produce a visible outcome.
                     case 'scan.prepareBfg':
-                        LeakLockPanel.currentPanel._prepareScanBfgCommand(message.replacements);
+                        reportIfRejected(
+                            LeakLockPanel.currentPanel._prepareScanBfgCommand(message.replacements),
+                            'Preparing the BFG command');
                         break;
                     case 'scan.prepareGit':
-                        LeakLockPanel.currentPanel._prepareScanGitCommand(message.replacements);
+                        reportIfRejected(
+                            LeakLockPanel.currentPanel._prepareScanGitCommand(message.replacements),
+                            'Preparing the Git-only command');
                         break;
                     case 'scan.runBfg':
-                        LeakLockPanel.currentPanel._runPreparedScanCleanup('bfg');
+                        reportIfRejected(
+                            LeakLockPanel.currentPanel._runPreparedScanCleanup('bfg'),
+                            'Running the BFG cleanup');
                         break;
                     case 'scan.runGit':
-                        LeakLockPanel.currentPanel._runPreparedScanCleanup('git');
+                        reportIfRejected(
+                            LeakLockPanel.currentPanel._runPreparedScanCleanup('git'),
+                            'Running the Git-only cleanup');
                         break;
                     case 'scan.confirmForcePush':
                         LeakLockPanel.currentPanel._confirmForcePush();
@@ -585,7 +643,7 @@ class LeakLockPanel {
                         LeakLockPanel.currentPanel._previewCustomRule(message.id);
                         break;
                     case 'scan.saveScript':
-                        LeakLockPanel.currentPanel._saveCleanupScript();
+                        LeakLockPanel.currentPanel._saveCleanupScript(message.flavor);
                         break;
                     case 'scan.exportJson':
                         LeakLockPanel.currentPanel._exportScanResultsJson();
@@ -1317,14 +1375,14 @@ class LeakLockPanel {
                 
                 <script>
                     const vscode = acquireVsCodeApi();
-                    
-                    // Dependency installation and directory selection 
+
+                    // Dependency installation and directory selection
                     // is now handled by the sidebar panel
                     
                     function collectReplacements() {
                         const replacements = {};
                         const checkboxes = document.querySelectorAll('.secret-checkbox:checked');
-                        
+
                         checkboxes.forEach(checkbox => {
                             const row = checkbox.closest('tr');
                             const findingIndex = row.dataset.findingIndex;
@@ -1517,8 +1575,8 @@ class LeakLockPanel {
                     document.addEventListener('DOMContentLoaded', refreshSelectionUi);
                     refreshSelectionUi();
 
-                    function saveScanScript() {
-                        vscode.postMessage({ command: 'scan.saveScript' });
+                    function saveScanScript(flavor) {
+                        vscode.postMessage({ command: 'scan.saveScript', flavor: flavor });
                     }
 
                     function prepareBfgCommand() {
@@ -1707,6 +1765,22 @@ class LeakLockPanel {
                             }
                         }
 
+                        // Commit permalink click: resolve the path in the commit before opening it.
+                        const commitLink = event.target instanceof Element
+                            ? event.target.closest('.commit-link[data-finding-index]')
+                            : null;
+                        if (commitLink) {
+                            const idx = parseInt(commitLink.getAttribute('data-finding-index'), 10);
+                            // Return only once the click was actually handled: an
+                            // unparseable index must fall through to the handlers below
+                            // rather than swallow the click.
+                            if (!isNaN(idx)) {
+                                event.preventDefault();
+                                vscode.postMessage({ command: 'openCommitUrl', findingIndex: idx });
+                                return;
+                            }
+                        }
+
                         // Credential report click
                         if (event.target.closest('.credential-link')) {
                             const el = event.target.closest('.credential-link');
@@ -1717,14 +1791,6 @@ class LeakLockPanel {
                             }
                         }
 
-                        // Commit permalink click
-                        if (event.target.closest('.commit-link')) {
-                            const el = event.target.closest('.commit-link');
-                            const idx = parseInt(el.getAttribute('data-finding-index'), 10);
-                            if (!isNaN(idx)) {
-                                vscode.postMessage({ command: 'openCommitUrl', findingIndex: idx });
-                            }
-                        }
 
                         // Close dialog on overlay click (outside dialog box)
                         if (event.target.id === 'detail-dialog-overlay') {
@@ -2021,6 +2087,7 @@ class LeakLockPanel {
                 }
                 this._removalState.repoDir = validated;
                 this._removalState.preparedCommand = null;
+                this._removalState.preparedScripts = null;
                 this._removalState.preparedIndexFilter = null;
             } catch (e) {
                 vscode.window.showErrorMessage(`Invalid repository path: ${e.message}`);
@@ -2072,6 +2139,7 @@ class LeakLockPanel {
             for (const t of newTargets) existing.set(t.path, t);
             this._removalState.targets = Array.from(existing.values());
             this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
             this._removalState.preparedIndexFilter = null;
             this._updateWebviewContent();
         }
@@ -2085,6 +2153,7 @@ class LeakLockPanel {
         this._removalState.targets = this._removalState.targets.filter(t => t.path !== targetPath);
         if (this._removalState.targets.length !== beforeCount) {
             this._removalState.preparedCommand = null;
+            this._removalState.preparedScripts = null;
             this._removalState.preparedIndexFilter = null;
             this._removalState.preparedMode = null;
             this._removalState.details = [];
@@ -2098,6 +2167,7 @@ class LeakLockPanel {
         }
         this._removalState.targets = [];
         this._removalState.preparedCommand = null;
+        this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._removalState.details = [];
@@ -2164,9 +2234,25 @@ class LeakLockPanel {
             : `(^|/)(${parts.join('|')})(/|$)`;
     }
 
-    _buildBfgCommand(repoDir, targets) {
+    /**
+     * Which script a machine runs by default. Both are always generated: a Windows
+     * user may well run the cleanup in WSL or Git Bash, where the `.ps1` is useless
+     * and the `.sh` is exactly right, and the reverse never comes up only because
+     * PowerShell is rarer elsewhere. The platform decides what is offered *first*,
+     * not what exists.
+     */
+    _defaultScriptFlavor() {
+        return process.platform === 'win32' ? 'ps1' : 'sh';
+    }
+
+    /** Both script flavours for one prepared cleanup, keyed by extension. */
+    _buildBothFlavors(build) {
+        return { sh: build('sh'), ps1: build('ps1') };
+    }
+
+    _buildBfgCommand(repoDir, targets, flavor = this._defaultScriptFlavor()) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-        if (process.platform === 'win32') {
+        if (flavor === 'ps1') {
             const args = this._buildBfgArgs(targets).map(a => gitRewrite.psQuote(a)).join(' ');
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir,
@@ -2206,6 +2292,7 @@ class LeakLockPanel {
                 this._removalState.blockedBranches = preflight.ahead;
                 this._removalState.blockedReason = preflight.reason;
                 this._removalState.preparedCommand = null;
+                this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 return;
             }
@@ -2213,12 +2300,12 @@ class LeakLockPanel {
             this._removalState.pushPlan = preflight.pushPlan;
 
             const mode = this._removalState.combineMode;
-            let cmd;
-            if (mode === 'combined') {
-                cmd = this._buildBfgCommand(validatedRepo, targets);
-            } else {
-                cmd = this._buildIndividualBfgCommands(validatedRepo, targets);
-            }
+            const scripts = this._buildBothFlavors((flavor) => mode === 'combined'
+                ? this._buildBfgCommand(validatedRepo, targets, flavor)
+                : this._buildIndividualBfgCommands(validatedRepo, targets, flavor));
+            const cmd = scripts[this._defaultScriptFlavor()];
+            this._removalState.preparedScripts = scripts;
+            this._removalState.preparedFlavor = this._defaultScriptFlavor();
             // Build details for granular feedback
             this._removalState.details = targets.map(t => ({
                 display: t.path,
@@ -2240,6 +2327,7 @@ class LeakLockPanel {
         this._removalState.combineMode = mode;
         // Invalidate prepared command to force regeneration with new mode
         this._removalState.preparedCommand = null;
+        this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._updateWebviewContent();
@@ -2249,9 +2337,9 @@ class LeakLockPanel {
         return String(s).replace(/"/g, '\\"');
     }
 
-    _buildIndividualBfgCommands(repoDir, targets) {
+    _buildIndividualBfgCommands(repoDir, targets, flavor = this._defaultScriptFlavor()) {
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
-        if (process.platform === 'win32') {
+        if (flavor === 'ps1') {
             const rewriteLines = targets.map(t => {
                 const flag = t.type === 'directory' ? '--delete-folders' : '--delete-files';
                 const pattern = gitRewrite.psQuote(this._escapeRegex(t.base));
@@ -2282,6 +2370,7 @@ class LeakLockPanel {
         this._removalState.deletionMode = mode;
         // Clear previous prepared command/preview when switching
         this._removalState.preparedCommand = null;
+        this._removalState.preparedScripts = null;
         this._removalState.preparedIndexFilter = null;
         this._removalState.preparedMode = null;
         this._updateWebviewContent();
@@ -2408,10 +2497,10 @@ class LeakLockPanel {
         return rmCmds.length ? rmCmds : 'echo no-op';
     }
 
-    _buildGitFilterBranchCommandForDisplay(repoDir, indexFilter, targets = []) {
+    _buildGitFilterBranchCommandForDisplay(repoDir, indexFilter, targets = [], flavor = this._defaultScriptFlavor()) {
         // Display/copy version of the command. Execution goes through
         // gitRewrite.runRewrite(), which follows the exact same sequence.
-        if (process.platform === 'win32') {
+        if (flavor === 'ps1') {
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir,
                 rewriteLines: [
@@ -2452,6 +2541,7 @@ class LeakLockPanel {
                 this._removalState.blockedBranches = preflight.ahead;
                 this._removalState.blockedReason = preflight.reason;
                 this._removalState.preparedCommand = null;
+                this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 return;
             }
@@ -2463,7 +2553,11 @@ class LeakLockPanel {
             this._removalState.preparedIndexFilter = indexFilter;
             this._removalState.repoDir = validatedRepo;
             // Build display-only command for UI
-            const displayCmd = this._buildGitFilterBranchCommandForDisplay(validatedRepo, indexFilter, targets);
+            const scripts = this._buildBothFlavors((flavor) =>
+                this._buildGitFilterBranchCommandForDisplay(validatedRepo, indexFilter, targets, flavor));
+            this._removalState.preparedScripts = scripts;
+            this._removalState.preparedFlavor = this._defaultScriptFlavor();
+            const displayCmd = scripts[this._removalState.preparedFlavor];
             this._removalState.preparedCommand = displayCmd;
             this._removalState.preparedMode = 'git';
         } catch (e) {
@@ -2626,6 +2720,7 @@ class LeakLockPanel {
                 this._removalState.repoDir = validated;
                 this._removalState.targets = [];
                 this._removalState.preparedCommand = null;
+                this._removalState.preparedScripts = null;
                 this._removalState.preparedMode = null;
                 this._removalState.preview = null;
                 this._removalState.details = [];
@@ -2778,12 +2873,12 @@ class LeakLockPanel {
                     parts.push(branchHtml);
                 }
                 if (result.commitBranches && result.commitBranches.length > 0) {
-                    tooltipParts.push('Branch(es): ' + result.commitBranches.join(', '));
+                    tooltipParts.push("Branch(es): " + result.commitBranches.join(", "));
                 }
                 if (shortHash) {
                     const commitUrl = this._resolveCommitUrl(index);
                     if (commitUrl) {
-                        parts.push(`<span class="commit-link" data-finding-index="${index}" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='Spacebar'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</span>`);
+                        parts.push(`<span class="commit-link" data-finding-index="${index}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'){this.click();event.preventDefault();}" title="Open ${escapeHtml(result.file)} at commit ${escapeHtml(result.commitHash)} in your browser" style="font-family: monospace; color: var(--vscode-textLink-foreground); cursor: pointer; text-decoration: underline;">${escapeHtml(shortHash)}</span>`);
                     } else {
                         parts.push(`<span title="Commit ${escapeHtml(result.commitHash)}" style="font-family: monospace; color: var(--vscode-textLink-foreground);">${escapeHtml(shortHash)}</span>`);
                     }
@@ -2852,10 +2947,11 @@ class LeakLockPanel {
                             <span style="font-size: 0.9em;">
                                 ${escapeHtml(result.description)}
                                 ${Array.isArray(result.ruleNames) && result.ruleNames.length > 1
-                                    ? ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.85em;" title="Every rule that matched this secret">— also matched: ${escapeHtml(result.ruleNames.filter(r => r !== result.ruleName).join(', '))}</span>`
-                                    : ''}
+                    ? ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.85em;" title="Every rule that matched this secret">— also matched: ${escapeHtml(result.ruleNames.filter(r => r !== result.ruleName).join(', '))}</span>`
+                    : ''}
                                 ${isDependency ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">— in a third-party dependency, not your code (not selectable)</span>' : ''}
                                 ${isUntracked ? ' <span style="color: var(--vscode-gitDecoration-addedResourceForeground); font-size: 0.8em;">(not committed)</span>' : ''}
+                                ${result.storedFormRecovered ? ` <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;" title="${escapeHtml(result.decoder || 'the engine')} decoded this value before reporting it. The value shown is the one stored in the file, which is what a cleanup has to search for.">— shown as stored (${escapeHtml(result.decoder || 'decoded')} by the engine)</span>` : ''}
                                 ${!includeInCleanup ? ' <span style="color: var(--vscode-descriptionForeground); font-size: 0.8em;">(excluded from cleanup)</span>' : ''}
                             </span>
                         </div>
@@ -2885,17 +2981,28 @@ class LeakLockPanel {
         const gitCommandText = prepared && this._scanCleanup.preparedMode === 'git'
             ? prepared
             : 'Git-only command will appear here after preparation.';
+        // Both scripts are generated for every prepared cleanup. Windows shows the
+        // PowerShell one first and the bash one second (WSL, Git Bash); everywhere
+        // else the order is reversed. Neither is hidden: the shell that runs the
+        // rewrite is not necessarily the one that prepared it.
+        const nativeFirst = this._defaultScriptFlavor() === 'ps1';
+        const saveButtons = [
+            `<button class="scan-button" onclick="saveScanScript('sh')" title="bash: Linux, macOS, WSL or Git Bash">💾 Save as .sh</button>`,
+            `<button class="scan-button" onclick="saveScanScript('ps1')" title="PowerShell on Windows">💾 Save as .ps1</button>`
+        ];
         const renderPreparedActions = (id) => `
             <div style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap;">
                 <button class="scan-button" onclick="copyScanCommand(&quot;${id}&quot;)">📋 Copy command</button>
-                <button class="scan-button" onclick="saveScanScript()">💾 Save as .sh</button>
+                ${(nativeFirst ? saveButtons.slice().reverse() : saveButtons).join('\n                ')}
             </div>
             <div class="hint" style="margin-top:8px;">
+                ${this._scanCleanup.preparedRepo ? `<div style="margin-bottom:6px;"><strong>Repository:</strong> <code>${escapeHtml(this._scanCleanup.preparedRepo)}</code></div>` : ''}
                 <strong>Run manually:</strong>
                 <ol style="margin:6px 0 0 20px; padding:0;">
-                    <li>Choose <strong>Save as .sh</strong> (or copy the script into <code>leak-lock-cleanup.sh</code>).</li>
-                    <li>In a local terminal run <code>chmod 700 leak-lock-cleanup.sh</code>, then <code>./leak-lock-cleanup.sh</code>. The script changes to the selected repository itself.</li>
-                    <li>Or use the red <strong>Run cleanup</strong> button below. Leak Lock stores replacement data in an owner-only OS temporary directory, removes it on success or failure, and asks separately before force-pushing.</li>
+                    <li><strong>Save as .sh</strong> for bash — Linux, macOS, and on Windows for WSL or Git Bash. Then <code>chmod 700 leak-lock-cleanup.sh</code> and <code>./leak-lock-cleanup.sh</code>.</li>
+                    <li><strong>Save as .ps1</strong> for PowerShell on Windows: <code>powershell -ExecutionPolicy Bypass -File .\\leak-lock-cleanup.ps1</code>.</li>
+                    <li>Either script changes to the selected repository itself, and the copy button above copies the ${nativeFirst ? 'PowerShell' : 'bash'} version shown here.</li>
+                    <li>Or use the red <strong>Run cleanup</strong> button below. Leak Lock keeps the replacement rules in an owner-only directory inside the repository's <code>.git</code>, removes them once the cleanup completed, and asks separately before force-pushing.</li>
                 </ol>
             </div>`;
         const preparedBlockBfg = `
@@ -2910,6 +3017,45 @@ class LeakLockPanel {
         // toward whether there is anything to prepare.
         const customRuleCount = this._getCustomRules().length;
         const noneSelected = selectedCount === 0 && customRuleCount === 0;
+        // Preparation reads history, which takes as long as the repository is big.
+        // The state was already tracked and re-rendered; it was simply never drawn,
+        // so the only feedback was a button that stopped responding.
+        const preparing = Boolean(this._scanCleanup.preparing);
+        const preparingBlock = preparing
+            ? `<div class="scanning-indicator" style="margin-top:8px;">
+                    <div class="spinner"></div>
+                    <span style="margin-left:8px;">Preparing the cleanup: checking each rule against this
+                    repository's history…</span>
+               </div>`
+            : '';
+        // A disabled button with no explanation reads as a broken button. Say which
+        // of the two situations it is - nothing ticked, or nothing tickable - and for
+        // the second one, why each finding was refused.
+        const notSelectableBlock = (() => {
+            if (!noneSelected || this._scanResults.length === 0) {
+                return '';
+            }
+            if (eligibleIndexes.length > 0) {
+                return `<div class="hint" style="margin-top:8px;">Select at least one finding above, or add a manual
+                    redaction rule, to enable the cleanup buttons.</div>`;
+            }
+            const reasons = new Map();
+            for (const result of this._scanResults) {
+                const reason = this._cleanupIneligibleReason(result);
+                reasons.set(reason, (reasons.get(reason) || 0) + 1);
+            }
+            const listed = [...reasons.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 3)
+                .map(([reason, count]) => `<li>${count} × ${escapeHtml(reason)}</li>`)
+                .join('');
+            return `<div class="hint" style="margin-top:8px;">
+                    <strong>No finding here can be cleaned automatically</strong>, so the buttons below are disabled:
+                    <ul style="margin:6px 0 0 20px; padding:0;">${listed}</ul>
+                    A <strong>manual redaction rule</strong> takes the text you type and is not affected by any of
+                    these, so it is the way to clean a value the scanner could not report exactly.
+                </div>`;
+        })();
         const blockedBlock = this._renderBlockedBranches(this._scanCleanup.blockedBranches, this._scanCleanup.blockedReason);
         const refreshBlock = this._renderRemoteError(this._scanCleanup.remoteError);
         const pushPlanBlock = prepared ? this._renderPushPlan(this._scanCleanup.pushPlan) : '';
@@ -2993,7 +3139,9 @@ class LeakLockPanel {
                         BFG is faster, but it will remove files/directories with the same name everywhere in history. Git-only cleanup does not.
                     </p>
                     <div style="margin-top: 8px;">
-                        <button class="scan-button" id="prepare-bfg-button" onclick="prepareBfgCommand()" ${noneSelected ? 'disabled' : ''}>⚙️ Prepare BFG command</button>
+                        ${notSelectableBlock}
+                        ${preparingBlock}
+                        <button class="scan-button" id="prepare-bfg-button" onclick="prepareBfgCommand()" ${noneSelected || preparing ? 'disabled' : ''}>⚙️ Prepare BFG command</button>
                     </div>
                     ${preparedBlockBfg}
                     ${this._scanCleanup.preparedMode === 'bfg' ? pushPlanBlock : ''}
@@ -3009,7 +3157,8 @@ class LeakLockPanel {
                         Git-only cleanup is path-aware and won’t remove same-name files elsewhere, but it is slower than BFG.
                     </p>
                     <div style="margin-top: 8px;">
-                        <button class="scan-button" id="prepare-git-button" onclick="prepareGitCommand()" ${noneSelected ? 'disabled' : ''}>⚙️ Prepare Git-only command</button>
+                        ${preparingBlock}
+                        <button class="scan-button" id="prepare-git-button" onclick="prepareGitCommand()" ${noneSelected || preparing ? 'disabled' : ''}>⚙️ Prepare Git-only command</button>
                     </div>
                     ${preparedBlockGit}
                     ${this._scanCleanup.preparedMode === 'git' ? pushPlanBlock : ''}
@@ -3026,17 +3175,31 @@ class LeakLockPanel {
     }
 
     /** Write the prepared rewrite script to a file the user picks. */
-    async _saveCleanupScript() {
-        const script = this._scanCleanup.preparedCommand || this._removalState.preparedCommand;
+    /**
+     * Save the prepared cleanup as a runnable script.
+     *
+     * Both flavours exist for every prepared cleanup, so this takes the one the user
+     * asked for rather than the one this machine happens to prefer: a Windows user
+     * running the rewrite in WSL or Git Bash needs the bash script, and saving them
+     * a `.ps1` there is useless.
+     */
+    async _saveCleanupScript(flavor) {
+        const wanted = flavor === 'sh' || flavor === 'ps1' ? flavor : this._defaultScriptFlavor();
+        const scripts = this._scanCleanup.preparedScripts || this._removalState.preparedScripts;
+        const script = (scripts && scripts[wanted])
+            || this._scanCleanup.preparedCommand || this._removalState.preparedCommand;
         if (!script) {
             vscode.window.showWarningMessage('Prepare a cleanup command first.');
             return;
         }
+        const isPowerShell = wanted === 'ps1';
         // Wrap the whole flow, including showSaveDialog, so a dialog rejection can
         // never surface as an unhandled promise rejection from the message handler.
         try {
             const target = await vscode.window.showSaveDialog({
-                filters: { 'Shell script': ['sh'] },
+                filters: isPowerShell
+                    ? { 'PowerShell script': ['ps1'] }
+                    : { 'Shell script': ['sh'] },
                 saveLabel: 'Save cleanup script'
             });
             if (!target) {
@@ -3052,7 +3215,10 @@ class LeakLockPanel {
                 }
                 permissionNote = " (permissions are managed by Windows ACLs)";
             }
-            vscode.window.showInformationMessage(`Cleanup script saved${permissionNote} to ${target.fsPath}. Run it locally with: bash ${gitRewrite.shellQuote(target.fsPath)}`);
+            const runHint = isPowerShell
+                ? `powershell -ExecutionPolicy Bypass -File ${gitRewrite.psQuote(target.fsPath)}`
+                : `bash ${gitRewrite.shellQuote(target.fsPath)}`;
+            vscode.window.showInformationMessage(`Cleanup script saved${permissionNote} to ${target.fsPath}. Run it locally with: ${runHint}`);
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to save script: ${e.message}`);
         }
@@ -3247,10 +3413,13 @@ class LeakLockPanel {
             // Show scanning in progress
             this._isScanning = true;
             this._scanResults = [];
+            this._rawEngineOutput = {};
             this._scanCleanup.preparedCommand = null;
+            this._scanCleanup.preparedScripts = null;
             this._scanCleanup.preparedMode = null;
             this._scanCleanup.replacements = null;
             this._scanCleanup.replacementsFile = null;
+            this._scanCleanup.repoOverride = null;
             this._scanCleanup.pushPlan = null;
             this._scanCleanup.blockedBranches = null;
             this._scanCleanup.blockedReason = null;
@@ -3410,6 +3579,12 @@ class LeakLockPanel {
                 engineResults.concat(keywordHistoryResults)
             );
 
+            // Resolve each finding against its owning repository before rendering
+            // permalinks. A workspace scan can include several child repos.
+            await this._primeFindingRepoInfo(allResults, scanPath);
+            // Show, export and rewrite the bytes the repository holds, not the
+            // decoding an engine performed before reporting.
+            await this._alignValuesWithStoredBytes(allResults, scanPath);
             // Only Nosey Parker accepts an ignore file, so without this the setting
             // meant different things depending on which engines were enabled.
             if (this._shouldExcludeDependencies()) {
@@ -3503,11 +3678,173 @@ class LeakLockPanel {
             this._remoteInfo = null;
         }
     }
+    /**
+     * Replace a reported value with the bytes the repository actually stores.
+     *
+     * TruffleHog decodes before it detects, so a token written `…%3d%3d` in the file
+     * is reported - and therefore displayed, exported and rewritten - as `…==`. All
+     * three are then wrong in the same way, and the disagreement only surfaces when
+     * someone opens the file and sees different characters.
+     *
+     * Reading the blob the finding names settles it: if the reported value is not
+     * there but one of its encodings is, that encoding is what the repository holds,
+     * and it becomes the finding's value. The reported form is kept alongside, so the
+     * row can say why the two differ rather than appearing to change the scan result.
+     *
+     * Bounded, but not by which engine reported the finding: gating this on an engine
+     * declaring a decode missed every engine that normalises without saying so, which
+     * is the case that produced the defect. Every finding with something to compare
+     * against is checked, capped at 500, with one read per (commit, path) cached - so
+     * a scan of a hundred findings in a handful of files does a handful of reads.
+     */
+    async _alignValuesWithStoredBytes(results, scanPath) {
+        // Every finding with something to compare against, whichever engine produced
+        // it. Gating this on an engine declaring a decoder was too narrow: an engine
+        // that normalises without saying so - or a build whose JSON omits the field -
+        // produced exactly the same wrong value with no flag to trigger the check.
+        const candidates = (results || []).filter(result =>
+            result && result.file && (result.fullSecret || result.secret));
+        if (candidates.length === 0) {
+            return 0;
+        }
+
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const blobs = new Map();
+        let aligned = 0;
+
+        for (const result of candidates.slice(0, 500)) {
+            const repoDir = result.repoRoot || this._scanRepoRoot || scanPath;
+            const reported = result.fullSecret || result.secret;
+            const key = `${repoDir}\u0000${result.commitHash || 'worktree'}\u0000${result.file}`;
+            if (!blobs.has(key)) {
+                let text = null;
+                // A history finding names a commit; a working-tree finding is the file
+                // on disk. Both are read, because an engine that normalises does so
+                // regardless of which surface the finding came from.
+                if (result.commitHash && repoDir) {
+                    for (const candidate of repoRelativeCandidates(result.file, scanPath, repoDir)) {
+                        try {
+                            const { stdout } = await execFileAsync(
+                                'git',
+                                ['-C', repoDir, 'show', `${result.commitHash}:${candidate}`],
+                                {
+                                    maxBuffer: GIT_MAX_BUFFER,
+                                    timeout: 20000,
+                                    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+                                }
+                            );
+                            text = stdout;
+                            break;
+                        } catch {
+                            continue;
+                        }
+                    }
+                } else {
+                    const absolute = path.isAbsolute(result.file)
+                        ? result.file
+                        : path.resolve(scanPath || repoDir || '.', result.file);
+                    try {
+                        text = fs.readFileSync(absolute, 'utf8');
+                    } catch {
+                        text = null;
+                    }
+                }
+                blobs.set(key, text);
+            }
+            const blob = blobs.get(key);
+            if (!blob || blob.includes(reported)) {
+                // Either unreadable, or the engine's value is stored as reported and
+                // the decoder changed nothing that matters here.
+                if (blob && blob.includes(reported)) {
+                    result.valueIsLiteral = true;
+                    // Read out of the blob itself, so preparation needs no history
+                    // search to know this value is there.
+                    result.valueVerifiedInBlob = true;
+                }
+                continue;
+            }
+            const stored = valueEncodings.findStoredForms(reported, blob)
+                .find(form => form !== reported);
+            if (!stored) {
+                continue;
+            }
+            result.reportedSecret = reported;
+            result.fullSecret = stored;
+            result.secret = this._truncateSecret(stored);
+            result.isSecretTruncated = result.secret !== stored;
+            result.valueIsLiteral = true;
+            result.storedFormRecovered = true;
+            result.valueVerifiedInBlob = true;
+            aligned++;
+        }
+        return aligned;
+    }
 
     /**
-     * The webview sends an index, never a URL. The host rebuilds the address
-     * from its own state and re-validates it, so a crafted message cannot turn
-     * `openExternal` into a launcher for an arbitrary address.
+     * Attach the owning repository and recognised remote to each finding.
+     *
+     * findGitRoot walks up the tree with a `.git` existsSync per level, and this
+     * runs on the scan's critical path, so the lookup is memoised per directory:
+     * findings cluster in a handful of directories, and repeating the walk for
+     * every one of a few thousand rows is a scan-time cost for an answer already
+     * known.
+     */
+    async _primeFindingRepoInfo(results, scanPath) {
+        if (!Array.isArray(results) || !scanPath) {
+            return;
+        }
+        const roots = new Map();
+        const rootByDir = new Map();
+        const rootForDir = (dir) => {
+            if (!rootByDir.has(dir)) {
+                rootByDir.set(dir, findGitRoot(dir));
+            }
+            return rootByDir.get(dir);
+        };
+        for (const finding of results) {
+            if (!finding || typeof finding.file !== "string" || !finding.file) {
+                continue;
+            }
+            const absoluteFile = path.isAbsolute(finding.file)
+                ? finding.file
+                : path.resolve(scanPath, finding.file);
+            const repoRoot = rootForDir(path.dirname(absoluteFile));
+            if (!repoRoot) {
+                continue;
+            }
+            finding.repoRoot = repoRoot;
+            if (!roots.has(repoRoot)) {
+                roots.set(repoRoot, null);
+            }
+        }
+        await Promise.all([...roots.keys()].map(async (repoRoot) => {
+            try {
+                roots.set(repoRoot, parseRemote(await gitRewrite.getRemoteUrl(repoRoot)));
+            } catch {
+                roots.set(repoRoot, null);
+            }
+        }));
+        for (const finding of results) {
+            if (finding?.repoRoot) {
+                finding.remoteInfo = roots.get(finding.repoRoot) || null;
+            }
+        }
+    }
+
+
+
+    /**
+     * Whether a permalink can be built for a finding at render time, used to
+     * decide if its hash is rendered as clickable. The URL itself is never given
+     * to the webview: clicking sends the index back, and _resolveCommitUrlVerified
+     * rebuilds the address, so a crafted message cannot turn `openExternal` into a
+     * launcher for an arbitrary address.
+     *
+     * Rendering cannot await git to disambiguate path candidates, so when the
+     * scanner repeats the repository directory this takes the de-prefixed reading
+     * — the one that does not produce /<repo>/<repo>/... — purely to answer
+     * "linkable or not". The opened link comes from the verified resolver.
      */
     _resolveCommitUrl(findingIndex) {
         const results = Array.isArray(this._scanResults) ? this._scanResults : [];
@@ -3515,14 +3852,14 @@ class LeakLockPanel {
             return null;
         }
         const finding = results[findingIndex];
-        // Repo-relative, not scan-relative: see repoRelativePath. Scanning a
-        // folder above the repository otherwise puts the repository's own
-        // directory name into the URL and every link 404s.
-        const file = repoRelativePath(finding.file, this._scanPath, this._scanRepoRoot);
+        const repoRoot = finding.repoRoot || this._scanRepoRoot;
+        const remoteInfo = finding.remoteInfo || this._remoteInfo;
+        const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoRoot);
+        const file = candidates.length > 1 ? candidates[1] : candidates[0];
         if (!file) {
             return null;
         }
-        const url = buildCommitUrl(this._remoteInfo, {
+        const url = buildCommitUrl(remoteInfo, {
             commitHash: finding.commitHash,
             file,
             line: finding.line
@@ -3542,14 +3879,37 @@ class LeakLockPanel {
             return null;
         }
         const finding = results[findingIndex];
-        const candidates = repoRelativeCandidates(finding.file, this._scanPath, this._scanRepoRoot);
-        if (candidates.length === 0) {
+        const absoluteFile = path.isAbsolute(finding.file)
+            ? finding.file
+            : (this._scanPath ? path.resolve(this._scanPath, finding.file) : null);
+        // _primeFindingRepoInfo already attached the owning repository during the
+        // scan; this recomputes it because a finding can also arrive from a path
+        // that priming skipped (no scanPath, or a result added afterwards), and
+        // one user click is not worth a cache-invalidation rule.
+        // The scan root is the last fallback, not an alternative branch: a finding
+        // whose own directory has no .git above it (a path that no longer exists, a
+        // symlinked checkout) would otherwise resolve to nothing and lose its
+        // permalink even though the scanned repository is known.
+        const repoDir = finding.repoRoot
+            || (absoluteFile && findGitRoot(path.dirname(absoluteFile)))
+            || this._scanRepoRoot;
+        const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoDir);
+        if (candidates.length === 0 || !repoDir) {
             return null;
         }
 
+        let remoteInfo = finding.remoteInfo
+            || (repoDir === this._scanRepoRoot ? this._remoteInfo : null);
+        if (!remoteInfo) {
+            try {
+                remoteInfo = parseRemote(await gitRewrite.getRemoteUrl(repoDir));
+            } catch {
+                remoteInfo = null;
+            }
+        }
+
         let file = candidates[0];
-        const repoDir = this._scanRepoRoot || this._scanPath;
-        if (candidates.length > 1 && repoDir && finding.commitHash) {
+        if (candidates.length > 1 && finding.commitHash) {
             try {
                 const found = await gitRewrite.findPathInCommit(repoDir, finding.commitHash, candidates);
                 if (found) {
@@ -3561,7 +3921,7 @@ class LeakLockPanel {
             }
         }
 
-        const url = buildCommitUrl(this._remoteInfo, {
+        const url = buildCommitUrl(remoteInfo, {
             commitHash: finding.commitHash,
             file,
             line: finding.line
@@ -3573,11 +3933,26 @@ class LeakLockPanel {
         const url = await this._resolveCommitUrlVerified(findingIndex);
         if (!url) {
             vscode.window.showWarningMessage(
-                'Leak Lock could not build a link for that commit. The repository has no recognised remote, or the finding has no commit.'
+                "Leak Lock could not build a link for that commit. The repository has no recognised remote, or the finding has no commit."
             );
             return;
         }
-        await vscode.env.openExternal(vscode.Uri.parse(url));
+        try {
+            const opened = await vscode.env.openExternal(vscode.Uri.parse(url));
+            if (opened) {
+                return;
+            }
+        } catch (error) {
+            console.warn("Could not open commit permalink:", error);
+        }
+        const action = await vscode.window.showWarningMessage(
+            "VS Code could not open the commit permalink in your browser.",
+            "Copy permalink"
+        );
+        if (action === "Copy permalink") {
+            await vscode.env.clipboard.writeText(url);
+            vscode.window.showInformationMessage("Commit permalink copied to the clipboard.");
+        }
     }
 
     /**
@@ -4122,7 +4497,15 @@ class LeakLockPanel {
         const repoDir = this._scanRepoRoot || scanPath;
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
-        const gitLogOptions = { timeout: 20000, maxBuffer: 50 * 1024 * 1024 };
+        // GIT_NO_REPLACE_OBJECTS: a previous filter-repo run leaves `refs/replace/*`
+        // aliasing every original commit to its rewritten one, and git honours them
+        // everywhere. Searching history through that alias reports a commit that
+        // still carries the secret as clean.
+        const gitLogOptions = {
+            timeout: 20000,
+            maxBuffer: 50 * 1024 * 1024,
+            env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+        };
         // The file-content pass runs `git log -G … -p` (pickaxe over full patches),
         // which is the heaviest search and the most likely to hit a limit on a
         // large repository. Give it a bigger buffer and a longer timeout so it
@@ -4270,8 +4653,8 @@ class LeakLockPanel {
                         const requestedMaxCount = Math.max(
                             100,
                             Math.max(1, keywordConfig.maxMatchesPerKeyword) *
-                                Math.max(1, passKeywords.length) *
-                                commitSafetyFactor
+                            Math.max(1, passKeywords.length) *
+                            commitSafetyFactor
                         );
                         let gitMaxCount = Math.min(maxFileHistoryLogCount, requestedMaxCount);
                         if (Number.isFinite(options.maxCountCap) && options.maxCountCap > 0) {
@@ -4817,9 +5200,9 @@ class LeakLockPanel {
                 previewHtml = `
                     <div style="font-size: 0.85em; margin-top: 4px; ${zero ? 'color: var(--vscode-editorWarning-foreground);' : 'color: var(--vscode-descriptionForeground);'}">
                         ${zero
-                            ? '⚠️ Matches nothing in history. A rule that matches nothing is almost always a typo — check it before running a rewrite for it.'
-                            : `Touches <strong>${preview.commitCount}${preview.truncated ? '+' : ''}</strong> commit(s), ${preview.files.length} file(s)${preview.branches.length ? `, on: <code>${escapeHtml(preview.branches.slice(0, 6).join(', '))}</code>` : ''}${preview.truncated ? ` — capped at ${preview.maxCount} commits, the real total is higher` : ''}`
-                        }
+                        ? '⚠️ Matches nothing in history. A rule that matches nothing is almost always a typo — check it before running a rewrite for it.'
+                        : `Touches <strong>${preview.commitCount}${preview.truncated ? '+' : ''}</strong> commit(s), ${preview.files.length} file(s)${preview.branches.length ? `, on: <code>${escapeHtml(preview.branches.slice(0, 6).join(', '))}</code>` : ''}${preview.truncated ? ` — capped at ${preview.maxCount} commits, the real total is higher` : ''}`
+                    }
                         ${preview.files.length ? `<div style="margin-top: 2px;">Files: <code>${escapeHtml(preview.files.slice(0, 8).join(', '))}</code>${preview.files.length > 8 ? ` and ${preview.files.length - 8} more` : ''}</div>` : ''}
                     </div>`;
             }
@@ -4868,8 +5251,8 @@ class LeakLockPanel {
                     <button class="scan-button" id="custom-rule-add">➕ Add rule</button>
                 </div>
                 ${rules.length === 0
-                    ? '<p style="font-size: 0.85em; color: var(--vscode-descriptionForeground);">No manual rules yet. Rules persist across re-scans, because they are not tied to a scan result.</p>'
-                    : `<table class="results-table">
+                ? '<p style="font-size: 0.85em; color: var(--vscode-descriptionForeground);">No manual rules yet. Rules persist across re-scans, because they are not tied to a scan result.</p>'
+                : `<table class="results-table">
                         <thead><tr><th>Source text</th><th style="width: 80px;">Match</th><th style="width: 20%;">Replace with</th><th style="width: 250px; white-space: nowrap;">Actions</th></tr></thead>
                         <tbody>${ruleRows}</tbody>
                        </table>
@@ -5106,23 +5489,23 @@ class LeakLockPanel {
      * them ends up saying "clean" while the other says nothing was scanned.
      */
     _renderEmptyScanState() {
-            // Zero findings means nothing at all if nothing ran. Reporting "no issues"
-            // when every engine failed is a false all-clear — the single worst output
-            // this product can produce, and the failure the coverage panel exists to
-            // prevent. Say what happened instead.
-            // Keyed on "a scan produced coverage" rather than "at least one engine was
-            // reported": an empty engine list — leakLock.scan.engines set to [], or to
-            // values that filter to nothing — examined the repository just as little as
-            // three failing engines did, and must not read differently.
-            const engines = this._scanCoverage?.engines || [];
-            const ranSuccessfully = engines.filter(engine => engine.ok);
-            // `ok` is false for an engine that ran but did not finish — a timeout sets
-            // it via `ok: !scanRun.incomplete`. That engine *did* examine part of the
-            // repository, so claiming "no detection engine ran" would be wrong, and
-            // would contradict the incomplete banner rendered just below. The
-            // incomplete state has its own accurate message; leave it to it.
-            if (this._scanCoverage && !this._scanCoverage.incomplete && ranSuccessfully.length === 0) {
-                return `
+        // Zero findings means nothing at all if nothing ran. Reporting "no issues"
+        // when every engine failed is a false all-clear — the single worst output
+        // this product can produce, and the failure the coverage panel exists to
+        // prevent. Say what happened instead.
+        // Keyed on "a scan produced coverage" rather than "at least one engine was
+        // reported": an empty engine list — leakLock.scan.engines set to [], or to
+        // values that filter to nothing — examined the repository just as little as
+        // three failing engines did, and must not read differently.
+        const engines = this._scanCoverage?.engines || [];
+        const ranSuccessfully = engines.filter(engine => engine.ok);
+        // `ok` is false for an engine that ran but did not finish — a timeout sets
+        // it via `ok: !scanRun.incomplete`. That engine *did* examine part of the
+        // repository, so claiming "no detection engine ran" would be wrong, and
+        // would contradict the incomplete banner rendered just below. The
+        // incomplete state has its own accurate message; leave it to it.
+        if (this._scanCoverage && !this._scanCoverage.incomplete && ranSuccessfully.length === 0) {
+            return `
                 <div class="scan-section">
                     <div class="empty-results scan-not-run">
                         <div class="empty-icon">🚫</div>
@@ -5132,14 +5515,14 @@ class LeakLockPanel {
                             your repository has not been checked at all.
                         </p>
                         ${engines.length > 0
-                            ? `<ul class="not-run-reasons">
+                    ? `<ul class="not-run-reasons">
                                 ${engines.map(engine => `
                                     <li><strong>${escapeHtml(engine.displayName)}</strong> — ${escapeHtml(engine.note || 'did not run')}</li>
                                 `).join('')}
                             </ul>`
-                            // An empty list here would render as an empty bullet list, which
-                            // reads as "no problems" — the opposite of what it means.
-                            : `<ul class="not-run-reasons">
+                    // An empty list here would render as an empty bullet list, which
+                    // reads as "no problems" — the opposite of what it means.
+                    : `<ul class="not-run-reasons">
                                 <li>No engines were enabled, so there was nothing to run.</li>
                             </ul>`}
                         <p class="hint">
@@ -5154,17 +5537,17 @@ class LeakLockPanel {
                 ${this._renderScanCoverage()}
                 ${this._renderCustomRules()}
             `;
-            }
+        }
 
-            return `
+        return `
                 <div class="scan-section">
                     <div class="empty-results">
                         <div class="empty-icon">🛡️</div>
                         <h2>No Security Issues Found!</h2>
                         <p>Great news! Your repository scan completed successfully with no secrets or credentials detected.</p>
                         ${engines.some(engine => !engine.ok)
-                            ? `<p class="partial-warning">⚠️ ${engines.filter(e => !e.ok).length} of ${engines.length} engines did not run, so this result is narrower than it looks. See the coverage below.</p>`
-                            : ''}
+                ? `<p class="partial-warning">⚠️ ${engines.filter(e => !e.ok).length} of ${engines.length} engines did not run, so this result is narrower than it looks. See the coverage below.</p>`
+                : ''}
 
 
                         <div class="scan-summary">
@@ -5572,6 +5955,11 @@ class LeakLockPanel {
                 : engine.capabilities;
 
             const outcome = await engine.scan(scanOptions);
+            // The engine's own bytes, before anything here touches them. Kept so a
+            // question like "did the scanner report this decoded, or did we change
+            // it?" is answered by looking at the output rather than by argument.
+            this._rawEngineOutput = this._rawEngineOutput || {};
+            this._rawEngineOutput[engine.id] = outcome.rawOutput || null;
             const results = (outcome.findings || []).map(finding =>
                 this._createResultFromEngineFinding(finding, engine.id, version, capabilities)
             );
@@ -5920,11 +6308,15 @@ class LeakLockPanel {
                             match.location?.line ||
                             match.line_number ||
                             1;
-                        const secretText = match.snippet?.matching ||
-                            match.snippet?.before ||
-                            match.content ||
-                            match.text ||
-                            'content_unavailable';
+                        // `snippet.matching` is the matched bytes, and some builds emit
+                        // the snippet as that string directly. `snippet.before` is the
+                        // text *around* the match, and the placeholder is not a value at
+                        // all - either one used as a rewrite rule would rewrite the wrong
+                        // text or nothing, so they are kept for display and marked
+                        // not-literal, which keeps them out of the rule list.
+                        const matchedText = matchedTextFromSnippet(match);
+                        const secretText = matchedText || match.snippet?.before || 'content_unavailable';
+                        const secretIsLiteral = Boolean(matchedText);
 
                         // Debug logging for path extraction
                         if (filePath === 'file_path_not_found') {
@@ -5956,7 +6348,8 @@ class LeakLockPanel {
                             secretText,
                             finding.rule_name || 'Secret detected',
                             finding.rule_name,
-                            match
+                            match,
+                            { extraFields: { valueIsLiteral: secretIsLiteral } }
                         );
                         results.push(result);
                     });
@@ -5978,7 +6371,7 @@ class LeakLockPanel {
                                 match.line_number ||
                                 match.location?.source_span?.start?.line ||
                                 1;
-                            const secretText = match.snippet ||
+                            const secretText = matchedTextFromSnippet(match) || match.snippet ||
                                 match.content ||
                                 match.text ||
                                 'content_unavailable';
@@ -6311,7 +6704,11 @@ class LeakLockPanel {
                     authorEmail: finding.authorEmail,
                     commitMessage: finding.commitMessage,
                     verified: finding.verified,
-                    verifiedAt: finding.verifiedAt
+                    verifiedAt: finding.verifiedAt,
+                    // Whether the reported value is the stored value. A decoded
+                    // value cannot be used as a rewrite rule as-is.
+                    valueIsLiteral: finding.valueIsLiteral !== false,
+                    decoder: finding.decoder || null
                 }
             }
         );
@@ -6410,14 +6807,22 @@ class LeakLockPanel {
             .join("\n");
         return {
             preambleLines: [
-                "# Keep sensitive replacement data outside the repository.",
+                "# The rule file lives in the repository's git directory, not $TMPDIR: a",
+                "# snap-packaged git-filter-repo is confined and cannot read a host temp",
+                "# path, and the git directory is never part of the working tree, so the",
+                "# values here cannot be staged or committed by accident.",
                 "umask 077",
-                'replacement_file="$(mktemp "${TMPDIR:-/tmp}/leak-lock-replacements.XXXXXX")"',
-                "trap " + gitRewrite.shellQuote('rm -f "$replacement_file"') + " EXIT",
+                'replacement_dir="$(git rev-parse --absolute-git-dir)/leak-lock"',
+                'mkdir -p "$replacement_dir"',
+                'chmod 700 "$replacement_dir"',
+                'replacement_file="$(mktemp "$replacement_dir/replacements.XXXXXX")"',
                 'chmod 600 "$replacement_file"',
                 `printf "%s" ${gitRewrite.shellQuote(replacementLines)} > "$replacement_file"`
             ],
-            exitCleanupCommand: 'rm -f "$replacement_file"'
+            // Deleted only once the rewrite, push and verification all succeeded -
+            // a failed run keeps it so the cleanup can be retried unchanged.
+            finalCleanupCommand: 'rm -f "$replacement_file"; rmdir "$replacement_dir" 2>/dev/null || true',
+            retainedPathExpr: '"$replacement_file"'
         };
     }
 
@@ -6428,34 +6833,57 @@ class LeakLockPanel {
         return { replacementsContent: replacementLines };
     }
 
-    async _withSecureReplacementsFile(replacements, callback) {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-"));
+    /**
+     * Materialise the `--replace-text` rule file, run the cleanup with it, and
+     * remove it only once that cleanup finished.
+     *
+     * The file is created inside the repository's git directory rather than in
+     * $TMPDIR. A snap-packaged git-filter-repo runs under strict confinement with
+     * a private /tmp, so it could not open the host path at all - the rewrite died
+     * with `FileNotFoundError: /tmp/leak-lock-XXXXXX/replacements.txt` before it
+     * touched a single commit.
+     *
+     * On failure the file is deliberately kept, and its path is attached to the
+     * error: it is the only materialised copy of what still has to be redacted,
+     * and deleting it would force the whole selection to be rebuilt by hand.
+     */
+    async _withSecureReplacementsFile(repoDir, replacements, callback) {
+        const replacementLines = this._toRuleList(replacements)
+            .map(rule => redactionRules.formatRuleLine(rule))
+            .join("\n");
+        const handle = gitRewrite.createRulesFile(repoDir, replacementLines);
+        let succeeded = false;
         try {
-            try {
-                fs.chmodSync(tempDir, 0o700);
-            } catch (permissionError) {
-                if (process.platform !== "win32") {
-                    throw permissionError;
-                }
+            const result = await callback(handle.file);
+            succeeded = true;
+            return result;
+        } catch (error) {
+            if (error && typeof error === "object") {
+                error.replacementsFile = handle.file;
             }
-            const replacementsFile = path.join(tempDir, "replacements.txt");
-            const replacementLines = this._toRuleList(replacements)
-                .map(rule => redactionRules.formatRuleLine(rule))
-                .join("\n");
-            fs.writeFileSync(replacementsFile, replacementLines, { mode: 0o600, flag: "wx" });
-            return await callback(replacementsFile);
+            throw error;
         } finally {
-            try {
-                fs.rmSync(tempDir, { recursive: true, force: true });
-            } catch (cleanupError) {
-                console.warn("Failed to remove secure replacement directory:", cleanupError);
+            if (succeeded) {
+                gitRewrite.removeRulesFile(handle);
+            } else {
+                this._scanCleanup.replacementsFile = handle.file;
             }
         }
     }
 
-    _buildScanBfgReplaceCommand(scanPath, replacements) {
+    /** Tell the user where the rule file survived, so a retry costs nothing. */
+    _retainedReplacementsNote(error) {
+        const file = (error && error.replacementsFile) || this._scanCleanup.replacementsFile;
+        if (!file) {
+            return '';
+        }
+        return ` The replacement rules were kept at ${file} so you can retry without rebuilding them; ` +
+            'they contain the values you asked to redact, so delete that file once you are done.';
+    }
+
+    _buildScanBfgReplaceCommand(scanPath, replacements, flavor = this._defaultScriptFlavor()) {
         const bfgPath = path.join(this._extensionUri.fsPath, "bfg.jar");
-        if (process.platform === 'win32') {
+        if (flavor === 'ps1') {
             const { replacementsContent } = this._buildReplacementScriptSetupPs1(replacements);
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir: scanPath,
@@ -6481,15 +6909,15 @@ class LeakLockPanel {
         });
     }
 
-    _buildScanGitReplaceCommand(scanPath, replacements, remoteUrl = null) {
-        if (process.platform === 'win32') {
+    _buildScanGitReplaceCommand(scanPath, replacements, remoteUrl = null, flavor = this._defaultScriptFlavor()) {
+        if (flavor === 'ps1') {
             const { replacementsContent } = this._buildReplacementScriptSetupPs1(replacements);
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir: scanPath,
                 remote: gitRewrite.DEFAULT_REMOTE,
                 requiredCommands: ['git', 'git-filter-repo'],
                 rewriteLines: [
-                    '& git filter-repo --replace-text $replacement_file --force'
+                    '& Invoke-GitFilterRepo --replace-text $replacement_file --replace-message $replacement_file --force'
                 ],
                 verifyRulesFile: '$replacement_file',
                 restoreRemote: true,
@@ -6503,7 +6931,9 @@ class LeakLockPanel {
             remote: gitRewrite.DEFAULT_REMOTE,
             requiredCommands: ['git', 'git-filter-repo'],
             rewriteLines: [
-                'git filter-repo --replace-text "$replacement_file" --force'
+                // --replace-message as well: a secret quoted in a commit message is
+                // not in any blob, so --replace-text alone leaves it in history.
+                'git_filter_repo --replace-text "$replacement_file" --replace-message "$replacement_file" --force'
             ],
             verifyRulesFile: '"$replacement_file"',
             restoreRemote: true,
@@ -6520,7 +6950,19 @@ class LeakLockPanel {
     _isCleanupEligible(result) {
         return !!result
             && !result.isDependency
-            && result.includeInCleanup !== false;
+            && result.includeInCleanup !== false
+            // A decoded value (TruffleHog names the transform in `decoder`) IS the
+            // secret - just written differently in the file - so it stays selectable
+            // and _expandRulesToStoredForms recovers the stored form. A value with no
+            // named transform is a different thing entirely: Nosey Parker's fallback
+            // is the text *around* the match, and rewriting that would replace the
+            // wrong text wherever it appears. Only the latter is excluded.
+            && !(result.valueIsLiteral === false && !result.decoder)
+            // Display truncation appends "..." to the shortened value. That string is
+            // for the table; a rule built from it would search history for text that
+            // ends in three literal dots and match nothing. Only reachable when the
+            // full value was never recorded.
+            && !(result.isSecretTruncated === true && !result.fullSecret);
     }
 
     /** Why a finding's checkbox is disabled - shown as its tooltip so the user
@@ -6534,6 +6976,14 @@ class LeakLockPanel {
         }
         if (result.includeInCleanup === false) {
             return 'Excluded from cleanup.';
+        }
+        if (result.isSecretTruncated === true && !result.fullSecret) {
+            return 'Only a shortened form of this value was recorded, and the shortened form is not in any commit. '
+                + 'Copy the value from the file and add it as a manual redaction rule.';
+        }
+        if (result.valueIsLiteral === false && !result.decoder) {
+            return 'The engine reported the text around this match rather than the match itself, so rewriting it '
+                + 'would replace the wrong text. Copy the value from the file and add it as a manual redaction rule.';
         }
         return 'Not cleanable.';
     }
@@ -6655,7 +7105,10 @@ class LeakLockPanel {
         if (!rule) {
             return null;
         }
-        const repoDir = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        // Preview against the repository the cleanup will actually rewrite, not the
+        // folder that was scanned - otherwise a rule reads as matching nothing here
+        // while matching plenty where it will run, or the reverse.
+        const repoDir = this._resolveCleanupRepo().repo;
         if (!repoDir) {
             vscode.window.showErrorMessage('No repository selected to preview against.');
             return null;
@@ -6753,6 +7206,37 @@ class LeakLockPanel {
      * click time — this beats the debounced state, so a value typed immediately
      * before clicking Prepare is never stale.
      */
+    /**
+     * Selected findings that will NOT be rewritten, and why.
+     *
+     * _resolveScanReplacements drops them silently, which is how a cleanup can
+     * report success while one selected value stays in history: the row looked
+     * chosen, the rewrite ran, and that value was never in the rule file. The
+     * reasons are knowable up front, so they are stated up front.
+     */
+    _droppedFromCleanup() {
+        const dropped = [];
+        for (const idx of this._ensureScanSelection()) {
+            const result = this._scanResults[idx];
+            if (!result) {
+                continue;
+            }
+            if (!this._isCleanupEligible(result)) {
+                dropped.push({ index: idx, file: result.file, reason: this._cleanupIneligibleReason(result) });
+                continue;
+            }
+            if (!(result.fullSecret || result.secret)) {
+                dropped.push({
+                    index: idx,
+                    file: result.file,
+                    reason: 'The scanner reported no value for this finding, so there is nothing to search for. '
+                        + 'Add a manual redaction rule with the exact text instead.'
+                });
+            }
+        }
+        return dropped;
+    }
+
     _resolveScanReplacements(replacements) {
         const resolved = {};
         const payloadByIdx = {};
@@ -6790,16 +7274,84 @@ class LeakLockPanel {
         return resolved;
     }
 
+    /**
+     * The repository a cleanup must run in.
+     *
+     * Not the scanned folder. A scan can cover a directory that merely contains a
+     * repository, or a repository with others nested inside it, and each finding
+     * already records the repository that owns it - that is why its commit link
+     * resolves. Rewriting the scanned path instead runs `git filter-repo` against a
+     * repository where the value does not exist: it succeeds, changes nothing, and
+     * every check afterwards agrees the value is still in "the" history, because it
+     * is - in the other repository.
+     *
+     * @returns {{repo: string|null, repos: string[], reason: string|null}}
+     */
+    _resolveCleanupRepo() {
+        const scanned = this._scanPath || this._selectedDirectory
+            || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+
+        // An explicit choice wins: it is either the repository the user picked, or
+        // the one Leak Lock located the value in and the user accepted.
+        if (this._scanCleanup.repoOverride) {
+            return { repo: this._scanCleanup.repoOverride, repos: [this._scanCleanup.repoOverride], reason: null };
+        }
+
+        const roots = new Set();
+        for (const idx of this._ensureScanSelection()) {
+            const finding = this._scanResults[idx];
+            if (finding && this._isCleanupEligible(finding) && finding.repoRoot) {
+                roots.add(finding.repoRoot);
+            }
+        }
+
+        if (roots.size === 1) {
+            return { repo: [...roots][0], repos: [...roots], reason: null };
+        }
+        if (roots.size > 1) {
+            // One rewrite cannot span two repositories, and picking one silently
+            // would clean one and leave the other reporting the same secret.
+            return {
+                repo: null,
+                repos: [...roots],
+                reason: 'The selected findings belong to more than one repository, and a rewrite applies to one '
+                    + 'repository at a time. Select the findings from a single repository and run the cleanup once '
+                    + `per repository. Repositories involved: ${[...roots].join(', ')}`
+            };
+        }
+        // Manual rules with nothing selected, or findings with no recorded root:
+        // the repository containing the scanned path, falling back to the path.
+        return { repo: this._scanRepoRoot || scanned, repos: [], reason: null };
+    }
+
     async _prepareScanReplacementCommand(mode, replacements) {
         // Manual rules count toward the cleanup: a user with three rules and no
         // selected findings is the exact case the feature exists for, and used to be
         // refused here.
-        const resolvedReplacements = this._resolveCleanupRules(replacements);
+        let resolvedReplacements = this._resolveCleanupRules(replacements);
+        // Say what will NOT be rewritten before anything irreversible is prepared.
+        // These findings are dropped from the rule list by design; silently doing so
+        // is what let a cleanup report success with a selected value still in history.
+        const dropped = this._droppedFromCleanup();
+        if (dropped.length > 0) {
+            const listed = dropped.slice(0, 3)
+                .map(d => `${d.file || 'finding ' + d.index}: ${d.reason}`)
+                .join(' ');
+            vscode.window.showWarningMessage(
+                `${dropped.length} selected finding(s) will NOT be included in this cleanup. ${listed}`
+                + (dropped.length > 3 ? ` (+${dropped.length - 3} more)` : '')
+            );
+        }
         if (!resolvedReplacements || resolvedReplacements.length === 0) {
             vscode.window.showWarningMessage('Nothing selected for removal. Select a finding or add a manual redaction rule.');
             return;
         }
-        const scanPath = this._scanPath || this._selectedDirectory || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const target = this._resolveCleanupRepo();
+        if (target.reason) {
+            vscode.window.showErrorMessage(`Nothing was prepared. ${target.reason}`);
+            return;
+        }
+        const scanPath = target.repo;
         if (!scanPath) {
             vscode.window.showErrorMessage('No directory selected or workspace available.');
             return;
@@ -6819,6 +7371,7 @@ class LeakLockPanel {
                 this._scanCleanup.blockedBranches = preflight.ahead;
                 this._scanCleanup.blockedReason = preflight.reason;
                 this._scanCleanup.preparedCommand = null;
+                this._scanCleanup.preparedScripts = null;
                 this._scanCleanup.preparedMode = null;
                 this._scanCleanup.remoteError = preflight.remoteError || null;
                 if (preflight.remoteError) {
@@ -6839,10 +7392,107 @@ class LeakLockPanel {
             this._scanCleanup.blockedBranches = preflight.ahead.length ? preflight.ahead : null;
             this._scanCleanup.blockedReason = preflight.ahead.length ? 'unpushed-commits' : null;
 
-            const command = mode === "git"
-                ? this._buildScanGitReplaceCommand(scanPath, resolvedReplacements, preflight.remoteUrl)
-                : this._buildScanBfgReplaceCommand(scanPath, resolvedReplacements);
-            this._scanCleanup.preparedCommand = command;
+            // A rule that matches nothing rewrites nothing, and both tools call that
+            // success. Say so now: discovered after the rewrite it reads as "the
+            // cleanup did not work", which is the report that prompted this check.
+            // Target what the repository stores, not what the scanner displayed. Runs
+            // before the unmatched check so an encoded value is rewritten rather than
+            // reported as "matches nothing".
+            const expansion = await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Preparing cleanup: checking each rule against history...',
+                cancellable: false
+            }, async () => this._expandRulesToStoredForms(scanPath, resolvedReplacements));
+            resolvedReplacements = expansion.rules;
+            if (expansion.substitutions.length > 0) {
+                console.warn('[leak-lock] rules retargeted to their stored form:',
+                    expansion.substitutions.map(entry => ({
+                        from: this._describeRules([entry.from]),
+                        to: this._describeRules(entry.to)
+                    })));
+                vscode.window.showInformationMessage(
+                    `${expansion.substitutions.length} value(s) are stored encoded in this repository `
+                    + '(percent-encoded, escaped or base64). The cleanup targets the stored form, '
+                    + 'not the decoded value the scan displayed.'
+                );
+            }
+
+            const unmatched = await this._rulesMatchingNothing(scanPath, resolvedReplacements);
+            this._scanCleanup.unmatchedRules = unmatched;
+            if (unmatched.length === resolvedReplacements.length) {
+                // Look before blaming the text: when a scan spans several
+                // repositories - backup clones, vendored copies, a workspace of
+                // projects - the far likelier explanation is that the value is real
+                // and this is the wrong repository. Find where it is and offer it.
+                const elsewhere = await this._findRepoContainingRules(resolvedReplacements, scanPath);
+                this._scanCleanup.preparing = false;
+
+                // Before offering another repository or blaming the text, ask the
+                // findings themselves: a value that is not in the blob it was
+                // reported from was transformed by the scanner, and no repository
+                // and no amount of retyping will make that rule match.
+                const unusable = [];
+                for (const idx of this._ensureScanSelection()) {
+                    const finding = this._scanResults[idx];
+                    if (!finding || !this._isCleanupEligible(finding)) {
+                        continue;
+                    }
+                    const verdict = await this._findingValueIsInItsBlob(scanPath, finding);
+                    if (verdict.checked && !verdict.present) {
+                        unusable.push({ finding, reason: verdict.reason });
+                    }
+                }
+                if (unusable.length > 0 && !elsewhere) {
+                    const action = await vscode.window.showErrorMessage(
+                        `Nothing prepared: ${unusable.length} finding(s) report a value that is not stored that way `
+                        + 'in the file they came from.',
+                        'Show details'
+                    );
+                    if (action === 'Show details') {
+                        this._showUnusableFindingDiagnostics(scanPath, unusable);
+                    }
+                    return;
+                }
+                if (elsewhere) {
+                    const action = await vscode.window.showWarningMessage(
+                        `Not found here. This value is in ${path.basename(elsewhere)}, not ${path.basename(scanPath)}.`,
+                        'Prepare there',
+                        'Show details'
+                    );
+                    if (action === 'Prepare there') {
+                        this._scanCleanup.repoOverride = elsewhere;
+                        return this._prepareScanReplacementCommand(mode, replacements);
+                    }
+                    if (action === 'Show details') {
+                        this._showCleanupDiagnostics(scanPath, resolvedReplacements, elsewhere);
+                    }
+                    return;
+                }
+                const action = await vscode.window.showErrorMessage(
+                    `Nothing prepared: no rule matches anything in ${path.basename(scanPath)}.`,
+                    'Show details'
+                );
+                if (action === 'Show details') {
+                    this._showCleanupDiagnostics(scanPath, resolvedReplacements, null);
+                }
+                return;
+            }
+            if (unmatched.length > 0) {
+                vscode.window.showWarningMessage(
+                    `${unmatched.length} of ${resolvedReplacements.length} rules match nothing here and will rewrite `
+                    + 'nothing; the rest are still prepared.'
+                );
+            }
+
+            // Both flavours, every time: the machine that prepares a cleanup is not
+            // necessarily the shell that runs it (WSL and Git Bash on Windows, and a
+            // script saved for a colleague on another OS).
+            const scripts = this._buildBothFlavors((flavor) => mode === "git"
+                ? this._buildScanGitReplaceCommand(scanPath, resolvedReplacements, preflight.remoteUrl, flavor)
+                : this._buildScanBfgReplaceCommand(scanPath, resolvedReplacements, flavor));
+            this._scanCleanup.preparedScripts = scripts;
+            this._scanCleanup.preparedFlavor = this._defaultScriptFlavor();
+            this._scanCleanup.preparedCommand = scripts[this._scanCleanup.preparedFlavor];
             this._scanCleanup.preparedMode = mode;
             this._scanCleanup.replacements = resolvedReplacements;
             this._scanCleanup.replacementsFile = null;
@@ -6974,10 +7624,425 @@ class LeakLockPanel {
             await this._executeBFGCleanup(replacements);
         }
         this._scanCleanup.preparedCommand = null;
+        this._scanCleanup.preparedScripts = null;
         this._scanCleanup.preparedMode = null;
         this._scanCleanup.replacements = null;
-        this._scanCleanup.replacementsFile = null;
+        // `replacementsFile` is NOT cleared here: a failed cleanup leaves the rule
+        // file on disk, and this is the pointer to it. Preparing a new cleanup
+        // replaces it (_prepareScanCleanup), which is when it stops being current.
         this._updateWebviewContent();
+    }
+
+    /** Long form for findings whose reported value is not the stored value. */
+    _showUnusableFindingDiagnostics(repoDir, unusable) {
+        if (!this._diagnosticsChannel) {
+            this._diagnosticsChannel = vscode.window.createOutputChannel('Leak Lock');
+        }
+        const channel = this._diagnosticsChannel;
+        channel.appendLine('── Cleanup could not be prepared ──────────────────────────────');
+        channel.appendLine(`Repository : ${repoDir}`);
+        channel.appendLine('');
+        channel.appendLine('These findings cannot be turned into a rewrite rule, because the value they');
+        channel.appendLine('report is not the value stored in the file:');
+        for (const entry of unusable) {
+            channel.appendLine(`  • ${entry.finding.file} @ ${String(entry.finding.commitHash || '').slice(0, 8)}`);
+            channel.appendLine(`    ${entry.reason}`);
+        }
+        channel.appendLine('');
+        channel.appendLine('What works instead: open the file at that commit, copy the text exactly as it');
+        channel.appendLine('is stored, and add it as a manual redaction rule.');
+        channel.appendLine('');
+        channel.appendLine('  git show <commit>:<path> | sed -n \'<line>p\' | cat -A');
+        channel.appendLine('');
+        channel.appendLine('cat -A reveals what a rendered value hides: ^M for a carriage return, escaped');
+        channel.appendLine('quotes in JSON or YAML, and where the value really begins and ends.');
+        channel.appendLine('');
+        channel.show(true);
+    }
+
+    /**
+     * The long form of a failed preparation, on demand and out of the way.
+     *
+     * A notification is one line by design; the reasoning belongs in an output
+     * channel the user opens when they want it, where it can be read, scrolled and
+     * copied without a modal in the way. Rule text never appears here either.
+     */
+    _showCleanupDiagnostics(repoDir, rules, elsewhere) {
+        if (!this._diagnosticsChannel) {
+            this._diagnosticsChannel = vscode.window.createOutputChannel('Leak Lock');
+        }
+        const channel = this._diagnosticsChannel;
+        channel.appendLine('── Cleanup could not be prepared ──────────────────────────────');
+        channel.appendLine(`Repository searched : ${repoDir}`);
+        channel.appendLine(`Rules               : ${this._describeRules(rules)}`);
+        if (elsewhere) {
+            channel.appendLine(`Value located in    : ${elsewhere}`);
+            channel.appendLine('');
+            channel.appendLine('The rule text is right; the repository was not. Choose "Prepare there",');
+            channel.appendLine('or scan that repository directly.');
+        } else {
+            channel.appendLine('Value located in    : no scanned repository');
+            channel.appendLine('');
+            channel.appendLine('Nothing in this scan contains that text, so the rule cannot match the bytes');
+            channel.appendLine('in any commit. The usual causes, in order:');
+            channel.appendLine('  • the value was shortened for display and copied from there');
+            channel.appendLine('  • quotes around the value were copied with it');
+            channel.appendLine('  • a trailing carriage return in the file (CRLF)');
+            channel.appendLine('  • the rule is in regex mode and the text contains regex characters');
+            channel.appendLine('');
+            channel.appendLine('Compare the character count above with the value in the file:');
+            channel.appendLine('  git show <commit>:<path> | cat -A');
+        }
+        channel.appendLine('');
+        channel.show(true);
+    }
+
+    /**
+     * Write the last scan's untouched engine output to a file.
+     *
+     * When a value on screen disagrees with the value in the repository, the only
+     * way to settle where it changed is the engine's own bytes. This writes them
+     * verbatim - no escaping, no truncation, no re-encoding - so the comparison can
+     * be made locally, without anything being pasted anywhere.
+     */
+    async _saveRawEngineOutput() {
+        const captured = Object.entries(this._rawEngineOutput || {}).filter(([, output]) => output);
+        if (captured.length === 0) {
+            vscode.window.showWarningMessage(
+                'No engine output was captured. Run a scan first; Nosey Parker findings are not covered.'
+            );
+            return;
+        }
+        try {
+            const target = await vscode.window.showSaveDialog({
+                filters: { 'Engine output': ['txt', 'json', 'jsonl'] },
+                saveLabel: 'Save raw engine output'
+            });
+            if (!target) {
+                return;
+            }
+            const body = captured
+                .map(([engineId, output]) => `===== ${engineId} (verbatim) =====\n${output}\n`)
+                .join('\n');
+            fs.writeFileSync(target.fsPath, body, { mode: 0o600 });
+            vscode.window.showInformationMessage(
+                `Raw output from ${captured.map(([id]) => id).join(', ')} saved to ${target.fsPath}. `
+                + 'It contains the secrets exactly as each engine reported them — delete it when done.'
+            );
+        } catch (error) {
+            vscode.window.showErrorMessage(`Could not save engine output: ${error.message}`);
+        }
+    }
+
+    /**
+     * Rewrite rules so they target the value as STORED, not as reported.
+     *
+     * A scanner reports the value it understood. TruffleHog decodes before
+     * detecting - percent, base64, UTF-16 - so a token written `…%3d%3d` in the
+     * file is reported as `…==`, and a rule built from that matches no blob. Both
+     * rewrite tools exit 0 on a rule that matches nothing, so the secret survives a
+     * cleanup that reports success, and the next scan finds it again because the
+     * scanner decodes again. Multiply that by every finding whose value travels
+     * through a URL, a query string or a JSON document and a cleanup can look
+     * complete while leaving most of its targets in place.
+     *
+     * So: any rule that matches nothing is retried in the forms the same value may
+     * be stored as, and every form that is actually present becomes a rule. All of
+     * them, not the first - a repository can hold the encoded form in a `.env` and
+     * the decoded form in a document, and removing one is not a cleanup.
+     */
+    async _expandRulesToStoredForms(repoDir, rules) {
+        const list = this._toRuleList(rules);
+        if (!repoDir || list.length === 0) {
+            return { rules: list, substitutions: [] };
+        }
+
+        const expanded = [];
+        const substitutions = [];
+        const literalRules = list.filter(rule => rule.mode !== 'regex');
+
+        // One command answers "which of these strings exist" for every rule and every
+        // encoding, by searching each ref's tree once. The pickaxe walks the whole
+        // history per string, so doing this first turns the common case from hundreds
+        // of full walks into a single search.
+        const everyForm = [];
+        for (const rule of literalRules) {
+            everyForm.push(...valueEncodings.candidateForms(rule.source));
+        }
+        let presentInRefs = new Set();
+        if (everyForm.length > 0) {
+            try {
+                presentInRefs = await gitRewrite.findStringsInRefs(repoDir, everyForm);
+            } catch (error) {
+                console.warn('Could not search refs for stored forms:', error);
+            }
+        }
+
+        // Whatever the fast path did not find may exist only in an older commit or in
+        // a commit message. One streaming pass over the object store answers that for
+        // every remaining form at once - a single read of the repository, rather than
+        // one full history walk per value, which is what made this take minutes.
+        const unresolved = [];
+        for (const rule of literalRules) {
+            for (const form of valueEncodings.candidateForms(rule.source)) {
+                if (!presentInRefs.has(form)) {
+                    unresolved.push(form);
+                }
+            }
+        }
+        let presentInHistory = new Set();
+        let searchComplete = true;
+        if (unresolved.length > 0) {
+            try {
+                const result = await gitRewrite.findStringsInObjects(repoDir, unresolved, { timeoutMs: 120000 });
+                presentInHistory = result.found;
+                searchComplete = result.complete;
+            } catch (error) {
+                console.warn('Could not search history for stored forms:', error);
+                searchComplete = false;
+            }
+        }
+        const isPresent = (form) => presentInRefs.has(form) || presentInHistory.has(form);
+
+        for (const rule of list) {
+            // A pattern is not a value: encoding variants of a regex are meaningless.
+            if (rule.mode === 'regex') {
+                expanded.push(rule);
+                continue;
+            }
+            const stored = valueEncodings.candidateForms(rule.source)
+                .filter(isPresent)
+                .map(form => ({ ...rule, source: form }));
+
+            if (stored.length === 0) {
+                // In no form. Kept as written so it is reported as unmatched rather
+                // than silently replaced by a variant that matches nothing either.
+                expanded.push(rule);
+                continue;
+            }
+            expanded.push(...stored);
+            if (stored.length > 1 || stored[0].source !== rule.source) {
+                substitutions.push({ from: rule, to: stored });
+            }
+        }
+
+        if (!searchComplete) {
+            console.warn('[leak-lock] the history search did not finish within its budget;',
+                'rules it did not reach are treated as unmatched and reported as such');
+        }
+        return { rules: expanded, substitutions, searchComplete };
+    }
+
+    /**
+     * Does the value a finding reports actually appear in the blob it came from?
+     *
+     * A scanner reports what it matched, which is not always what is stored: a value
+     * can be truncated for display, normalised, decoded (a JWT payload, a base64
+     * blob) or escaped in the file it lives in (JSON, YAML quoting). A rule built
+     * from that reported value then matches nothing, `git filter-repo` exits 0, and
+     * the finding survives every cleanup while the scan keeps reporting it.
+     *
+     * Reading the blob the finding names answers it directly, and the answer is the
+     * difference between "your text is wrong" and "this finding's value cannot be
+     * used as a rule".
+     *
+     * @returns {Promise<{checked: boolean, present: boolean, reason: string|null}>}
+     */
+    async _findingValueIsInItsBlob(repoDir, finding) {
+        const value = finding && (finding.fullSecret || finding.secret);
+        if (!repoDir || !value || !finding.commitHash || !finding.file) {
+            return { checked: false, present: false, reason: 'not a history finding with a value' };
+        }
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoDir);
+        for (const candidate of candidates.length > 0 ? candidates : [finding.file]) {
+            try {
+                const { stdout } = await execFileAsync(
+                    'git',
+                    ['-C', repoDir, '--no-replace-objects', 'show', `${finding.commitHash}:${candidate}`],
+                    { maxBuffer: GIT_MAX_BUFFER, timeout: 30000, env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' } }
+                );
+                if (stdout.includes(value)) {
+                    return { checked: true, present: true, reason: null };
+                }
+                return {
+                    checked: true,
+                    present: false,
+                    reason: `the value this finding reports does not appear literally in ${candidate} at `
+                        + `${String(finding.commitHash).slice(0, 8)} — the scanner reported a value that is `
+                        + 'truncated, normalised, decoded or escaped in the file, so it cannot be used as a '
+                        + 'rewrite rule as-is'
+                };
+            } catch {
+                // Path reading differs between engines; try the next candidate.
+                continue;
+            }
+        }
+        return { checked: false, present: false, reason: 'the file could not be read at that commit' };
+    }
+
+    /**
+     * Every repository this scan touched, most likely first.
+     *
+     * A workspace scan can span a dozen repositories, and backup or vendored
+     * clones make several of them plausible homes for the same value.
+     */
+    _candidateRepos() {
+        const candidates = [];
+        for (const finding of this._scanResults || []) {
+            if (finding && finding.repoRoot && !candidates.includes(finding.repoRoot)) {
+                candidates.push(finding.repoRoot);
+            }
+        }
+        for (const extra of [this._scanRepoRoot, this._scanPath, this._selectedDirectory]) {
+            if (extra && !candidates.includes(extra)) {
+                candidates.push(extra);
+            }
+        }
+        return candidates;
+    }
+
+    /**
+     * The repository a rule actually matches in, when the chosen one does not.
+     *
+     * The alternative is telling the user their text must be wrong, which is only
+     * one of the two possibilities and the less likely one when a scan covered
+     * several repositories: the value is usually right and the repository is not.
+     */
+    async _findRepoContainingRules(rules, exclude) {
+        const list = this._toRuleList(rules);
+        for (const candidate of this._candidateRepos()) {
+            if (candidate === exclude) {
+                continue;
+            }
+            // A positive hit, asked directly: "fewer unmatched than rules" also holds
+            // when the check could not run at all, which would offer a directory that
+            // is not even a repository.
+            let present = [];
+            try {
+                present = await gitRewrite.findUnremovedRules(candidate, list, { timeoutMs: 30000 });
+            } catch {
+                continue;
+            }
+            if (present.some(entry => !/could not be checked/.test(entry.commit || ''))) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Rules as a summary that identifies them without revealing them.
+     *
+     * A notification gets screenshotted, pasted into tickets and captured by log
+     * collectors, so it must never carry the secret - not even a few characters of
+     * it, which for a short token is most of it. The fingerprint is a digest, so
+     * two rules can be told apart and matched against the rules table; the length
+     * and mode are what actually diagnose the two silent no-ops (a value the
+     * scanner shortened, and quotes copied along with the text).
+     */
+    _describeRules(rules) {
+        const crypto = require('crypto');
+        return this._toRuleList(rules).map(rule => {
+            const source = String(rule.source || '');
+            const fingerprint = crypto.createHash('sha256').update(source).digest('hex').slice(0, 8);
+            return `rule ${fingerprint} (${rule.mode}, ${source.length} chars)`;
+        }).join(', ');
+    }
+
+    /**
+     * Which rules would rewrite nothing, asked before the rewrite rather than after.
+     *
+     * `--replace-text` is a literal substring match and both rewrite tools exit 0
+     * when a rule matches no blob, so a rule built from a truncated value, from a
+     * line with a trailing carriage return, or from text that includes its
+     * surrounding quotes is indistinguishable from a rule that worked - until the
+     * secret is still there afterwards. This is the last moment before an
+     * irreversible operation, and the cheapest place to answer it.
+     */
+    /** Values already read out of the blob they were found in - no search needed. */
+    _valuesVerifiedAtScanTime() {
+        const verified = new Set();
+        for (const result of this._scanResults || []) {
+            if (result && result.valueVerifiedInBlob) {
+                const value = result.fullSecret || result.secret;
+                if (value) {
+                    verified.add(value);
+                }
+            }
+        }
+        return verified;
+    }
+
+    async _rulesMatchingNothing(repoDir, rules) {
+        const verified = this._valuesVerifiedAtScanTime();
+        const list = this._toRuleList(rules)
+            .filter(rule => rule && rule.source)
+            // Proven present by reading the blob during the scan. Searching history
+            // for it again is a full walk to re-learn a fact already established.
+            .filter(rule => !verified.has(rule.source));
+        if (!repoDir || list.length === 0) {
+            return [];
+        }
+        let present;
+        try {
+            present = await gitRewrite.findUnremovedRules(repoDir, list, { timeoutMs: 30000 });
+        } catch (error) {
+            // Unknown, not clean and not matched. Returning "nothing unmatched" would
+            // let a directory that is not a repository read as though every rule
+            // matched there, which is worse than not checking at all.
+            console.warn('Could not pre-check the rewrite rules:', error);
+            return [];
+        }
+        if (!Array.isArray(present)) {
+            return [];
+        }
+        // Three states, not two. findUnremovedRules reports a search it could not run
+        // as an entry whose commit reads "could not be checked", and counting those as
+        // matches let a timeout or an unreadable repository look like "everything
+        // matched" - suppressing the very warning this exists to raise. A rule is only
+        // reported as matching nothing when the search ran and found nothing; one that
+        // could not be checked is neither, and is named in the log rather than guessed
+        // at in either direction.
+        const couldNotCheck = (entry) => /could not be checked/.test(entry.commit || '');
+        const found = new Set(present.filter(entry => !couldNotCheck(entry)).map(entry => entry.source));
+        const unchecked = new Set(present.filter(couldNotCheck).map(entry => entry.source));
+        if (unchecked.size > 0) {
+            console.warn('[leak-lock] could not check', unchecked.size, 'rule(s) against',
+                repoDir, '- they are treated as neither matched nor unmatched');
+        }
+        return list.filter(rule => !found.has(rule.source) && !unchecked.has(rule.source));
+    }
+
+    /**
+     * After a rewrite that reported success, check that each rule actually took
+     * effect. filter-repo and BFG both exit 0 when a rule matches nothing, so
+     * without this a value can stay in history behind a green result - which is
+     * exactly how one selected secret survived a cleanup that removed the rest.
+     */
+    async _reportRulesThatDidNotApply(repoDir, replacements, label) {
+        let remaining = [];
+        try {
+            remaining = await gitRewrite.findUnremovedRules(repoDir, this._toRuleList(replacements));
+        } catch (error) {
+            console.warn('Could not check which rules applied:', error);
+            return false;
+        }
+        if (remaining.length === 0) {
+            return false;
+        }
+        this._scanCleanup.unappliedRules = remaining;
+        const named = remaining.slice(0, 3)
+            .map(r => `${this._describeRules([r])} — still in ${r.commit}`)
+            .join(', ');
+        vscode.window.showErrorMessage(
+            `${label} rewrote your history, but ${remaining.length} rule(s) matched nothing and their values are `
+            + `STILL in local history: ${named}${remaining.length > 3 ? ', …' : ''}. `
+            + 'The rule text must match the bytes in the commit exactly - check for a truncated value, a trailing '
+            + 'carriage return, or surrounding quotes, then add a manual redaction rule with the exact text and run again.'
+        );
+        return true;
     }
 
     async _executeGitCleanup(replacements) {
@@ -7013,25 +8078,28 @@ class LeakLockPanel {
                 cancellable: false
             }, async (progress) => {
                 progress.report({ increment: 10, message: "Preparing secure temporary replacement file..." });
-                const util = require("util");
-                const execFileAsync = util.promisify(execFile);
-
-                report = await this._withSecureReplacementsFile(replacements, async (replacementsFile) =>
+                report = await this._withSecureReplacementsFile(scanPath, replacements, async (replacementsFile) =>
                     gitRewrite.runRewrite({
                         repoDir: scanPath,
                         push: false,
                         progress: (message) => progress.report({ increment: 10, message }),
                         rewrite: async () => {
-                            await execFileAsync(
-                                "git",
-                                ["filter-repo", "--replace-text", replacementsFile, "--force"],
-                                { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
+                            // Both flags, one rule file: --replace-text rewrites blob
+                            // contents, --replace-message rewrites commit messages. A
+                            // secret quoted in a commit message is found by the scan
+                            // and is untouched by --replace-text alone.
+                            await gitRewrite.runGitFilterRepo(
+                                scanPath,
+                                ["--replace-text", replacementsFile,
+                                    "--replace-message", replacementsFile, "--force"],
+                                { maxBuffer: GIT_MAX_BUFFER }
                             );
                         }
                     })
                 );
             });
 
+            await this._reportRulesThatDidNotApply(scanPath, replacements, 'Git-only cleanup');
             this._stagePushForConfirmation(
                 'Git-only cleanup', scanPath, report,
                 redactionRules.partitionForVerification(this._toRuleList(replacements))
@@ -7043,7 +8111,8 @@ class LeakLockPanel {
             }
             vscode.window.showErrorMessage(
                 'Git-only cleanup did not complete. Your remote was not touched — this step only rewrites ' +
-                `local history, and the force-push is a separate confirmation. Reason: ${error.message}`
+                `local history, and the force-push is a separate confirmation. Reason: ${error.message}` +
+                this._retainedReplacementsNote(error)
             );
         }
     }
@@ -7191,10 +8260,10 @@ class LeakLockPanel {
                 '<strong>Restore the restriction</strong> once the push succeeds.'
             ]
         }[blocked.provider] || [
-            `Ask whoever administers this remote to allow a force-push to ${refList}, or to lift the protection temporarily.`,
-            'Come back here and press <strong>Confirm force-push</strong> again — the rewrite is already done, only the push is left.',
-            '<strong>Restore the protection</strong> once the push succeeds.'
-        ];
+                `Ask whoever administers this remote to allow a force-push to ${refList}, or to lift the protection temporarily.`,
+                'Come back here and press <strong>Confirm force-push</strong> again — the rewrite is already done, only the push is left.',
+                '<strong>Restore the protection</strong> once the push succeeds.'
+            ];
 
         return `
             <div class="rewrite-blocked">
@@ -7289,17 +8358,25 @@ class LeakLockPanel {
                 return;
             }
 
-            // Create a temporary replacements file for BFG
-            const replacementsFile = path.join(workspaceFolder.uri.fsPath, 'secrets-replacements.txt');
+            // The rule file the printed command reads. It goes into the git directory,
+            // not the working tree: it holds the raw secrets, and a file named
+            // `secrets-replacements.txt` sitting next to the source was one `git add .`
+            // away from being committed. It is NOT deleted here - the user runs the
+            // command afterwards, and deleting the file first made that command fail.
             const replacementLines = Object.entries(replacements).map(([secret, replacement]) =>
                 `${secret}==>${replacement}`
             ).join('\n');
+            const rulesHandle = gitRewrite.createRulesFile(workspaceFolder.uri.fsPath, replacementLines);
+            const replacementsFile = rulesHandle.file;
 
-            fs.writeFileSync(replacementsFile, replacementLines);
-
-            // Generate BFG command
-            const bfgCommand = `java -jar bfg.jar --replace-text ${replacementsFile}`;
-            const manualCommand = `cd ${workspaceFolder.uri.fsPath} && ${bfgCommand} && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
+            // Every path is quoted: the rule file now lives under `.git/leak-lock/`,
+            // and a repository checked out to a path with a space (a Windows user
+            // profile, "My Documents") otherwise produces a command that splits into
+            // arguments and fails the moment it is pasted.
+            const quotedRepo = gitRewrite.shellQuote(workspaceFolder.uri.fsPath);
+            const quotedRules = gitRewrite.shellQuote(replacementsFile);
+            const bfgCommand = `java -jar bfg.jar --replace-text ${quotedRules}`;
+            const manualCommand = `cd ${quotedRepo} && ${bfgCommand} && git reflog expire --expire=now --all && git gc --prune=now --aggressive`;
 
             // Show the manual command to the user
             const action = await vscode.window.showInformationMessage(
@@ -7310,22 +8387,32 @@ class LeakLockPanel {
             );
 
             if (action === 'Show Manual Command') {
-                vscode.window.showInformationMessage('Manual fix command generated.');
-
-                // Create a document with the command
-                const document = await vscode.workspace.openTextDocument({
-                    content: `# Leak Lock - Manual Secret Fix Command\n\n${manualCommand}\n\n# Warning: This will rewrite git history!\n# Make sure to backup your repository first.\n# After running, you may need to force push with: git push --force-with-lease`,
-                    language: 'bash'
-                });
-
-                vscode.window.showTextDocument(document);
-            }
-
-            // Clean up the temporary file
-            try {
-                fs.unlinkSync(replacementsFile);
-            } catch (cleanupError) {
-                console.warn('Failed to clean up temporary file:', cleanupError);
+                // The rule file is only worth keeping if the user actually receives
+                // the command and the path. If the document cannot be opened they get
+                // neither, so a file of raw secrets must not be left behind for it.
+                try {
+                    const document = await vscode.workspace.openTextDocument({
+                        content: `# Leak Lock - Manual Secret Fix Command\n\n${manualCommand}\n\n`
+                            + `# Warning: This will rewrite git history!\n`
+                            + `# Make sure to backup your repository first.\n`
+                            + `# After running, you may need to force push with: git push --force-with-lease\n#\n`
+                            + `# The replacement rules are kept at:\n#   ${replacementsFile}\n`
+                            + `# They contain the values you asked to redact. Delete that file once the\n`
+                            + `# rewrite is done:\n#   rm -f ${quotedRules}\n`,
+                        language: 'bash'
+                    });
+                    await vscode.window.showTextDocument(document);
+                    vscode.window.showInformationMessage('Manual fix command generated.');
+                } catch (displayError) {
+                    gitRewrite.removeRulesFile(rulesHandle);
+                    vscode.window.showErrorMessage(
+                        'Could not open the manual fix command, so nothing was left behind: the replacement '
+                        + `rules were deleted rather than kept on disk with your secrets in them. Reason: ${displayError.message}`
+                    );
+                }
+            } else {
+                // Nothing was shown, so nothing can run the command - drop the rules.
+                gitRewrite.removeRulesFile(rulesHandle);
             }
 
         } catch (error) {
@@ -7375,7 +8462,7 @@ class LeakLockPanel {
                 const util = require("util");
                 const execFileAsync = util.promisify(execFile);
 
-                report = await this._withSecureReplacementsFile(replacements, async (replacementsFile) =>
+                report = await this._withSecureReplacementsFile(scanPath, replacements, async (replacementsFile) =>
                     gitRewrite.runRewrite({
                         repoDir: scanPath,
                         push: false,
@@ -7392,6 +8479,7 @@ class LeakLockPanel {
                 );
             });
 
+            await this._reportRulesThatDidNotApply(scanPath, replacements, 'BFG cleanup');
             this._stagePushForConfirmation(
                 'BFG cleanup', scanPath, report,
                 redactionRules.partitionForVerification(this._toRuleList(replacements))
@@ -7405,7 +8493,8 @@ class LeakLockPanel {
             }
             vscode.window.showErrorMessage(
                 'BFG cleanup did not complete. Your remote was not touched — this step only rewrites ' +
-                `local history, and the force-push is a separate confirmation. Reason: ${error.message}`
+                `local history, and the force-push is a separate confirmation. Reason: ${error.message}` +
+                this._retainedReplacementsNote(error)
             );
         }
     }
@@ -7458,6 +8547,12 @@ class LeakLockPanel {
                 line: result.line,
                 secret: redactSensitive ? '[REDACTED_SECRET]' : (result.fullSecret || result.secret),
                 secretDisplay: redactSensitive ? '[REDACTED_SECRET]' : result.secret,
+                // Provenance for the value itself: whether it is the bytes the file
+                // holds, and which transform the engine applied if not. A value that
+                // reads oddly in this export is then traceable to its engine rather
+                // than assumed to be Leak Lock's doing.
+                valueIsLiteral: result.valueIsLiteral !== false,
+                decoder: result.decoder || null,
                 // Avoid leaking secret-length hints in redacted exports.
                 isSecretDisplayTruncated: redactSensitive ? null : Boolean(result.isSecretTruncated),
                 description: result.description,
@@ -7722,3 +8817,6 @@ module.exports = LeakLockPanel;
 // Exported for tests: parsing `git branch --contains` output is easy to get subtly
 // wrong and both call sites depend on it.
 module.exports.__parseContainingBranches = parseContainingBranches;
+// Exported for tests: the guarantee is that a fire-and-forget handler's failure
+// reaches the user, which cannot be asserted through the message dispatch alone.
+module.exports.__reportIfRejected = reportIfRejected;

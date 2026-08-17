@@ -382,6 +382,11 @@ _getHtmlForWebview() {
 - Secure temporary file creation and cleanup
 - Proper file permission handling
 - Automatic cleanup on extension deactivation
+- Rewrite rule files (`--replace-text`) are the exception to "put it in `$TMPDIR`":
+  they are created inside the repository's git directory (`gitRewrite.createRulesFile`),
+  because a confined `git-filter-repo` build cannot read a host temp path, and they are
+  removed only once the rewrite finished — a failed run keeps the file and reports where
+  it is, since it is the only materialised copy of what still has to be redacted
 
 ### 4. **Tool Isolation**
 - Docker containerization for Nosey Parker

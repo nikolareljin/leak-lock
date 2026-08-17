@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -36,6 +36,10 @@
       {
         "command": "leak-lock.fixSecrets",
         "title": "Fix Secrets"
+      },
+      {
+        "command": "leak-lock.saveRawEngineOutput",
+        "title": "Leak Lock: Save raw engine output from the last scan"
       },
       {
         "command": "leak-lock.openPanel",
@@ -323,12 +327,12 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@types/vscode": "1.125.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
-    "eslint": "^10.8.0",
-    "globals": "^17.9.0"
+    "eslint": "^10.8.1",
+    "globals": "^17.11.0"
   },
   "overrides": {
     "brace-expansion": "5.0.9",

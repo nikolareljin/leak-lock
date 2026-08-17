@@ -116,22 +116,31 @@ suite('buildRewriteScriptPs1', () => {
         assert.ok(checkAt < rewriteAt, 'the check must precede the rewrite, not follow it');
     });
 
-    test('detects git-filter-repo through git, not Get-Command', () => {
-        // It is a git subcommand living in git's exec-path, not on PATH, so
-        // Get-Command cannot see it even when `git filter-repo` works.
+    test('uses the standalone pip launcher when Git cannot discover filter-repo', () => {
         const out = ps({ requiredCommands: ['git-filter-repo'] });
-        assert.match(out, /& git filter-repo --version/);
-        assert.ok(
-            !/Get-Command\s+.*filter-repo/.test(out),
-            'Get-Command would report it missing on a machine where it works'
-        );
-        assert.match(out, /pip install git-filter-repo/, 'and should say how to install it');
+        assert.match(out, /& git filter-repo --version/, 'tries Git\'s subcommand first');
+        assert.match(out, /Get-Command git-filter-repo/, 'then looks for pip\'s PATH launcher');
+        assert.match(out, /function Invoke-GitFilterRepo \{ & git-filter-repo @args \}/);
+        // The Windows script names a Windows entry point: `python3` is not present on
+        // a default Windows install, so quoting it there is a command the user cannot
+        // run. The bash script keeps python3, which is correct for its platforms.
+        assert.match(out, /py -3 -m pip install --user git-filter-repo/,
+            'and should say how to install it, in a form Windows actually has');
+        assert.ok(!/python3 -m pip/.test(out), 'no python3 in a PowerShell script');
     });
 
-    test('secret replacements go to a temp file, never inline in the script', () => {
+    test('secret replacements go to a rule file, never inline in the script', () => {
         const out = ps({ replacementsContent: 'AKIAIOSFODNN7EXAMPLE==>REDACTED' });
-        assert.match(out, /\$replacement_file = \[System\.IO\.Path\]::GetTempFileName\(\)/);
+        // In the git directory, not $env:TEMP: a confined git-filter-repo cannot read
+        // a host temp path, and the git directory is outside the working tree, so the
+        // raw values can never be staged.
+        assert.match(out, /\$git_dir = \(& git rev-parse --absolute-git-dir\)/);
+        assert.match(out, /\$replacement_dir = Join-Path \$git_dir 'leak-lock'/);
+        assert.ok(!out.includes('GetTempFileName()'), 'no host temp path for the rule file');
         assert.match(out, /WriteAllText\(\$replacement_file/, 'written to the file');
+        const setLocationAt = out.indexOf('Set-Location');
+        assert.ok(setLocationAt > -1 && setLocationAt < out.indexOf('$git_dir ='),
+            'the repository is entered first, so `git rev-parse` resolves');
     });
 
     test('the temp file is locked to the current user', () => {
@@ -144,15 +153,57 @@ suite('buildRewriteScriptPs1', () => {
         assert.match(out, /Set-Acl \$replacement_file/);
     });
 
-    test('the temp file is removed even when the rewrite throws', () => {
-        const out = ps({ replacementsContent: 'a==>b' });
+    test('the rule file survives a failed rewrite and is reported, not deleted', () => {
+        const out = ps({ replacementsContent: 'a==>b', verifyLiterals: ['a'] });
         const finallyAt = out.indexOf('} finally {');
         const removeAt = out.indexOf('Remove-Item $replacement_file');
         assert.ok(finallyAt > -1, 'must have a finally block');
-        assert.ok(removeAt > finallyAt, 'cleanup must live in finally, not the happy path');
+        // Deleting it in `finally` destroyed the only copy of what still had to be
+        // redacted whenever the rewrite failed. It is removed on the happy path only.
+        assert.ok(removeAt > -1 && removeAt < finallyAt, 'cleanup runs after a successful rewrite');
+        assert.match(out, /Write-Warning "Replacement rules kept for a retry: \$replacement_file"/);
+        assert.ok(out.indexOf('Write-Warning "Replacement rules kept') > finallyAt,
+            'the retained path is reported from finally');
     });
 
-    test('no temp-file machinery when there are no replacements', () => {
+    test('drops the alias refs a rewrite leaves behind, and verifies past them', () => {
+        const out = ps({ replacementsContent: 'a==>b', verifyRulesFile: '$replacement_file' });
+        assert.match(out, /refs\/original\/ refs\/replace\//, 'both ref namespaces are deleted');
+        assert.match(out, /git --no-replace-objects grep --quiet/,
+            'verification must bypass refs/replace, or a still-leaking ref reads as clean');
+    });
+
+    test('parses as valid PowerShell', function () {
+        // The bash generator is checked with `bash -n`; this is the equivalent, and
+        // the only way to catch a syntax error in the Windows script from a Linux
+        // CI box. Skipped where PowerShell is unavailable rather than faked.
+        const cp = require('child_process');
+        const fs = require('fs');
+        const os = require('os');
+        const path = require('path');
+        const probe = cp.spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major']);
+        if (probe.error) { this.skip(); return; }
+
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-ps1-'));
+        const file = path.join(dir, 'cleanup.ps1');
+        try {
+            fs.writeFileSync(file, ps({
+                replacementsContent: 'AKIA==>REDACTED',
+                verifyRulesFile: '$replacement_file',
+                requiredCommands: ['git', 'git-filter-repo'],
+                restoreRemote: true,
+                remoteUrl: 'git@example.com:repo.git'
+            }));
+            const parse = cp.spawnSync('pwsh', ['-NoProfile', '-Command',
+                `$e = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile('${file}', [ref]$null, [ref]$e); `
+                + 'if ($e.Count) { $e | ForEach-Object { Write-Host $_.Message }; exit 1 }']);
+            assert.strictEqual(parse.status, 0, parse.stdout.toString() + parse.stderr.toString());
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('no rule-file machinery when there are no replacements', () => {
         const out = ps();
         assert.ok(!out.includes('$replacement_file'), 'nothing to protect, nothing to create');
     });

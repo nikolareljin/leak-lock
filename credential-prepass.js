@@ -6,7 +6,7 @@ const { runWithConcurrency } = require('./host-capacity');
 
 // Above this, classification happens on demand instead. A 4,000-finding scan
 // should not spend its tail inspecting rows nobody will open.
-const PREPASS_LIMIT = 500;
+const PREPASS_LIMIT = 100;
 const PREPASS_CONCURRENCY = 4;
 
 function labelFor(credential) {

@@ -417,6 +417,177 @@ The generated cleanup script applies the same rule: it exits non-zero and prints
 - Check repository is not corrupted
 - Ensure sufficient disk space
 
+**Git-only cleanup fails with `FileNotFoundError: .../replacements.txt`**
+
+A snap-packaged `git-filter-repo` is confined: it gets a private `/tmp` and can
+only read non-hidden paths under your home directory. The replacement rule file
+now lives inside the repository's `.git` directory for exactly that reason, but a
+snap still cannot touch a repository stored outside `$HOME` at all. Install the
+unconfined tool instead:
+
+```bash
+sudo snap remove git-filter-repo      # optional, but it stays first on PATH otherwise
+python3 -m pip install --user git-filter-repo
+```
+
+Then reload the VS Code window so its `PATH` picks up the new binary. Leak Lock
+reports this case by name rather than passing the Python traceback through.
+
+**The secret keeps coming back after a cleanup**
+
+The cleanup is two separate steps: it rewrites your **local** history first, and the
+force-push to the remote is a **second, explicitly confirmed** step. If the second
+step never ran, or was rejected, the remote still holds the secret — and every
+`git fetch` or `git pull` brings those commits back into your clone. Preparing
+another cleanup does the same, because it force-resets each local branch to its
+remote counterpart before rewriting. This looks identical to "the rewrite did not
+work", including on the default branch, and no branch protection is involved.
+
+Check what the remote actually has:
+
+```bash
+git fetch --prune --tags origin
+git --no-replace-objects grep -F "<the secret>" $(git for-each-ref --format='%(refname)' refs/remotes)
+```
+
+`--no-replace-objects` matters. `git filter-repo` writes a `refs/replace/<old>`
+entry for every commit it rewrites, and git honours those refs everywhere: ask
+about the original commit and git answers with the rewritten one, so a branch that
+still carries the secret reads as clean. Leak Lock now deletes those refs after a
+rewrite and verifies past them regardless; a repository rewritten with `git
+filter-repo` directly may still have them:
+
+```bash
+git for-each-ref refs/replace          # anything here masks the original commits
+git for-each-ref --format='delete %(refname)' refs/replace | git update-ref --stdin
+```
+
+Two more reasons a secret survives a *successful* force-push, both outside the
+extension's reach:
+
+- **The hosting provider keeps the old commits.** On GitHub, any commit that was
+  ever part of a pull request stays reachable at its URL through `refs/pull/*`
+  after a force-push, and forks keep their own copy. Ask GitHub Support to run a
+  garbage collection on the repository, and delete forks first.
+- **Another clone pushes it back.** A colleague's working copy, a CI job, or a
+  second machine of yours still has the pre-rewrite history; the next push from
+  there restores it. Everyone must re-clone after a rewrite.
+
+Rotate the credential regardless. A secret that reached a remote must be treated
+as compromised, whatever the history now says.
+
+**The cleanup ran but the secret is still there, and the commit link works**
+
+Check which repository the cleanup targeted. The prepared script block names it,
+above the script. If you scanned a folder that *contains* the repository — a
+workspace with several projects in it, or a repository with others nested inside —
+older builds rewrote the scanned path rather than the repository the finding came
+from, so the rewrite ran somewhere the value does not exist and reported success.
+
+Leak Lock now takes the repository from the finding itself, and refuses a selection
+that spans two repositories rather than cleaning one of them. If you are on an
+older build, scan the repository directly rather than its parent folder.
+
+**The scanner shows one value and the file contains another**
+
+Engines report what they *understood*, which is not always what the file *stores*.
+TruffleHog decodes before it detects (base64, UTF-16, percent forms), so a token
+written `…%3d%3d` in the file is reported as `…==`, and `%2b` as `+`. Gitleaks
+reports the bytes it matched. Nosey Parker reports the matched snippet, or the
+surrounding context when the match itself is unavailable.
+
+This matters beyond display: a rewrite rule built from a value that is not in any
+blob matches nothing, and `git filter-repo` and BFG both exit `0` on a rule that
+matches nothing — so the credential survives a cleanup that reported success, and
+the next scan finds it again.
+
+Leak Lock reconciles this for you, for every engine:
+
+- **At scan time**, each finding is compared against its own bytes — the blob at its
+  commit, or the file on disk for a working-tree finding. If the reported value is
+  there, nothing changes. If it is not, but one of its encodings is, that form is
+  adopted — **read out of the file, never computed** — and the row is marked
+  *shown as stored*. The engine's reported form is kept alongside it.
+- **At cleanup time**, each rule is probed against history in every form the value
+  may be stored as, and every form actually present becomes a rule. A repository
+  holding the encoded form in a `.env` and the decoded form in a document has both
+  rewritten. A value found in no form is reported instead of producing a script that
+  runs and changes nothing.
+
+Regex rules are never re-encoded: encoding variants of a pattern are meaningless.
+
+To see which form your repository holds:
+
+```bash
+git show <commit>:<path> | cat -A | sed -n '<line>p'
+```
+
+`cat -A` is the point — it shows `%3d%3d` rather than the `==` a rendered view may
+display, plus `^M` for a carriage return and any escaping the file format applies.
+
+**The secret is in a commit message, not in a file**
+
+`--replace-text` rewrites file contents; commit messages need `--replace-message`.
+Leak Lock passes both, so a value quoted in a commit message is removed like any
+other. If you are running the rewrite by hand, pass the same rule file twice:
+
+```bash
+git filter-repo --replace-text rules.txt --replace-message rules.txt --force
+```
+
+Note that BFG cannot rewrite commit messages at all — use the Git-only route for
+those. To check which surface a value is on:
+
+```bash
+git --no-replace-objects log --all --oneline -S '<value>'                 # file contents
+git --no-replace-objects log --all --oneline --fixed-strings --grep '<value>'   # commit messages
+```
+
+**One value survived a cleanup that removed all the others**
+
+Leak Lock now catches both causes for you — preparation refuses a cleanup whose
+rules match nothing and names any individual rule that would rewrite nothing, and
+after the rewrite it re-checks every rule and reports any whose value is still in
+history. On an older build, check by hand:
+
+Two causes, both now reported by the extension rather than silent, and both worth
+checking by hand on an older build:
+
+1. **The finding never entered the rule list.** Rows that are third-party
+   dependencies, rows marked *(excluded from cleanup)*, and rows the scanner
+   reported without a value are skipped — they can look selected while taking no
+   part in the rewrite. Hover the checkbox for the reason, and use a **manual
+   redaction rule** instead: those are keyed on the text you type, so eligibility
+   never applies.
+2. **The rule matched nothing.** `--replace-text` is a literal substring match, and
+   `git filter-repo` exits 0 whether it replaced ten thousand occurrences or none.
+   A value copied from the panel can differ from the bytes in the commit: truncated
+   for display, carrying a trailing `\r`, or including the surrounding quotes. Take
+   it from the blob instead, and look at the raw bytes:
+
+```bash
+git show <commit>:<path> | grep -n '<fragment>'
+git show <commit>:<path> | sed -n '<line>p' | cat -A     # ^M, tabs, trailing spaces
+```
+
+   Rules containing `==>`, or starting with `regex:`, `glob:` or `literal:`, are
+   parsed as syntax by filter-repo and will not match as text.
+
+Check what is actually left, across every ref, with replacement refs bypassed:
+
+```bash
+git --no-replace-objects log --all --oneline -S '<value>'
+```
+
+**A cleanup failed and I do not want to re-select every secret**
+
+Nothing is lost. The replacement rules are written under `<repo>/.git/leak-lock/`
+— `run-*/replacements.txt` for a cleanup run from the panel, `replacements.*` for
+one run from a generated script — and are deleted **only after** the rewrite,
+the force-push and the verification have all succeeded. A failed run keeps the
+file and the error message names its path, so the same cleanup can be retried
+unchanged. The file holds the raw secret values, so delete it once you are done.
+
 **UI Not Responding**
 - Reload VS Code window (`Ctrl+Shift+P` → "Reload Window")
 - Check VS Code version compatibility
