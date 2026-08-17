@@ -3017,6 +3017,17 @@ class LeakLockPanel {
         // toward whether there is anything to prepare.
         const customRuleCount = this._getCustomRules().length;
         const noneSelected = selectedCount === 0 && customRuleCount === 0;
+        // Preparation reads history, which takes as long as the repository is big.
+        // The state was already tracked and re-rendered; it was simply never drawn,
+        // so the only feedback was a button that stopped responding.
+        const preparing = Boolean(this._scanCleanup.preparing);
+        const preparingBlock = preparing
+            ? `<div class="scanning-indicator" style="margin-top:8px;">
+                    <div class="spinner"></div>
+                    <span style="margin-left:8px;">Preparing the cleanup: checking each rule against this
+                    repository's history…</span>
+               </div>`
+            : '';
         // A disabled button with no explanation reads as a broken button. Say which
         // of the two situations it is - nothing ticked, or nothing tickable - and for
         // the second one, why each finding was refused.
@@ -3129,7 +3140,8 @@ class LeakLockPanel {
                     </p>
                     <div style="margin-top: 8px;">
                         ${notSelectableBlock}
-                        <button class="scan-button" id="prepare-bfg-button" onclick="prepareBfgCommand()" ${noneSelected ? 'disabled' : ''}>⚙️ Prepare BFG command</button>
+                        ${preparingBlock}
+                        <button class="scan-button" id="prepare-bfg-button" onclick="prepareBfgCommand()" ${noneSelected || preparing ? 'disabled' : ''}>⚙️ Prepare BFG command</button>
                     </div>
                     ${preparedBlockBfg}
                     ${this._scanCleanup.preparedMode === 'bfg' ? pushPlanBlock : ''}
@@ -3145,7 +3157,8 @@ class LeakLockPanel {
                         Git-only cleanup is path-aware and won’t remove same-name files elsewhere, but it is slower than BFG.
                     </p>
                     <div style="margin-top: 8px;">
-                        <button class="scan-button" id="prepare-git-button" onclick="prepareGitCommand()" ${noneSelected ? 'disabled' : ''}>⚙️ Prepare Git-only command</button>
+                        ${preparingBlock}
+                        <button class="scan-button" id="prepare-git-button" onclick="prepareGitCommand()" ${noneSelected || preparing ? 'disabled' : ''}>⚙️ Prepare Git-only command</button>
                     </div>
                     ${preparedBlockGit}
                     ${this._scanCleanup.preparedMode === 'git' ? pushPlanBlock : ''}
@@ -3745,6 +3758,9 @@ class LeakLockPanel {
                 // the decoder changed nothing that matters here.
                 if (blob && blob.includes(reported)) {
                     result.valueIsLiteral = true;
+                    // Read out of the blob itself, so preparation needs no history
+                    // search to know this value is there.
+                    result.valueVerifiedInBlob = true;
                 }
                 continue;
             }
@@ -3759,6 +3775,7 @@ class LeakLockPanel {
             result.isSecretTruncated = result.secret !== stored;
             result.valueIsLiteral = true;
             result.storedFormRecovered = true;
+            result.valueVerifiedInBlob = true;
             aligned++;
         }
         return aligned;
@@ -7742,41 +7759,61 @@ class LeakLockPanel {
 
         const expanded = [];
         const substitutions = [];
-        // A prepare must stay interactive. Beyond this many history walks the
-        // remaining forms are skipped and said so, rather than turning a click into
-        // a multi-minute silence.
-        const PROBE_BUDGET = 60;
-        let probes = 0;
-        let skippedForBudget = 0;
+        const literalRules = list.filter(rule => rule.mode !== 'regex');
+
+        // One command answers "which of these strings exist" for every rule and every
+        // encoding, by searching each ref's tree once. The pickaxe walks the whole
+        // history per string, so doing this first turns the common case from hundreds
+        // of full walks into a single search.
+        const everyForm = [];
+        for (const rule of literalRules) {
+            everyForm.push(...valueEncodings.candidateForms(rule.source));
+        }
+        let presentInRefs = new Set();
+        if (everyForm.length > 0) {
+            try {
+                presentInRefs = await gitRewrite.findStringsInRefs(repoDir, everyForm);
+            } catch (error) {
+                console.warn('Could not search refs for stored forms:', error);
+            }
+        }
+
+        // Whatever the fast path did not find may exist only in an older commit or in
+        // a commit message. One streaming pass over the object store answers that for
+        // every remaining form at once - a single read of the repository, rather than
+        // one full history walk per value, which is what made this take minutes.
+        const unresolved = [];
+        for (const rule of literalRules) {
+            for (const form of valueEncodings.candidateForms(rule.source)) {
+                if (!presentInRefs.has(form)) {
+                    unresolved.push(form);
+                }
+            }
+        }
+        let presentInHistory = new Set();
+        let searchComplete = true;
+        if (unresolved.length > 0) {
+            try {
+                const result = await gitRewrite.findStringsInObjects(repoDir, unresolved, { timeoutMs: 120000 });
+                presentInHistory = result.found;
+                searchComplete = result.complete;
+            } catch (error) {
+                console.warn('Could not search history for stored forms:', error);
+                searchComplete = false;
+            }
+        }
+        const isPresent = (form) => presentInRefs.has(form) || presentInHistory.has(form);
+
         for (const rule of list) {
             // A pattern is not a value: encoding variants of a regex are meaningless.
             if (rule.mode === 'regex') {
                 expanded.push(rule);
                 continue;
             }
-            // Each probe is a full `git log --all -S` walk, so the budget matters:
-            // nine forms times twenty findings is a few hundred history walks and
-            // several minutes of a button that looks dead. The reported form is
-            // probed first and, when it matches, only the forms that differ from it
-            // in encoding are worth trying - and only until the budget runs out.
-            const stored = [];
-            const forms = valueEncodings.candidateForms(rule.source);
-            for (const form of forms) {
-                if (probes >= PROBE_BUDGET) {
-                    skippedForBudget += 1;
-                    break;
-                }
-                probes += 1;
-                const candidate = { ...rule, source: form };
-                if ((await this._rulesMatchingNothing(repoDir, [candidate])).length === 0) {
-                    stored.push(candidate);
-                    // The value is stored exactly as reported. Alternate encodings are
-                    // still worth a look, but not at the cost of the whole budget.
-                    if (form === rule.source) {
-                        continue;
-                    }
-                }
-            }
+            const stored = valueEncodings.candidateForms(rule.source)
+                .filter(isPresent)
+                .map(form => ({ ...rule, source: form }));
+
             if (stored.length === 0) {
                 // In no form. Kept as written so it is reported as unmatched rather
                 // than silently replaced by a variant that matches nothing either.
@@ -7788,11 +7825,12 @@ class LeakLockPanel {
                 substitutions.push({ from: rule, to: stored });
             }
         }
-        if (skippedForBudget > 0) {
-            console.warn('[leak-lock] stopped probing encoded forms after', probes,
-                'history searches;', skippedForBudget, 'rule(s) were not fully explored');
+
+        if (!searchComplete) {
+            console.warn('[leak-lock] the history search did not finish within its budget;',
+                'rules it did not reach are treated as unmatched and reported as such');
         }
-        return { rules: expanded, substitutions, probes, skippedForBudget };
+        return { rules: expanded, substitutions, searchComplete };
     }
 
     /**
@@ -7923,8 +7961,27 @@ class LeakLockPanel {
      * secret is still there afterwards. This is the last moment before an
      * irreversible operation, and the cheapest place to answer it.
      */
+    /** Values already read out of the blob they were found in - no search needed. */
+    _valuesVerifiedAtScanTime() {
+        const verified = new Set();
+        for (const result of this._scanResults || []) {
+            if (result && result.valueVerifiedInBlob) {
+                const value = result.fullSecret || result.secret;
+                if (value) {
+                    verified.add(value);
+                }
+            }
+        }
+        return verified;
+    }
+
     async _rulesMatchingNothing(repoDir, rules) {
-        const list = this._toRuleList(rules).filter(rule => rule && rule.source);
+        const verified = this._valuesVerifiedAtScanTime();
+        const list = this._toRuleList(rules)
+            .filter(rule => rule && rule.source)
+            // Proven present by reading the blob during the scan. Searching history
+            // for it again is a full walk to re-learn a fact already established.
+            .filter(rule => !verified.has(rule.source));
         if (!repoDir || list.length === 0) {
             return [];
         }

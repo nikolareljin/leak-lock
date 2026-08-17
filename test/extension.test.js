@@ -6624,18 +6624,53 @@ suite('Prepare always produces a visible outcome', () => {
 		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
 	});
 
-	test('the number of history searches is bounded, and the shortfall is reported', async () => {
+	test('checks every rule without a history walk per rule', async () => {
 		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
-		// Twenty rules times nine encodings is a few hundred full-history walks —
-		// minutes of a button that appears to do nothing.
+		// Twenty rules times nine encodings used to be a few hundred full-history
+		// walks - minutes of a button that appears to do nothing. The check is still
+		// exhaustive; it is one search of the repository instead of one per value.
 		const many = Array.from({ length: 20 }, (_, i) => ({
 			source: `absent-value-${i}==`, mode: 'literal', replaceWith: '*****'
 		}));
-		const result = await p._expandRulesToStoredForms(repo, many);
 
-		assert.ok(result.probes <= 60, `expected a bounded probe count, saw ${result.probes}`);
-		assert.ok(result.skippedForBudget > 0, 'and the rules it could not finish are counted, not hidden');
-		assert.strictEqual(result.rules.length >= many.length, true, 'every rule still reaches the cleanup');
+		const gitRewrite = require('../git-rewrite');
+		const originalPickaxe = gitRewrite.findUnremovedRules;
+		let pickaxeCalls = 0;
+		gitRewrite.findUnremovedRules = async (...args) => {
+			pickaxeCalls += 1;
+			return originalPickaxe(...args);
+		};
+
+		let result;
+		try {
+			result = await p._expandRulesToStoredForms(repo, many);
+		} finally {
+			gitRewrite.findUnremovedRules = originalPickaxe;
+		}
+
+		assert.strictEqual(pickaxeCalls, 0, 'no per-value history walk is issued');
+		assert.strictEqual(result.searchComplete, true, 'and the search really did cover everything');
+		assert.strictEqual(result.rules.length, many.length, 'every rule still reaches the cleanup');
+	});
+
+	test('a value present only in an older commit is still found', async () => {
+		// The ref-tip search cannot see it; the object-store pass can. Losing this
+		// would turn the optimisation into a silent gap in the check.
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const gone = 'ONLY-IN-AN-OLD-COMMIT-XYZ';
+		fs.writeFileSync(path.join(repo, 'old.txt'), `${gone}\n`);
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'add'], { env, stdio: 'pipe' });
+		fs.rmSync(path.join(repo, 'old.txt'));
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'remove'], { env, stdio: 'pipe' });
+
+		const { rules } = await p._expandRulesToStoredForms(repo, [
+			{ source: gone, mode: 'literal', replaceWith: '*****' }
+		]);
+		assert.deepStrictEqual(rules.map(rule => rule.source), [gone]);
+		assert.strictEqual((await p._rulesMatchingNothing(repo, rules)).length, 0,
+			'the value is in history, so it must not be reported as matching nothing');
 	});
 
 	test('a rejected handler is reported rather than swallowed', async () => {

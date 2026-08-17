@@ -771,6 +771,136 @@ async function verifyRemoteRefs(repoDir, remote = DEFAULT_REMOTE, criteria = {})
 }
 
 /**
+ * Which of many strings occur at the tip of any ref - in ONE command.
+ *
+ * The pickaxe (`git log --all -S<value>`) walks the entire history per value, so
+ * checking twenty rules in nine encodings is a few hundred full walks and minutes
+ * of waiting. `git grep` takes many patterns at once and searches each ref's tree
+ * once, and `-o` makes it report which pattern matched - so a single invocation
+ * answers "which of these strings exist" for every rule and every encoding.
+ *
+ * It sees only what each ref currently contains, which is why it is a fast path
+ * rather than the answer: content that exists solely in an older commit needs the
+ * pickaxe. Callers use this first and fall back for whatever it does not find.
+ *
+ * @param {string} repoDir
+ * @param {string[]} needles
+ * @returns {Promise<Set<string>>} the needles that occur somewhere
+ */
+async function findStringsInRefs(repoDir, needles) {
+    const wanted = [...new Set((needles || []).filter(needle => typeof needle === 'string' && needle))];
+    if (wanted.length === 0) {
+        return new Set();
+    }
+    let refs = [];
+    try {
+        refs = await gitLines(repoDir, ['for-each-ref', '--format=%(refname)'], { env: RAW_OBJECT_ENV });
+    } catch {
+        return new Set();
+    }
+    if (refs.length === 0) {
+        return new Set();
+    }
+    const args = ['grep', '--no-color', '-I', '-F', '-o', '-h'];
+    for (const needle of wanted) {
+        args.push('-e', needle);
+    }
+    args.push(...refs);
+    try {
+        const { stdout } = await gitRaw(repoDir, args, { timeout: 120000 });
+        const found = new Set();
+        for (const line of String(stdout).split('\n')) {
+            // `-o -h` prints "<ref>:<path>:<match>" per hit; the match is what follows
+            // the last colon that precedes a known needle, so compare directly.
+            for (const needle of wanted) {
+                if (line.endsWith(needle)) {
+                    found.add(needle);
+                }
+            }
+        }
+        return found;
+    } catch (error) {
+        // Exit 1 is "no matches", which is an answer, not a failure.
+        if (error && error.code === 1) {
+            return new Set();
+        }
+        return new Set();
+    }
+}
+
+/**
+ * Which of many strings occur anywhere in the object store - in ONE pass.
+ *
+ * The pickaxe answers this per string by walking the whole history, so N strings
+ * cost N walks. `git cat-file --batch-all-objects --batch` streams every object
+ * once instead, and every needle is checked against that one stream: the cost is
+ * a single read of the repository regardless of how many values are being looked
+ * for. Commit messages are objects too, so a secret quoted in one is covered by
+ * the same pass.
+ *
+ * Chunks are joined by an overlap of the longest needle minus one byte, so a value
+ * split across a read boundary is still found. Search stops as soon as every needle
+ * is accounted for, and a time budget bounds a pathological repository - `complete`
+ * says which of the two happened, so a caller never reports a partial search as a
+ * clean one.
+ *
+ * @returns {Promise<{found: Set<string>, complete: boolean}>}
+ */
+function findStringsInObjects(repoDir, needles, options = {}) {
+    const wanted = [...new Set((needles || []).filter(needle => typeof needle === 'string' && needle))];
+    if (wanted.length === 0) {
+        return Promise.resolve({ found: new Set(), complete: true });
+    }
+    const timeoutMs = options.timeoutMs || 120000;
+    const overlap = Math.max(...wanted.map(needle => needle.length)) - 1;
+
+    return new Promise((resolve) => {
+        const found = new Set();
+        let complete = true;
+        let carry = '';
+        let settled = false;
+
+        const child = spawn('git', ['cat-file', '--batch-all-objects', '--batch', '--buffer'], {
+            cwd: repoDir,
+            env: RAW_OBJECT_ENV,
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+
+        const finish = (wasComplete) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            complete = wasComplete;
+            clearTimeout(timer);
+            try {
+                child.kill();
+            } catch { /* already gone */ }
+            resolve({ found, complete });
+        };
+
+        const timer = setTimeout(() => finish(false), timeoutMs);
+
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', (chunk) => {
+            const haystack = carry + chunk;
+            for (const needle of wanted) {
+                if (!found.has(needle) && haystack.includes(needle)) {
+                    found.add(needle);
+                }
+            }
+            if (found.size === wanted.length) {
+                finish(true);
+                return;
+            }
+            carry = overlap > 0 ? haystack.slice(-overlap) : '';
+        });
+        child.on('error', () => finish(false));
+        child.on('close', () => finish(true));
+    });
+}
+
+/**
  * Which rules did NOT take effect, after a rewrite that reported success.
  *
  * `git filter-repo --replace-text` exits 0 whether it replaced ten thousand
@@ -1726,6 +1856,8 @@ module.exports = {
     pushRewritten,
     verifyRemoteRefs,
     findUnremovedRules,
+    findStringsInRefs,
+    findStringsInObjects,
     parseProtectedRefRejection,
     detectRemoteProvider,
     buildRewriteScript,
