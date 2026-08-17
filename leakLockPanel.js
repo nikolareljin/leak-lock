@@ -7711,9 +7711,7 @@ class LeakLockPanel {
         }
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
-        const candidates = redactionRules && typeof require === 'function'
-            ? require('./finding-paths').repoRelativeCandidates(finding.file, this._scanPath, repoDir)
-            : [finding.file];
+        const candidates = repoRelativeCandidates(finding.file, this._scanPath, repoDir);
         for (const candidate of candidates.length > 0 ? candidates : [finding.file]) {
             try {
                 const { stdout } = await execFileAsync(

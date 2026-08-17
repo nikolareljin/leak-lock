@@ -262,24 +262,35 @@ async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform 
 }
 
 /**
- * Read a report file an engine wrote, tolerating "no findings, no file".
- */
-/**
- * The report file as text, bounded, for diagnostics only.
+ * The first RAW_OUTPUT_LIMIT bytes of a report file, for diagnostics only.
  *
- * Deliberately not the parsed value: keeping the parse alive and stringifying it
- * again is two copies of a report that can be tens of megabytes, held in the
- * extension host, to write one file. Failure here is never fatal - diagnostics
- * must not be able to fail a scan.
+ * Deliberately not the parsed value, and deliberately not the whole file: keeping
+ * the parse alive and stringifying it again is two copies of a report that can be
+ * tens of megabytes, and reading it whole before slicing is a third. Only the
+ * prefix is read, straight into a fixed buffer. Failure here is never fatal -
+ * a diagnostic must not be able to fail a scan.
  */
 function readReportText(reportPath) {
+    let handle = null;
     try {
-        return fs.readFileSync(reportPath, 'utf8').slice(0, RAW_OUTPUT_LIMIT);
+        handle = fs.openSync(reportPath, 'r');
+        const buffer = Buffer.allocUnsafe(RAW_OUTPUT_LIMIT);
+        const bytes = fs.readSync(handle, buffer, 0, RAW_OUTPUT_LIMIT, 0);
+        return buffer.toString('utf8', 0, bytes);
     } catch {
         return '';
+    } finally {
+        if (handle !== null) {
+            try {
+                fs.closeSync(handle);
+            } catch { /* the descriptor is going away with the process anyway */ }
+        }
     }
 }
 
+/**
+ * Read a report file an engine wrote, tolerating "no findings, no file".
+ */
 function readJsonReport(reportPath) {
     try {
         if (!fs.existsSync(reportPath)) {
