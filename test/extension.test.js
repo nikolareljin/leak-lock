@@ -7229,6 +7229,45 @@ suite('Importing a previous report and checking what was resolved', () => {
 		}
 	});
 
+	// Copilot review: execFile puts the whole command line into error.message, and
+	// these commands carry the secret as -S<value> / -e <value>. A failure reason must
+	// not print it into the results table.
+	test('a failed search never repeats what it was searching for', async () => {
+		const secret = 'AKIASHOULDNEVERAPPEAR';
+		assert.match(scanBaseline.describeGitFailure({ code: 128 }), /code 128/);
+		assert.strictEqual(scanBaseline.describeGitFailure({ code: 'ENOENT' }), 'git was not found on this machine');
+		assert.match(scanBaseline.describeGitFailure({ killed: true, signal: 'SIGTERM' }), /SIGTERM/);
+		const raw = new Error(`Command failed: git log --all -S${secret}\n`);
+		raw.code = 128;
+		assert.ok(!scanBaseline.describeGitFailure(raw).includes(secret), 'the value must not reach the reason');
+
+		// And end to end: a search against a directory that is not a repository fails,
+		// and the row rendered from it carries no value.
+		const notARepo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-norepo-'));
+		try {
+			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+			panel._updateWebviewContent = () => {};
+			const presence = await panel._checkValuePresence(notARepo, secret);
+			assert.strictEqual(presence.checked, false, 'a search that could not run has not shown the value to be absent');
+			assert.ok(!presence.reason.includes(secret), presence.reason);
+		} finally {
+			try { fs.rmSync(notARepo, { recursive: true, force: true }); } catch (e) { void e; }
+		}
+	});
+
+	test('an unreadable recorded path is no switch target, not a crash', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		const broken = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-broken-'));
+		try {
+			const link = path.join(broken, 'dangling');
+			fs.symlinkSync(path.join(broken, 'missing'), link);
+			const target = await panel._resolveSwitchTarget(link, panel._importedReport);
+			assert.strictEqual(target, null);
+		} finally {
+			try { fs.rmSync(broken, { recursive: true, force: true }); } catch (e) { void e; }
+		}
+	});
+
 	test('the imported card is reachable with no scan on screen', () => {
 		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
 		panel._updateWebviewContent = () => {};
