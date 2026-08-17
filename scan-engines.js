@@ -52,7 +52,13 @@ const NORMALISED_FIELDS = Object.freeze([
     // verifiedAt, so without a null default the key is simply absent on findings from
     // the other engines — and JSON.stringify drops absent keys entirely, so the
     // exported schema would vary per finding depending on which engine found it.
-    'verified', 'verifiedAt'
+    'verified', 'verifiedAt',
+    // Whether `secret` is the byte sequence the file stores, or something the engine
+    // derived from it. TruffleHog decodes before detecting (base64, UTF-16, escaped
+    // forms), so its value can be a decoding of what is in the blob - and a rewrite
+    // rule built from a decoding matches nothing while both rewrite tools report
+    // success. `decoder` names the transform when the engine says which it used.
+    'valueIsLiteral', 'decoder'
 ]);
 
 function makeFinding(fields) {
@@ -371,6 +377,10 @@ function relativizePath(filePath, repoDir) {
 function mapGitleaksFinding(raw, surface, repoDir) {
     const commit = raw.Commit || null;
     return makeFinding({
+        // Gitleaks reports the regex match (or its secret capture group) from the
+        // file as-is, and its optional base64 decoding (--max-decode-depth) is off
+        // unless asked for, which Leak Lock never does. The value is what is stored.
+        valueIsLiteral: true,
         file: relativizePath(raw.File || raw.SymlinkFile || null, repoDir),
         line: Number.isFinite(raw.StartLine) ? raw.StartLine : null,
         secret: raw.Secret || raw.Match || null,
@@ -613,6 +623,25 @@ function toLineNumber(value) {
     return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * TruffleHog decodes before it detects, and says so.
+ *
+ * Its decoders (base64, UTF-16, escaped/percent forms) run over each chunk, so `Raw`
+ * is the credential TruffleHog *understood*, which is not the byte sequence the file
+ * *stores* - a token written `…%3d%3d` is reported as `…==`. A rewrite rule built
+ * from that matches no blob, and both rewrite tools exit 0 on a rule that matches
+ * nothing, so the secret survives a cleanup that reports success.
+ *
+ * There is no flag to turn the decoders off, but every result carries `DecoderName`.
+ * Anything other than PLAIN means "this value is not what the file contains", and a
+ * finding that says so can be handled honestly instead of producing a rule that
+ * silently does nothing.
+ */
+function truffleHogValueIsLiteral(raw) {
+    const decoder = String(raw?.DecoderName || 'PLAIN').toUpperCase();
+    return decoder === '' || decoder === 'PLAIN';
+}
+
 function mapTruffleHogFinding(raw) {
     // The Git metadata moved under SourceMetadata.Data.Git in v3; older builds put it
     // directly under SourceMetadata.Git. Accept both rather than silently losing the
@@ -624,6 +653,8 @@ function mapTruffleHogFinding(raw) {
         line: toLineNumber(git.line),
         secret: raw.Raw || raw.RawV2 || null,
         matchText: raw.RawV2 || raw.Raw || null,
+        decoder: raw.DecoderName || null,
+        valueIsLiteral: truffleHogValueIsLiteral(raw),
         description: describeTruffleHogDetector(raw.DetectorName),
         ruleId: raw.DetectorName || null,
         commitHash: git.commit || null,

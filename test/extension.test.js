@@ -5991,3 +5991,164 @@ suite('Findings whose reported value is not the stored value', () => {
 		assert.strictEqual(verdict.checked, false, 'no commit means nothing to compare against');
 	});
 });
+
+// The engines do not agree on what "the secret" is. Gitleaks reports the bytes it
+// matched in the file; TruffleHog decodes first (base64, UTF-16, escaped/percent
+// forms) and reports what it understood; Nosey Parker reports a snippet that may be
+// context rather than the match. Only the first can be used as a rewrite rule as-is.
+suite('Engine value semantics', () => {
+	const scanEngines = require('../scan-engines');
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	test('gitleaks values are the stored bytes', () => {
+		const finding = scanEngines.mapGitleaksFinding(
+			{ Secret: 'abc', Match: 'token=abc', File: 'a.env', StartLine: 1 }, 'worktree', '/repo');
+		assert.strictEqual(finding.valueIsLiteral, true, 'gitleaks reports what it matched in the file');
+		assert.strictEqual(finding.secret, 'abc');
+	});
+
+	test('TruffleHog is trusted only when it did not decode', () => {
+		const plain = scanEngines.mapTruffleHogFinding({ Raw: 'tok', DecoderName: 'PLAIN' });
+		assert.strictEqual(plain.valueIsLiteral, true);
+
+		// The reported case: the file holds `%3d%3d`, TruffleHog reports `==`.
+		for (const decoder of ['BASE64', 'UTF16', 'ESCAPED_UNICODE']) {
+			const decoded = scanEngines.mapTruffleHogFinding({ Raw: 'tok==', DecoderName: decoder });
+			assert.strictEqual(decoded.valueIsLiteral, false, `${decoder} output is not the stored text`);
+			assert.strictEqual(decoded.decoder, decoder, 'the transform is named, so the reason can be stated');
+		}
+
+		// No DecoderName at all (older builds) is treated as plain, not as suspect:
+		// refusing every finding from an old TruffleHog would be worse than the bug.
+		assert.strictEqual(scanEngines.mapTruffleHogFinding({ Raw: 'tok' }).valueIsLiteral, true);
+	});
+
+	test('a decoded TruffleHog value is not eligible for cleanup, and says why', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const decoded = {
+			file: 'a.env', secret: 'tok==', fullSecret: 'tok==',
+			valueIsLiteral: false, decoder: 'BASE64', severity: 'high', description: 'x'
+		};
+		assert.strictEqual(p._isCleanupEligible(decoded), false,
+			'a decoded value used as a rule matches nothing and the rewrite still reports success');
+		assert.match(p._cleanupIneligibleReason(decoded), /decoded this value \(BASE64\)/);
+		assert.match(p._cleanupIneligibleReason(decoded), /manual redaction rule/);
+	});
+
+	test('a snippet that is context rather than the match is refused too', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const contextOnly = {
+			file: 'a.env', secret: 'export TOKEN=', fullSecret: 'export TOKEN=',
+			valueIsLiteral: false, severity: 'high', description: 'x'
+		};
+		assert.strictEqual(p._isCleanupEligible(contextOnly), false);
+		assert.match(p._cleanupIneligibleReason(contextOnly), /did not report the matched text/);
+	});
+
+	test('an ordinary finding is unaffected', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		assert.strictEqual(p._isCleanupEligible({ file: 'a.env', secret: 'x', fullSecret: 'x' }), true,
+			'findings without the flag keep working exactly as before');
+	});
+});
+
+// The reported failure, end to end: the file stores a percent-encoded token, the
+// scanner reports the decoded form, and the rule built from it matches nothing while
+// the rewrite reports success. The cleanup must target what the repository stores.
+suite('Rules follow the stored encoding, not the reported value', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const DECODED = 'sk_live_abc123==';
+	const STORED = 'sk_live_abc123%3d%3d';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-encoded-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, '.env'), `CALLBACK=https://x/cb?token=${STORED}\n`);
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		return p;
+	}
+
+	test('a decoded value is retargeted to the encoding the repository stores', async () => {
+		const p = panel();
+		// Precondition: the reported value is in no commit, which is why every
+		// rewrite built from it silently did nothing.
+		assert.strictEqual(
+			(await p._rulesMatchingNothing(repo, [{ source: DECODED, mode: 'literal' }])).length, 1,
+			'the decoded form matches nothing — this is the bug'
+		);
+
+		const { rules, substitutions } = await p._expandRulesToStoredForms(repo, [
+			{ source: DECODED, mode: 'literal', replaceWith: '*****' }
+		]);
+
+		assert.strictEqual(substitutions.length, 1, 'the substitution is recorded, not silent');
+		assert.ok(rules.some(rule => rule.source === STORED),
+			'the rule now targets the percent-encoded form actually in the blob');
+		assert.ok(rules.every(rule => rule.replaceWith === '*****'), 'the replacement is preserved');
+		assert.strictEqual((await p._rulesMatchingNothing(repo, rules)).length, 0,
+			'every expanded rule matches something');
+	});
+
+	test('both forms are rewritten when the repository holds both', async () => {
+		const twin = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-bothforms-'));
+		try {
+			cp.execFileSync('git', ['init', '--quiet', twin], { env, stdio: 'pipe' });
+			// A .env with the encoded form and a note with the decoded one: removing
+			// only the encoded copy would leave the credential in the repository.
+			fs.writeFileSync(path.join(twin, '.env'), `T=${STORED}\n`);
+			fs.writeFileSync(path.join(twin, 'NOTES.md'), `the token is ${DECODED}\n`);
+			cp.execFileSync('git', ['-C', twin, 'add', '-A'], { env, stdio: 'pipe' });
+			cp.execFileSync('git', ['-C', twin, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+
+			const { rules } = await panel()._expandRulesToStoredForms(twin, [
+				{ source: DECODED, mode: 'literal', replaceWith: '*****' }
+			]);
+			const sources = rules.map(rule => rule.source);
+			assert.ok(sources.includes(DECODED) && sources.includes(STORED),
+				'both the encoded and the decoded copy are targeted');
+		} finally {
+			fs.rmSync(twin, { recursive: true, force: true });
+		}
+	});
+
+	test('a value that is genuinely absent is left alone, not mangled into variants', async () => {
+		const { rules, substitutions } = await panel()._expandRulesToStoredForms(repo, [
+			{ source: 'NOT-IN-THIS-REPO-IN-ANY-FORM', mode: 'literal', replaceWith: '*****' }
+		]);
+		assert.strictEqual(substitutions.length, 0);
+		assert.deepStrictEqual(rules.map(r => r.source), ['NOT-IN-THIS-REPO-IN-ANY-FORM'],
+			'it stays as written so it is reported as unmatched, not silently replaced');
+	});
+
+	test('regex rules are never re-encoded', async () => {
+		const { rules, substitutions } = await panel()._expandRulesToStoredForms(repo, [
+			{ source: 'sk_live_[a-z0-9]+', mode: 'regex', replaceWith: '*****' }
+		]);
+		assert.strictEqual(substitutions.length, 0, 'encoding variants of a pattern are meaningless');
+		assert.deepStrictEqual(rules.map(r => r.source), ['sk_live_[a-z0-9]+']);
+	});
+});
