@@ -490,29 +490,40 @@ older build, scan the repository directly rather than its parent folder.
 
 **The scanner shows one value and the file contains another**
 
-Engines report what they *understood*, which is not always what the file *stores*:
+Engines report what they *understood*, which is not always what the file *stores*.
+TruffleHog decodes before it detects (base64, UTF-16, percent forms), so a token
+written `…%3d%3d` in the file is reported as `…==`, and `%2b` as `+`. Gitleaks
+reports the bytes it matched. Nosey Parker reports the matched snippet, or the
+surrounding context when the match itself is unavailable.
 
-| Engine | What its value is |
-|---|---|
-| Gitleaks | The bytes matched in the file — usable as a rewrite rule |
-| TruffleHog | The **decoded** credential: its decoders (base64, UTF-16, escaped/percent) run before detection, so `…%3d%3d` in the file is reported as `…==` |
-| Nosey Parker | The matched snippet, or the surrounding context when the match itself is unavailable |
+This matters beyond display: a rewrite rule built from a value that is not in any
+blob matches nothing, and `git filter-repo` and BFG both exit `0` on a rule that
+matches nothing — so the credential survives a cleanup that reported success, and
+the next scan finds it again.
 
-A rewrite rule built from a decoded value matches nothing, and both rewrite tools
-report success anyway — so the credential survives a cleanup that looked complete.
+Leak Lock reconciles this for you, for every engine:
 
-Leak Lock handles this for you: a rule that is not found is retried in the forms the
-value may be stored as, and every form actually present in the repository becomes a
-rule, so a `.env` holding `%3d%3d` and a document holding `==` are both rewritten. A
-value the engine says it decoded is excluded from rule-building outright, with the
-transform named — copy the value as it appears in the file and add it as a manual
-redaction rule instead.
+- **At scan time**, each finding is compared against its own bytes — the blob at its
+  commit, or the file on disk for a working-tree finding. If the reported value is
+  there, nothing changes. If it is not, but one of its encodings is, that form is
+  adopted — **read out of the file, never computed** — and the row is marked
+  *shown as stored*. The engine's reported form is kept alongside it.
+- **At cleanup time**, each rule is probed against history in every form the value
+  may be stored as, and every form actually present becomes a rule. A repository
+  holding the encoded form in a `.env` and the decoded form in a document has both
+  rewritten. A value found in no form is reported instead of producing a script that
+  runs and changes nothing.
+
+Regex rules are never re-encoded: encoding variants of a pattern are meaningless.
 
 To see which form your repository holds:
 
 ```bash
 git show <commit>:<path> | cat -A | sed -n '<line>p'
 ```
+
+`cat -A` is the point — it shows `%3d%3d` rather than the `==` a rendered view may
+display, plus `^M` for a carriage return and any escaping the file format applies.
 
 **The secret is in a commit message, not in a file**
 

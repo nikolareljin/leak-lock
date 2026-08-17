@@ -246,6 +246,23 @@ Generates BFG commands for secret remediation.
 }
 ```
 
+**Value fidelity:**
+- A finding's value is reconciled with the bytes it came from before it is displayed,
+  exported or turned into a rule (`_alignValuesWithStoredBytes`). Engines that decode
+  before reporting — TruffleHog decodes base64, UTF-16 and percent forms — otherwise
+  produce a value that is in no blob, and a rule built from it matches nothing while
+  the rewrite still exits `0`.
+- Candidate forms come from `value-encodings.js` (`candidateForms`, `findStoredForms`):
+  percent-encoded in either hex case, `encodeURIComponent`, JSON- and HTML-escaped,
+  base64, and the decoded form of an encoded one. They are used only as search keys —
+  the value stored is the substring found in the file, never a computed one.
+- Findings carry `valueIsLiteral` and `decoder` (from the engine), plus
+  `reportedSecret` and `storedFormRecovered` when the two forms differed. The JSON
+  export includes `valueIsLiteral` and `decoder` for provenance.
+- `_expandRulesToStoredForms` repeats the reconciliation against history at cleanup
+  time and keeps **every** form present, so an encoded copy and a decoded copy are
+  both rewritten.
+
 **Generated Files:**
 - Creates an owner-only `replacements.txt` under `<repo>/.git/leak-lock/run-*/` for BFG
   and `git filter-repo` (generated scripts write `<repo>/.git/leak-lock/replacements.*`)
