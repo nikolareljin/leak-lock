@@ -38,6 +38,10 @@
         "title": "Fix Secrets"
       },
       {
+        "command": "leak-lock.saveRawEngineOutput",
+        "title": "Leak Lock: Save raw engine output from the last scan"
+      },
+      {
         "command": "leak-lock.openPanel",
         "title": "Open Leak Lock Scanner",
         "icon": "$(shield)"

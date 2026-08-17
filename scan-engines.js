@@ -36,6 +36,8 @@ const engineDocker = require('./engine-docker');
 const execFileAsync = util.promisify(execFile);
 
 const DEFAULT_TIMEOUT_MS = 300000;
+// How much untouched engine output to keep for diagnostics.
+const RAW_OUTPUT_LIMIT = 5 * 1024 * 1024;
 const MAX_BUFFER = 256 * 1024 * 1024;
 
 /**
@@ -472,6 +474,7 @@ const gitleaksEngine = {
 
         const warnings = [];
         const surfaces = {};
+        const rawReports = {};
         const findings = [];
 
         await withTempDir('leaklock-gitleaks-', async (dir) => {
@@ -501,6 +504,8 @@ const gitleaksEngine = {
                     await invoke(execution, args, { mounts, timeoutMs });
                     const raw = readJsonReport(hostReportPath);
                     surfaces[surface] = raw.length;
+                    // Keep the engine's own report, untouched, for diagnostics.
+                    rawReports[surface] = raw;
                     for (const item of raw) {
                         findings.push(mapGitleaksFinding(item, surface, scanRoot));
                     }
@@ -532,7 +537,10 @@ const gitleaksEngine = {
             }
         });
 
-        return { findings, surfaces, warnings, dialect, runtime: execution.mode };
+        return {
+            findings, surfaces, warnings, dialect, runtime: execution.mode,
+            rawOutput: JSON.stringify(rawReports, null, 2).slice(0, RAW_OUTPUT_LIMIT)
+        };
     }
 };
 
@@ -780,7 +788,11 @@ const truffleHogEngine = {
             findings,
             warnings,
             verified: findings.filter(f => f.verified === true).length,
-            runtime: execution.mode
+            runtime: execution.mode,
+            // The engine's own bytes, kept so a disagreement about what was reported
+            // can be settled by looking rather than by reasoning. Bounded, because a
+            // large scan's output is not worth holding in memory whole.
+            rawOutput: String(stdout || '').slice(0, RAW_OUTPUT_LIMIT)
         };
     }
 };

@@ -6222,3 +6222,42 @@ suite('A scanner value is never altered on its way to a rule', () => {
 		assert.match(p._cleanupIneligibleReason(lost), /shortened form/);
 	});
 });
+
+// Provenance, so a value that reads oddly can be traced to whoever transformed it
+// instead of being blamed on the wrong layer.
+suite('Value provenance travels with the finding', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	test('the export records whether the value is the stored bytes, and the transform', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = path.join(path.sep, 'repo');
+		p._scanResults = [
+			{ file: 'a.env', line: 1, secret: 'tok%3d%3d', fullSecret: 'tok%3d%3d', severity: 'high', description: 'x' },
+			{ file: 'b.env', line: 1, secret: 'tok==', fullSecret: 'tok==', severity: 'high', description: 'x',
+				valueIsLiteral: false, decoder: 'BASE64' }
+		];
+
+		const payload = p._buildScanExportPayload({});
+		assert.strictEqual(payload.findings[0].secret, 'tok%3d%3d', 'the export carries raw bytes, not entities');
+		assert.strictEqual(payload.findings[0].valueIsLiteral, true);
+		assert.strictEqual(payload.findings[0].decoder, null);
+
+		assert.strictEqual(payload.findings[1].valueIsLiteral, false, 'a decoded value is flagged in the export');
+		assert.strictEqual(payload.findings[1].decoder, 'BASE64');
+
+		// And redaction still wins over provenance.
+		const redacted = p._buildScanExportPayload({ redactSensitive: true });
+		assert.strictEqual(redacted.findings[0].secret, '[REDACTED_SECRET]');
+	});
+
+	test('raw engine output is offered only when a scan captured some', async () => {
+		const vscode = require('vscode');
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		let warned = null;
+		vscode.window.showWarningMessage = async (message) => { warned = message; return undefined; };
+		p._rawEngineOutput = {};
+		await p._saveRawEngineOutput();
+		assert.match(warned || '', /No engine output was captured/);
+	});
+});
