@@ -6910,13 +6910,23 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.strictEqual(verdict.verdict, 'match');
 	});
 
-	test('the same remote written three ways is one repository', () => {
+	test('the same remote written five ways is one repository', () => {
+		// Copilot review: an explicit SSH port was being folded into the path, which
+		// turned one repository into two and refused a valid import.
 		const forms = [
 			'git@github.com:acme/app.git',
 			'https://github.com/acme/app.git',
-			'ssh://git@github.com/acme/app'
+			'ssh://git@github.com/acme/app',
+			'ssh://git@github.com:2222/acme/app.git',
+			'https://github.com/acme/app/'
 		].map(scanBaseline.normalizeRemoteUrl);
 		assert.deepStrictEqual(new Set(forms).size, 1, forms.join(' | '));
+		// A port is not identity, but a host still is.
+		assert.notStrictEqual(
+			scanBaseline.normalizeRemoteUrl('ssh://git@gitlab.com:2222/acme/app.git'),
+			scanBaseline.normalizeRemoteUrl('ssh://git@github.com:2222/acme/app.git')
+		);
+		assert.strictEqual(scanBaseline.normalizeRemoteUrl('   '), null);
 	});
 
 	test('a different repository is a mismatch, on roots and on remote alike', () => {
