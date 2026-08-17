@@ -9360,9 +9360,14 @@ class LeakLockPanel {
                 return;
             }
 
+            // The scan's own repository, not the cleanup target: _resolveCleanupRepo
+            // follows the current selection and any repository override, so identity
+            // would have depended on which findings happened to be ticked, and a report
+            // exported from one scan could later be refused as a different repository.
+            const scanRepo = this._scanRepoRoot || this._scanPath || this._selectedDirectory || null;
             const exportPayload = this._buildScanExportPayload({
                 redactSensitive,
-                repository: await this._readRepositoryIdentity(this._resolveCleanupRepo().repo, { redactPath: redactSensitive })
+                repository: await this._readRepositoryIdentity(scanRepo, { redactPath: redactSensitive })
             });
             await vscode.workspace.fs.writeFile(
                 targetUri,
