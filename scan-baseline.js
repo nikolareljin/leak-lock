@@ -367,7 +367,15 @@ function describeRepoMatch(report, repoDir) {
     if (!repoDir) {
         return { known: true, matches: null, recorded };
     }
-    const normalize = (p) => String(p).replace(/[\\/]+$/, '');
+    // Both separators, because a report exported on Windows is read on Linux and back:
+    // `C:\repo\sub` and `C:/repo/sub` are one location, and comparing them raw reported
+    // a location change that never happened. Windows paths are also case-insensitive.
+    const isWindowsPath = (p) => /^[a-z]:[\\/]/i.test(p) || p.includes('\\');
+    const foldCase = isWindowsPath(recorded) || isWindowsPath(repoDir);
+    const normalize = (p) => {
+        const unified = String(p).replace(/\\/g, '/').replace(/\/+$/, '');
+        return foldCase ? unified.toLowerCase() : unified;
+    };
     const a = normalize(recorded);
     const b = normalize(repoDir);
     return {
