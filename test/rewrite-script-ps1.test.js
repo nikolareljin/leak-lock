@@ -121,10 +121,12 @@ suite('buildRewriteScriptPs1', () => {
         assert.match(out, /& git filter-repo --version/, 'tries Git\'s subcommand first');
         assert.match(out, /Get-Command git-filter-repo/, 'then looks for pip\'s PATH launcher');
         assert.match(out, /function Invoke-GitFilterRepo \{ & git-filter-repo @args \}/);
-        // One install line everywhere — python3, and --user — so a machine without a
-        // `python` shim is not told to run a command it does not have.
-        assert.match(out, /python3 -m pip install --user git-filter-repo/,
-            'and should say how to install it');
+        // The Windows script names a Windows entry point: `python3` is not present on
+        // a default Windows install, so quoting it there is a command the user cannot
+        // run. The bash script keeps python3, which is correct for its platforms.
+        assert.match(out, /py -3 -m pip install --user git-filter-repo/,
+            'and should say how to install it, in a form Windows actually has');
+        assert.ok(!/python3 -m pip/.test(out), 'no python3 in a PowerShell script');
     });
 
     test('secret replacements go to a rule file, never inline in the script', () => {
