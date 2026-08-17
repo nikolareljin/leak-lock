@@ -5927,3 +5927,67 @@ suite('Secrets in commit messages', () => {
 		);
 	});
 });
+
+// A scanner reports what it matched, which is not always what is stored: values get
+// truncated for display, normalised, decoded, or escaped in JSON/YAML. A rule built
+// from such a value matches nothing and filter-repo exits 0 — the finding then
+// survives every cleanup while the scan keeps reporting it.
+suite('Findings whose reported value is not the stored value', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo, sha;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-stored-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		// Stored escaped, as a JSON file would hold it.
+		fs.writeFileSync(path.join(repo, 'config.json'), '{"token":"AKIA\\/IOSF\\/ODNN7"}\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+		sha = cp.execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { env }).toString().trim();
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		return p;
+	}
+
+	test('a value stored exactly as reported is usable', async () => {
+		const verdict = await panel()._findingValueIsInItsBlob(repo, {
+			file: 'config.json', commitHash: sha, fullSecret: 'AKIA\\/IOSF\\/ODNN7'
+		});
+		assert.deepStrictEqual(verdict, { checked: true, present: true, reason: null });
+	});
+
+	test('a value the scanner un-escaped is reported as unusable, with the reason', async () => {
+		// What a scanner would show a human: the decoded form, which is in no blob.
+		const verdict = await panel()._findingValueIsInItsBlob(repo, {
+			file: 'config.json', commitHash: sha, fullSecret: 'AKIA/IOSF/ODNN7'
+		});
+		assert.strictEqual(verdict.checked, true);
+		assert.strictEqual(verdict.present, false);
+		assert.match(verdict.reason, /does not appear literally/);
+		assert.match(verdict.reason, /config\.json/);
+	});
+
+	test('a working-tree finding is not judged at all', async () => {
+		const verdict = await panel()._findingValueIsInItsBlob(repo, { file: 'config.json', fullSecret: 'x' });
+		assert.strictEqual(verdict.checked, false, 'no commit means nothing to compare against');
+	});
+});

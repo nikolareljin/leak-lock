@@ -7169,6 +7169,33 @@ class LeakLockPanel {
                 // and this is the wrong repository. Find where it is and offer it.
                 const elsewhere = await this._findRepoContainingRules(resolvedReplacements, scanPath);
                 this._scanCleanup.preparing = false;
+
+                // Before offering another repository or blaming the text, ask the
+                // findings themselves: a value that is not in the blob it was
+                // reported from was transformed by the scanner, and no repository
+                // and no amount of retyping will make that rule match.
+                const unusable = [];
+                for (const idx of this._ensureScanSelection()) {
+                    const finding = this._scanResults[idx];
+                    if (!finding || !this._isCleanupEligible(finding)) {
+                        continue;
+                    }
+                    const verdict = await this._findingValueIsInItsBlob(scanPath, finding);
+                    if (verdict.checked && !verdict.present) {
+                        unusable.push({ finding, reason: verdict.reason });
+                    }
+                }
+                if (unusable.length > 0 && !elsewhere) {
+                    const action = await vscode.window.showErrorMessage(
+                        `Nothing prepared: ${unusable.length} finding(s) report a value that is not stored that way `
+                        + 'in the file they came from.',
+                        'Show details'
+                    );
+                    if (action === 'Show details') {
+                        this._showUnusableFindingDiagnostics(scanPath, unusable);
+                    }
+                    return;
+                }
                 if (elsewhere) {
                     const action = await vscode.window.showWarningMessage(
                         `Not found here. This value is in ${path.basename(elsewhere)}, not ${path.basename(scanPath)}.`,
@@ -7349,6 +7376,33 @@ class LeakLockPanel {
         this._updateWebviewContent();
     }
 
+    /** Long form for findings whose reported value is not the stored value. */
+    _showUnusableFindingDiagnostics(repoDir, unusable) {
+        if (!this._diagnosticsChannel) {
+            this._diagnosticsChannel = vscode.window.createOutputChannel('Leak Lock');
+        }
+        const channel = this._diagnosticsChannel;
+        channel.appendLine('── Cleanup could not be prepared ──────────────────────────────');
+        channel.appendLine(`Repository : ${repoDir}`);
+        channel.appendLine('');
+        channel.appendLine('These findings cannot be turned into a rewrite rule, because the value they');
+        channel.appendLine('report is not the value stored in the file:');
+        for (const entry of unusable) {
+            channel.appendLine(`  • ${entry.finding.file} @ ${String(entry.finding.commitHash || '').slice(0, 8)}`);
+            channel.appendLine(`    ${entry.reason}`);
+        }
+        channel.appendLine('');
+        channel.appendLine('What works instead: open the file at that commit, copy the text exactly as it');
+        channel.appendLine('is stored, and add it as a manual redaction rule.');
+        channel.appendLine('');
+        channel.appendLine('  git show <commit>:<path> | sed -n \'<line>p\' | cat -A');
+        channel.appendLine('');
+        channel.appendLine('cat -A reveals what a rendered value hides: ^M for a carriage return, escaped');
+        channel.appendLine('quotes in JSON or YAML, and where the value really begins and ends.');
+        channel.appendLine('');
+        channel.show(true);
+    }
+
     /**
      * The long form of a failed preparation, on demand and out of the way.
      *
@@ -7384,6 +7438,57 @@ class LeakLockPanel {
         }
         channel.appendLine('');
         channel.show(true);
+    }
+
+    /**
+     * Does the value a finding reports actually appear in the blob it came from?
+     *
+     * A scanner reports what it matched, which is not always what is stored: a value
+     * can be truncated for display, normalised, decoded (a JWT payload, a base64
+     * blob) or escaped in the file it lives in (JSON, YAML quoting). A rule built
+     * from that reported value then matches nothing, `git filter-repo` exits 0, and
+     * the finding survives every cleanup while the scan keeps reporting it.
+     *
+     * Reading the blob the finding names answers it directly, and the answer is the
+     * difference between "your text is wrong" and "this finding's value cannot be
+     * used as a rule".
+     *
+     * @returns {Promise<{checked: boolean, present: boolean, reason: string|null}>}
+     */
+    async _findingValueIsInItsBlob(repoDir, finding) {
+        const value = finding && (finding.fullSecret || finding.secret);
+        if (!repoDir || !value || !finding.commitHash || !finding.file) {
+            return { checked: false, present: false, reason: 'not a history finding with a value' };
+        }
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        const candidates = redactionRules && typeof require === 'function'
+            ? require('./finding-paths').repoRelativeCandidates(finding.file, this._scanPath, repoDir)
+            : [finding.file];
+        for (const candidate of candidates.length > 0 ? candidates : [finding.file]) {
+            try {
+                const { stdout } = await execFileAsync(
+                    'git',
+                    ['-C', repoDir, '--no-replace-objects', 'show', `${finding.commitHash}:${candidate}`],
+                    { maxBuffer: GIT_MAX_BUFFER, timeout: 30000, env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' } }
+                );
+                if (stdout.includes(value)) {
+                    return { checked: true, present: true, reason: null };
+                }
+                return {
+                    checked: true,
+                    present: false,
+                    reason: `the value this finding reports does not appear literally in ${candidate} at `
+                        + `${String(finding.commitHash).slice(0, 8)} — the scanner reported a value that is `
+                        + 'truncated, normalised, decoded or escaped in the file, so it cannot be used as a '
+                        + 'rewrite rule as-is'
+                };
+            } catch {
+                // Path reading differs between engines; try the next candidate.
+                continue;
+            }
+        }
+        return { checked: false, present: false, reason: 'the file could not be read at that commit' };
     }
 
     /**
