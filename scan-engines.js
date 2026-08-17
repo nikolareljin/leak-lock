@@ -36,6 +36,8 @@ const engineDocker = require('./engine-docker');
 const execFileAsync = util.promisify(execFile);
 
 const DEFAULT_TIMEOUT_MS = 300000;
+// How much untouched engine output to keep for diagnostics.
+const RAW_OUTPUT_LIMIT = 5 * 1024 * 1024;
 const MAX_BUFFER = 256 * 1024 * 1024;
 
 /**
@@ -52,7 +54,13 @@ const NORMALISED_FIELDS = Object.freeze([
     // verifiedAt, so without a null default the key is simply absent on findings from
     // the other engines — and JSON.stringify drops absent keys entirely, so the
     // exported schema would vary per finding depending on which engine found it.
-    'verified', 'verifiedAt'
+    'verified', 'verifiedAt',
+    // Whether `secret` is the byte sequence the file stores, or something the engine
+    // derived from it. TruffleHog decodes before detecting (base64, UTF-16, escaped
+    // forms), so its value can be a decoding of what is in the blob - and a rewrite
+    // rule built from a decoding matches nothing while both rewrite tools report
+    // success. `decoder` names the transform when the engine says which it used.
+    'valueIsLiteral', 'decoder'
 ]);
 
 function makeFinding(fields) {
@@ -143,7 +151,13 @@ async function runTool(command, args, options = {}) {
     return execFileAsync(command, args, {
         timeout: options.timeoutMs || DEFAULT_TIMEOUT_MS,
         maxBuffer: MAX_BUFFER,
-        ...options
+        ...options,
+        // A history scan is `git log -p --all` underneath, whichever engine runs it,
+        // and git honours `refs/replace/*`: after a filter-repo rewrite those refs
+        // alias every original commit to its rewritten one, so a commit that still
+        // carries the secret is read as though it were already clean. The scan must
+        // see what is actually stored, not the rewrite's own view of it.
+        env: { ...process.env, ...(options.env || {}), GIT_NO_REPLACE_OBJECTS: '1' }
     });
 }
 
@@ -245,6 +259,33 @@ async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform 
         );
     }
     return runTool(execution.command, engineArgs, { timeoutMs });
+}
+
+/**
+ * The first RAW_OUTPUT_LIMIT bytes of a report file, for diagnostics only.
+ *
+ * Deliberately not the parsed value, and deliberately not the whole file: keeping
+ * the parse alive and stringifying it again is two copies of a report that can be
+ * tens of megabytes, and reading it whole before slicing is a third. Only the
+ * prefix is read, straight into a fixed buffer. Failure here is never fatal -
+ * a diagnostic must not be able to fail a scan.
+ */
+function readReportText(reportPath) {
+    let handle = null;
+    try {
+        handle = fs.openSync(reportPath, 'r');
+        const buffer = Buffer.allocUnsafe(RAW_OUTPUT_LIMIT);
+        const bytes = fs.readSync(handle, buffer, 0, RAW_OUTPUT_LIMIT, 0);
+        return buffer.toString('utf8', 0, bytes);
+    } catch {
+        return '';
+    } finally {
+        if (handle !== null) {
+            try {
+                fs.closeSync(handle);
+            } catch { /* the descriptor is going away with the process anyway */ }
+        }
+    }
 }
 
 /**
@@ -365,6 +406,10 @@ function relativizePath(filePath, repoDir) {
 function mapGitleaksFinding(raw, surface, repoDir) {
     const commit = raw.Commit || null;
     return makeFinding({
+        // Gitleaks reports the regex match (or its secret capture group) from the
+        // file as-is, and its optional base64 decoding (--max-decode-depth) is off
+        // unless asked for, which Leak Lock never does. The value is what is stored.
+        valueIsLiteral: true,
         file: relativizePath(raw.File || raw.SymlinkFile || null, repoDir),
         line: Number.isFinite(raw.StartLine) ? raw.StartLine : null,
         secret: raw.Secret || raw.Match || null,
@@ -456,6 +501,7 @@ const gitleaksEngine = {
 
         const warnings = [];
         const surfaces = {};
+        const rawReports = {};
         const findings = [];
 
         await withTempDir('leaklock-gitleaks-', async (dir) => {
@@ -485,6 +531,11 @@ const gitleaksEngine = {
                     await invoke(execution, args, { mounts, timeoutMs });
                     const raw = readJsonReport(hostReportPath);
                     surfaces[surface] = raw.length;
+                    // Diagnostics keep the report's own text, read back and bounded,
+                    // rather than the parsed array: holding the parse and then
+                    // stringifying it again doubles peak memory on a large scan, in
+                    // the extension host, for something only ever written to a file.
+                    rawReports[surface] = readReportText(hostReportPath);
                     for (const item of raw) {
                         findings.push(mapGitleaksFinding(item, surface, scanRoot));
                     }
@@ -516,7 +567,13 @@ const gitleaksEngine = {
             }
         });
 
-        return { findings, surfaces, warnings, dialect, runtime: execution.mode };
+        return {
+            findings, surfaces, warnings, dialect, runtime: execution.mode,
+            rawOutput: Object.entries(rawReports)
+                .map(([surface, text]) => `----- ${surface} -----\n${text}`)
+                .join('\n')
+                .slice(0, RAW_OUTPUT_LIMIT)
+        };
     }
 };
 
@@ -607,6 +664,25 @@ function toLineNumber(value) {
     return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * TruffleHog decodes before it detects, and says so.
+ *
+ * Its decoders (base64, UTF-16, escaped/percent forms) run over each chunk, so `Raw`
+ * is the credential TruffleHog *understood*, which is not the byte sequence the file
+ * *stores* - a token written `…%3d%3d` is reported as `…==`. A rewrite rule built
+ * from that matches no blob, and both rewrite tools exit 0 on a rule that matches
+ * nothing, so the secret survives a cleanup that reports success.
+ *
+ * There is no flag to turn the decoders off, but every result carries `DecoderName`.
+ * Anything other than PLAIN means "this value is not what the file contains", and a
+ * finding that says so can be handled honestly instead of producing a rule that
+ * silently does nothing.
+ */
+function truffleHogValueIsLiteral(raw) {
+    const decoder = String(raw?.DecoderName || 'PLAIN').toUpperCase();
+    return decoder === '' || decoder === 'PLAIN';
+}
+
 function mapTruffleHogFinding(raw) {
     // The Git metadata moved under SourceMetadata.Data.Git in v3; older builds put it
     // directly under SourceMetadata.Git. Accept both rather than silently losing the
@@ -618,6 +694,8 @@ function mapTruffleHogFinding(raw) {
         line: toLineNumber(git.line),
         secret: raw.Raw || raw.RawV2 || null,
         matchText: raw.RawV2 || raw.Raw || null,
+        decoder: raw.DecoderName || null,
+        valueIsLiteral: truffleHogValueIsLiteral(raw),
         description: describeTruffleHogDetector(raw.DetectorName),
         ruleId: raw.DetectorName || null,
         commitHash: git.commit || null,
@@ -743,7 +821,11 @@ const truffleHogEngine = {
             findings,
             warnings,
             verified: findings.filter(f => f.verified === true).length,
-            runtime: execution.mode
+            runtime: execution.mode,
+            // The engine's own bytes, kept so a disagreement about what was reported
+            // can be settled by looking rather than by reasoning. Bounded, because a
+            // large scan's output is not worth holding in memory whole.
+            rawOutput: String(stdout || '').slice(0, RAW_OUTPUT_LIMIT)
         };
     }
 };

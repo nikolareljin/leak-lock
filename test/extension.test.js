@@ -268,8 +268,10 @@ suite('Ref-complete rewrite script', () => {
 		const out = script();
 		// A rejected push (protected branch) would abort under `set -e` before the
 		// explicit restore; the trap guarantees the repo is never left detached.
-		assert.ok(/trap '.*git checkout --quiet "\$current_branch".*' EXIT/.test(out),
-			'installs an EXIT trap that restores the branch');
+		assert.ok(out.includes('trap cleanup_on_exit EXIT'), 'installs an EXIT trap');
+		const handlerAt = out.indexOf('cleanup_on_exit() {');
+		const restoreAt = out.indexOf('git checkout --quiet "$current_branch"');
+		assert.ok(handlerAt > -1 && restoreAt > handlerAt, 'the trap handler restores the branch');
 	});
 
 	test('is emitted as a multi-line script, not a single line', () => {
@@ -291,6 +293,65 @@ suite('Ref-complete rewrite script', () => {
 		assert.ok(out.includes('Required command not found on PATH'));
 		// The check must precede the rewrite, not follow it.
 		assert.ok(out.indexOf('command -v "$cmd"') < out.indexOf('# 1. Refresh every ref'));
+	});
+
+	test('uses the standalone pip launcher when Git cannot discover filter-repo', () => {
+		const out = script({
+			requiredCommands: ['git', 'git-filter-repo'],
+			rewriteLines: ['git_filter_repo --replace-text "$replacement_file" --force']
+		});
+		assert.match(out, /git filter-repo --version/, 'tries Git\'s subcommand first');
+		assert.match(out, /command -v git-filter-repo/, 'falls back to pip\'s standalone launcher');
+		assert.match(out, /git-filter-repo "\$@"/, 'the fallback receives the rewrite arguments');
+		assert.ok(!out.includes("for cmd in 'git' 'git-filter-repo'"), 'does not reject a valid PATH launcher before trying it');
+	});
+
+	test('a missing git-filter-repo stops the script before it touches a branch', () => {
+		const out = script({ requiredCommands: ['git', 'git-filter-repo'] });
+		const probeAt = out.indexOf('! git filter-repo --version');
+		assert.ok(probeAt > -1, 'the tool is probed, not assumed');
+		// The `command -v` loop cannot check this one: it is valid either as a git
+		// subcommand or as a PATH launcher. Without an explicit probe the script
+		// detaches HEAD and force-resets every local branch first, then fails.
+		for (const destructive of ['git checkout --detach', 'git branch --force --no-track']) {
+			assert.ok(probeAt < out.indexOf(destructive), `probe runs before: ${destructive}`);
+		}
+	});
+
+	test('drops the alias refs a rewrite leaves behind, and verifies past them', () => {
+		const out = script({ verifyRulesFile: '"$replacement_file"' });
+		// refs/replace/* makes git answer for the original commit with the rewritten
+		// one, so leaving them behind turns a still-leaking ref into a clean-looking
+		// one — for this script and for every later scan.
+		assert.ok(out.includes('refs/original/ refs/replace/'), 'both ref namespaces are deleted');
+		assert.ok(!/[^-]git grep --quiet/.test(out), 'verification greps must bypass replacement refs');
+		assert.ok(out.includes('git --no-replace-objects grep --quiet'));
+		assert.ok(out.includes('git --no-replace-objects ls-tree -r --name-only'));
+	});
+
+	test('one EXIT trap survives the whole script', () => {
+		const out = script();
+		// A second `trap ... EXIT` for the push log used to replace the first one, so
+		// the branch checked out before the rewrite was never restored.
+		assert.strictEqual((out.match(/^trap /gm) || []).length, 1, 'exactly one trap is installed');
+		assert.ok(out.includes('trap cleanup_on_exit EXIT'));
+		assert.ok(out.includes('rm -f "$push_log"'), 'the push log is still cleaned up');
+		assert.ok(out.includes('git checkout --quiet "$current_branch"'), 'the branch is still restored');
+	});
+
+	test('the rule file outlives a failed run and is removed only after verification', () => {
+		const out = script({
+			verifyRulesFile: '"$replacement_file"',
+			preambleLines: ['replacement_file="$(git rev-parse --absolute-git-dir)/leak-lock/rules"'],
+			finalCleanupCommand: 'rm -f "$replacement_file"',
+			retainedPathExpr: '"$replacement_file"'
+		});
+		const verifyAt = out.indexOf('# 9. Verify the remote');
+		const cleanupAt = out.lastIndexOf('rm -f "$replacement_file"');
+		assert.ok(verifyAt > -1 && cleanupAt > verifyAt, 'the rule file is removed after verification, not before');
+		assert.ok(!/trap .*rm -f "\$replacement_file"/.test(out), 'never removed from the EXIT trap');
+		assert.ok(out.includes('Replacement rules kept for a retry: $replacement_file'),
+			'a failed run says where the rules survived');
 	});
 
 	test('verification reads the rule file instead of repeating every secret inline', () => {
@@ -320,7 +381,7 @@ suite('Ref-complete rewrite script', () => {
 
 	test('verifies every remote ref after pushing', () => {
 		const out = script();
-		const verifyIndex = out.indexOf('git ls-tree -r --name-only');
+		const verifyIndex = out.indexOf('ls-tree -r --name-only');
 		const pushIndex = out.indexOf('git push --force --atomic');
 		assert.ok(verifyIndex > -1, 'emits a verification loop');
 		assert.ok(verifyIndex > pushIndex, 'verification runs after the push');
@@ -528,11 +589,18 @@ suite("Prepared cleanup scripts", () => {
 			{ "secret-value": "redacted" },
 			"git@example.com:repo.git"
 		);
-		assert.ok(script.includes('mktemp "${TMPDIR:-/tmp}/leak-lock-replacements.XXXXXX"'));
+		// Inside the git directory, never $TMPDIR: a snap-packaged git-filter-repo
+		// has a private /tmp and cannot open a host temp path, which killed the
+		// rewrite with FileNotFoundError before it touched a commit.
+		assert.ok(script.includes('replacement_dir="$(git rev-parse --absolute-git-dir)/leak-lock"'));
+		assert.ok(script.includes('mktemp "$replacement_dir/replacements.XXXXXX"'));
+		assert.ok(!script.includes('${TMPDIR:-/tmp}/leak-lock-replacements'), 'no host temp path for the rule file');
+		assert.ok(script.indexOf("cd '/repo with spaces'") < script.indexOf('replacement_dir='),
+			'the rule file is created inside the repository, so `git rev-parse` resolves');
 		assert.ok(script.includes("umask 077"));
+		assert.ok(script.includes('chmod 700 "$replacement_dir"'));
 		assert.ok(script.includes('chmod 600 "$replacement_file"'));
 		assert.ok(script.includes("secret-value==>redacted"));
-		assert.ok(/trap .*rm -f .*replacement_file.*git checkout.* EXIT/.test(script));
 		assert.ok(script.includes('--replace-text "$replacement_file"'));
 
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "leak-lock-script-test-"));
@@ -551,11 +619,12 @@ suite("Prepared cleanup scripts", () => {
 		}
 	});
 
-	test("in-panel execution uses owner-only temp storage and always removes it", async () => {
+	test("in-panel execution keeps the owner-only rule file when the cleanup fails", async () => {
 		let tempDir;
 		let tempFile;
+		const p = panel();
 		await assert.rejects(
-			panel()._withSecureReplacementsFile({ secret: "redacted" }, async (file) => {
+			p._withSecureReplacementsFile("/not-a-repo", { secret: "redacted" }, async (file) => {
 				tempFile = file;
 				tempDir = path.dirname(file);
 				if (process.platform !== "win32") {
@@ -567,9 +636,176 @@ suite("Prepared cleanup scripts", () => {
 			}),
 			/simulated cleanup failure/
 		);
-		assert.strictEqual(fs.existsSync(tempFile), false);
-		assert.strictEqual(fs.existsSync(tempDir), false);
+		// Kept on purpose: it is the only materialised copy of what still has to be
+		// redacted, so a retry costs nothing and the panel can point the user at it.
+		assert.strictEqual(fs.existsSync(tempFile), true);
+		assert.strictEqual(p._scanCleanup.replacementsFile, tempFile);
+		assert.match(p._retainedReplacementsNote({}), /kept at/);
+		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
+
+	test("in-panel execution removes the rule file once the cleanup completed", async () => {
+		let tempFile;
+		const p = panel();
+		const result = await p._withSecureReplacementsFile("/not-a-repo", { secret: "redacted" }, async (file) => {
+			tempFile = file;
+			assert.strictEqual(fs.readFileSync(file, "utf8"), "secret==>redacted");
+			return "done";
+		});
+		assert.strictEqual(result, "done");
+		assert.strictEqual(fs.existsSync(tempFile), false);
+		assert.strictEqual(fs.existsSync(path.dirname(tempFile)), false);
+	});
+
+	test("the rule file is created inside the repository's git directory", async () => {
+		const gitRewrite = require("../git-rewrite");
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "leaklock-rules-"));
+		try {
+			cp.execFileSync("git", ["init", "--quiet", repo]);
+			const handle = gitRewrite.createRulesFile(repo, "a==>b");
+			try {
+				assert.strictEqual(handle.insideGitDir, true);
+				// fs.realpathSync: git answers with the resolved path, and the OS temp
+				// directory is a symlink on macOS.
+				// One location for both producers: the generated scripts write
+				// <git dir>/leak-lock/replacements.*, so a panel run must not invent a
+				// sibling directory the error messages and the guide do not mention.
+				assert.ok(handle.file.startsWith(path.join(fs.realpathSync(repo), ".git", "leak-lock") + path.sep),
+					handle.file);
+				assert.strictEqual(fs.readFileSync(handle.file, "utf8"), "a==>b");
+			} finally {
+				gitRewrite.removeRulesFile(handle);
+			}
+			assert.strictEqual(fs.existsSync(handle.dir), false);
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	test("a rule that matched nothing is reported, not counted as removed", async () => {
+		// filter-repo and BFG both exit 0 when a rule matches nothing. Without this
+		// check a selected value stays in history behind a successful-looking run —
+		// the failure mode where every other secret disappears and one does not.
+		const gitRewrite = require("../git-rewrite");
+		const repo = fs.mkdtempSync(path.join(os.tmpdir(), "leaklock-unapplied-"));
+		try {
+			const git = (...args) => cp.execFileSync("git", ["-C", repo, ...args], {
+				stdio: "pipe",
+				env: {
+					...process.env,
+					GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null",
+					GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e.com",
+					GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e.com"
+				}
+			});
+			cp.execFileSync("git", ["init", "--quiet", repo]);
+			fs.writeFileSync(path.join(repo, "app.env"), "token=AKIAIOSFODNN7EXAMPLE\n");
+			git("add", "-A");
+			git("commit", "--quiet", "-m", "seed");
+
+			const remaining = await gitRewrite.findUnremovedRules(repo, [
+				{ source: "AKIAIOSFODNN7EXAMPLE", mode: "literal" },   // still there
+				{ source: "NEVER-IN-THIS-REPO-XYZ", mode: "literal" }, // genuinely absent
+				{ source: "AKIA[A-Z0-9]+", mode: "regex" }             // regex form
+			]);
+
+			const sources = remaining.map(r => r.source);
+			assert.ok(sources.includes("AKIAIOSFODNN7EXAMPLE"), "a value still in history is reported");
+			assert.ok(sources.includes("AKIA[A-Z0-9]+"), "regex rules are checked with -G");
+			assert.ok(!sources.includes("NEVER-IN-THIS-REPO-XYZ"), "an absent value is not reported");
+			assert.ok(remaining[0].commit, "the reporting names a commit the value survives in");
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	test("selected findings that cannot be cleaned are named, not dropped in silence", () => {
+		const p = panel();
+		p._scanResults = [
+			{ file: "a.env", secret: "real-secret", fullSecret: "real-secret", severity: "high", description: "x" },
+			{ file: "node_modules/pkg/b.env", secret: "dep-secret", fullSecret: "dep-secret", isDependency: true, severity: "high", description: "x" },
+			{ file: "c.env", secret: "", fullSecret: "", severity: "high", description: "x" }
+		];
+		p._scanCleanup.selection = new Set([0, 1, 2]);
+
+		const dropped = p._droppedFromCleanup();
+		assert.strictEqual(dropped.length, 2, "the dependency row and the valueless row are both reported");
+		assert.deepStrictEqual(dropped.map(d => d.file).sort(), ["c.env", "node_modules/pkg/b.env"]);
+		assert.match(dropped.find(d => d.file === "node_modules/pkg/b.env").reason, /dependency/i);
+		assert.match(dropped.find(d => d.file === "c.env").reason, /no value/i);
+		// And the rule list really does exclude them, which is why saying so matters.
+		assert.deepStrictEqual(Object.keys(p._resolveScanReplacements({})), ["real-secret"]);
+	});
+
+	test("a snap-confined git-filter-repo failure is reported as a snap problem", () => {
+		const gitRewrite = require("../git-rewrite");
+		const traceback = [
+			'Command failed: git filter-repo --replace-text /x/replacements.txt --force',
+			'  File "/snap/git-filter-repo/50/bin/git-filter-repo", line 2131, in get_replace_text',
+			"FileNotFoundError: [Errno 2] No such file or directory: '/x/replacements.txt'"
+		].join("\n");
+		const hint = gitRewrite.describeSandboxedFilterRepo(traceback, "/x/replacements.txt");
+		assert.match(hint, /installed as a snap/);
+		assert.match(hint, /pip install --user git-filter-repo/);
+		assert.strictEqual(gitRewrite.describeSandboxedFilterRepo("some other failure", "/x"), null);
+	});
+
+	test("a Buffer stderr still produces the snap hint, not a raw traceback", async () => {
+		// execFile yields a string under its default encoding, but a caller passing
+		// `encoding: 'buffer'` yields a Buffer, and the hint must not depend on which.
+		const gitRewrite = require("../git-rewrite");
+		const traceback = [
+			'  File "/snap/git-filter-repo/50/bin/git-filter-repo", line 2131, in get_replace_text',
+			"FileNotFoundError: [Errno 2] No such file or directory: '/x/replacements.txt'"
+		].join("\n");
+		for (const stderr of [traceback, Buffer.from(traceback)]) {
+			const error = new Error("Command failed: git filter-repo --replace-text /x/replacements.txt --force");
+			error.stderr = stderr;
+			const output = [error.message, error.stderr]
+				.map(part => (typeof part === "string" ? part : String(part)))
+				.join("\n");
+			assert.match(gitRewrite.describeSandboxedFilterRepo(output, "/x/replacements.txt"),
+				/installed as a snap/, `stderr as ${typeof stderr === "string" ? "string" : "Buffer"}`);
+		}
+	});
+	test("every builder can emit either flavour, whatever the host platform is", () => {
+		const p = panel();
+		const rules = { "secret-value": "redacted" };
+		const cases = [
+			["scan git", (flavor) => p._buildScanGitReplaceCommand("/repo", rules, "git@example.com:r.git", flavor)],
+			["scan bfg", (flavor) => p._buildScanBfgReplaceCommand("/repo", rules, flavor)],
+			["removal bfg", (flavor) => p._buildBfgCommand("/repo", [{ path: "a.env", base: "a.env", type: "file" }], flavor)],
+			["removal bfg per-target", (flavor) => p._buildIndividualBfgCommands("/repo", [{ path: "a.env", base: "a.env", type: "file" }], flavor)],
+			["removal git", (flavor) => p._buildGitFilterBranchCommandForDisplay("/repo", "git rm -r --cached --ignore-unmatch \"a.env\"", [{ path: "a.env", base: "a.env", type: "file" }], flavor)]
+		];
+		for (const [name, build] of cases) {
+			const sh = build("sh");
+			const ps1 = build("ps1");
+			assert.ok(sh.startsWith("#!/usr/bin/env bash"), `${name}: sh flavour is a bash script`);
+			assert.ok(ps1.includes("$ErrorActionPreference"), `${name}: ps1 flavour is a PowerShell script`);
+			assert.notStrictEqual(sh, ps1, `${name}: the two flavours are not the same text`);
+		}
+	});
+
+	test("the bash script stays within what macOS ships (bash 3.2)", () => {
+		const full = panel()._buildScanGitReplaceCommand("/repo", { "secret-value": "redacted" }, null, "sh");
+		// Comments are stripped: the header documents the very constructs this test
+		// forbids, and matching them there would fail on the documentation.
+		const script = full.split("\n").filter(line => !/^\s*#/.test(line)).join("\n");
+		// macOS ships bash 3.2 for licensing reasons, and it is what /usr/bin/env bash
+		// resolves to there unless the user installed a newer one. These are the 4.x
+		// constructs that would work on Linux and fail on a stock Mac.
+		assert.ok(!/\bmapfile\b|\breadarray\b/.test(script), "no mapfile/readarray (bash 4)");
+		assert.ok(!/declare\s+-A|local\s+-A/.test(script), "no associative arrays (bash 4)");
+		assert.ok(!/\$\{[A-Za-z_][A-Za-z0-9_]*\^\^|\$\{[A-Za-z_][A-Za-z0-9_]*,,/.test(script), "no ${var^^}/${var,,} (bash 4)");
+		assert.ok(!/&>>|\|&/.test(script), "no |& or &>> (bash 4)");
+		assert.ok(!/\bgrep\s+-P\b/.test(script), "no grep -P: BSD grep has no PCRE support");
+		assert.ok(!/\bsed\s+-i\s+[^']/.test(script), "no GNU-style sed -i: BSD sed needs an argument");
+		assert.ok(!/\breadlink\s+-f\b/.test(script), "no readlink -f: not in BSD readlink");
+		assert.ok(!/\bmktemp\s+-p\b|--tmpdir/.test(script), "no GNU-only mktemp flags");
+		assert.ok(full.startsWith("#!/usr/bin/env bash"), "found through PATH, not assumed at /bin/bash");
+	});
+
 	test("both prepared modes show save and local-run instructions", () => {
 		const p = panel();
 		p._scanResults = [{ file: "config.env", line: 1, secret: "secret", fullSecret: "secret", severity: "high", description: "test" }];
@@ -579,9 +815,15 @@ suite("Prepared cleanup scripts", () => {
 			p._scanCleanup.preparedCommand = "#!/bin/bash\necho prepared";
 			p._scanCleanup.preparedMode = mode;
 			const html = p._getResultsHtml();
+			// Both flavours, on every platform: a Windows user may run the rewrite in
+			// WSL or Git Bash, where only the bash script is any use.
 			assert.ok(html.includes("Save as .sh"));
+			assert.ok(html.includes("Save as .ps1"));
+			assert.ok(html.includes("saveScanScript('sh')"));
+			assert.ok(html.includes("saveScanScript('ps1')"));
 			assert.ok(html.includes("chmod 700 leak-lock-cleanup.sh"));
-			assert.ok(html.includes("owner-only OS temporary directory"));
+			assert.ok(html.includes("ExecutionPolicy Bypass"));
+			assert.ok(html.includes("owner-only directory inside the repository"));
 			assert.ok(html.includes(`copyScanCommand(&quot;scan-prepared-command-${mode}&quot;)`));
 		}
 	});
@@ -1635,6 +1877,27 @@ suite('Manual regex redaction end to end', () => {
 		}
 	}
 
+	/**
+	 * A snap-packaged git-filter-repo is confined to $HOME and cannot read this
+	 * fixture, which lives under os.tmpdir(). That is a property of the host, not
+	 * of the code under test, so the suite skips instead of reporting a failure
+	 * that no change here could fix.
+	 */
+	function filterRepoCanReadFixture(dir) {
+		const probe = path.join(dir, 'filter-repo-probe.txt');
+		fs.writeFileSync(probe, 'probe==>probe');
+		try {
+			cp.execFileSync('git', ['-C', dir, 'filter-repo', '--replace-text', probe, '--dry-run', '--force'],
+				{ env, stdio: 'pipe' });
+			return true;
+		} catch (error) {
+			const output = [error.message, error.stderr && error.stderr.toString()].filter(Boolean).join('\n');
+			return !gitRewrite.describeSandboxedFilterRepo(output, probe);
+		} finally {
+			try { fs.unlinkSync(probe); } catch (e) { void e; }
+		}
+	}
+
 	let base, origin, work, available;
 
 	suiteSetup(() => {
@@ -1655,6 +1918,7 @@ suite('Manual regex redaction end to end', () => {
 		].join('\n') + '\n');
 		const g = (args) => cp.execFileSync('git', ['-C', work, ...args], { env });
 		g(['add', '-A']); g(['commit', '-qm', 'add config']); g(['push', '-q', 'origin', 'main']);
+		available = filterRepoCanReadFixture(work);
 	});
 
 	suiteTeardown(() => {
@@ -1675,7 +1939,7 @@ suite('Manual regex redaction end to end', () => {
 
 		assert.strictEqual(originMatches('internal-corp-[0-9]+\\.example'), true, 'the remote starts dirty');
 
-		await panel._withSecureReplacementsFile(rules, async (replacementsFile) => {
+		await panel._withSecureReplacementsFile(work, rules, async (replacementsFile) => {
 			// The rule file is what both the rewrite and the verification read.
 			const contents = fs.readFileSync(replacementsFile, 'utf8');
 			assert.ok(contents.startsWith('regex:'), 'the regex: prefix reaches the rewrite tool');
@@ -2666,6 +2930,36 @@ suite('Fourth review pass', () => {
 			assert.strictEqual(offenders.length, 1);
 			assert.strictEqual(offenders[0].reason, 'secret still present');
 			assert.ok(!offenders[0].notVerified, 'a genuine hit is not a not-verified marker');
+		});
+
+		test('a replacement ref cannot make a still-leaking remote read as clean', async () => {
+			// git filter-repo writes refs/replace/<old> -> <new>, and every git read
+			// honours them: ask about the original commit and git answers with the
+			// rewritten one. Verification used to inherit that, so a remote that still
+			// held the secret was reported "verified clean on every remote ref" — the
+			// false all-clear this product exists to prevent. Reproduced by hand here,
+			// because the alias is what does the damage, not how it got written.
+			const run = (args) => cp.execFileSync('git', args, { cwd: work, env, stdio: 'pipe' })
+				.toString().trim();
+			const dirty = run(['rev-parse', 'refs/remotes/origin/main']);
+			fs.writeFileSync(path.join(work, 'app.conf'), 'password = REDACTED\n');
+			run(['add', '-A']);
+			run(['commit', '--quiet', '-m', 'redacted']);
+			const clean = run(['rev-parse', 'HEAD']);
+			run(['update-ref', `refs/replace/${dirty}`, clean]);
+			try {
+				assert.match(run(['show', `${dirty}:app.conf`]), /REDACTED/,
+					'precondition: plain git now answers for the dirty commit with the clean one');
+				const offenders = await gitRewrite.verifyRemoteRefs(work, 'origin', {
+					literals: ['SUPERSECRETVALUE123']
+				});
+				assert.strictEqual(offenders.length, 1,
+					'the remote still carries the secret, so verification must not report clean');
+				assert.strictEqual(offenders[0].reason, 'secret still present');
+			} finally {
+				run(['update-ref', '-d', `refs/replace/${dirty}`]);
+				run(['reset', '--hard', dirty]);
+			}
 		});
 
 		test('empty criteria report not-verified rather than clean', async () => {
@@ -4902,6 +5196,8 @@ suite('PR #105 eighth review pass', () => {
 		// Nosey Parker deliberately absent from the enabled set.
 		vscode.workspace.getConfiguration = () => ({ get: (key) => (key === 'scan.engines' ? ['gitleaks', 'trufflehog'] : undefined) });
 		p._checkDependencies = async () => {};
+		p._installBfg = async () => {};
+		p._reportSetupOutcome = () => {};
 
 		try {
 			await p._installDependencies();
@@ -4915,7 +5211,8 @@ suite('PR #105 eighth review pass', () => {
 		assert.strictEqual(progressRan, false, 'no Docker work may run when nothing needs Docker');
 	});
 
-	test('the Docker step still runs when Nosey Parker is enabled', async () => {
+	test('the Docker step still runs when Nosey Parker is enabled', async function () {
+		this.timeout(5000);
 		const p = new LeakLockSidebarProvider(
 			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'))),
 			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
@@ -4932,17 +5229,33 @@ suite('PR #105 eighth review pass', () => {
 		const getConfiguration = vscode.workspace.getConfiguration;
 		let progressRan = false;
 
-		// Fails immediately: this asserts the step is attempted, not that Docker exists.
-		vscode.window.withProgress = async () => { progressRan = true; throw new Error('docker unavailable in test'); };
+		// writable: true, or the property is left read-only for the rest of the
+		// process and a later test patching it by assignment silently does nothing.
+		Object.defineProperty(vscode.window, 'withProgress', {
+			configurable: true,
+			writable: true,
+			value: async () => {
+				progressRan = true;
+				throw new Error('docker unavailable in test');
+			}
+		});
 		vscode.window.showInformationMessage = async () => undefined;
 		vscode.window.showWarningMessage = async () => undefined;
-		vscode.workspace.getConfiguration = () => ({ get: (key) => (key === 'scan.engines' ? ['noseyparker'] : undefined) });
+		vscode.workspace.getConfiguration = () => ({
+			get: (key) => (key === 'scan.engines' ? ['noseyparker'] : undefined)
+		});
+		p._installBfg = async () => {};
 		p._checkDependencies = async () => {};
+		p._reportSetupOutcome = () => {};
 
 		try {
 			await p._installDependencies();
 		} finally {
-			vscode.window.withProgress = withProgress;
+			Object.defineProperty(vscode.window, 'withProgress', {
+				configurable: true,
+				writable: true,
+				value: withProgress
+			});
 			vscode.window.showInformationMessage = showInfo;
 			vscode.window.showWarningMessage = showWarn;
 			vscode.workspace.getConfiguration = getConfiguration;
@@ -5321,5 +5634,1069 @@ suite('PR #105 sixteenth review pass', () => {
 		const html = p._getEngineStatusHtml();
 		assert.match(html, /HTTP 403/, 'the primary failure is shown');
 		assert.match(html, /Docker fallback also failed: Docker is not installed/, 'and so is the fallback');
+	});
+});
+
+// A rule that matches nothing rewrites nothing, and both rewrite tools call that
+// success. Caught before the irreversible step rather than after it.
+suite('Rules that match nothing are caught before the rewrite', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	let repo;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-prematch-'));
+		const env = {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+			GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+			GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+		};
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, 'app.env'), 'token=AKIAIOSFODNN7EXAMPLE\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function panel() {
+		return new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+	}
+
+	test('names the rules that would rewrite nothing, and keeps the ones that would', async () => {
+		const unmatched = await panel()._rulesMatchingNothing(repo, [
+			{ source: 'AKIAIOSFODNN7EXAMPLE', mode: 'literal', replaceWith: '*****' },
+			// The shapes that produce a silent no-op: a value the scanner shortened,
+			// and one copied with its surrounding quote.
+			{ source: 'AKIAIOSFODNN7EXAMPL', mode: 'literal', replaceWith: '*****' },
+			{ source: '"AKIAIOSFODNN7EXAMPLE"', mode: 'literal', replaceWith: '*****' }
+		]);
+		const sources = unmatched.map(rule => rule.source);
+		assert.ok(!sources.includes('AKIAIOSFODNN7EXAMPLE'), 'a rule that matches is not reported');
+		assert.ok(sources.includes('"AKIAIOSFODNN7EXAMPLE"'), 'a quoted copy matches nothing and is named');
+		// A shortened value is still a substring, so it does match — which is why the
+		// check reports facts about history rather than guessing at intent.
+		assert.ok(!sources.includes('AKIAIOSFODNN7EXAMPL'), 'a substring still matches');
+	});
+
+	test('an empty or unknown repository never blocks a cleanup', async () => {
+		assert.deepStrictEqual(await panel()._rulesMatchingNothing(null, [{ source: 'x', mode: 'literal' }]), []);
+		assert.deepStrictEqual(await panel()._rulesMatchingNothing(repo, []), []);
+	});
+});
+
+// A scan can cover a folder that merely contains a repository, or a repository
+// with others nested inside it. Every finding records the repository that owns it
+// — that is why its commit link resolves — and the cleanup has to use that, not
+// the scanned path, or the rewrite runs where the value does not exist.
+suite('The cleanup targets the repository the findings live in', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	const OUTER = path.join(path.sep, 'work', 'projects');
+	const REPO_A = path.join(OUTER, 'service-a');
+	const REPO_B = path.join(OUTER, 'service-b');
+
+	function panelWith(results, selection, scanPath = OUTER, scanRepoRoot = null) {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanResults = results;
+		p._scanPath = scanPath;
+		p._scanRepoRoot = scanRepoRoot;
+		p._scanCleanup.selection = new Set(selection);
+		return p;
+	}
+
+	const finding = (file, repoRoot) => ({
+		file, repoRoot, secret: 'AKIAIOSFODNN7EXAMPLE', fullSecret: 'AKIAIOSFODNN7EXAMPLE',
+		severity: 'high', description: 'x', commitHash: 'a'.repeat(40)
+	});
+
+	test('uses the finding\'s own repository, not the scanned folder', () => {
+		const p = panelWith([finding('service-a/app.env', REPO_A)], [0]);
+		const target = p._resolveCleanupRepo();
+		assert.strictEqual(target.repo, REPO_A,
+			'rewriting the scanned folder would run against a repository without the value in it');
+		assert.strictEqual(target.reason, null);
+	});
+
+	test('refuses when the selection spans two repositories', () => {
+		const p = panelWith([finding('service-a/app.env', REPO_A), finding('service-b/app.env', REPO_B)], [0, 1]);
+		const target = p._resolveCleanupRepo();
+		assert.strictEqual(target.repo, null, 'one rewrite cannot span two repositories');
+		assert.match(target.reason, /more than one repository/);
+		assert.ok(target.reason.includes(REPO_A) && target.reason.includes(REPO_B), 'both are named');
+	});
+
+	test('falls back to the scanned repository for manual rules with nothing selected', () => {
+		const p = panelWith([], [], OUTER, REPO_A);
+		assert.strictEqual(p._resolveCleanupRepo().repo, REPO_A);
+
+		const noRoot = panelWith([], [], OUTER, null);
+		assert.strictEqual(noRoot._resolveCleanupRepo().repo, OUTER);
+	});
+
+	test('ignores the repository of a finding that is not cleanup-eligible', () => {
+		const dependency = { ...finding('service-b/node_modules/x/app.env', REPO_B), isDependency: true };
+		const p = panelWith([finding('service-a/app.env', REPO_A), dependency], [0, 1]);
+		assert.strictEqual(p._resolveCleanupRepo().repo, REPO_A,
+			'a row that cannot be cleaned must not drag a second repository into the decision');
+	});
+});
+
+suite('The refusal message can be acted on', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	test('identifies rules without revealing any part of them', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const secret = 'AKIAIOSFODNN7EXAMPLE';
+		const described = p._describeRules([
+			{ source: secret, mode: 'literal', replaceWith: '*****' },
+			{ source: 'pw1', mode: 'regex', replaceWith: '*****' }
+		]);
+
+		// A notification gets screenshotted and pasted into tickets. No part of the
+		// value may appear — not a prefix, not a suffix, not a short value whole.
+		assert.ok(!described.includes(secret), 'the value is not printed');
+		assert.ok(!described.includes('pw1'), 'a short value is not printed either');
+		for (let i = 0; i + 4 <= secret.length; i++) {
+			assert.ok(!described.includes(secret.slice(i, i + 4)),
+				`no 4-character fragment of the value leaks (${secret.slice(i, i + 4)})`);
+		}
+
+		// What it does carry: a stable digest to tell rules apart, plus the two
+		// facts that diagnose a silent no-op.
+		assert.match(described, /rule [0-9a-f]{8} \(literal, 20 chars\)/);
+		assert.match(described, /rule [0-9a-f]{8} \(regex, 3 chars\)/);
+		assert.strictEqual(
+			p._describeRules([{ source: secret, mode: 'literal' }]),
+			p._describeRules([{ source: secret, mode: 'literal' }]),
+			'the fingerprint is stable, so it can be matched against the rules table'
+		);
+		assert.notStrictEqual(
+			p._describeRules([{ source: secret, mode: 'literal' }]),
+			p._describeRules([{ source: secret + 'X', mode: 'literal' }]),
+			'a different value fingerprints differently'
+		);
+	});
+});
+
+// When a scan spans several repositories — backup clones, vendored copies, a
+// workspace of projects — a rule that matches nothing usually means the wrong
+// repository, not the wrong text. Locate it instead of blaming the user.
+suite('A rule that matches nothing points at the repository that has it', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let root, withSecret, without;
+
+	function makeRepo(dir, contents) {
+		fs.mkdirSync(dir, { recursive: true });
+		cp.execFileSync('git', ['init', '--quiet', dir], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(dir, 'app.env'), contents);
+		cp.execFileSync('git', ['-C', dir, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', dir, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	}
+
+	suiteSetup(() => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-whichrepo-'));
+		withSecret = path.join(root, 'real-project');
+		without = path.join(root, 'backup', 'repos', 'real-project');
+		makeRepo(withSecret, `token=${SECRET}\n`);
+		makeRepo(without, 'token=already-clean\n');
+	});
+
+	suiteTeardown(() => {
+		if (root) { try { fs.rmSync(root, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		// Both repositories were seen by the scan; the selected finding points at the
+		// backup copy, which is the case that produced a silent no-op.
+		p._scanResults = [
+			{ file: 'app.env', repoRoot: without, secret: SECRET, fullSecret: SECRET, severity: 'high', description: 'x' },
+			{ file: 'app.env', repoRoot: withSecret, secret: SECRET, fullSecret: SECRET, severity: 'high', description: 'x' }
+		];
+		p._scanPath = root;
+		return p;
+	}
+
+	test('locates the repository that contains the value', async () => {
+		const found = await panel()._findRepoContainingRules(
+			[{ source: SECRET, mode: 'literal', replaceWith: '*****' }],
+			without
+		);
+		assert.strictEqual(found, withSecret, 'the offer must name the repository that actually has it');
+	});
+
+	test('returns null when no scanned repository contains it', async () => {
+		const found = await panel()._findRepoContainingRules(
+			[{ source: 'NOT-IN-ANY-OF-THESE-REPOS', mode: 'literal', replaceWith: '*****' }],
+			without
+		);
+		assert.strictEqual(found, null, 'nothing to offer means the text really is the problem');
+	});
+
+	test('an accepted repository overrides the finding-derived one', () => {
+		const p = panel();
+		p._scanCleanup.selection = new Set([0]);
+		assert.strictEqual(p._resolveCleanupRepo().repo, without, 'without an override, the finding decides');
+		p._scanCleanup.repoOverride = withSecret;
+		assert.strictEqual(p._resolveCleanupRepo().repo, withSecret);
+	});
+});
+
+// A secret quoted in a commit message is in no blob. --replace-text alone leaves
+// it there, so the scan keeps reporting it while every cleanup looks successful.
+suite('Secrets in commit messages', () => {
+	const gitRewrite = require('../git-rewrite');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo, available;
+
+	suiteSetup(() => {
+		try {
+			cp.execFileSync('git', ['filter-repo', '--version'], { env, stdio: 'ignore' });
+			available = true;
+		} catch {
+			available = false;
+		}
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-message-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, 'notes.txt'), 'nothing sensitive here\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		// The value exists ONLY in the commit message, never in a file.
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', `rotate ${SECRET} out of staging`],
+			{ env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	test('a message-only secret is found, and reported as a message', async () => {
+		const found = await gitRewrite.findUnremovedRules(repo, [{ source: SECRET, mode: 'literal' }]);
+		assert.strictEqual(found.length, 1, 'searching blobs alone reports this as "matches nothing"');
+		assert.strictEqual(found[0].surface, 'message', 'the surface says which flag is needed to remove it');
+	});
+
+	test('--replace-message removes it, and the check then reports clean', async function () {
+		if (!available) { this.skip(); return; }
+		this.timeout(60000);
+		const rules = path.join(repo, '.git', 'rules.txt');
+		fs.writeFileSync(rules, `${SECRET}==>REDACTED\n`);
+		await gitRewrite.runGitFilterRepo(repo,
+			['--replace-text', rules, '--replace-message', rules, '--force'], {});
+		fs.rmSync(rules, { force: true });
+
+		assert.ok(!cp.execFileSync('git', ['-C', repo, 'log', '--all', '--format=%B'], { env })
+			.toString().includes(SECRET), 'the message no longer carries it');
+		assert.deepStrictEqual(
+			await gitRewrite.findUnremovedRules(repo, [{ source: SECRET, mode: 'literal' }]),
+			[]
+		);
+	});
+});
+
+// A scanner reports what it matched, which is not always what is stored: values get
+// truncated for display, normalised, decoded, or escaped in JSON/YAML. A rule built
+// from such a value matches nothing and filter-repo exits 0 — the finding then
+// survives every cleanup while the scan keeps reporting it.
+suite('Findings whose reported value is not the stored value', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo, sha;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-stored-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		// Stored escaped, as a JSON file would hold it.
+		fs.writeFileSync(path.join(repo, 'config.json'), '{"token":"AKIA\\/IOSF\\/ODNN7"}\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+		sha = cp.execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { env }).toString().trim();
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		return p;
+	}
+
+	test('a value stored exactly as reported is usable', async () => {
+		const verdict = await panel()._findingValueIsInItsBlob(repo, {
+			file: 'config.json', commitHash: sha, fullSecret: 'AKIA\\/IOSF\\/ODNN7'
+		});
+		assert.deepStrictEqual(verdict, { checked: true, present: true, reason: null });
+	});
+
+	test('a value the scanner un-escaped is reported as unusable, with the reason', async () => {
+		// What a scanner would show a human: the decoded form, which is in no blob.
+		const verdict = await panel()._findingValueIsInItsBlob(repo, {
+			file: 'config.json', commitHash: sha, fullSecret: 'AKIA/IOSF/ODNN7'
+		});
+		assert.strictEqual(verdict.checked, true);
+		assert.strictEqual(verdict.present, false);
+		assert.match(verdict.reason, /does not appear literally/);
+		assert.match(verdict.reason, /config\.json/);
+	});
+
+	test('a working-tree finding is not judged at all', async () => {
+		const verdict = await panel()._findingValueIsInItsBlob(repo, { file: 'config.json', fullSecret: 'x' });
+		assert.strictEqual(verdict.checked, false, 'no commit means nothing to compare against');
+	});
+});
+
+// The engines do not agree on what "the secret" is. Gitleaks reports the bytes it
+// matched in the file; TruffleHog decodes first (base64, UTF-16, escaped/percent
+// forms) and reports what it understood; Nosey Parker reports a snippet that may be
+// context rather than the match. Only the first can be used as a rewrite rule as-is.
+suite('Engine value semantics', () => {
+	const scanEngines = require('../scan-engines');
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	test('gitleaks values are the stored bytes', () => {
+		const finding = scanEngines.mapGitleaksFinding(
+			{ Secret: 'abc', Match: 'token=abc', File: 'a.env', StartLine: 1 }, 'worktree', '/repo');
+		assert.strictEqual(finding.valueIsLiteral, true, 'gitleaks reports what it matched in the file');
+		assert.strictEqual(finding.secret, 'abc');
+	});
+
+	test('TruffleHog is trusted only when it did not decode', () => {
+		const plain = scanEngines.mapTruffleHogFinding({ Raw: 'tok', DecoderName: 'PLAIN' });
+		assert.strictEqual(plain.valueIsLiteral, true);
+
+		// The reported case: the file holds `%3d%3d`, TruffleHog reports `==`.
+		for (const decoder of ['BASE64', 'UTF16', 'ESCAPED_UNICODE']) {
+			const decoded = scanEngines.mapTruffleHogFinding({ Raw: 'tok==', DecoderName: decoder });
+			assert.strictEqual(decoded.valueIsLiteral, false, `${decoder} output is not the stored text`);
+			assert.strictEqual(decoded.decoder, decoder, 'the transform is named, so the reason can be stated');
+		}
+
+		// No DecoderName at all (older builds) is treated as plain, not as suspect:
+		// refusing every finding from an old TruffleHog would be worse than the bug.
+		assert.strictEqual(scanEngines.mapTruffleHogFinding({ Raw: 'tok' }).valueIsLiteral, true);
+	});
+
+	test('a decoded value stays selectable, because the stored form is recoverable', () => {
+		// The decoded value IS the secret, written differently in the file. Excluding
+		// it would drop the finding from the cleanup entirely; keeping it lets
+		// _expandRulesToStoredForms retarget the rule at the encoding actually stored.
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const decoded = {
+			file: 'a.env', secret: 'tok==', fullSecret: 'tok==',
+			valueIsLiteral: false, decoder: 'BASE64', severity: 'high', description: 'x'
+		};
+		assert.strictEqual(p._isCleanupEligible(decoded), true);
+	});
+
+	test('a snippet that is context rather than the match is still refused', () => {
+		// No named transform means the value is not a rewritten form of the secret -
+		// it is the text around it, and rewriting that replaces the wrong text
+		// wherever it appears. Not recoverable, so not selectable.
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const contextOnly = {
+			file: 'a.env', secret: 'export TOKEN=', fullSecret: 'export TOKEN=',
+			valueIsLiteral: false, severity: 'high', description: 'x'
+		};
+		assert.strictEqual(p._isCleanupEligible(contextOnly), false);
+		assert.match(p._cleanupIneligibleReason(contextOnly), /text around this match/);
+	});
+
+	test('an ordinary finding is unaffected', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		assert.strictEqual(p._isCleanupEligible({ file: 'a.env', secret: 'x', fullSecret: 'x' }), true,
+			'findings without the flag keep working exactly as before');
+	});
+});
+
+// The reported failure, end to end: the file stores a percent-encoded token, the
+// scanner reports the decoded form, and the rule built from it matches nothing while
+// the rewrite reports success. The cleanup must target what the repository stores.
+suite('Rules follow the stored encoding, not the reported value', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const DECODED = 'sk_live_abc123==';
+	const STORED = 'sk_live_abc123%3d%3d';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-encoded-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, '.env'), `CALLBACK=https://x/cb?token=${STORED}\n`);
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		return p;
+	}
+
+	test('a decoded value is retargeted to the encoding the repository stores', async () => {
+		const p = panel();
+		// Precondition: the reported value is in no commit, which is why every
+		// rewrite built from it silently did nothing.
+		assert.strictEqual(
+			(await p._rulesMatchingNothing(repo, [{ source: DECODED, mode: 'literal' }])).length, 1,
+			'the decoded form matches nothing — this is the bug'
+		);
+
+		const { rules, substitutions } = await p._expandRulesToStoredForms(repo, [
+			{ source: DECODED, mode: 'literal', replaceWith: '*****' }
+		]);
+
+		assert.strictEqual(substitutions.length, 1, 'the substitution is recorded, not silent');
+		assert.ok(rules.some(rule => rule.source === STORED),
+			'the rule now targets the percent-encoded form actually in the blob');
+		assert.ok(rules.every(rule => rule.replaceWith === '*****'), 'the replacement is preserved');
+		assert.strictEqual((await p._rulesMatchingNothing(repo, rules)).length, 0,
+			'every expanded rule matches something');
+	});
+
+	test('both forms are rewritten when the repository holds both', async () => {
+		const twin = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-bothforms-'));
+		try {
+			cp.execFileSync('git', ['init', '--quiet', twin], { env, stdio: 'pipe' });
+			// A .env with the encoded form and a note with the decoded one: removing
+			// only the encoded copy would leave the credential in the repository.
+			fs.writeFileSync(path.join(twin, '.env'), `T=${STORED}\n`);
+			fs.writeFileSync(path.join(twin, 'NOTES.md'), `the token is ${DECODED}\n`);
+			cp.execFileSync('git', ['-C', twin, 'add', '-A'], { env, stdio: 'pipe' });
+			cp.execFileSync('git', ['-C', twin, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+
+			const { rules } = await panel()._expandRulesToStoredForms(twin, [
+				{ source: DECODED, mode: 'literal', replaceWith: '*****' }
+			]);
+			const sources = rules.map(rule => rule.source);
+			assert.ok(sources.includes(DECODED) && sources.includes(STORED),
+				'both the encoded and the decoded copy are targeted');
+		} finally {
+			fs.rmSync(twin, { recursive: true, force: true });
+		}
+	});
+
+	test('a value that is genuinely absent is left alone, not mangled into variants', async () => {
+		const { rules, substitutions } = await panel()._expandRulesToStoredForms(repo, [
+			{ source: 'NOT-IN-THIS-REPO-IN-ANY-FORM', mode: 'literal', replaceWith: '*****' }
+		]);
+		assert.strictEqual(substitutions.length, 0);
+		assert.deepStrictEqual(rules.map(r => r.source), ['NOT-IN-THIS-REPO-IN-ANY-FORM'],
+			'it stays as written so it is reported as unmatched, not silently replaced');
+	});
+
+	test('regex rules are never re-encoded', async () => {
+		const { rules, substitutions } = await panel()._expandRulesToStoredForms(repo, [
+			{ source: 'sk_live_[a-z0-9]+', mode: 'regex', replaceWith: '*****' }
+		]);
+		assert.strictEqual(substitutions.length, 0, 'encoding variants of a pattern are meaningless');
+		assert.deepStrictEqual(rules.map(r => r.source), ['sk_live_[a-z0-9]+']);
+	});
+});
+
+// The value must survive the round trip from engine output to rewrite rule
+// byte-for-byte. Rendering escapes for HTML, and the table shortens long values —
+// neither may reach the rule file, and neither may mutate what is stored.
+suite('A scanner value is never altered on its way to a rule', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const redactionRules = require('../redaction-rules');
+	const path = require('path');
+
+	// Every character that HTML escaping, URL decoding or JSON escaping would touch,
+	// including the percent-encoding that produced the reported failure.
+	const RAW = `tok%3d%3d&x<y>"z'q\\/end`;
+
+	function panelWithFinding(secret) {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = path.join(path.sep, 'repo');
+		p._scanResults = [p._createResult('app.env', 1, secret, 'test', 'rule-1')];
+		p._resetScanSelection();
+		return p;
+	}
+
+	test('the stored value is byte-identical to what the engine reported', () => {
+		const p = panelWithFinding(RAW);
+		assert.strictEqual(p._scanResults[0].fullSecret, RAW, 'no escaping, decoding or trimming on the way in');
+	});
+
+	test('the rule file line carries the raw bytes, not the rendered ones', () => {
+		const p = panelWithFinding(RAW);
+		const rules = p._toRuleList(p._resolveScanReplacements({}));
+		assert.strictEqual(rules.length, 1);
+		assert.strictEqual(rules[0].source, RAW);
+
+		const line = redactionRules.formatRuleLine(rules[0]);
+		assert.ok(line.startsWith(RAW + '==>'), 'the rewrite searches for exactly what the engine reported');
+		assert.ok(!line.includes('&amp;'), 'HTML entities never reach the rule file');
+		assert.ok(!line.includes('&quot;'));
+	});
+
+	test('rendering escapes for HTML without changing the stored value', () => {
+		const p = panelWithFinding(RAW);
+		const html = p._getResultsHtml();
+		// The table escapes, as it must — a raw `<` there would be markup.
+		assert.ok(html.includes('&amp;') || html.includes('&lt;'), 'the rendered cell is escaped');
+		assert.strictEqual(p._scanResults[0].fullSecret, RAW, 'rendering did not mutate the finding');
+		assert.strictEqual(p._toRuleList(p._resolveScanReplacements({}))[0].source, RAW);
+	});
+
+	test('the webview never sends a secret back, only its index', () => {
+		const source = require('fs').readFileSync(require('path').join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const collect = source.slice(source.indexOf('function collectReplacements'));
+		const body = collect.slice(0, collect.indexOf('\n                    }'));
+		assert.ok(body.includes("'idx:' + findingIndex"), 'findings are identified by index');
+		assert.ok(!/secret/i.test(body.replace(/secret-checkbox/g, '')),
+			'no secret text is read out of the DOM, so escaped markup cannot become a rule');
+	});
+
+	test('a value shortened for display cannot become a rule', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const long = 'x'.repeat(400);
+		const result = p._createResult('app.env', 1, long, 'test', 'rule-1');
+		assert.ok(result.secret.endsWith('...'), 'the table shows a shortened value');
+		assert.strictEqual(result.fullSecret, long, 'the full value is kept for the rewrite');
+		assert.strictEqual(p._isCleanupEligible(result), true, 'and the finding is usable');
+
+		// The only way the shortened form could reach a rule: the full value missing.
+		const lost = { ...result, fullSecret: '' };
+		assert.strictEqual(p._isCleanupEligible(lost), false);
+		assert.match(p._cleanupIneligibleReason(lost), /shortened form/);
+	});
+});
+
+// Provenance, so a value that reads oddly can be traced to whoever transformed it
+// instead of being blamed on the wrong layer.
+suite('Value provenance travels with the finding', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	test('the export records whether the value is the stored bytes, and the transform', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = path.join(path.sep, 'repo');
+		p._scanResults = [
+			{ file: 'a.env', line: 1, secret: 'tok%3d%3d', fullSecret: 'tok%3d%3d', severity: 'high', description: 'x' },
+			{ file: 'b.env', line: 1, secret: 'tok==', fullSecret: 'tok==', severity: 'high', description: 'x',
+				valueIsLiteral: false, decoder: 'BASE64' }
+		];
+
+		const payload = p._buildScanExportPayload({});
+		assert.strictEqual(payload.findings[0].secret, 'tok%3d%3d', 'the export carries raw bytes, not entities');
+		assert.strictEqual(payload.findings[0].valueIsLiteral, true);
+		assert.strictEqual(payload.findings[0].decoder, null);
+
+		assert.strictEqual(payload.findings[1].valueIsLiteral, false, 'a decoded value is flagged in the export');
+		assert.strictEqual(payload.findings[1].decoder, 'BASE64');
+
+		// And redaction still wins over provenance.
+		const redacted = p._buildScanExportPayload({ redactSensitive: true });
+		assert.strictEqual(redacted.findings[0].secret, '[REDACTED_SECRET]');
+	});
+
+	test('raw engine output is offered only when a scan captured some', async () => {
+		const vscode = require('vscode');
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		let warned = null;
+		vscode.window.showWarningMessage = async (message) => { warned = message; return undefined; };
+		p._rawEngineOutput = {};
+		await p._saveRawEngineOutput();
+		assert.match(warned || '', /No engine output was captured/);
+	});
+});
+
+// The question this all serves: a scanner reports a decoded value, and the user
+// presses Prepare. A script must come out, and it must contain the encoding the
+// repository actually stores — otherwise it is a script that runs and does nothing.
+suite('Preparing a script for a decoded value', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const redactionRules = require('../redaction-rules');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const DECODED = 'sk_live_abc123==';
+	const STORED = 'sk_live_abc123%3d%3d';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-script-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, '.env'), `CALLBACK=https://x/cb?token=${STORED}\n`);
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	test('a TruffleHog-decoded finding still reaches the rule list', () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		p._scanResults = [{
+			file: '.env', line: 1, secret: DECODED, fullSecret: DECODED,
+			valueIsLiteral: false, decoder: 'BASE64', severity: 'high', description: 'x'
+		}];
+		p._resetScanSelection();
+		assert.deepStrictEqual(Object.keys(p._resolveScanReplacements({})), [DECODED],
+			'excluding it would drop the secret from the cleanup entirely');
+	});
+
+	test('the generated script searches for the stored encoding', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+
+		const { rules } = await p._expandRulesToStoredForms(repo, [
+			{ source: DECODED, mode: 'literal', replaceWith: '*****' }
+		]);
+		const script = p._buildScanGitReplaceCommand(repo, rules, null, 'sh');
+
+		// The rule file the script writes must carry the bytes in the blob.
+		assert.ok(script.includes(`${STORED}==>*****`),
+			'the script rewrites the percent-encoded form the repository holds');
+		assert.ok(script.includes('--replace-text'), 'and it is a --replace-text rewrite');
+		assert.ok(script.includes('--replace-message'), 'commit messages included');
+
+		// And the rule file content is exactly the formatted rules, unescaped.
+		for (const rule of rules) {
+			assert.ok(script.includes(redactionRules.formatRuleLine(rule)));
+		}
+	});
+});
+
+// Display, export and rewrite must all show the bytes the repository holds. An
+// engine that decodes before reporting made all three wrong in the same way, and
+// the difference only surfaced when someone opened the file.
+suite('Displayed values follow the stored bytes', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const DECODED = 'sk_live_abc123==';
+	const STORED = 'sk_live_abc123%3d%3d';
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo, sha;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-align-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, '.env'), `CALLBACK=https://x/cb?token=${STORED}\n`);
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+		sha = cp.execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { env }).toString().trim();
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	function decodedFinding() {
+		return {
+			file: '.env', line: 1, secret: DECODED, fullSecret: DECODED, commitHash: sha,
+			repoRoot: repo, valueIsLiteral: false, decoder: 'BASE64',
+			severity: 'high', description: 'x', isGitHistory: true
+		};
+	}
+
+	test('a decoded value is replaced by the form the file stores', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const findings = [decodedFinding()];
+		const aligned = await p._alignValuesWithStoredBytes(findings, repo);
+
+		assert.strictEqual(aligned, 1);
+		assert.strictEqual(findings[0].fullSecret, STORED, 'the finding now carries the stored bytes');
+		assert.strictEqual(findings[0].reportedSecret, DECODED, 'what the engine said is kept, not discarded');
+		assert.strictEqual(findings[0].valueIsLiteral, true, 'it is now usable as a rewrite rule');
+		assert.strictEqual(findings[0].storedFormRecovered, true);
+	});
+
+	test('display and export both show the stored form, and say why', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = repo;
+		p._scanRepoRoot = repo;
+		p._scanResults = [decodedFinding()];
+		await p._alignValuesWithStoredBytes(p._scanResults, repo);
+		p._resetScanSelection();
+
+		const html = p._getResultsHtml();
+		assert.ok(html.includes(STORED), 'the table shows the value as stored');
+		assert.ok(html.includes('shown as stored'), 'and states that the engine decoded it');
+
+		const payload = p._buildScanExportPayload({});
+		assert.strictEqual(payload.findings[0].secret, STORED, 'the export agrees with the file');
+	});
+
+	test('a value stored exactly as reported is left untouched', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const findings = [{ ...decodedFinding(), secret: STORED, fullSecret: STORED }];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(findings, repo), 0);
+		assert.strictEqual(findings[0].fullSecret, STORED);
+		assert.strictEqual(findings[0].valueIsLiteral, true, 'and it is confirmed literal');
+		assert.ok(!findings[0].storedFormRecovered, 'nothing was recovered, so nothing is claimed');
+	});
+
+	test('a finding no engine flagged is aligned too', async () => {
+		// The gate used to be "the engine declared a decoder". An engine that
+		// normalises without saying so - or a build whose JSON omits the field -
+		// produced the same wrong value with nothing to trigger the check.
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const unflagged = [{
+			file: '.env', line: 1, secret: DECODED, fullSecret: DECODED,
+			commitHash: sha, repoRoot: repo, severity: 'high', description: 'x'
+		}];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(unflagged, repo), 1);
+		assert.strictEqual(unflagged[0].fullSecret, STORED);
+	});
+
+	test('a working-tree finding is compared against the file on disk', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const worktree = [{
+			file: '.env', line: 1, secret: DECODED, fullSecret: DECODED,
+			repoRoot: repo, severity: 'high', description: 'x'
+		}];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(worktree, repo), 1,
+			'an engine that normalises does so on every surface, not only history');
+		assert.strictEqual(worktree[0].fullSecret, STORED);
+	});
+
+	test('a value genuinely absent from the file is left exactly as reported', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const absent = [{
+			file: '.env', line: 1, secret: 'NOT-IN-THIS-FILE', fullSecret: 'NOT-IN-THIS-FILE',
+			commitHash: sha, repoRoot: repo, severity: 'high', description: 'x'
+		}];
+		assert.strictEqual(await p._alignValuesWithStoredBytes(absent, repo), 0);
+		assert.strictEqual(absent[0].fullSecret, 'NOT-IN-THIS-FILE', 'nothing invented');
+	});
+});
+
+// leakLockPanel exports the class directly. Destructuring it yields undefined, and
+// the failure only appears when the command is first invoked — a shape mismatch
+// that no unit test touching the class itself can catch.
+suite('Command handlers import the panel correctly', () => {
+	const fs = require('fs');
+	const path = require('path');
+
+	test('the panel module exports the class itself', () => {
+		const exported = require('../leakLockPanel');
+		assert.strictEqual(typeof exported, 'function', 'module.exports is the class, not a namespace');
+		assert.strictEqual(typeof exported.createOrShow, 'function', 'and its statics are reachable');
+	});
+
+	test('no call site destructures that export', () => {
+		const root = path.join(__dirname, '..');
+		const offenders = fs.readdirSync(root)
+			.filter(name => name.endsWith('.js'))
+			.filter(name => /\{\s*LeakLockPanel\s*\}\s*=\s*require/.test(
+				fs.readFileSync(path.join(root, name), 'utf8')));
+		assert.deepStrictEqual(offenders, [],
+			'destructuring the direct export yields undefined and throws when the command runs');
+	});
+});
+
+// findUnremovedRules reports a search it could not run as an entry rather than
+// throwing. Counting those as matches made a timeout or an unreadable repository
+// look like "every rule matched", which suppresses the warning and the refusal.
+suite('An unrunnable rule check is neither matched nor unmatched', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const gitRewrite = require('../git-rewrite');
+	const path = require('path');
+
+	const RULES = [
+		{ source: 'present-value', mode: 'literal', replaceWith: '*' },
+		{ source: 'absent-value', mode: 'literal', replaceWith: '*' },
+		{ source: 'unreadable-value', mode: 'literal', replaceWith: '*' }
+	];
+
+	test('only a search that ran and found nothing counts as unmatched', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const original = gitRewrite.findUnremovedRules;
+		gitRewrite.findUnremovedRules = async () => ([
+			{ source: 'present-value', mode: 'literal', commit: 'abc1234 seed' },
+			{ source: 'unreadable-value', mode: 'literal', commit: 'could not be checked: timeout' }
+		]);
+		try {
+			const unmatched = await p._rulesMatchingNothing(path.join(path.sep, 'repo'), RULES);
+			assert.deepStrictEqual(unmatched.map(rule => rule.source), ['absent-value'],
+				'the found rule is matched, the errored one is unknown, only the third is unmatched');
+		} finally {
+			gitRewrite.findUnremovedRules = original;
+		}
+	});
+
+	test('a check that failed for every rule refuses nothing', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const original = gitRewrite.findUnremovedRules;
+		gitRewrite.findUnremovedRules = async () => RULES.map(rule => ({
+			source: rule.source, mode: rule.mode, commit: 'could not be checked: not a git repository'
+		}));
+		try {
+			assert.deepStrictEqual(await p._rulesMatchingNothing(path.join(path.sep, 'repo'), RULES), [],
+				'an unrunnable check must not be reported as "nothing matches"');
+		} finally {
+			gitRewrite.findUnremovedRules = original;
+		}
+	});
+});
+
+// A finding whose value is unusable is correctly not selectable — but if that is
+// every finding, both cleanup buttons disable with nothing on screen explaining it,
+// which reads as a broken button.
+suite('Nosey Parker snippets and the disabled cleanup buttons', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const path = require('path');
+
+	const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+
+	function panel() {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		p._scanPath = path.join(path.sep, 'repo');
+		return p;
+	}
+
+	const npFinding = (snippet, file) => JSON.stringify([{
+		rule_name: 'AWS API Key',
+		matches: [{
+			provenance: [{ kind: 'file', path: path.join(path.sep, 'repo', file) }],
+			location: { source_span: { start: { line: 1 } } },
+			snippet
+		}]
+	}]);
+
+	test('a snippet emitted as a plain string is the matched value', () => {
+		// Reading `.matching` off a string yields undefined, which fell through to the
+		// placeholder — so the finding carried "content_unavailable" and, once values
+		// were checked, became non-selectable.
+		const [result] = panel()._parseNoseyParkerResults(npFinding(SECRET, 'b.env'));
+		assert.strictEqual(result.fullSecret, SECRET);
+		assert.strictEqual(panel()._isCleanupEligible(result), true);
+	});
+
+	test('the object form still works', () => {
+		const [result] = panel()._parseNoseyParkerResults(
+			npFinding({ before: 'token=', matching: SECRET, after: '' }, 'a.env'));
+		assert.strictEqual(result.fullSecret, SECRET);
+		assert.strictEqual(panel()._isCleanupEligible(result), true);
+	});
+
+	test('context without a match is still refused, because it is not the secret', () => {
+		const [result] = panel()._parseNoseyParkerResults(
+			npFinding({ before: 'token=AKIA...' }, 'c.env'));
+		assert.strictEqual(panel()._isCleanupEligible(result), false);
+	});
+
+	test('when nothing is selectable the panel says so, per reason', () => {
+		const p = panel();
+		p._scanResults = [
+			{ file: 'c.env', line: 1, secret: 'token=', fullSecret: 'token=', valueIsLiteral: false,
+				severity: 'high', description: 'x' },
+			{ file: 'node_modules/x/d.env', line: 1, secret: SECRET, fullSecret: SECRET, isDependency: true,
+				severity: 'high', description: 'x' }
+		];
+		p._resetScanSelection();
+
+		const html = p._getResultsHtml();
+		assert.ok(html.includes('No finding here can be cleaned automatically'),
+			'a disabled button with no explanation reads as a broken button');
+		assert.ok(html.includes('text around this match'), 'the per-finding reasons are counted and shown');
+		assert.ok(html.includes('manual redaction rule'), 'and the way forward is named');
+	});
+
+	test('with selectable findings the buttons are enabled and no notice is shown', () => {
+		const p = panel();
+		p._scanResults = [{ file: 'a.env', line: 1, secret: SECRET, fullSecret: SECRET,
+			severity: 'high', description: 'x' }];
+		p._resetScanSelection();
+
+		const html = p._getResultsHtml();
+		assert.ok(!html.includes('No finding here can be cleaned automatically'));
+		assert.ok(html.includes('id="prepare-git-button" onclick="prepareGitCommand()" >')
+			|| html.includes('id="prepare-git-button" onclick="prepareGitCommand()">'),
+			'the prepare button is not disabled when something is selected');
+	});
+});
+
+// A click must always produce a visible outcome. Two ways it stopped doing that:
+// an unbounded number of history searches (a button that looks dead while it
+// works), and a rejected handler nothing awaits (a button that is dead).
+suite('Prepare always produces a visible outcome', () => {
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const env = {
+		...process.env,
+		GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+		GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+		GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+	};
+
+	let repo;
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-budget-'));
+		cp.execFileSync('git', ['init', '--quiet', repo], { env, stdio: 'pipe' });
+		fs.writeFileSync(path.join(repo, 'app.env'), 'token=AKIAIOSFODNN7EXAMPLE\n');
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'seed'], { env, stdio: 'pipe' });
+	});
+
+	suiteTeardown(() => {
+		if (repo) { try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; } }
+	});
+
+	test('checks every rule without a history walk per rule', async () => {
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		// Twenty rules times nine encodings used to be a few hundred full-history
+		// walks - minutes of a button that appears to do nothing. The check is still
+		// exhaustive; it is one search of the repository instead of one per value.
+		const many = Array.from({ length: 20 }, (_, i) => ({
+			source: `absent-value-${i}==`, mode: 'literal', replaceWith: '*****'
+		}));
+
+		const gitRewrite = require('../git-rewrite');
+		const originalPickaxe = gitRewrite.findUnremovedRules;
+		let pickaxeCalls = 0;
+		gitRewrite.findUnremovedRules = async (...args) => {
+			pickaxeCalls += 1;
+			return originalPickaxe(...args);
+		};
+
+		let result;
+		try {
+			result = await p._expandRulesToStoredForms(repo, many);
+		} finally {
+			gitRewrite.findUnremovedRules = originalPickaxe;
+		}
+
+		assert.strictEqual(pickaxeCalls, 0, 'no per-value history walk is issued');
+		assert.strictEqual(result.searchComplete, true, 'and the search really did cover everything');
+		assert.strictEqual(result.rules.length, many.length, 'every rule still reaches the cleanup');
+	});
+
+	test('a value present only in an older commit is still found', async () => {
+		// The ref-tip search cannot see it; the object-store pass can. Losing this
+		// would turn the optimisation into a silent gap in the check.
+		const p = new LeakLockPanel({ fsPath: path.join(path.sep, 'tmp', 'ext') });
+		const gone = 'ONLY-IN-AN-OLD-COMMIT-XYZ';
+		fs.writeFileSync(path.join(repo, 'old.txt'), `${gone}\n`);
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'add'], { env, stdio: 'pipe' });
+		fs.rmSync(path.join(repo, 'old.txt'));
+		cp.execFileSync('git', ['-C', repo, 'add', '-A'], { env, stdio: 'pipe' });
+		cp.execFileSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'remove'], { env, stdio: 'pipe' });
+
+		const { rules } = await p._expandRulesToStoredForms(repo, [
+			{ source: gone, mode: 'literal', replaceWith: '*****' }
+		]);
+		assert.deepStrictEqual(rules.map(rule => rule.source), [gone]);
+		assert.strictEqual((await p._rulesMatchingNothing(repo, rules)).length, 0,
+			'the value is in history, so it must not be reported as matching nothing');
+	});
+
+	test('a rejected handler is reported rather than swallowed', async () => {
+		const vscode = require('vscode');
+		const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		// The four fire-and-forget cases must go through the reporter.
+		for (const handler of ['_prepareScanBfgCommand', '_prepareScanGitCommand', '_runPreparedScanCleanup']) {
+			const dispatch = source.slice(source.indexOf('switch (message.command)'));
+			const call = dispatch.indexOf(handler);
+			assert.ok(call > -1, `${handler} is dispatched`);
+			const before = dispatch.slice(Math.max(0, call - 200), call);
+			assert.ok(before.includes('reportIfRejected'), `${handler} must not be fire-and-forget`);
+		}
+		// And the reporter tells the user, rather than only the console.
+		let shown = null;
+		const original = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = async (message) => { shown = message; };
+		try {
+			const { __reportIfRejected } = require('../leakLockPanel');
+			if (typeof __reportIfRejected === 'function') {
+				__reportIfRejected(Promise.reject(new Error('boom')), 'Preparing');
+				await new Promise(resolve => setImmediate(resolve));
+				assert.match(shown || '', /Preparing failed.*boom/);
+			}
+		} finally {
+			vscode.window.showErrorMessage = original;
+		}
 	});
 });

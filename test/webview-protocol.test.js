@@ -77,6 +77,39 @@ suite('webview message protocol', () => {
             'showReportDialog must set it');
     });
 
+    test('commit clicks use the verified host resolver rather than an inline URL', () => {
+        assert.ok(PANEL.includes('class="commit-link" data-finding-index="'),
+            'the Git Info item must carry its finding index to the host');
+        assert.ok(PANEL.includes("event.target.closest('.commit-link[data-finding-index]')"),
+            'the delegated click handler must handle Git Info items');
+        assert.ok(PANEL.includes("vscode.postMessage({ command: 'openCommitUrl', findingIndex: idx })"),
+            'the click handler must ask the host to resolve and open the URL');
+        assert.ok(!PANEL.includes('<a class="commit-link" href='),
+            'an inline href bypasses Git-backed path verification');
+    });
+
+    test('keyboard activation matches each element\'s ARIA role', () => {
+        // A role="button" activates on Enter AND Space; a role="link" on Enter only,
+        // where Space belongs to scrolling. Making them uniform broke one or the
+        // other twice, so both directions are pinned here.
+        const handlers = PANEL.split('\n')
+            .filter(line => /role="(button|link)"/.test(line) && line.includes('onkeydown="'))
+            .map(line => ({
+                role: line.match(/role="(button|link)"/)[1],
+                handler: line.match(/onkeydown="([^"]+)"/)[1]
+            }));
+        assert.ok(handlers.length >= 3, `expected the keyboard-activated spans, found ${handlers.length}`);
+        for (const { role, handler } of handlers) {
+            const acceptsSpace = /=== ?' '/.test(handler) || handler.includes("'Spacebar'");
+            assert.ok(handler.includes("'Enter'"), `a role="${role}" activates on Enter`);
+            if (role === 'button') {
+                assert.ok(acceptsSpace, 'a role="button" must accept Space');
+            } else {
+                assert.ok(!acceptsSpace, 'a role="link" must not swallow Space');
+            }
+        }
+    });
+
     test('the commands this feature added are actually handled', () => {
         const handled = handledCommands(PANEL);
         assert.ok(handled, 'could not locate the message switch');

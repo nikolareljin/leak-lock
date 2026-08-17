@@ -15,6 +15,7 @@ const engineInstall = require('./engine-install');
 // The container fallback, for a machine where a downloaded executable will not run but
 // Docker will.
 const engineDocker = require('./engine-docker');
+const gitRewrite = require('./git-rewrite');
 // Keywords are user-supplied and land in both element text and attribute values,
 // so they must be escaped before interpolation into the webview HTML. Shared with
 // leakLockPanel.js so both webviews escape identically.
@@ -103,6 +104,13 @@ class LeakLockSidebarProvider {
                                 this._isInstalling = false;
                                 this._updateView();
                                 vscode.window.showErrorMessage(`Dependency setup failed: ${error.message}`);
+                            });
+                        break;
+                    case 'installFilterRepo':
+                        this._installFilterRepo()
+                            .catch(error => {
+                                console.error('git-filter-repo install failed:', error);
+                                vscode.window.showErrorMessage(`git-filter-repo install failed: ${error.message}`);
                             });
                         break;
                     case 'installEngine':
@@ -562,6 +570,10 @@ class LeakLockSidebarProvider {
                     vscode.postMessage({ command: 'installDependencies' });
                 }
 
+                function installFilterRepo() {
+                    vscode.postMessage({ command: 'installFilterRepo' });
+                }
+
                 // Delegated, like every other button that carries data: the engine id
                 // travels in a data attribute rather than inside an inline handler.
                 document.addEventListener('click', (e) => {
@@ -868,6 +880,10 @@ class LeakLockSidebarProvider {
         // Get status for each dependency
         const dockerStatus = this._dependencyStatus?.docker?.installed ? '✅' : '❌';
         const noseyparkerStatus = this._dependencyStatus?.noseyparker?.installed ? '✅' : '❌';
+        const filterRepo = this._dependencyStatus?.filterRepo || {};
+        // Installed but confined is not ready: a snap build cannot read a repository
+        // outside $HOME, so the rewrite fails before it touches a commit.
+        const filterRepoStatus = filterRepo.installed ? (filterRepo.confined ? '⚠️' : '✅') : '⚠️';
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
         // BFG without a JVM is not a tool, it is a file. Marked unavailable rather than
         // merely "not downloaded", which would suggest downloading it would help.
@@ -960,6 +976,41 @@ class LeakLockSidebarProvider {
                     </div>
                 ` : ''}
                 
+                <div style="margin: 15px 0 10px 0; font-size: 11px; color: var(--vscode-descriptionForeground);">
+                    <strong>Required for Git-only cleanup:</strong>
+                </div>
+
+                <div class="status-item">
+                    <span><span class="status-icon">${filterRepoStatus}</span>git-filter-repo</span>
+                </div>
+                ${filterRepo.installed && !filterRepo.confined ? `
+                    <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                        ${escapeHtml(filterRepo.form || 'installed')}${filterRepo.version ? ` — ${escapeHtml(filterRepo.version)}` : ''}
+                    </div>
+                ` : ''}
+                ${filterRepo.confined ? `
+                    <div class="install-instructions">
+                        <div class="warning-message">⚠️ Installed as a snap (${escapeHtml(filterRepo.path || '/snap/bin/git-filter-repo')}), which is confined</div>
+                        <div style="font-size: 11px; margin-top: 4px;">
+                            A snap cannot read a repository outside your home directory, so a cleanup fails
+                            before it changes anything. Install the unconfined tool instead:
+                            <code>python3 -m pip install --user git-filter-repo</code>
+                            (<code>sudo snap remove git-filter-repo</code> first, or it stays first on PATH).
+                        </div>
+                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (pip)</button>
+                    </div>
+                ` : ''}
+                ${!filterRepo.installed ? `
+                    <div class="install-instructions">
+                        <div class="warning-message">⚠️ ${escapeHtml(filterRepo.error || 'git-filter-repo not found')}</div>
+                        <div style="font-size: 11px; margin-top: 4px;">
+                            Without it the Git-only cleanup cannot rewrite history. The prepared script and the
+                            manual commands are still shown, and BFG remains available if you have Java.
+                        </div>
+                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (pip)</button>
+                    </div>
+                ` : ''}
+
                 <div style="margin: 15px 0 10px 0; font-size: 11px; color: var(--vscode-descriptionForeground);">
                     <strong>Optional for BFG cleanup:</strong>
                 </div>
@@ -1260,6 +1311,64 @@ class LeakLockSidebarProvider {
         `;
     }
 
+    /**
+     * Install git-filter-repo with pip, into the user site rather than a system
+     * prefix, so no elevation is needed and PEP 668's "externally managed
+     * environment" refusal does not apply.
+     *
+     * The install is verified by re-probing rather than by trusting pip's exit
+     * code: a successful install into a directory that is not on this VS Code
+     * window's PATH is indistinguishable from no install at all, from here, and
+     * that is precisely the case the user has to be told about.
+     */
+    async _installFilterRepo() {
+        const execFileAsync = require('util').promisify(require('child_process').execFile);
+        const { command, args } = gitRewrite.buildFilterRepoInstallCommand();
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'Installing git-filter-repo...',
+            cancellable: false
+        }, async () => {
+            try {
+                await execFileAsync(command, args, { maxBuffer: 16 * 1024 * 1024 });
+            } catch (error) {
+                const detail = [error.stderr, error.stdout, error.message]
+                    .map(part => (typeof part === 'string' ? part : String(part || '')))
+                    .find(part => part.trim());
+                throw new Error(
+                    `${command} ${args.join(' ')} failed. ${String(detail || '').split('\n')[0]}`
+                );
+            }
+        });
+
+        const status = await gitRewrite.detectFilterRepo();
+        this._dependencyStatus.filterRepo = status;
+        this._applyDependencyVerdict();
+        this._updateView();
+
+        if (status.installed && !status.confined) {
+            vscode.window.showInformationMessage(
+                `git-filter-repo is ready (${status.form}${status.version ? `, ${status.version}` : ''}).`
+            );
+            return;
+        }
+        // pip put it somewhere this process cannot see - almost always ~/.local/bin
+        // missing from PATH, and a VS Code window started from the desktop never
+        // picks up a PATH change made in a terminal.
+        // The user scripts directory differs per platform, and naming the wrong one
+        // sends people editing a PATH entry that was never involved.
+        const scriptsDir = process.platform === 'win32'
+            ? 'your Python user Scripts directory (%APPDATA%\\Python\\PythonXY\\Scripts) — '
+                + '`python -m site --user-base` prints its parent'
+            : 'your user scripts directory (usually ~/.local/bin) — '
+                + '`python3 -m site --user-base` prints its parent';
+        vscode.window.showWarningMessage(
+            `pip reported success, but git-filter-repo is still not on this window's PATH. Add ${scriptsDir} `
+            + 'to PATH, then reload the window.'
+        );
+    }
+
     async _checkDependencies() {
         // execFile, not exec: no shell means no quoting rules to get wrong and no PATH
         // resolution differences between platforms, and the image name travels as one
@@ -1270,7 +1379,11 @@ class LeakLockSidebarProvider {
             docker: { installed: false, version: null, error: null },
             noseyparker: { installed: false, error: null },
             java: { installed: false, version: null, error: null },
-            bfg: { installed: false, path: null, error: null }
+            bfg: { installed: false, path: null, error: null },
+            // The Git-only cleanup route. Reported here because "can this machine
+            // remove a secret from history" is a setup question, and it used to be
+            // answered only by a rewrite failing halfway through.
+            filterRepo: { installed: false, form: null, version: null, confined: false, error: null }
         };
 
         // Check Docker
@@ -1321,6 +1434,10 @@ class LeakLockSidebarProvider {
         } catch {
             this._dependencyStatus.java.error = 'Java not installed or not in PATH';
         }
+
+        // Check git-filter-repo: either installation form is fine, and a confined
+        // snap build is reported as installed-but-limited rather than as ready.
+        this._dependencyStatus.filterRepo = await gitRewrite.detectFilterRepo();
 
         // Check BFG tool
         const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
@@ -1468,6 +1585,11 @@ class LeakLockSidebarProvider {
 
         if (!this._dependencyStatus?.java?.installed || !this._dependencyStatus?.bfg?.installed) {
             optional.push('BFG');
+        }
+        // Optional for scanning, required for the Git-only cleanup - which is the
+        // default route and the one that needs no Java.
+        if (!this._dependencyStatus?.filterRepo?.installed || this._dependencyStatus?.filterRepo?.confined) {
+            optional.push('git-filter-repo');
         }
         if (!this._dependencyStatus?.docker?.installed) {
             optional.push('Docker');

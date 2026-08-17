@@ -146,4 +146,4 @@ function repoRelativeCandidates(file, scanPath, repoRoot) {
     return candidates;
 }
 
-module.exports = { describeFindingPath, repoRelativePath, repoRelativeCandidates };
+module.exports = { findGitRoot, describeFindingPath, repoRelativePath, repoRelativeCandidates };
