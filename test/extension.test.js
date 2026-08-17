@@ -7366,6 +7366,32 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.match(html, /an unrecorded time/);
 	});
 
+	// Copilot review: the verdict displayed the first hash of each list, so a
+	// repository with several roots showed two different hashes as the evidence for
+	// calling them the same repository.
+	test('a matching root is reported as the hash that actually matched', () => {
+		const verdict = scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111', 'shared0'] },
+			{ rootCommits: ['bbb222', 'shared0'] }
+		);
+		assert.strictEqual(verdict.verdict, 'match');
+		assert.strictEqual(verdict.recorded, 'shared0');
+		assert.strictEqual(verdict.current, 'shared0');
+	});
+
+	// Copilot review: identity came from the cleanup target, which follows the current
+	// selection, so the same scan could export two different identities.
+	test('the exported identity comes from the scan, not from what is selected', () => {
+		const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const fn = source.slice(source.indexOf('async _exportScanResultsJson('));
+		const call = fn.slice(0, fn.indexOf('_buildScanExportPayload') + 400);
+		assert.ok(call.includes('_scanRepoRoot'), 'the scan repository is what a report is about');
+		// The identity argument itself, not the prose around it: the cleanup target
+		// follows the current selection and is not identity.
+		assert.match(call, /_readRepositoryIdentity\(scanRepo/);
+		assert.doesNotMatch(call, /_readRepositoryIdentity\(this\._resolveCleanupRepo/);
+	});
+
 	test('the imported card is reachable with no scan on screen', () => {
 		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
 		panel._updateWebviewContent = () => {};

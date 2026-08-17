@@ -478,8 +478,12 @@ function normalizeRemoteUrl(url) {
 function describeRepositoryIdentity(recorded, current) {
     const rootsA = Array.isArray(recorded?.rootCommits) ? recorded.rootCommits.filter(Boolean) : [];
     const rootsB = Array.isArray(current?.rootCommits) ? current.rootCommits.filter(Boolean) : [];
-    if (rootsA.length && rootsB.length && rootsA.some(hash => rootsB.includes(hash))) {
-        return { verdict: 'match', basis: 'root commit', recorded: rootsA[0], current: rootsB[0] };
+    // Report the hash that actually matched, not the first of each list. A repository
+    // with several roots would otherwise show two different hashes as the evidence for
+    // saying they are the same repository, which reads as a contradiction.
+    const sharedRoot = rootsA.find(hash => rootsB.includes(hash)) || null;
+    if (sharedRoot) {
+        return { verdict: 'match', basis: 'root commit', recorded: sharedRoot, current: sharedRoot };
     }
 
     const remoteA = normalizeRemoteUrl(recorded?.remote);
