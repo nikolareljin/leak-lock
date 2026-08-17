@@ -3599,8 +3599,11 @@ class LeakLockPanel {
      * and it becomes the finding's value. The reported form is kept alongside, so the
      * row can say why the two differ rather than appearing to change the scan result.
      *
-     * Bounded deliberately: only findings an engine flagged as decoded are checked,
-     * one blob read per (commit, path), so an ordinary scan does no extra work.
+     * Bounded, but not by which engine reported the finding: gating this on an engine
+     * declaring a decode missed every engine that normalises without saying so, which
+     * is the case that produced the defect. Every finding with something to compare
+     * against is checked, capped at 500, with one read per (commit, path) cached - so
+     * a scan of a hundred findings in a handful of files does a handful of reads.
      */
     async _alignValuesWithStoredBytes(results, scanPath) {
         // Every finding with something to compare against, whichever engine produced

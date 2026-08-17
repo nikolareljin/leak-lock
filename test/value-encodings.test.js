@@ -53,6 +53,19 @@ suite('value encodings', () => {
 		assert.ok(encodings.candidateForms('100%').length > 0);
 	});
 
+	test('only the hex digits of an escape are lowercased, never the value', () => {
+		// `encodeURIComponent(x).toLowerCase()` lowercased everything, so `ABC%3D`
+		// became `abc%3d` — a string that was never stored. As a search key that is
+		// a miss; as a rewrite rule that happens to occur, it redacts the wrong text.
+		assert.strictEqual(encodings.lowercasePercentEscapes('ABC%3D%2F'), 'ABC%3d%2f');
+		assert.strictEqual(encodings.lowercasePercentEscapes('NoEscapesHere'), 'NoEscapesHere');
+
+		const forms = encodings.candidateForms('ABC=');
+		assert.ok(forms.includes('ABC%3D') && forms.includes('ABC%3d'), 'both hex cases are offered');
+		assert.ok(forms.every(form => !form.startsWith('abc')),
+			'the value itself keeps its case in every candidate');
+	});
+
 	test('no form is empty or duplicated', () => {
 		const forms = encodings.candidateForms('plain-token');
 		assert.strictEqual(new Set(forms).size, forms.length);

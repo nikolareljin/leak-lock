@@ -33,6 +33,18 @@ function percentEncodeSome(value, { upperCase = true, chars = PERCENT_ENCODED_CH
     return out;
 }
 
+/**
+ * Lowercase the hex digits of `%XX` escapes and nothing else.
+ *
+ * `encodeURIComponent(x).toLowerCase()` would lowercase the whole string, including
+ * characters the encoder left alone - so `ABC%3D` becomes `abc%3d`, a value that was
+ * never stored anywhere. Used as a search key that is merely a miss; used as a
+ * rewrite rule that happens to occur in the repository, it redacts the wrong text.
+ */
+function lowercasePercentEscapes(value) {
+    return String(value).replace(/%[0-9A-Fa-f]{2}/g, escape => escape.toLowerCase());
+}
+
 /** Percent-decode, tolerating a value that is not encoded at all. */
 function percentDecode(value) {
     try {
@@ -78,7 +90,7 @@ function candidateForms(value) {
         percentEncodeSome(source, { upperCase: true }),
         percentEncodeSome(source, { upperCase: false }),
         encodeURIComponent(source),
-        encodeURIComponent(source).toLowerCase(),
+        lowercasePercentEscapes(encodeURIComponent(source)),
         jsonEscape(source),
         htmlEscape(source),
         // And the reverse: the file holds the decoded form while the scanner
@@ -117,6 +129,7 @@ function findStoredForms(value, text) {
 module.exports = {
     PERCENT_ENCODED_CHARS,
     percentEncodeSome,
+    lowercasePercentEscapes,
     percentDecode,
     jsonEscape,
     htmlEscape,
