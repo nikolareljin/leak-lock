@@ -5356,10 +5356,15 @@ class LeakLockPanel {
             : '';
 
         // The recorded path is shown as information, never as identity: a clone lives
-        // wherever the user put it.
+        // wherever the user put it. The note states the two paths and what identity
+        // actually established, rather than asserting "same repository" on the strength
+        // of a path check that cannot show any such thing.
         const repoMatch = comparison ? comparison.repoMatch : null;
+        const identityNote = identity && identity.verdict === 'match'
+            ? ` Identity confirmed by ${escapeHtml(identity.basis)}, so this is the same repository in another location.`
+            : ' Identity could not be confirmed for this report, so check it is the same repository before trusting a resolved.';
         const pathNote = !report.crossRepository && repoMatch && repoMatch.known && repoMatch.matches === false
-            ? `<div class="coverage-note">Exported from <code>${escapeHtml(repoMatch.recorded)}</code>; checked against <code>${escapeHtml(comparison.repoDir || 'none')}</code>. Same repository, different location on disk.</div>`
+            ? `<div class="coverage-note">Exported from <code>${escapeHtml(repoMatch.recorded)}</code>; checked against <code>${escapeHtml(comparison.repoDir || 'none')}</code>.${identityNote}</div>`
             : '';
 
         const summaryLine = summary
@@ -5713,11 +5718,16 @@ class LeakLockPanel {
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
 
+        // The flag is in the argument list; the environment variable says the same thing
+        // a second way, so a future refactor of either one cannot quietly reintroduce a
+        // read that walks replaced objects and calls a surviving value resolved.
+        const rawObjects = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' };
+
         let inHistory = false;
         try {
             const { stdout } = await execFileAsync(
                 'git', scanBaseline.buildHistoryPresenceArgs(repoDir, value),
-                { timeout: 120000, maxBuffer: GIT_MAX_BUFFER }
+                { timeout: 120000, maxBuffer: GIT_MAX_BUFFER, env: rawObjects }
             );
             inHistory = Boolean(String(stdout || '').trim());
         } catch (error) {
@@ -5729,7 +5739,7 @@ class LeakLockPanel {
         try {
             await execFileAsync(
                 'git', scanBaseline.buildWorkingTreePresenceArgs(repoDir, value),
-                { timeout: 60000, maxBuffer: GIT_MAX_BUFFER }
+                { timeout: 60000, maxBuffer: GIT_MAX_BUFFER, env: rawObjects }
             );
             inWorkingTree = true;
         } catch (error) {
@@ -5779,7 +5789,13 @@ class LeakLockPanel {
                 try {
                     const { stdout } = await execFileAsync(
                         'git', scanBaseline.buildFirstCommitArgs(repoDir, value),
-                        { timeout: 120000, maxBuffer: GIT_MAX_BUFFER }
+                        {
+                            timeout: 120000,
+                            maxBuffer: GIT_MAX_BUFFER,
+                            // "When did this appear" must date the real commit, not the
+                            // rewritten stand-in a replace ref would substitute.
+                            env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+                        }
                     );
                     firstCommit = scanBaseline.parseFirstCommit(stdout);
                 } catch (error) {

@@ -6880,8 +6880,12 @@ suite('Importing a previous report and checking what was resolved', () => {
 		const comparison = await panel._verifyImportedReport();
 		assert.strictEqual(comparison.repoMatch.matches, false);
 		const html = panel._renderImportedReport();
-		assert.match(html, /different location on disk/);
+		assert.match(html, /Exported from/);
 		assert.doesNotMatch(html, /from a different repository/);
+		// The path check cannot show two paths are one repository, so the note must
+		// not claim it does.
+		assert.doesNotMatch(html, /Same repository/);
+		assert.match(html, /Identity could not be confirmed/);
 	});
 
 	test('imported findings are rendered but never selectable for cleanup', async () => {
@@ -7030,6 +7034,52 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'C:/Users/dev/other').matches, false);
 		// POSIX paths keep their case sensitivity.
 		assert.strictEqual(scanBaseline.describeRepoMatch({ scanPath: '/home/dev/App' }, '/home/dev/app').matches, false);
+	});
+
+	// Copilot review: git honours refs/replace/*, so a pickaxe run after a filter-repo
+	// rewrite walks the rewritten history and calls a surviving value resolved. That is
+	// a false all-clear in the exact workflow this feature is for.
+	test('every presence check reads the real objects, not replaced ones', () => {
+		for (const args of [
+			scanBaseline.buildHistoryPresenceArgs('/repo', 'value'),
+			scanBaseline.buildFirstCommitArgs('/repo', 'value'),
+			scanBaseline.buildWorkingTreePresenceArgs('/repo', 'value')
+		]) {
+			assert.strictEqual(args[0], '--no-replace-objects', args.join(' '));
+			assert.ok(args.indexOf('--no-replace-objects') < args.indexOf('-C'), 'the flag is global, so it precedes the subcommand');
+		}
+	});
+
+	test('a value hidden behind a replace ref is still reported present', async () => {
+		const cpx = require('child_process');
+		const env = {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+			GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+			GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+		};
+		const replaced = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-replace-'));
+		const run = (args) => cpx.execFileSync('git', ['-C', replaced, ...args], { env }).toString().trim();
+		try {
+			cpx.execFileSync('git', ['-C', replaced, 'init', '-q', '-b', 'main']);
+			fs.writeFileSync(path.join(replaced, 'a.txt'), `KEY = "${LEAKED}"\n`);
+			run(['add', '-A']); run(['commit', '-qm', 'leak']);
+			const leaky = run(['rev-parse', 'HEAD']);
+			// A commit with the value removed, standing in for the leaky one - which is
+			// exactly the state `git filter-repo` leaves behind.
+			fs.writeFileSync(path.join(replaced, 'a.txt'), 'KEY = os.environ["KEY"]\n');
+			run(['add', '-A']); run(['commit', '-qm', 'clean']);
+			const clean = run(['rev-parse', 'HEAD']);
+			run(['replace', leaky, clean]);
+
+			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+			panel._updateWebviewContent = () => {};
+			const presence = await panel._checkValuePresence(replaced, LEAKED);
+			assert.strictEqual(presence.checked, true);
+			assert.strictEqual(presence.inHistory, true, 'the original object still holds the value, so it is not resolved');
+		} finally {
+			try { fs.rmSync(replaced, { recursive: true, force: true }); } catch (e) { void e; }
+		}
 	});
 
 	test('the imported card is reachable with no scan on screen', () => {

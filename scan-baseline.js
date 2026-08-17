@@ -35,6 +35,15 @@ const REDACTED_PATH = '[REDACTED_PATH]';
 // is the same failure as a truncated scan that reads as clean.
 const DEFAULT_VERIFY_LIMIT = 250;
 
+// Every read that decides whether a value is gone runs against the real objects.
+// `git filter-repo` leaves a `refs/replace/<old commit>` entry for every commit it
+// rewrites, and git honours those refs everywhere: a pickaxe would then walk the
+// rewritten history, find nothing, and report a value as resolved while the original
+// objects still hold it. That is a false all-clear in the exact workflow this feature
+// exists for - importing a report straight after a cleanup. Same rule as git-rewrite.js
+// and scan-engines.js, applied here in the argument list so it is directly assertable.
+const RAW_OBJECT_FLAGS = Object.freeze(['--no-replace-objects']);
+
 const STATUS = Object.freeze({
     RESOLVED: 'resolved',
     PRESENT: 'present',
@@ -311,7 +320,7 @@ function summarize(entries, extra = {}) {
  * the case this check exists to catch.
  */
 function buildHistoryPresenceArgs(repoDir, value, options = {}) {
-    const args = ['-C', repoDir, 'log', '--all', '--max-count=1', '--format=%H'];
+    const args = [...RAW_OBJECT_FLAGS, '-C', repoDir, 'log', '--all', '--max-count=1', '--format=%H'];
     if (options.reverse) {
         // `--reverse` is applied after the traversal, so it needs the walk to complete;
         // `--max-count=1` with it yields the *first* commit, which is what "when was
@@ -325,7 +334,7 @@ function buildHistoryPresenceArgs(repoDir, value, options = {}) {
 
 /** Arguments for the first commit that introduced a value, with its author date. */
 function buildFirstCommitArgs(repoDir, value) {
-    return ['-C', repoDir, 'log', '--all', '--reverse', '--max-count=1', '--format=%H %aI', `-S${value}`];
+    return [...RAW_OBJECT_FLAGS, '-C', repoDir, 'log', '--all', '--reverse', '--max-count=1', '--format=%H %aI', `-S${value}`];
 }
 
 /**
@@ -336,7 +345,7 @@ function buildFirstCommitArgs(repoDir, value) {
  * reported as resolved just because history is clean.
  */
 function buildWorkingTreePresenceArgs(repoDir, value) {
-    return ['-C', repoDir, 'grep', '--fixed-strings', '--quiet', '--untracked', '-e', value];
+    return [...RAW_OBJECT_FLAGS, '-C', repoDir, 'grep', '--fixed-strings', '--quiet', '--untracked', '-e', value];
 }
 
 /** Parse `<hash> <iso-date>` from the first-commit query. Tolerates an empty result. */
@@ -453,6 +462,7 @@ module.exports = {
     REDACTED_SECRET,
     REDACTED_PATH,
     DEFAULT_VERIFY_LIMIT,
+    RAW_OBJECT_FLAGS,
     STATUS,
     parseImportedReport,
     normalizeImportedFinding,
