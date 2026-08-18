@@ -199,6 +199,34 @@ function describeSandboxedFilterRepo(output, rulesPath) {
 }
 
 /**
+ * Resolve the Python user scripts directory on Windows.
+ *
+ * `pip install --user` places executables in the per-user Scripts directory
+ * (e.g. %APPDATA%\Python\Python312\Scripts), which is NOT added to PATH by the
+ * Python installer by default.  Asking sysconfig for the path is the only
+ * reliable way to find it without guessing a version number.
+ *
+ * Tries the same Python interpreters that the install command may have used, in
+ * the same priority order, so what we find matches what pip wrote.
+ *
+ * @returns {Promise<string|null>} Absolute path to the Scripts directory, or null.
+ */
+async function findWindowsUserScriptsDir() {
+    const script = "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))";
+    for (const cmd of ['python', 'py', 'python3']) {
+        try {
+            const { stdout } = await execFileAsync(cmd, ['-c', script],
+                { maxBuffer: MAX_BUFFER, timeout: 10000 });
+            const dir = String(stdout).trim();
+            if (dir) {
+                return dir;
+            }
+        } catch { /* try next interpreter */ }
+    }
+    return null;
+}
+
+/**
  * Which form of git-filter-repo this machine has, if any.
  *
  * Two installations are both valid and neither implies the other: pip drops a
@@ -206,6 +234,11 @@ function describeSandboxedFilterRepo(output, rulesPath) {
  * it in git's exec-path so `git filter-repo` resolves. Probing both is the only
  * way to answer "can a Git-only cleanup run here", which is what the setup panel
  * needs to state before the user selects anything.
+ *
+ * On Windows, pip's `--user` install lands in a per-version Scripts directory
+ * (%APPDATA%\Python\PythonXY\Scripts) that is not on PATH by default. When
+ * neither standard probe succeeds, the user Scripts directory is searched as a
+ * last resort so the tool is reported as available rather than missing.
  *
  * @returns {Promise<{installed: boolean, form: string|null, version: string|null,
  *                    path: string|null, confined: boolean, error: string|null}>}
@@ -244,6 +277,29 @@ async function detectFilterRepo() {
         };
     } catch (launcherError) {
         const output = failureText(launcherError);
+
+        // On Windows, pip --user installs to a Scripts directory that is often not
+        // on PATH. Try to find the launcher there before reporting it as missing.
+        if (process.platform === 'win32' && /ENOENT|not found/i.test(output)) {
+            try {
+                const scriptsDir = await findWindowsUserScriptsDir();
+                if (scriptsDir) {
+                    const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
+                    if (fs.existsSync(launcherPath)) {
+                        const version = await readVersion(launcherPath, ['--version']);
+                        return {
+                            installed: true,
+                            form: 'PATH launcher',
+                            version,
+                            path: launcherPath,
+                            confined: false,
+                            error: null
+                        };
+                    }
+                }
+            } catch { /* probe failed, fall through to the not-installed report */ }
+        }
+
         return {
             installed: false,
             form: null,
@@ -325,6 +381,31 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
             if (launcherError.code !== 'ENOENT') {
                 throw withSandboxHint(launcherError);
             }
+
+            // On Windows, pip --user installs git-filter-repo.exe into a Scripts
+            // directory that is typically not on PATH. Try to find and invoke it
+            // directly before giving up, so the rewrite works without the user
+            // having to modify their environment.
+            if (process.platform === 'win32') {
+                try {
+                    const scriptsDir = await findWindowsUserScriptsDir();
+                    if (scriptsDir) {
+                        const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
+                        if (fs.existsSync(launcherPath)) {
+                            return await execFileAsync(launcherPath, args, {
+                                cwd: repoDir,
+                                maxBuffer: MAX_BUFFER,
+                                ...options
+                            });
+                        }
+                    }
+                } catch (userPathError) {
+                    if (userPathError.code !== 'ENOENT') {
+                        throw withSandboxHint(userPathError);
+                    }
+                }
+            }
+
             // Named for the platform this is actually running on: Windows has no
             // python3 shim by default, so quoting one turns a missing dependency
             // into a second dead end.
