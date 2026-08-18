@@ -4,26 +4,59 @@
 // provider names out of git *error text* so a remediation message can name the
 // right UI; it never sees a URL and cannot produce an owner or repo.
 //
-// Unknown hosts — self-hosted GitLab, GitHub Enterprise, internal Gitea —
-// return null on purpose. A guessed URL shape produces a 404 that looks like
-// leak-lock pointing at the wrong commit, which is worse than plain text.
+// Well-known SaaS hosts are matched exactly. Every other valid git remote is
+// supported too: the platform is inferred from the hostname (a host containing
+// "gitlab" uses GitLab's /-/blob/ path shape; one containing "gitea", "forgejo"
+// or "gogs" uses Gitea's /src/commit/ shape; everything else — GitHub Enterprise,
+// Azure DevOps-style, generic self-hosted — gets GitHub's /blob/ shape, which is
+// the most widely adopted layout).
 
-const HOSTS = Object.freeze({
-    'github.com': {
-        build: (owner, repo, sha, encodedPath, line) =>
-            `https://github.com/${owner}/${repo}/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : '')
+// URL builders per platform. The host is the first argument so the same
+// function serves both well-known SaaS hosts and any self-hosted instance at an
+// arbitrary hostname.
+const PLATFORMS = Object.freeze({
+    github: {
+        build: (host, owner, repo, sha, encodedPath, line) =>
+            `https://${host}/${owner}/${repo}/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : '')
     },
-    'gitlab.com': {
-        build: (owner, repo, sha, encodedPath, line) =>
-            `https://gitlab.com/${owner}/${repo}/-/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : '')
+    gitlab: {
+        build: (host, owner, repo, sha, encodedPath, line) =>
+            `https://${host}/${owner}/${repo}/-/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : '')
     },
-    'bitbucket.org': {
-        build: (owner, repo, sha, encodedPath, line) =>
-            `https://bitbucket.org/${owner}/${repo}/src/${sha}/${encodedPath}` + (line ? `#lines-${line}` : '')
+    bitbucket: {
+        build: (host, owner, repo, sha, encodedPath, line) =>
+            `https://${host}/${owner}/${repo}/src/${sha}/${encodedPath}` + (line ? `#lines-${line}` : '')
+    },
+    gitea: {
+        build: (host, owner, repo, sha, encodedPath, line) =>
+            `https://${host}/${owner}/${repo}/src/commit/${sha}/${encodedPath}` + (line ? `#L${line}` : '')
     }
 });
 
-const SUPPORTED_HOSTS = Object.freeze(Object.keys(HOSTS));
+// Canonical SaaS hostnames → platform key.
+const BUILT_IN_HOSTS = Object.freeze({
+    'github.com': 'github',
+    'gitlab.com': 'gitlab',
+    'bitbucket.org': 'bitbucket'
+});
+
+const SUPPORTED_PLATFORMS = Object.freeze(Object.keys(PLATFORMS));
+
+/**
+ * Infer which URL layout a self-hosted Git instance most likely uses.
+ *
+ * The hostname is the only signal available without making a network request.
+ * Operators commonly include the product name in their hostname
+ * (gitlab.acme.com, gitea.internal, forgejo.dev, …), so keyword matching covers
+ * the most common cases. Everything else defaults to GitHub's /blob/ layout,
+ * which GitHub Enterprise and most generic hosts share.
+ */
+function inferPlatform(host) {
+    if (/gitlab/i.test(host)) { return 'gitlab'; }
+    if (/bitbucket/i.test(host)) { return 'bitbucket'; }
+    if (/gitea|forgejo|gogs/i.test(host)) { return 'gitea'; }
+    return 'github';
+}
 
 // Only the forms git itself writes into `remote.get-url`. `file://` and
 // anything exotic is refused rather than parsed.
@@ -49,7 +82,21 @@ function splitOwnerRepo(pathPart) {
     };
 }
 
-function parseRemote(url) {
+/**
+ * Parse a git remote URL into the fields needed to build a commit permalink.
+ *
+ * Accepts any remote that git itself accepts (https://, http://, ssh://, git://,
+ * and SCP-like git@host:owner/repo). Returns { host, owner, repo, platform }
+ * where platform selects the URL layout; returns null only when the URL cannot
+ * be parsed into an owner and repo (missing path segments, bad scheme, etc.).
+ *
+ * @param {string} url  The remote URL (e.g. from `git remote get-url origin`).
+ * @param {Record<string,string>} [customHostTypes]  Optional map of hostname →
+ *   platform name supplied from user configuration. Checked before heuristics,
+ *   so `{ "git.acme.com": "gitlab" }` forces GitLab's URL format for that host
+ *   even though its name contains no platform keyword.
+ */
+function parseRemote(url, customHostTypes = {}) {
     if (typeof url !== 'string') {
         return null;
     }
@@ -82,16 +129,18 @@ function parseRemote(url) {
         pathPart = match[2];
     }
 
-    if (!Object.hasOwn(HOSTS, host)) {
-        return null;
-    }
-
     const ownerRepo = splitOwnerRepo(pathPart);
     if (!ownerRepo) {
         return null;
     }
 
-    return { host, owner: ownerRepo.owner, repo: ownerRepo.repo };
+    const platform =
+        BUILT_IN_HOSTS[host] ||
+        (customHostTypes && Object.hasOwn(customHostTypes, host) && Object.hasOwn(PLATFORMS, customHostTypes[host])
+            ? customHostTypes[host]
+            : null) ||
+        inferPlatform(host);
+    return { host, owner: ownerRepo.owner, repo: ownerRepo.repo, platform };
 }
 
 function encodePath(file) {
@@ -101,7 +150,7 @@ function encodePath(file) {
 }
 
 function buildCommitUrl(remote, { commitHash, file, line } = {}) {
-    if (!remote || !Object.hasOwn(HOSTS, remote.host)) {
+    if (!remote || !remote.platform || !Object.hasOwn(PLATFORMS, remote.platform)) {
         return null;
     }
     if (typeof commitHash !== 'string' || !HEX_SHA.test(commitHash)) {
@@ -111,7 +160,8 @@ function buildCommitUrl(remote, { commitHash, file, line } = {}) {
         return null;
     }
     const anchorLine = Number.isFinite(line) && line > 0 ? line : null;
-    return HOSTS[remote.host].build(
+    return PLATFORMS[remote.platform].build(
+        remote.host,
         encodePath(remote.owner),
         encodeURIComponent(remote.repo),
         commitHash,
@@ -124,8 +174,13 @@ function buildCommitUrl(remote, { commitHash, file, line } = {}) {
  * Would this URL have been produced by `buildCommitUrl`? The host re-checks
  * before opening a browser, so that a message from the webview can never turn
  * `openExternal` into a launcher for an arbitrary address.
+ *
+ * For well-known SaaS hosts the hostname alone is the guard. For self-hosted
+ * instances, remoteInfo (the parsed origin remote of the scanned repository)
+ * is required so the check remains specific: only the host the repository
+ * actually lives on is accepted, not any arbitrary https address.
  */
-function isPermalinkUrl(url) {
+function isPermalinkUrl(url, remoteInfo = null) {
     if (typeof url !== 'string' || !url) {
         return false;
     }
@@ -135,7 +190,16 @@ function isPermalinkUrl(url) {
     } catch {
         return false;
     }
-    return parsed.protocol === 'https:' && Object.hasOwn(HOSTS, parsed.hostname.toLowerCase());
+    if (parsed.protocol !== 'https:') {
+        return false;
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (Object.hasOwn(BUILT_IN_HOSTS, host)) {
+        return true;
+    }
+    // Custom host: accept only if it matches the repository's own remote,
+    // so a crafted webview message cannot redirect the browser elsewhere.
+    return remoteInfo != null && host === remoteInfo.host.toLowerCase();
 }
 
-module.exports = { parseRemote, buildCommitUrl, isPermalinkUrl, SUPPORTED_HOSTS };
+module.exports = { parseRemote, buildCommitUrl, isPermalinkUrl, SUPPORTED_PLATFORMS };

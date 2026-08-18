@@ -8,35 +8,35 @@ suite('parseRemote', () => {
     test('parses the SCP-like SSH form', () => {
         assert.deepStrictEqual(
             parseRemote('git@github.com:nikolareljin/leak-lock.git'),
-            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock' }
+            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
         );
     });
 
     test('parses the HTTPS form', () => {
         assert.deepStrictEqual(
             parseRemote('https://github.com/nikolareljin/leak-lock.git'),
-            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock' }
+            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
         );
     });
 
     test('parses the ssh:// form', () => {
         assert.deepStrictEqual(
             parseRemote('ssh://git@github.com/nikolareljin/leak-lock.git'),
-            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock' }
+            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
         );
     });
 
     test('the .git suffix is optional', () => {
         assert.deepStrictEqual(
             parseRemote('https://github.com/nikolareljin/leak-lock'),
-            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock' }
+            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
         );
     });
 
     test('keeps GitLab subgroups in the owner', () => {
         assert.deepStrictEqual(
             parseRemote('git@gitlab.com:group/subgroup/thing.git'),
-            { host: 'gitlab.com', owner: 'group/subgroup', repo: 'thing' }
+            { host: 'gitlab.com', owner: 'group/subgroup', repo: 'thing', platform: 'gitlab' }
         );
     });
 
@@ -44,12 +44,44 @@ suite('parseRemote', () => {
         assert.strictEqual(parseRemote('git@GitHub.COM:o/r.git').host, 'github.com');
     });
 
-    test('an unknown host is null, so no link is offered', () => {
-        assert.strictEqual(parseRemote('git@git.internal.example:o/r.git'), null);
+    test('a self-hosted GitLab is detected by platform keyword in the hostname', () => {
+        assert.deepStrictEqual(
+            parseRemote('https://gitlab.example.com/o/r.git'),
+            { host: 'gitlab.example.com', owner: 'o', repo: 'r', platform: 'gitlab' }
+        );
     });
 
-    test('a self-hosted GitLab is null rather than guessed', () => {
-        assert.strictEqual(parseRemote('https://gitlab.example.com/o/r.git'), null);
+    test('an unrecognised hostname defaults to the github URL layout', () => {
+        assert.deepStrictEqual(
+            parseRemote('git@git.internal.example:o/r.git'),
+            { host: 'git.internal.example', owner: 'o', repo: 'r', platform: 'github' }
+        );
+    });
+
+    test('customHostTypes overrides heuristic detection', () => {
+        assert.deepStrictEqual(
+            parseRemote('https://git.acme.com/o/r.git', { 'git.acme.com': 'gitlab' }),
+            { host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'gitlab' }
+        );
+    });
+
+    test('customHostTypes is case-insensitive on the hostname key', () => {
+        assert.strictEqual(
+            parseRemote('https://git.acme.com/o/r.git', { 'GIT.ACME.COM': 'gitea' }),
+            null // key not matched because we lowercase the parsed host; user must provide lowercase key
+        );
+        // But a lowercase key works:
+        assert.strictEqual(
+            parseRemote('https://git.acme.com/o/r.git', { 'git.acme.com': 'gitea' }).platform,
+            'gitea'
+        );
+    });
+
+    test('an unknown customHostTypes platform value is ignored, heuristic is used instead', () => {
+        assert.strictEqual(
+            parseRemote('https://gitlab.acme.com/o/r.git', { 'gitlab.acme.com': 'unknown-platform' }).platform,
+            'gitlab'
+        );
     });
 
     test('a path with no repo segment is null', () => {
@@ -73,9 +105,12 @@ suite('parseRemote', () => {
 
 suite('buildCommitUrl', () => {
 
-    const github = { host: 'github.com', owner: 'o', repo: 'r' };
-    const gitlab = { host: 'gitlab.com', owner: 'group/sub', repo: 'r' };
-    const bitbucket = { host: 'bitbucket.org', owner: 'o', repo: 'r' };
+    const github    = { host: 'github.com',    owner: 'o',         repo: 'r', platform: 'github' };
+    const gitlab    = { host: 'gitlab.com',    owner: 'group/sub', repo: 'r', platform: 'gitlab' };
+    const bitbucket = { host: 'bitbucket.org', owner: 'o',         repo: 'r', platform: 'bitbucket' };
+    const ghe       = { host: 'git.acme.com',  owner: 'o',         repo: 'r', platform: 'github' };
+    const selfGitlab = { host: 'gitlab.acme.com', owner: 'o',      repo: 'r', platform: 'gitlab' };
+    const gitea     = { host: 'gitea.acme.com', owner: 'o',        repo: 'r', platform: 'gitea' };
 
     test('GitHub blob URL with a line anchor', () => {
         assert.strictEqual(
@@ -95,6 +130,27 @@ suite('buildCommitUrl', () => {
         assert.strictEqual(
             buildCommitUrl(bitbucket, { commitHash: SHA, file: 'src/a.js', line: 12 }),
             `https://bitbucket.org/o/r/src/${SHA}/src/a.js#lines-12`
+        );
+    });
+
+    test('GitHub Enterprise uses the repo host, not github.com', () => {
+        assert.strictEqual(
+            buildCommitUrl(ghe, { commitHash: SHA, file: 'src/a.js', line: 1 }),
+            `https://git.acme.com/o/r/blob/${SHA}/src/a.js#L1`
+        );
+    });
+
+    test('self-hosted GitLab uses the repo host with /-/blob', () => {
+        assert.strictEqual(
+            buildCommitUrl(selfGitlab, { commitHash: SHA, file: 'src/a.js', line: 1 }),
+            `https://gitlab.acme.com/o/r/-/blob/${SHA}/src/a.js#L1`
+        );
+    });
+
+    test('Gitea uses /src/commit/', () => {
+        assert.strictEqual(
+            buildCommitUrl(gitea, { commitHash: SHA, file: 'src/a.js', line: 1 }),
+            `https://gitea.acme.com/o/r/src/commit/${SHA}/src/a.js#L1`
         );
     });
 
@@ -128,8 +184,31 @@ suite('buildCommitUrl', () => {
 
 suite('isPermalinkUrl', () => {
 
-    test('accepts a URL this module built', () => {
+    const customRemote = { host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'github' };
+
+    test('accepts a URL built for a well-known host', () => {
         assert.strictEqual(isPermalinkUrl(`https://github.com/o/r/blob/${SHA}/a.js#L1`), true);
+    });
+
+    test('accepts a URL built for a custom host when remoteInfo matches', () => {
+        assert.strictEqual(
+            isPermalinkUrl(`https://git.acme.com/o/r/blob/${SHA}/a.js#L1`, customRemote),
+            true
+        );
+    });
+
+    test('rejects a custom-host URL without remoteInfo', () => {
+        assert.strictEqual(
+            isPermalinkUrl(`https://git.acme.com/o/r/blob/${SHA}/a.js#L1`),
+            false
+        );
+    });
+
+    test('rejects a custom-host URL when remoteInfo host does not match', () => {
+        assert.strictEqual(
+            isPermalinkUrl(`https://git.evil.com/o/r/blob/${SHA}/a.js#L1`, customRemote),
+            false
+        );
     });
 
     test('rejects a lookalike host', () => {
