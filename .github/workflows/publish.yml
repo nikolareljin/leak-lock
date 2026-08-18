@@ -94,17 +94,23 @@ jobs:
           node -e "
             const pkg = require('./package.json');
             console.log('Package name:', pkg.name);
+            const fs = require('fs');
+            const version = fs.readFileSync('VERSION', 'utf8').trim();
             console.log('Version:', pkg.version);
+            console.log('VERSION file:', version);
             console.log('Publisher:', pkg.publisher);
             console.log('Engine requirement:', pkg.engines?.vscode);
             if (!pkg.name || !pkg.version || !pkg.publisher) {
               throw new Error('Missing required package.json fields');
             }
+            if (pkg.version !== version) {
+              throw new Error('VERSION must match package.json version');
+            }
           "
 
       - name: Get current version
         id: version
-        run: echo "version=$(node -p -e "require('./package.json').version")" >> $GITHUB_OUTPUT
+        run: echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
 
       - name: Check if version exists
         id: check_version
@@ -123,8 +129,13 @@ jobs:
         run: |
           # Auto-bump patch version if current version already exists
           npm version patch --no-git-tag-version
-          echo "version=$(node -p -e "require('./package.json').version")" >> $GITHUB_OUTPUT
+          node -e "const fs = require('fs'); const pkg = require('./package.json'); fs.writeFileSync('VERSION', `${pkg.version}\n`);"
+          echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
         id: new_version
+
+      - name: Generate release notes
+        if: github.event_name == 'push'
+        run: node tools/release-notes.js
 
       - name: Package extension
         run: |
@@ -232,7 +243,7 @@ jobs:
           echo "Creating git tag v${FINAL_VERSION}"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git tag "v${FINAL_VERSION}"
+          git tag -a "v${FINAL_VERSION}" -F .release-notes.md
           # Ensure remote is authenticated with GITHUB_TOKEN for pushing tags
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "v${FINAL_VERSION}"
@@ -243,39 +254,7 @@ jobs:
         with:
           tag_name: v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
           name: Release v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
-          body: |
-            ## Changes in this Release
-            
-            ### 🛡️ Security Scanning
-            - Enhanced dependency directory handling (node_modules, vendor, etc.)
-            - Improved UI with sidebar controls and main area results
-            - Dynamic progress indicators during scanning operations
-            - Cross-platform security protection for Windows and Unix systems
-            - Fixed XSS vulnerabilities in file path display
-            - Enhanced path validation with directory traversal protection
-            
-            ### 🔧 Technical Improvements  
-            - Separated installation/setup controls to sidebar
-            - Streamlined main panel for scan results and BFG execution
-            - Added spinner animations for better user feedback
-            - Improved error handling and cleanup operations
-            - Centralized configuration constants for better maintainability
-            - Enhanced dependency installation with detailed instructions
-            
-            ### 🚀 Deployment
-            - Automated publishing pipeline with version management
-            - Comprehensive testing before release
-            - Updated GitHub Actions to latest versions
-            - Fixed Node.js compatibility issues with VSCE packaging
-            - Resolved VSCE command line option compatibility
-            
-            **Installation:** Search for "leak-lock" in VS Code Extensions marketplace
-            
-            **Usage:** 
-            1. Open the Leak Lock sidebar panel
-            2. Install dependencies and select target directory  
-            3. Click "Start Scan" to analyze for secrets
-            4. Review results and run BFG cleanup as needed
+          body_path: .release-notes.md
           draft: false
           prerelease: false
           files: "*.vsix"
