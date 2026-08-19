@@ -289,7 +289,7 @@ async function detectFilterRepo() {
                         const version = await readVersion(launcherPath, ['--version']);
                         return {
                             installed: true,
-                            form: 'PATH launcher',
+                            form: 'pip --user launcher',
                             version,
                             path: launcherPath,
                             confined: false,

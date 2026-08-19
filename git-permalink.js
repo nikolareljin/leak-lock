@@ -42,6 +42,19 @@ const BUILT_IN_HOSTS = Object.freeze({
 
 const SUPPORTED_PLATFORMS = Object.freeze(Object.keys(PLATFORMS));
 
+function normalizeCustomHostTypes(customHostTypes) {
+    if (!customHostTypes || typeof customHostTypes !== 'object') {
+        return {};
+    }
+    const normalized = {};
+    for (const [hostname, platform] of Object.entries(customHostTypes)) {
+        if (typeof hostname === 'string' && typeof platform === 'string') {
+            normalized[hostname.toLowerCase()] = platform;
+        }
+    }
+    return normalized;
+}
+
 /**
  * Infer which URL layout a self-hosted Git instance most likely uses.
  *
@@ -134,10 +147,11 @@ function parseRemote(url, customHostTypes = {}) {
         return null;
     }
 
+    const normalizedHostTypes = normalizeCustomHostTypes(customHostTypes);
     const platform =
         BUILT_IN_HOSTS[host] ||
-        (customHostTypes && Object.hasOwn(customHostTypes, host) && Object.hasOwn(PLATFORMS, customHostTypes[host])
-            ? customHostTypes[host]
+        (Object.hasOwn(normalizedHostTypes, host) && Object.hasOwn(PLATFORMS, normalizedHostTypes[host])
+            ? normalizedHostTypes[host]
             : null) ||
         inferPlatform(host);
     return { host, owner: ownerRepo.owner, repo: ownerRepo.repo, platform };
