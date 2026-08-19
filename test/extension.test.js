@@ -7367,6 +7367,33 @@ suite('Importing a previous report and checking what was resolved', () => {
 		}
 	});
 
+	// Copilot review: the count was denominated in every finding the report held,
+	// while it only advanced for the ones that actually get searched, so a report
+	// full of redacted findings counted towards a total it could never reach.
+	test('the verification count is denominated in the values actually searched', async () => {
+		const messages = [];
+		const withProgress = vscode.window.withProgress;
+		vscode.window.withProgress = async (_options, task) =>
+			task({ report: value => messages.push(value.message) }, { isCancellationRequested: false });
+		try {
+			const panel = panelFor(JSON.stringify({
+				generatedAt: '2026-01-01T00:00:00Z',
+				scanPath: repo,
+				findings: [
+					finding({ fingerprint: 'fp-1' }),
+					finding({ fingerprint: 'fp-2', secret: scanBaseline.REDACTED_SECRET }),
+					finding({ fingerprint: 'fp-3', secret: scanBaseline.REDACTED_SECRET }),
+					finding({ fingerprint: 'fp-4', valueIsLiteral: false, decoder: 'base64' })
+				]
+			}));
+			await panel._verifyImportedReport();
+			assert.deepStrictEqual(messages, ['1 of 1 value(s)'],
+				'only the one searchable finding counts, towards a total of one');
+		} finally {
+			vscode.window.withProgress = withProgress;
+		}
+	});
+
 	// Copilot review: a hand-edited or older-format date rendered the words
 	// "Invalid Date" into the panel.
 	test('an unreadable date never renders as Invalid Date', async () => {
