@@ -17,11 +17,11 @@ function resolveCommitUrl(scanResults, remoteInfo, findingIndex) {
         file: finding.file,
         line: finding.line
     });
-    return url && isPermalinkUrl(url) ? url : null;
+    return url && isPermalinkUrl(url, remoteInfo) ? url : null;
 }
 
 const SHA = 'abc1234567890abcdef1234567890abcdef12345';
-const REMOTE = { host: 'github.com', owner: 'o', repo: 'r' };
+const REMOTE = { host: 'github.com', owner: 'o', repo: 'r', platform: 'github' };
 const RESULTS = [{ commitHash: SHA, file: 'src/a.js', line: 5 }];
 
 suite('openCommitUrl resolution', () => {
