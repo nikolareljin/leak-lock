@@ -2,73 +2,27 @@
   <img src="https://github.com/nikolareljin/leak-lock/blob/main/media/icon.png?raw=true&sanitize=true" width="128" height="128" />
 </p>
 
-# 🛡️ Leak Lock - VS Code Security Extension
+# Leak Lock
 
-**Secure your code repositories by detecting and removing sensitive information from git history**
+VS Code extension that finds secrets in git history, verifies live credentials, and helps remove leaks with safe rewrite workflows.
 
 [![Version](https://img.shields.io/github/package-json/v/nikolareljin/leak-lock?color=blue)](package.json)
+[![Latest Release](https://img.shields.io/github/v/release/nikolareljin/leak-lock?color=blue)](https://github.com/nikolareljin/leak-lock/releases)
+[![CI](https://github.com/nikolareljin/leak-lock/actions/workflows/ci.yml/badge.svg)](https://github.com/nikolareljin/leak-lock/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/nikolareljin/leak-lock)](LICENSE)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.125.0+-brightgreen.svg)](https://code.visualstudio.com/)
 
-[🌐 Website](https://nikolareljin.github.io/leak-lock/) • [📖 Documentation](#documentation) • [🚀 Quick Start](#quick-start) • [📸 Screenshots](#screenshots) • [🛠️ Development](#development)
+[Website](https://nikolareljin.github.io/leak-lock/) | [Documentation](#documentation) | [Quick Start](#quick-start) | [Screenshots](#screenshots) | [Development](#development)
 
----
+![The full Leak Lock interface](docs/website/img/full-interface.png)
 
-## Overview
+## Why Leak Lock
 
-Leak Lock is a powerful VS Code extension that helps developers secure their repositories by:
+- **Multi-engine scanning**: Runs Gitleaks, TruffleHog, and optional Nosey Parker, then merges findings into one attributed result set.
+- **Live credential checks**: Uses TruffleHog verification when enabled, so live credentials stand out from static pattern matches.
+- **Safer cleanup flow**: Previews history rewrites, separates local cleanup from force-push, and verifies refs after push.
+- **Report comparison**: Exports scan results, imports them later, and marks previous findings as resolved, still present, or unverifiable.
 
-- 🔍 **Scanning** git repositories for secrets, API keys, and sensitive data
-- 🛡️ **Detecting** credentials with **multiple engines** — Gitleaks, TruffleHog and Nosey Parker — merged into one attributed result set
-- 🔎 **Identifying** what a secret actually *is* — key type, algorithm, fingerprint, expiry — not merely that a rule matched
-- ✅ **Verifying** whether a discovered credential is still live (TruffleHog)
-- ✏️ **Removing** both detected secrets and **arbitrary text you specify** from git history
-- 📋 **Reporting** exactly what was scanned, so "no findings" is a claim you can check
-- ⚡ **Automating** the complete security remediation workflow
-
-## ✨ Key Features
-
-### 🎯 **Multi-Engine Detection**
-- **Several engines, one result set**: Gitleaks (default), TruffleHog and Nosey Parker run together; findings are merged and every finding names the engines that found it — and the ones that missed it
-- **Live credential verification**: TruffleHog can confirm whether a key still works. A live credential outranks everything else, because rewriting history does not revoke it
-- **Full history, every ref**: refs are refreshed before scanning, so a branch that exists only on the remote is not silently skipped
-- **Working tree too**: untracked and ignored files (a local `.env`) are found and flagged as not-committed, since those are fixed by deleting the file, not by rewriting history
-- **No silent truncation**: results are never capped without saying so
-
-### 🔎 **Credential Identification**
-- **What it is, not just that it matched**: a finding that is an SSH or PEM private key, a certificate, a JWT or a GCP service-account file is badged with its type. Click it for the algorithm, fingerprint, whether the key is passphrase-protected, any validity window, and the claims the artifact carries
-- **The whole artifact, not the snippet**: fifty characters of a private key is not a key, so a secret the scanner cut short is identified by reading the enclosing file — or the blob at that commit, for a finding from history
-- **Local, always**: analysis runs on your machine via [credential-lens](https://github.com/nikolareljin/credential-lens), which ships inside the extension. Nothing is uploaded, and the report omits private-key bodies and JWT signatures
-- **Evidence, not proof**: a key comment or certificate subject is what the artifact says about itself. Each claim carries its source and the report states its limits
-
-### 🔗 **Findings You Can Follow**
-- **Full path on hover**: the File column shows a path relative to what you scanned; hover for the absolute one. A finding from history names the commit its path belongs to, since that file may no longer exist on disk
-- **Commit hashes open in your browser**: click the SHA to open that file, at that commit, on GitHub, GitLab or Bitbucket, anchored to the line. The repository is asked which path is real, so the link is not a guess
-- **No broken links**: a self-hosted or unrecognised host shows the hash as plain text rather than a URL that would 404
-
-### ✏️ **Manual Redaction**
-- **Source text → Replace with**: remove content no scanner flags — an internal hostname, a private repository or team name, a customer identifier
-- **Literal or regex** matching, validated before it can be used
-- **Dry run first**: see which commits, files and branches a rule touches before anything is rewritten
-
-### 🖥️ **Modern Interface**
-- **Main Area Display**: Wide layout perfect for scan results
-- **Activity Bar Integration**: Easy access via shield icon
-- **Smart Directory Selection**: Auto-detects git repositories
-- **Progress Tracking**: Real-time scanning and remediation progress
-- **Remove Files Flow**: Sidebar button opens guided removal UI in main area
- - **Path-Based Safe Removal**: Exact path deletion across branches with preview
-- **Results Export**: Export findings to JSON or print/save as PDF directly from the results view
-
-### 🤖 **Automated Workflow**
-- **One-Click Dependency Install**: the scan engines, plus the optional Docker, Nosey Parker image and BFG
-- **Intelligent Scanning**: Context-aware repository analysis
-- **Guided Remediation**: Step-by-step secret removal process
-- **Git History Cleanup**: Automatic history rewriting and cleanup
-- **Granular Deletion Feedback**: Per-item BFG flags and patterns preview
-- **Preview Before Delete**: Show exact matches across branches, remotes, and tags for path-based deletions
- - **Auto-Fetch Remotes**: Fetches all remotes and tags before preview and execution
-
----
 
 ## 🚀 Quick Start
 
@@ -105,6 +59,7 @@ code --install-extension leak-lock-*.vsix
 - **Export JSON**: Save all current findings and metadata to a `.json` file
 - **Print / Save as PDF**: Use the print-friendly view from scan results for PDF reports
 - **Share Findings**: Attach exports to tickets, audits, or remediation docs
+- **Import JSON**: Read a report back in and check each of its findings against the repository now, marked **Resolved**, **Still present** or **Unverifiable**, plus what is new since the report and the commit that introduced it
 
 <img width="942" height="1307" alt="image" src="https://github.com/user-attachments/assets/1c0ca6c4-1254-4337-b893-ee26c94f95e3" />
 
@@ -513,18 +468,13 @@ We welcome contributions! Areas for improvement:
 
 ## 📋 Release Notes
 
-Full history is in the [CHANGELOG](CHANGELOG.md).
+Current version lives in [VERSION](VERSION), and `package.json` must match it. Current release text lives in [RELEASE_NOTES.md](RELEASE_NOTES.md). The release script uses that file for GitHub Releases and annotated git tags, and can insert it into [CHANGELOG](CHANGELOG.md) before publishing with `--sync-changelog`. Sync will not overwrite a changelog section that already exists unless `--force` is passed, since those entries are expanded by hand after they are generated. `npm run check:release` validates all three sources and runs on every pull request.
 
-### **v0.6.2 (Current)**
-- 📦 Slimmer package — docs and the website are no longer bundled into the `.vsix`
-- 🔒 Security bumps for `brace-expansion`, `minimatch`, `ajv` and `js-yaml` (dev dependencies)
-- 🤖 Dependabot now opens weekly npm and GitHub Actions update PRs
-
-### **v0.6.0**
-- ✅ Two-step force-push confirmation before the remote is touched
-- ☑️ Select-all / clear-all controls over what gets cleaned
-- 🌿 Ref-by-ref push plan, rewrite preflight and post-run verification
-- 📄 Cleanups saved as a reviewable `.sh` script
+### v0.9.0
+- Import previous scan reports and check which findings are resolved.
+- Enforce repository identity before comparing reports.
+- Show findings introduced since the imported report.
+- Keep imported findings as historical records, not cleanup targets.
 
 ---
 

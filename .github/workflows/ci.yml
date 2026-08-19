@@ -4,7 +4,10 @@ name: CI
 # gated before they reach main. Publishing stays in publish.yml.
 on:
   pull_request:
-    branches: [ main ]
+    # Release branches are included because work lands on them first: a pull
+    # request into release/0.9.0 used to report no checks at all, so lint,
+    # tests and packaging never ran until after it was merged.
+    branches: [ main, 'release/**' ]
   push:
     branches: [ 'release/**' ]
   workflow_dispatch:
@@ -17,11 +20,45 @@ jobs:
     uses: nikolareljin/ci-helpers/.github/workflows/node.yml@production
     with:
       node_version: "22"
-      lint_command: "npm ci && npm run lint"
+      # Release sources are validated first, ahead of the ~10 minute VS Code
+      # test run, and on the pull request rather than in publish.yml — which
+      # runs only after a merge to main, where a rejected RELEASE_NOTES.md
+      # blocks the release instead of the change that caused it.
+      lint_command: |
+        npm ci
+        npm run check:release
+        # A tag that already exists means this version was published: the
+        # publish job would fail after the merge. Checked only on release
+        # branches, where setting the version is the point; pull requests into
+        # main are often docs or hotfixes that publish.yml skips anyway.
+        target="${GITHUB_BASE_REF:-${GITHUB_REF_NAME:-}}"
+        case "$target" in
+          release/*)
+            version="$(node -p "require('./package.json').version")"
+            if [ -n "$(git tag -l "v$version")" ]; then
+              echo "::error::v$version is already tagged. Bump VERSION, package.json and RELEASE_NOTES.md together."
+              exit 1
+            fi
+            echo "v$version is not tagged yet."
+            ;;
+          *)
+            echo "Not a release branch ($target); skipping the tag check."
+            ;;
+        esac
+        npm run lint
       # vscode-test launches a real VS Code (Electron) instance, which needs a
       # virtual display on Linux. node_modules is already present from the lint
       # step, which runs first.
-      test_command: "sudo apt-get update && sudo apt-get install -y xvfb && xvfb-run -a -s '-screen 0 1024x768x24' npm test"
+      # ubuntu-latest already ships xvfb, so the install is a network round-trip
+      # that buys nothing on the normal path -- and one run stalled inside
+      # `apt-get update` with no output until the 20 minute job timeout killed it,
+      # turning a green commit red. It now runs only if xvfb-run is genuinely
+      # missing, so a changed runner image is still covered.
+      test_command: |
+        command -v xvfb-run >/dev/null 2>&1 || {
+          sudo apt-get update && sudo apt-get install -y xvfb
+        }
+        xvfb-run -a -s '-screen 0 1024x768x24' npm test
       # The extension ships its sources directly, so there is nothing to compile
       # (the package.json "build" script targets a src/ directory that does not
       # exist). Packaging runs here anyway because `vsce package` is the only

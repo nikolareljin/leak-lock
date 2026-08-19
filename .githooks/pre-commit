@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+# Validate what is about to be committed, not whatever happens to be in the
+# working tree. Checking the working tree meant an unstaged fix made this hook
+# pass on a commit that still carried the broken release sources.
+# BSD mktemp (macOS) requires a template; only GNU coreutils accepts a bare
+# `mktemp -d`. The explicit template works on both.
+staged_dir=$(mktemp -d "${TMPDIR:-/tmp}/leak-lock-precommit.XXXXXX")
+trap 'rm -rf "$staged_dir"' EXIT INT TERM
+
+for file in VERSION package.json RELEASE_NOTES.md; do
+  if ! git show ":$file" > "$staged_dir/$file" 2>/dev/null; then
+    echo "pre-commit: $file is missing from the index." >&2
+    exit 1
+  fi
+done
+
+node tools/release-notes.js --check --root "$staged_dir"

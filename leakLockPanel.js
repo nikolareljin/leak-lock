@@ -10,12 +10,13 @@ const gitRewrite = require('./git-rewrite');
 const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
 const redactionRules = require('./redaction-rules');
+const scanBaseline = require('./scan-baseline');
 const valueEncodings = require('./value-encodings');
 const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 const { findGitRoot, describeFindingPath, repoRelativeCandidates } = require('./finding-paths');
-const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
+const { parseRemote, buildCommitUrl, isPermalinkUrl, SUPPORTED_PLATFORMS } = require('./git-permalink');
 const credentialInspect = require('./credential-inspect');
 const { classifyFindings } = require('./credential-prepass');
 const { renderCredentialReportHtml } = require('./credential-report-html');
@@ -401,6 +402,28 @@ function matchedTextFromSnippet(match) {
     return match.snippet?.matching || match.content || match.text || null;
 }
 
+/**
+ * Render a date out of an imported report.
+ *
+ * The value comes from a file the user picked, which may have been hand-edited or
+ * written by an older format, and `new Date('whatever').toLocaleString()` renders the
+ * words "Invalid Date" into the panel. A value that will not parse renders as
+ * `fallback` instead, and the caller chooses what that is: a neutral label where
+ * there is nothing useful to show, or the raw string where seeing what the report
+ * actually holds is the more informative answer. Either tells the reader more
+ * than "Invalid Date" does.
+ */
+function formatReportDate(value, fallback, options = {}) {
+    if (!value) {
+        return fallback;
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+        return fallback;
+    }
+    return options.dateOnly ? parsed.toLocaleDateString() : parsed.toLocaleString();
+}
+
 class LeakLockPanel {
     constructor(extensionUri) {
         this._extensionUri = extensionUri;
@@ -465,6 +488,16 @@ class LeakLockPanel {
         // What the last scan actually covered. "No findings" is only meaningful
         // alongside this, so it is rendered with the results rather than logged.
         this._scanCoverage = null; // see _buildScanCoverage()
+        // A previously exported report read back in, and what it looks like against the
+        // repository now. Deliberately outside _scanCleanup: these findings describe a
+        // past state, are never cleanup targets, and must survive a re-scan, since
+        // comparing them against a fresh scan is the entire point.
+        this._importedReport = null; // see scan-baseline.parseImportedReport()
+        // Which verification run owns the panel. Bumped by every import, clear and
+        // re-verify, so an older run cannot write its answer over a newer report.
+        this._importRun = 0;
+        this._importedComparison = null; // { entries, newFindings, summary, repoMatch, repoDir, verifiedAt }
+        this._verifyingImport = false;
         this._dependenciesInstalled = false;
         this._panel = null;
 
@@ -647,6 +680,15 @@ class LeakLockPanel {
                         break;
                     case 'scan.exportJson':
                         LeakLockPanel.currentPanel._exportScanResultsJson();
+                        break;
+                    case 'scan.importJson':
+                        LeakLockPanel.currentPanel._importScanResultsJson();
+                        break;
+                    case 'scan.verifyImported':
+                        LeakLockPanel.currentPanel._verifyImportedReport();
+                        break;
+                    case 'scan.clearImported':
+                        LeakLockPanel.currentPanel._clearImportedReport();
                         break;
                     case 'scan.printPdf':
                         LeakLockPanel.currentPanel._printScanResultsPdf();
@@ -1617,6 +1659,29 @@ class LeakLockPanel {
                         vscode.postMessage({ command: 'scan.printPdf' });
                     }
 
+                    function importScanResultsJson() {
+                        vscode.postMessage({ command: 'scan.importJson' });
+                    }
+
+                    function verifyImportedReport() {
+                        vscode.postMessage({ command: 'scan.verifyImported' });
+                    }
+
+                    function clearImportedReport() {
+                        vscode.postMessage({ command: 'scan.clearImported' });
+                    }
+
+                    // A checkbox has no "unknown" state in HTML, and rendering an
+                    // unverifiable finding as unchecked would read as "still present"
+                    // when the truth is that nothing was checked. The rows are rendered
+                    // after this script, so wait for the document like the selection UI
+                    // does rather than querying an empty DOM.
+                    document.addEventListener('DOMContentLoaded', function () {
+                        document.querySelectorAll('.import-status-unknown').forEach(function (box) {
+                            box.indeterminate = true;
+                        });
+                    });
+
                     function copyScanCommand(id) {
                         try {
                             const el = document.getElementById(id);
@@ -1835,6 +1900,13 @@ class LeakLockPanel {
             </body>
             </html>
         `;
+    }
+
+    // Public: import a previously exported report from the Command Palette. The scan
+    // view owns the comparison, so make sure that is the view being shown.
+    importScanReport() {
+        this._viewMode = 'scan';
+        return this._importScanResultsJson();
     }
 
     // Public: switch to Remove Files UI
@@ -3081,6 +3153,7 @@ class LeakLockPanel {
                         <button class="scan-button" id="ll-select-all" type="button">☑️ Select all</button>
                         <button class="scan-button" id="ll-clear-all" type="button">☐ Clear all</button>
                         <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
+                        <button class="scan-button" onclick="importScanResultsJson()" title="Import a report exported earlier and check whether each of its findings was resolved.">📥 Import JSON</button>
                         <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
                     </div>
                     <div id="selection-counter" class="selection-counter" data-selected="${selectedCount}" data-total="${eligibleIndexes.length}">
@@ -3661,6 +3734,22 @@ class LeakLockPanel {
     }
 
     /**
+     * Custom hostname → platform mappings from user configuration.
+     * Keys are lowercased hostnames; values are validated platform names.
+     * Computed on every call (config can change); cheap enough for the call rate.
+     */
+    _customHostTypes() {
+        const raw = vscode.workspace.getConfiguration('leakLock').get('git.customHostTypes') || {};
+        const result = {};
+        for (const [hostname, platform] of Object.entries(raw)) {
+            if (typeof hostname === 'string' && hostname && SUPPORTED_PLATFORMS.includes(platform)) {
+                result[hostname.toLowerCase()] = platform;
+            }
+        }
+        return result;
+    }
+
+    /**
      * Resolved once per scan: the remote does not change mid-run, and every row
      * in the table would otherwise shell out to git for the same answer.
      */
@@ -3671,10 +3760,10 @@ class LeakLockPanel {
         }
         try {
             const remoteUrl = await gitRewrite.getRemoteUrl(scanPath);
-            this._remoteInfo = parseRemote(remoteUrl);
+            this._remoteInfo = parseRemote(remoteUrl, this._customHostTypes());
         } catch {
-            // No remote, not a repository, or a host we do not build URLs for.
-            // The SHA simply stays plain text; this must never fail a scan.
+            // No remote or not a repository. The SHA stays as plain text;
+            // this must never fail a scan.
             this._remoteInfo = null;
         }
     }
@@ -3820,7 +3909,7 @@ class LeakLockPanel {
         }
         await Promise.all([...roots.keys()].map(async (repoRoot) => {
             try {
-                roots.set(repoRoot, parseRemote(await gitRewrite.getRemoteUrl(repoRoot)));
+                roots.set(repoRoot, parseRemote(await gitRewrite.getRemoteUrl(repoRoot), this._customHostTypes()));
             } catch {
                 roots.set(repoRoot, null);
             }
@@ -3864,7 +3953,7 @@ class LeakLockPanel {
             file,
             line: finding.line
         });
-        return url && isPermalinkUrl(url) ? url : null;
+        return url && isPermalinkUrl(url, remoteInfo) ? url : null;
     }
 
     /**
@@ -3902,7 +3991,7 @@ class LeakLockPanel {
             || (repoDir === this._scanRepoRoot ? this._remoteInfo : null);
         if (!remoteInfo) {
             try {
-                remoteInfo = parseRemote(await gitRewrite.getRemoteUrl(repoDir));
+                remoteInfo = parseRemote(await gitRewrite.getRemoteUrl(repoDir), this._customHostTypes());
             } catch {
                 remoteInfo = null;
             }
@@ -3926,7 +4015,7 @@ class LeakLockPanel {
             file,
             line: finding.line
         });
-        return url && isPermalinkUrl(url) ? url : null;
+        return url && isPermalinkUrl(url, remoteInfo) ? url : null;
     }
 
     async _openCommitUrl(findingIndex) {
@@ -5265,6 +5354,692 @@ class LeakLockPanel {
     }
 
     /**
+     * A previously exported report, read back and checked against the repository now.
+     *
+     * The card is rendered even with nothing imported: the question it answers - did
+     * the cleanup actually remove what the last report listed - comes up after a
+     * rewrite, when there may be no current scan on screen at all.
+     */
+    _renderImportedReport() {
+        const report = this._importedReport;
+        const comparison = this._importedComparison;
+
+        if (!report) {
+            return `
+                <div class="scan-section" id="imported-report-section" style="margin-top: 16px;">
+                    <h3 style="margin-bottom: 4px;">📥 Verify a previous report</h3>
+                    <p style="font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                        Import a report exported earlier and Leak Lock checks each of its findings against this
+                        repository as it stands now: resolved, still present, or impossible to check. It also lists
+                        what has appeared since the report was written, and the commit that introduced it.
+                    </p>
+                    <button class="scan-button" onclick="importScanResultsJson()">📥 Import JSON</button>
+                </div>
+            `;
+        }
+
+        const summary = comparison ? comparison.summary : null;
+        const generatedAt = formatReportDate(report.generatedAt, 'an unrecorded time');
+
+        const warnings = (report.warnings || []).map(warning => `
+            <div class="coverage-note coverage-warn">⚠️ ${escapeHtml(warning)}</div>
+        `).join('');
+
+        // A report from another repository would produce meaningless "resolved" rows.
+        // Importing one is refused; when the user overrode that refusal, the fact stays
+        // on screen for as long as the comparison does, because a status read out of
+        // context is exactly what the refusal exists to prevent.
+        const identity = report.identity || null;
+        const repoNote = report.crossRepository
+            ? `<div class="coverage-note coverage-warn">⚠️ <strong>This report is from a different repository</strong>${identity && identity.basis ? ` (${escapeHtml(identity.basis)} <code>${escapeHtml(String(identity.recorded))}</code> against <code>${escapeHtml(String(identity.current))}</code>)` : ''}. You chose to compare anyway. A finding that never existed here reads as resolved, which says nothing about the repository it came from.</div>`
+            : '';
+
+        // The recorded path is shown as information, never as identity: a clone lives
+        // wherever the user put it. The note states the two paths and what identity
+        // actually established, rather than asserting "same repository" on the strength
+        // of a path check that cannot show any such thing.
+        const repoMatch = comparison ? comparison.repoMatch : null;
+        const identityNote = identity && identity.verdict === 'match'
+            ? ` Identity confirmed by ${escapeHtml(identity.basis)}, so this is the same repository in another location.`
+            : ' Identity could not be confirmed for this report, so check it is the same repository before trusting a resolved.';
+        const pathNote = !report.crossRepository && repoMatch && repoMatch.known && repoMatch.matches === false
+            ? `<div class="coverage-note">Exported from <code>${escapeHtml(repoMatch.recorded)}</code>; checked against <code>${escapeHtml(comparison.repoDir || 'none')}</code>.${identityNote}</div>`
+            : '';
+
+        const summaryLine = summary
+            ? `<div class="import-summary" style="margin: 10px 0; font-size: 0.95em;">
+                    <strong>${summary.resolved} of ${summary.total}</strong> resolved
+                    · ${summary.present} still present
+                    · ${summary.unverifiable} unverifiable
+                    ${summary.newFindings ? `· <strong>${summary.newFindings}</strong> new since this report` : ''}
+               </div>
+               ${summary.bounded ? `<div class="coverage-note coverage-warn">⚠️ Verification stopped at ${summary.verifyLimit} values. The rest are reported as unverifiable, not resolved.</div>` : ''}`
+            : '<div class="coverage-note">Not verified yet.</div>';
+
+        const rows = (comparison ? comparison.entries : []).map(entry => {
+            const finding = entry.finding;
+            const isResolved = entry.status === scanBaseline.STATUS.RESOLVED;
+            const isUnknown = entry.status === scanBaseline.STATUS.UNVERIFIABLE;
+            const label = isResolved ? 'Resolved' : (isUnknown ? 'Unverifiable' : 'Still present');
+            const colour = isResolved
+                ? 'var(--vscode-testing-iconPassed, #4caf50)'
+                : (isUnknown ? 'var(--vscode-descriptionForeground)' : 'var(--vscode-testing-iconFailed, #d73a49)');
+            const value = finding.secretDisplay || '';
+            const shown = value.length > SECRET_TRUNCATE_LENGTH ? `${value.substring(0, SECRET_TRUNCATE_LENGTH)}…` : value;
+
+            return `
+                <tr>
+                    <td style="white-space: nowrap;">
+                        <input type="checkbox" ${isResolved ? 'checked' : ''} disabled
+                            class="${isUnknown ? 'import-status-unknown' : ''}"
+                            aria-label="${escapeHtml(label)}"
+                            title="${escapeHtml(entry.reason || label)}">
+                        <span style="color: ${colour}; font-size: 0.9em;">${escapeHtml(label)}</span>
+                    </td>
+                    <td style="word-break: break-all;">${escapeHtml(finding.file || 'unknown')}</td>
+                    <td>${escapeHtml(String(finding.line ?? ''))}</td>
+                    <td style="font-family: monospace; word-break: break-all;">${escapeHtml(shown)}</td>
+                    <td>${escapeHtml(finding.severity || '')}</td>
+                    <td>${escapeHtml((finding.engines || []).join(', ') || finding.engine || '—')}</td>
+                    <td style="font-size: 0.9em; color: var(--vscode-descriptionForeground);">${escapeHtml(entry.reason || '')}</td>
+                </tr>
+            `;
+        }).join('');
+
+        const newRows = (comparison ? comparison.newFindings : []).map(item => `
+            <tr>
+                <td style="word-break: break-all;">${escapeHtml(item.file || 'unknown')}</td>
+                <td>${escapeHtml(String(item.line ?? ''))}</td>
+                <td style="font-family: monospace; word-break: break-all;">${escapeHtml(item.secretDisplay || '')}</td>
+                <td>${escapeHtml(item.severity || '')}</td>
+                <td style="font-size: 0.9em;">${item.firstCommit
+            ? `${escapeHtml(item.firstCommit.hash.substring(0, 7))}${item.firstCommit.date ? ` · ${escapeHtml(formatReportDate(item.firstCommit.date, item.firstCommit.date, { dateOnly: true }))}` : ''}`
+            : '<span style="color: var(--vscode-descriptionForeground);">not looked up</span>'}</td>
+            </tr>
+        `).join('');
+
+        return `
+            <div class="scan-section" id="imported-report-section" style="margin-top: 16px;">
+                <h3 style="margin-bottom: 4px;">📥 Imported report${report.sourceName ? `: ${escapeHtml(report.sourceName)}` : ''}</h3>
+                <p style="font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                    ${report.totalFindings} finding(s), scanned ${escapeHtml(generatedAt)}${report.redactedFindings ? ` · ${report.redactedFindings} value(s) redacted` : ''}.
+                    These are a record of a past scan. They are never cleanup targets and are not selectable.
+                </p>
+                ${warnings}
+                ${repoNote}
+                ${pathNote}
+                ${summaryLine}
+                <div class="export-actions" style="margin-bottom: 10px;">
+                    <button class="scan-button" onclick="verifyImportedReport()" ${this._verifyingImport ? 'disabled' : ''}>${this._verifyingImport ? '⏳ Verifying…' : '🔁 Re-verify'}</button>
+                    <button class="scan-button" onclick="importScanResultsJson()">📥 Import another</button>
+                    <button class="scan-button" onclick="clearImportedReport()">✕ Clear</button>
+                </div>
+                ${rows
+                ? `<table class="results-table">
+                        <thead><tr>
+                            <th style="width: 150px;">Resolved?</th><th>File</th><th style="width: 60px;">Line</th>
+                            <th style="width: 22%;">Value</th><th style="width: 90px;">Severity</th>
+                            <th style="width: 130px;">Engine</th><th style="width: 22%;">Evidence</th>
+                        </tr></thead>
+                        <tbody>${rows}</tbody>
+                       </table>`
+                // An empty table has two very different causes, and reading one as the
+                // other is the whole failure mode this feature exists to avoid: a report
+                // with nothing in it, versus one whose findings have not been checked.
+                : (report.totalFindings > 0
+                    ? `<p style="font-size: 0.9em; color: var(--vscode-editorWarning-foreground);">
+                            ⚠️ ${report.totalFindings} finding(s) in this report have not been checked${this._verifyingImport ? ' yet' : ''}.
+                            Nothing here says they were resolved. ${this._verifyingImport ? '' : 'Use Re-verify.'}
+                       </p>`
+                    : '<p style="font-size: 0.9em; color: var(--vscode-descriptionForeground);">This report contains no findings to check.</p>')}
+                ${newRows
+                ? `<h4 style="margin: 14px 0 4px 0;">New since this report</h4>
+                       <p style="font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                           Reported by the current scan and absent from the imported report.
+                       </p>
+                       ${summary && summary.unmatchable
+                    ? `<div class="coverage-note coverage-warn">⚠️ ${summary.unmatchable} finding(s) in this report carry no value or fingerprint to recognise them by, so anything listed here may have been in the report already. A redacted export is the usual reason.</div>`
+                    : ''}
+                       <table class="results-table">
+                        <thead><tr><th>File</th><th style="width: 60px;">Line</th><th style="width: 25%;">Value</th><th style="width: 90px;">Severity</th><th style="width: 180px;">Introduced by</th></tr></thead>
+                        <tbody>${newRows}</tbody>
+                       </table>`
+                : ''}
+            </div>
+        `;
+    }
+
+    /**
+     * Identify a repository in a way that survives being cloned elsewhere.
+     *
+     * Root commits are the strong signal: every clone, fork and mirror shares them and
+     * two unrelated repositories do not. The origin URL is the second. The path is
+     * recorded for a human reading the file and is never compared, because a repository
+     * is not where it happens to sit on one machine.
+     */
+    async _readRepositoryIdentity(repoDir, options = {}) {
+        if (!repoDir) {
+            return null;
+        }
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+
+        let rootCommits = [];
+        try {
+            const { stdout } = await execFileAsync(
+                'git', [...scanBaseline.RAW_OBJECT_FLAGS, '-C', repoDir, 'rev-list', '--max-parents=0', '--all'],
+                {
+                    timeout: 30000,
+                    maxBuffer: GIT_MAX_BUFFER,
+                    // Identity must come from the real objects too. A cleanup leaves
+                    // replace refs behind, and reading roots through them would report
+                    // a different repository than the same read a moment earlier did.
+                    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+                }
+            );
+            // A repository can have several roots (grafted or merged histories). Keep a
+            // bounded, sorted set so two exports of the same repository agree.
+            rootCommits = String(stdout || '').split('\n').map(line => line.trim()).filter(Boolean).sort().slice(0, 20);
+        } catch (error) {
+            console.warn('Could not read root commits:', error.message);
+        }
+
+        let remote = null;
+        try {
+            const { stdout } = await execFileAsync(
+                'git', ['-C', repoDir, 'remote', 'get-url', gitRewrite.DEFAULT_REMOTE],
+                { timeout: 15000 }
+            );
+            // Redacted at the source, so a credential in the remote never reaches
+            // the recorded identity, the exported report, or the banner and prompt
+            // that render it. Comparison is unaffected: normalizeRemoteUrl strips
+            // userinfo before matching.
+            remote = scanBaseline.redactRemoteUserinfo(String(stdout || '').trim());
+        } catch {
+            // A repository with no origin is normal; identity then rests on the roots.
+        }
+
+        if (!rootCommits.length && !remote) {
+            return null;
+        }
+        return {
+            remote,
+            rootCommits,
+            path: options.redactPath ? null : repoDir
+        };
+    }
+
+    /**
+     * Read a report back in.
+     *
+     * A wrong file is an expected outcome here, not an exceptional one, so parse
+     * failures are reported and nothing is rendered half-read.
+     */
+    async _importScanResultsJson() {
+        try {
+            const picked = await vscode.window.showOpenDialog({
+                canSelectMany: false,
+                openLabel: 'Import scan report',
+                filters: { 'JSON files': ['json'] }
+            });
+            if (!picked || picked.length === 0) {
+                return;
+            }
+
+            const uri = picked[0];
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const parsed = scanBaseline.parseImportedReport(Buffer.from(bytes).toString('utf8'), {
+                sourceName: path.basename(uri.fsPath)
+            });
+            if (!parsed.ok) {
+                vscode.window.showErrorMessage(`Could not import that file. ${parsed.error}`);
+                return;
+            }
+
+            // Repository A's report says nothing about repository B. Comparing them
+            // would answer "resolved" for every value that simply never existed here,
+            // which is the most dangerous wrong answer this feature can give, so a
+            // known mismatch stops the import rather than annotating it.
+            const gate = await this._checkImportBelongsHere(parsed.report);
+            if (!gate.allowed) {
+                return;
+            }
+            parsed.report.identity = gate.identity;
+            parsed.report.crossRepository = gate.crossRepository;
+
+            this._importedReport = parsed.report;
+            this._importedComparison = null;
+            this._updateWebviewContent();
+            await this._verifyImportedReport();
+        } catch (error) {
+            console.error('Failed to import scan report:', error);
+            vscode.window.showErrorMessage(`Failed to import scan report: ${error.message}`);
+        }
+    }
+
+    /**
+     * Decide whether this report is about this repository.
+     *
+     * Three outcomes, and they are deliberately not the same:
+     *
+     *  - **match** - the identities agree; import proceeds silently.
+     *  - **mismatch** - they disagree, and the identities are strong enough to be sure.
+     *    Refused by default. A rewrite log from another repository would mark every one
+     *    of its values resolved here, because they were never in this repository at all.
+     *    An override exists, because a legitimate case does exist (a split repository, a
+     *    re-created history), and it labels the result rather than hiding the fact.
+     *  - **unknown** - a report exported before identity was recorded, or a repository
+     *    with no remote and no readable roots. Allowed, with the uncertainty stated:
+     *    refusing on a guess would block a valid import as often as it caught a wrong one.
+     */
+    async _checkImportBelongsHere(report) {
+        const repoDir = this._resolveCleanupRepo().repo
+            || this._scanRepoRoot
+            || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+            || null;
+
+        const current = await this._readRepositoryIdentity(repoDir);
+        const identity = scanBaseline.describeRepositoryIdentity(report.repository, current);
+
+        if (identity.verdict !== 'mismatch') {
+            if (identity.verdict === 'unknown') {
+                report.warnings.push(
+                    'This report records no repository identity, or this repository has none to compare against, '
+                    + 'so Leak Lock cannot confirm the report is about this repository. Check it is before trusting a "resolved".'
+                );
+            }
+            return { allowed: true, crossRepository: false, identity };
+        }
+
+        // The report usually names where it was scanned. If that repository is on this
+        // machine, offering to switch to it beats sending the user away to reopen a
+        // folder and start the import again - and it is the outcome they actually want,
+        // since the report is not wrong, it is just pointed at the wrong repository.
+        const recordedPath = report.repository?.path || report.scanPath || null;
+        const switchTarget = await this._resolveSwitchTarget(recordedPath, report);
+        const switchLabel = switchTarget ? `Switch to ${path.basename(switchTarget)}` : null;
+
+        const options = [switchLabel, 'Compare anyway'].filter(Boolean);
+        const choice = await vscode.window.showWarningMessage(
+            `This report is from a different repository. It records ${identity.basis} `
+            + `${identity.recorded}, and this repository has ${identity.current}. `
+            + 'Every finding that never existed here would be reported as resolved.'
+            + (switchTarget ? `\n\nThe repository it describes is on this machine at ${switchTarget}.` : ''),
+            { modal: true },
+            ...options
+        );
+
+        if (switchLabel && choice === switchLabel) {
+            const switched = await this._switchToRepository(switchTarget);
+            if (!switched) {
+                return { allowed: false, crossRepository: true, identity };
+            }
+            // Re-check against the repository now in scope rather than assuming the
+            // switch fixed it: the path in the report may hold a different repository
+            // today, and that must refuse exactly as it would have before.
+            const after = scanBaseline.describeRepositoryIdentity(
+                report.repository,
+                await this._readRepositoryIdentity(switchTarget)
+            );
+            if (after.verdict === 'mismatch') {
+                vscode.window.showErrorMessage(
+                    `${switchTarget} is no longer the repository this report describes, so nothing was imported.`
+                );
+                return { allowed: false, crossRepository: true, identity: after };
+            }
+            return { allowed: true, crossRepository: false, identity: after };
+        }
+
+        if (choice !== 'Compare anyway') {
+            return { allowed: false, crossRepository: true, identity };
+        }
+        return { allowed: true, crossRepository: true, identity };
+    }
+
+    /**
+     * Is the repository a report names still on this machine, and is it the one the
+     * report describes? Both, or the offer to switch is worse than not making it.
+     */
+    async _resolveSwitchTarget(recordedPath, report) {
+        if (!recordedPath || recordedPath === scanBaseline.REDACTED_PATH) {
+            return null;
+        }
+        let candidate;
+        try {
+            candidate = validatePath(recordedPath);
+        } catch {
+            return null;
+        }
+        // The path comes from an imported file, so it can be a broken symlink or a
+        // directory this user cannot stat. That is "no switch target", not a crashed
+        // import.
+        try {
+            if (!fs.statSync(candidate).isDirectory()) {
+                return null;
+            }
+        } catch {
+            return null;
+        }
+        const root = findGitRoot(candidate) || candidate;
+        const identity = scanBaseline.describeRepositoryIdentity(
+            report.repository,
+            await this._readRepositoryIdentity(root)
+        );
+        // Only offer the switch when it demonstrably fixes the problem. Offering to
+        // move to a repository that mismatches too would just relocate the refusal.
+        return identity.verdict === 'match' ? root : null;
+    }
+
+    /**
+     * Point the panel at another repository.
+     *
+     * Results, coverage and cleanup selection all describe the repository that was
+     * scanned, so they are cleared rather than carried across - a findings table from
+     * repository A beside an imported report about repository B is the mixing this
+     * whole check exists to prevent. Manual redaction rules are kept: they are not tied
+     * to a scan, and re-typing them is exactly what the user would not expect to do.
+     */
+    async _switchToRepository(repoDir) {
+        try {
+            const validated = validatePath(repoDir);
+            if (this._scanResults.length > 0) {
+                const confirmed = await vscode.window.showWarningMessage(
+                    `Switching to ${validated} clears the current scan results, which describe a different repository. Scan again there when you are ready.`,
+                    { modal: true },
+                    'Switch and clear results'
+                );
+                if (confirmed !== 'Switch and clear results') {
+                    return false;
+                }
+            }
+            this._selectedDirectory = validated;
+            this._scanPath = null;
+            this._scanRepoRoot = findGitRoot(validated) || validated;
+            this._scanResults = [];
+            this._scanCoverage = null;
+            this._resetScanSelection();
+            this._scanCleanup.repoOverride = null;
+            this._scanCleanup.preparedCommand = null;
+            this._scanCleanup.preparedScripts = null;
+            this._scanCleanup.preparedRepo = null;
+            this._viewMode = 'scan';
+            this._updateWebviewContent();
+            return true;
+        } catch (error) {
+            vscode.window.showErrorMessage(`Could not switch to ${repoDir}: ${error.message}`);
+            return false;
+        }
+    }
+
+    _clearImportedReport() {
+        // Abandon whatever verification is in flight. It reads a report this panel no
+        // longer holds, and letting it finish would write a comparison for a report the
+        // user has cleared - statuses on screen with nothing to attach them to.
+        this._importRun += 1;
+        this._verifyingImport = false;
+        this._importedReport = null;
+        this._importedComparison = null;
+        this._updateWebviewContent();
+    }
+
+    /**
+     * Check every imported finding against the repository as it stands now.
+     *
+     * Two signals, kept separate because they answer different questions: whether the
+     * value is still anywhere in history or on disk, which needs no engine and is what
+     * a rewrite actually changes; and whether the current scan still reports it.
+     */
+    async _verifyImportedReport() {
+        const report = this._importedReport;
+        if (!report) {
+            return null;
+        }
+
+        // Each run claims a number. Importing another report, clearing, or asking for a
+        // re-verify starts a newer one, and an older run that is still walking history
+        // must not write its answer afterwards: those statuses would describe a report
+        // that is no longer on screen. Deliberately not a "refuse while busy" flag - a
+        // verification can take minutes, and refusing to import during it is the same
+        // dead end as refusing to import into the wrong repository was.
+        const run = ++this._importRun;
+        const superseded = () => run !== this._importRun || this._importedReport !== report;
+
+        const repoDir = this._resolveCleanupRepo().repo
+            || this._scanRepoRoot
+            || this._scanPath
+            || this._selectedDirectory
+            || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+            || null;
+
+        this._verifyingImport = true;
+        this._updateWebviewContent();
+        try {
+            const currentIndex = scanBaseline.indexCurrentFindings(this._scanResults);
+            const limit = scanBaseline.DEFAULT_VERIFY_LIMIT;
+            // The denominator has to be the values that will actually be searched.
+            // A finding the current scan already matches needs no search, and an
+            // unverifiable one carries nothing to search for, so counting every
+            // finding in the report made the count stop short of its own total --
+            // a report of 200 where 3 are searchable read "3 of 25" and stopped.
+            const searchable = repoDir
+                ? report.findings.filter(finding =>
+                    finding.verifiable && !scanBaseline.matchInCurrentScan(finding, currentIndex)).length
+                : 0;
+            const searchTotal = Math.min(searchable, limit);
+            const entries = [];
+            let checked = 0;
+            let bounded = false;
+            // Cancelling has to stop the work that follows the loop as well. The
+            // "new since" pass is up to 25 full-history walks of its own, and a cancel
+            // that only ended the part with a progress bar would leave the user
+            // watching nothing happen for exactly as long as before.
+            let cancelled = false;
+
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Checking the imported report against this repository',
+                cancellable: true
+            }, async (progress, token) => {
+                for (const finding of report.findings) {
+                    if (superseded()) {
+                        break;
+                    }
+                    const currentMatch = scanBaseline.matchInCurrentScan(finding, currentIndex);
+                    let presence = null;
+
+                    if (!currentMatch && finding.verifiable) {
+                        if (!repoDir) {
+                            presence = { checked: false, reason: 'no repository is open to search' };
+                        } else if (token.isCancellationRequested) {
+                            bounded = true;
+                            cancelled = true;
+                            presence = { checked: false, reason: 'verification was cancelled' };
+                        } else if (checked >= limit) {
+                            bounded = true;
+                            presence = { checked: false, reason: `the ${limit}-value verification limit was reached` };
+                        } else {
+                            checked += 1;
+                            progress.report({ message: `${checked} of ${searchTotal} value(s)` });
+                            presence = await this._checkValuePresence(repoDir, finding.secret);
+                        }
+                    }
+
+                    const outcome = scanBaseline.resolveStatus(finding, { presence, currentMatch });
+                    entries.push({
+                        finding,
+                        status: outcome.status,
+                        reason: outcome.reason,
+                        currentIndex: currentMatch ? currentMatch.position : null
+                    });
+                }
+                cancelled = cancelled || token.isCancellationRequested;
+            });
+
+            if (superseded()) {
+                return null;
+            }
+
+            const newFindings = await this._describeFindingsNewSince(report, repoDir, { lookupCommits: !cancelled });
+            if (superseded()) {
+                return null;
+            }
+            this._importedComparison = {
+                entries,
+                newFindings,
+                summary: scanBaseline.summarize(entries, {
+                    newFindings: newFindings.length,
+                    unmatchable: scanBaseline.countUnmatchableFindings(report.findings),
+                    bounded,
+                    verifyLimit: limit
+                }),
+                repoMatch: scanBaseline.describeRepoMatch(report, repoDir),
+                repoDir,
+                verifiedAt: new Date().toISOString()
+            };
+            return this._importedComparison;
+        } catch (error) {
+            console.error('Failed to verify the imported report:', error);
+            vscode.window.showErrorMessage(`Could not verify the imported report: ${error.message}`);
+            return null;
+        } finally {
+            // A superseded run must not clear the flag or repaint: a newer verification
+            // is running, and the panel belongs to it.
+            if (run === this._importRun) {
+                this._verifyingImport = false;
+                this._updateWebviewContent();
+            }
+        }
+    }
+
+    /**
+     * Is this exact value still anywhere in the repository?
+     *
+     * History is searched with the pickaxe over `--all`, which finds content that was
+     * added and later removed - the shape of every leaked value - and covers refs that
+     * are not reachable from HEAD. The working tree is searched separately, including
+     * untracked files, because a value that was never committed is removed by deleting
+     * the file rather than by rewriting history, and must not read as resolved.
+     */
+    async _checkValuePresence(repoDir, value) {
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+
+        // The flag is in the argument list; the environment variable says the same thing
+        // a second way, so a future refactor of either one cannot quietly reintroduce a
+        // read that walks replaced objects and calls a surviving value resolved.
+        const rawObjects = { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' };
+
+        let inHistory = false;
+        try {
+            const { stdout } = await execFileAsync(
+                'git', scanBaseline.buildHistoryPresenceArgs(repoDir, value),
+                { timeout: 120000, maxBuffer: GIT_MAX_BUFFER, env: rawObjects }
+            );
+            inHistory = Boolean(String(stdout || '').trim());
+        } catch (error) {
+            // A search that could not run has not shown the value to be absent. The
+            // reason names the exit status only: execFile puts the whole command line
+            // into error.message, and that command line carries the secret.
+            return { checked: false, reason: `the history search failed (${scanBaseline.describeGitFailure(error)})` };
+        }
+
+        // A value spanning lines cannot be answered by a line-oriented grep: git
+        // splits the pattern per line and ORs it, so a PEM key would match any
+        // file carrying the standard -----BEGIN ...----- header and a key that
+        // was successfully removed would still read as still present. History
+        // already answered reliably above; where it did not, this is reported as
+        // unsearched rather than guessed at.
+        if (!scanBaseline.isLineSearchable(value)) {
+            return {
+                checked: inHistory,
+                inHistory,
+                inWorkingTree: false,
+                reason: inHistory ? null : 'the working tree cannot be searched for a value that spans lines'
+            };
+        }
+
+        let inWorkingTree = false;
+        try {
+            await execFileAsync(
+                'git', scanBaseline.buildWorkingTreePresenceArgs(repoDir, value),
+                { timeout: 60000, maxBuffer: GIT_MAX_BUFFER, env: rawObjects }
+            );
+            inWorkingTree = true;
+        } catch (error) {
+            // `git grep --quiet` exits 1 for "no match", which is an answer, not a
+            // failure. Anything else is a failure and must not be read as absence.
+            if (error.code !== 1) {
+                return {
+                    checked: inHistory,
+                    inHistory,
+                    inWorkingTree: false,
+                    reason: inHistory ? null : `the working-tree search failed (${scanBaseline.describeGitFailure(error)})`
+                };
+            }
+        }
+
+        return { checked: true, inHistory, inWorkingTree };
+    }
+
+    /**
+     * Findings the current scan reports and the imported report does not, each with the
+     * commit that first introduced the value.
+     *
+     * "When did this appear?" is the other half of comparing two scans, and the pickaxe
+     * with `--reverse` answers it exactly.
+     */
+    async _describeFindingsNewSince(report, repoDir, options = {}) {
+        const lookupCommits = options.lookupCommits !== false;
+        const fresh = scanBaseline.findingsNewSince(report.findings, this._scanResults);
+        if (fresh.length === 0) {
+            return [];
+        }
+
+        const util = require('util');
+        const execFileAsync = util.promisify(execFile);
+        // Each lookup is a full history walk, so only the first few are dated. The rest
+        // say "not looked up" rather than implying nothing was found.
+        const LOOKUP_LIMIT = 25;
+
+        const described = [];
+        for (const [position, { result }] of fresh.entries()) {
+            const value = result.fullSecret || result.secret;
+            let firstCommit = null;
+            const searchable = value
+                && value !== scanBaseline.REDACTED_SECRET
+                && result.valueIsLiteral !== false
+                && !result.decoder;
+            if (lookupCommits && repoDir && searchable && position < LOOKUP_LIMIT) {
+                try {
+                    const { stdout } = await execFileAsync(
+                        'git', scanBaseline.buildFirstCommitArgs(repoDir, value),
+                        {
+                            timeout: 120000,
+                            maxBuffer: GIT_MAX_BUFFER,
+                            // "When did this appear" must date the real commit, not the
+                            // rewritten stand-in a replace ref would substitute.
+                            env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' }
+                        }
+                    );
+                    firstCommit = scanBaseline.parseFirstCommit(stdout);
+                } catch (error) {
+                    // Same reason as the presence checks: the message would carry the
+                    // value the pickaxe was searching for, and this one goes to a log.
+                    console.warn('First-commit lookup failed:', scanBaseline.describeGitFailure(error));
+                }
+            }
+            described.push({
+                file: result.file,
+                line: result.line,
+                secretDisplay: result.secret,
+                severity: result.severity,
+                firstCommit
+            });
+        }
+        return described;
+    }
+
+    /**
      * Per-finding engine attribution.
      *
      * Names the engines that found it and, just as importantly, the enabled engines
@@ -5615,13 +6390,15 @@ class LeakLockPanel {
             `;
         }
 
-        // Show results or empty state
+        // Show results or empty state. The imported-report card is appended to both:
+        // "did the cleanup remove what the last report listed" is asked after a
+        // rewrite, when a current scan may show nothing at all.
         if (!this._scanResults || this._scanResults.length === 0) {
-            return this._renderEmptyScanState();
+            return `${this._renderEmptyScanState()}${this._renderImportedReport()}`;
         }
 
         // Show actual results (existing logic)
-        return this._getResultsHtml();
+        return `${this._getResultsHtml()}${this._renderImportedReport()}`;
     }
 
     _generateFixCommand(replacements) {
@@ -8508,6 +9285,11 @@ class LeakLockPanel {
 
         return {
             generatedAt: new Date().toISOString(),
+            // Which repository this report is about, by an identity that survives being
+            // cloned somewhere else: the root commits, plus the origin URL. The path is
+            // recorded for readers, never used as identity - a clone lives wherever the
+            // user put it, and two different repositories can occupy one path over time.
+            repository: options.repository || null,
             scanPath: redactSensitive ? '[REDACTED_PATH]' : (this._scanPath || null),
             selectedDirectory: redactSensitive ? '[REDACTED_PATH]' : (this._selectedDirectory || null),
             totalFindings: this._scanResults.length,
@@ -8630,7 +9412,15 @@ class LeakLockPanel {
                 return;
             }
 
-            const exportPayload = this._buildScanExportPayload({ redactSensitive });
+            // The scan's own repository, not the cleanup target: _resolveCleanupRepo
+            // follows the current selection and any repository override, so identity
+            // would have depended on which findings happened to be ticked, and a report
+            // exported from one scan could later be refused as a different repository.
+            const scanRepo = this._scanRepoRoot || this._scanPath || this._selectedDirectory || null;
+            const exportPayload = this._buildScanExportPayload({
+                redactSensitive,
+                repository: await this._readRepositoryIdentity(scanRepo, { redactPath: redactSensitive })
+            });
             await vscode.workspace.fs.writeFile(
                 targetUri,
                 Buffer.from(`${JSON.stringify(exportPayload, null, 2)}\n`, 'utf8')

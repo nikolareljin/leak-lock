@@ -19,5 +19,14 @@ Tests are JavaScript files under `test/`, typically named `*.test.js`. Run `npm 
 ## Commit & Pull Request Guidelines
 Recent history uses Conventional Commit prefixes (`feat:`, `chore:`, `fix:`). Follow that format with a short, imperative summary. PRs should include a clear description, testing steps, and screenshots when UI/webview changes occur (e.g., updates to `media/` or the sidebar panel).
 
+## Release Workflow
+- Treat `VERSION` as the current release version source. Keep `package.json` version exactly equal to it.
+- Keep current release notes in `RELEASE_NOTES.md`. Its first line must be `# Release notes, vX.Y.Z`, matching `VERSION`.
+- Before publishing, run `node tools/release-notes.js --sync-changelog` to insert the current release notes into `CHANGELOG.md`.
+- Sync refuses to touch a `CHANGELOG.md` section that already exists, because those entries get expanded by hand after they are generated. Pass `--force` only when you mean to discard the existing text.
+- Validation runs on every pull request (`npm run check:release`), in the pre-commit hook against the staged files, and again in the publish workflow.
+- The publish workflow runs `node tools/release-notes.js`, writes `.release-notes.md`, creates an annotated git tag from that file, and uses the same file for the GitHub Release body.
+- Do not edit generated `.release-notes.md`; it is ignored and recreated during release.
+
 ## Security & Configuration Tips
 Do not commit real secrets. Use `test/test-secrets.js` for demos. Configuration is exposed under `leakLock.dependencyHandling` in `package.json`—update docs if you add or change settings.
