@@ -16,6 +16,7 @@
 - Allow the release notes tool to sync the current release into CHANGELOG.md while preserving the existing heading style.
 
 ## Fixed
+- Strip credentials from the origin URL before recording it, so an exported report never carries a token from an HTTPS remote.
 - Check a commit permalink against the layout and repository it claims, not only its hostname, before opening it in a browser.
 - Stop matching a value that spans lines, such as a PEM key, against any file that merely shares one of its lines.
 - Run verification searches with object replacement disabled, so rewritten commits cannot hide original objects.

@@ -125,7 +125,9 @@ suite('release notes', () => {
             '- Mail <MAILTO:security@example.com> works too.',
             '- Read [the guide](https://example.com/guide).',
             '- Read [the guide](https://example.com/a%20b).',
-            '- Read [the guide](https://example.com/100%25).'
+            '- Read [the guide](https://example.com/100%25).',
+            '- [ref]: https://example.com/releases',
+            '- Ratio [a]: 3 to 1 after the change.'
         ];
         for (const bullet of bullets) {
             const dir = fixture({ notes: releaseNotes(bullet) });
@@ -148,7 +150,12 @@ suite('release notes', () => {
             // and the decoded text have to agree about what the scheme is.
             '- [Open release](&#106;avascript:alert(1))',
             '- [Open release](&#x6A;avascript:alert(1))',
-            '- [Open release](%6Aavascript:alert(1))'
+            '- [Open release](%6Aavascript:alert(1))',
+            // A link reference definition carries a target the inline pattern
+            // never sees, because it follows `]:` rather than `](`.
+            '- [ref]: javascript:alert(1)',
+            '- [ref]: //evil.example/release',
+            '- [ref]: &#106;avascript:alert(1)'
         ];
         for (const bullet of bullets) {
             const dir = fixture({ notes: releaseNotes(bullet) });
