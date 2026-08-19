@@ -5809,6 +5809,16 @@ class LeakLockPanel {
         try {
             const currentIndex = scanBaseline.indexCurrentFindings(this._scanResults);
             const limit = scanBaseline.DEFAULT_VERIFY_LIMIT;
+            // The denominator has to be the values that will actually be searched.
+            // A finding the current scan already matches needs no search, and an
+            // unverifiable one carries nothing to search for, so counting every
+            // finding in the report made the count stop short of its own total --
+            // a report of 200 where 3 are searchable read "3 of 25" and stopped.
+            const searchable = repoDir
+                ? report.findings.filter(finding =>
+                    finding.verifiable && !scanBaseline.matchInCurrentScan(finding, currentIndex)).length
+                : 0;
+            const searchTotal = Math.min(searchable, limit);
             const entries = [];
             let checked = 0;
             let bounded = false;
@@ -5842,7 +5852,7 @@ class LeakLockPanel {
                             presence = { checked: false, reason: `the ${limit}-value verification limit was reached` };
                         } else {
                             checked += 1;
-                            progress.report({ message: `${checked} of ${Math.min(report.findings.length, limit)} value(s)` });
+                            progress.report({ message: `${checked} of ${searchTotal} value(s)` });
                             presence = await this._checkValuePresence(repoDir, finding.secret);
                         }
                     }
