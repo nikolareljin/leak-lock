@@ -5547,7 +5547,11 @@ class LeakLockPanel {
                 'git', ['-C', repoDir, 'remote', 'get-url', gitRewrite.DEFAULT_REMOTE],
                 { timeout: 15000 }
             );
-            remote = String(stdout || '').trim() || null;
+            // Redacted at the source, so a credential in the remote never reaches
+            // the recorded identity, the exported report, or the banner and prompt
+            // that render it. Comparison is unaffected: normalizeRemoteUrl strips
+            // userinfo before matching.
+            remote = scanBaseline.redactRemoteUserinfo(String(stdout || '').trim());
         } catch {
             // A repository with no origin is normal; identity then rests on the roots.
         }

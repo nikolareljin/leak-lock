@@ -478,6 +478,38 @@ function describeRepoMatch(report, repoDir) {
  * `ssh://git@github.com/acme/app` are the same repository, and a comparison that said
  * otherwise would refuse an import that is perfectly valid.
  */
+/**
+ * Remove credentials from a remote URL before it is recorded, shown or exported.
+ *
+ * `git remote get-url` returns whatever is configured, and an HTTPS remote
+ * commonly carries a token: https://ghp_xxx@host/o/r or https://user:token@host/o/r.
+ * That string is written into an exported report and rendered in the
+ * cross-repository banner and prompt, so without this a report shared on purpose
+ * -- including a redacted one, since redaction only dropped the local path --
+ * would hand over a working credential.
+ *
+ * A conventional SSH user is kept, because `git@host:o/r` is how the remote is
+ * written everywhere and it is not a secret. A password is always dropped, and
+ * for http/https the whole userinfo goes, since that is where tokens live.
+ * Identity is unaffected: normalizeRemoteUrl already strips userinfo before
+ * comparing.
+ */
+function redactRemoteUserinfo(url) {
+    if (typeof url !== 'string' || !url.trim()) {
+        return null;
+    }
+    const value = url.trim();
+    const scheme = (/^([a-z+]+):\/\//i.exec(value)?.[1] || '').toLowerCase();
+    if (scheme) {
+        return value.replace(/^([a-z+]+:\/\/)([^/@]+)@/i, (whole, prefix, userinfo) => {
+            const isWeb = scheme === 'http' || scheme === 'https';
+            return isWeb || userinfo.includes(':') ? prefix : whole;
+        });
+    }
+    // SCP-like user@host:path. Only a password-bearing userinfo is dropped.
+    return value.replace(/^([^/@]+)@(?=[^/@]+:)/, (whole, userinfo) => userinfo.includes(':') ? '' : whole);
+}
+
 function normalizeRemoteUrl(url) {
     if (typeof url !== 'string' || !url.trim()) {
         return null;
@@ -581,6 +613,7 @@ module.exports = {
     buildFirstCommitArgs,
     buildWorkingTreePresenceArgs,
     isLineSearchable,
+    redactRemoteUserinfo,
     parseFirstCommit,
     describeGitFailure,
     describeRepoMatch,

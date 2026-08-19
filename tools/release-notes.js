@@ -85,6 +85,17 @@ function validateReleaseNotes(markdown) {
     }
   }
 
+  // A link reference definition carries a target too, and `[ref]: javascript:...`
+  // inside a bullet is a definition CommonMark honours, so `[ref]` elsewhere in
+  // the notes renders as that link. The inline-link pattern above never sees it,
+  // because the target follows `]:` rather than `](`.
+  const referenceTargetPattern = /\[[^\]\n]*\]:\s*(\S+)/g;
+  for (const match of markdown.matchAll(referenceTargetPattern)) {
+    if (UNSAFE_TARGET.test(normalizeTarget(match[1]))) {
+      throw new Error('RELEASE_NOTES.md contains an unsafe markdown link target.');
+    }
+  }
+
   const autolinkPattern = /<([^<>\s]+)>/g;
   for (const match of markdown.matchAll(autolinkPattern)) {
     if (UNSAFE_TARGET.test(normalizeTarget(match[1]))) {

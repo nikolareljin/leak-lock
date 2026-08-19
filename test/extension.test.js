@@ -7018,6 +7018,33 @@ suite('Importing a previous report and checking what was resolved', () => {
 	// this feature refuses, and it decides precisely when the roots disagree -- the
 	// rewrite case -- where a false match makes another repository's values, absent
 	// here, all read as resolved.
+	// Copilot review: the recorded remote was whatever `git remote get-url` returned,
+	// which for an HTTPS remote commonly carries a token. That string is written into
+	// the exported report -- redaction only dropped the local path -- and rendered in
+	// the cross-repository banner and prompt, so a report shared on purpose handed
+	// over a working credential.
+	test('a credential in the remote is never recorded', () => {
+		const redact = scanBaseline.redactRemoteUserinfo;
+		assert.strictEqual(redact('https://ghp_SECRETTOKEN@github.com/o/r.git'), 'https://github.com/o/r.git');
+		assert.strictEqual(redact('https://user:ghp_SECRET@github.com/o/r.git'), 'https://github.com/o/r.git');
+		assert.strictEqual(redact('http://user:pw@git.acme.com:8443/o/r.git'), 'http://git.acme.com:8443/o/r.git');
+		assert.strictEqual(redact('ssh://user:pw@host/o/r.git'), 'ssh://host/o/r.git');
+		assert.strictEqual(redact('user:pw@host:o/r.git'), 'host:o/r.git');
+		// A conventional SSH user is how the remote is written everywhere and is not
+		// a secret, so it survives and the remote stays recognisable.
+		assert.strictEqual(redact('git@github.com:o/r.git'), 'git@github.com:o/r.git');
+		assert.strictEqual(redact('ssh://git@github.com:2222/o/r.git'), 'ssh://git@github.com:2222/o/r.git');
+		assert.strictEqual(redact('https://github.com/o/r.git'), 'https://github.com/o/r.git');
+		assert.strictEqual(redact('  '), null);
+	});
+
+	test('redacting the remote does not change which repository it names', () => {
+		assert.strictEqual(
+			scanBaseline.normalizeRemoteUrl(scanBaseline.redactRemoteUserinfo('https://ghp_x@github.com/o/r.git')),
+			scanBaseline.normalizeRemoteUrl('https://github.com/o/r.git')
+		);
+	});
+
 	test('a web port is identity, a transport port is not', () => {
 		const norm = scanBaseline.normalizeRemoteUrl;
 		assert.notStrictEqual(
