@@ -407,8 +407,11 @@ function matchedTextFromSnippet(match) {
  *
  * The value comes from a file the user picked, which may have been hand-edited or
  * written by an older format, and `new Date('whatever').toLocaleString()` renders the
- * words "Invalid Date" into the panel. An unreadable date falls back to the raw string
- * or to a neutral label, both of which tell the reader more than that does.
+ * words "Invalid Date" into the panel. A value that will not parse renders as
+ * `fallback` instead, and the caller chooses what that is: a neutral label where
+ * there is nothing useful to show, or the raw string where seeing what the report
+ * actually holds is the more informative answer. Either tells the reader more
+ * than "Invalid Date" does.
  */
 function formatReportDate(value, fallback, options = {}) {
     if (!value) {

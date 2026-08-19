@@ -19,7 +19,10 @@ const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\
 // autolink targets, and no syntax a shell or GitHub Actions would expand if the
 // text ever landed inside a `run:` block or a `${{ }}` expression.
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
-const SAFE_AUTOLINK = /<(?:https?:\/\/[^<>\s]+|mailto:[^<>\s]+|[^<>\s@]+@[^<>\s@.]+(?:\.[^<>\s@.]+)+)>/g;
+// URI schemes are case-insensitive, so <HTTPS://example.com> is a perfectly
+// ordinary autolink. Matching only lowercase left it unstripped, and the raw
+// HTML check then rejected it as an unsupported scheme.
+const SAFE_AUTOLINK = /<(?:https?:\/\/[^<>\s]+|mailto:[^<>\s]+|[^<>\s@]+@[^<>\s@.]+(?:\.[^<>\s@.]+)+)>/gi;
 const UNSAFE_TARGET = /^(?:javascript|data|vbscript|file|blob|filesystem):|^\/\//i;
 const AUTOLINK_SCHEME = /^<[A-Za-z][A-Za-z0-9+.-]*:/;
 const ALLOWED_SECTIONS = new Set(['Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security']);
