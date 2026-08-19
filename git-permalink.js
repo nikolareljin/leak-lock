@@ -133,7 +133,11 @@ function parseRemote(url, customHostTypes = {}) {
         return null;
     }
 
+    // `host` is what the permalink is built with and can carry a port; `hostname`
+    // never does, and is what platform inference and customHostTypes are keyed on,
+    // so `{ "git.acme.com": "gitlab" }` still applies to git.acme.com:8443.
     let host;
+    let hostname;
     let pathPart;
 
     if (SCHEME_PREFIX.test(trimmed)) {
@@ -146,14 +150,21 @@ function parseRemote(url, customHostTypes = {}) {
         if (!REMOTE_SCHEMES.has(parsed.protocol)) {
             return null;
         }
-        host = parsed.hostname.toLowerCase();
+        hostname = parsed.hostname.toLowerCase();
+        // Only a web scheme's port belongs in a browser URL. ssh:// and git://
+        // carry the port of the git transport, which the web UI does not answer
+        // on, so ssh://git@host:2222/o/r must still link to https://host/...
+        const isWebScheme = parsed.protocol === 'https:' || parsed.protocol === 'http:';
+        host = isWebScheme && parsed.port ? `${hostname}:${parsed.port}` : hostname;
         pathPart = parsed.pathname;
     } else {
         const match = SCP_LIKE.exec(trimmed);
         if (!match) {
             return null;
         }
-        host = match[1].toLowerCase();
+        // SCP-like syntax has no port: the colon separates host from path.
+        hostname = match[1].toLowerCase();
+        host = hostname;
         pathPart = match[2];
     }
 
@@ -164,11 +175,11 @@ function parseRemote(url, customHostTypes = {}) {
 
     const normalizedHostTypes = normalizeCustomHostTypes(customHostTypes);
     const platform =
-        BUILT_IN_HOSTS[host] ||
-        (Object.hasOwn(normalizedHostTypes, host) && Object.hasOwn(PLATFORMS, normalizedHostTypes[host])
-            ? normalizedHostTypes[host]
+        BUILT_IN_HOSTS[hostname] ||
+        (Object.hasOwn(normalizedHostTypes, hostname) && Object.hasOwn(PLATFORMS, normalizedHostTypes[hostname])
+            ? normalizedHostTypes[hostname]
             : null) ||
-        inferPlatform(host);
+        inferPlatform(hostname);
     return { host, owner: ownerRepo.owner, repo: ownerRepo.repo, platform };
 }
 
@@ -233,16 +244,26 @@ function isPermalinkUrl(url, remoteInfo = null) {
         return false;
     }
 
-    const host = parsed.hostname.toLowerCase();
+    // Platform is keyed on the portless hostname; the authority is what the
+    // builder writes and is what has to match the repository's own remote,
+    // port included, for a self-hosted instance on a non-default port.
+    const hostname = parsed.hostname.toLowerCase();
+    const authority = parsed.host.toLowerCase();
     // Without a remote to pin it to, only the well-known SaaS hosts are
     // recognised, and the URL still has to be shaped like a commit permalink.
     const platform = remoteInfo && remoteInfo.platform
         ? remoteInfo.platform
-        : BUILT_IN_HOSTS[host];
+        : BUILT_IN_HOSTS[hostname];
     if (!platform || !Object.hasOwn(PLATFORMS, platform)) {
         return false;
     }
-    if (remoteInfo && host !== String(remoteInfo.host || '').toLowerCase()) {
+    if (remoteInfo) {
+        if (authority !== String(remoteInfo.host || '').toLowerCase()) {
+            return false;
+        }
+    } else if (parsed.port) {
+        // No well-known SaaS host serves permalinks on a custom port, and with
+        // no remote to compare against there is nothing that would justify one.
         return false;
     }
 
@@ -267,7 +288,7 @@ function isPermalinkUrl(url, remoteInfo = null) {
         line = Number(anchor[1]);
     }
 
-    return PLATFORMS[platform].build(host, owner, repo, sha, file, line) === url;
+    return PLATFORMS[platform].build(authority, owner, repo, sha, file, line) === url;
 }
 
 module.exports = { parseRemote, buildCommitUrl, isPermalinkUrl, SUPPORTED_PLATFORMS };
