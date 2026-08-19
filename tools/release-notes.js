@@ -43,7 +43,9 @@ function validateReleaseNotes(markdown) {
     { pattern: /(?:^|\s)(?:eval|Function|require|import)\s*\(/, label: 'JavaScript call syntax' },
     { pattern: /(?:^|\s)(?:process|globalThis)\s*\./, label: 'JavaScript global access' },
     { pattern: /(?:^|\s)(?:bash|sh|zsh|fish|powershell|pwsh|cmd(?:\.exe)?|node|npm|npx|python3?|ruby|perl|curl|wget|git|gh|pip)\s+[-./\w]/, label: 'command invocation syntax' },
-    { pattern: /\s(?:&&|\|\||[;|])\s*/, label: 'shell control syntax' }
+    { pattern: /\s(?:&&|\|\||[;|])\s*/, label: 'shell control syntax' },
+    { pattern: /\s>\s*\S/, label: 'shell output redirection syntax' },
+    { pattern: /\s<(?![A-Za-z][A-Za-z0-9+.-]*:[^<>\s]*>)/, label: 'shell input redirection syntax' }
   ];
 
   for (const { pattern, label } of executablePatterns) {
