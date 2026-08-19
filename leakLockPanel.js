@@ -16,7 +16,7 @@ const hostCapacity = require('./host-capacity');
 // Shared with leakLockSidebarProvider.js so the two webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 const { findGitRoot, describeFindingPath, repoRelativeCandidates } = require('./finding-paths');
-const { parseRemote, buildCommitUrl, isPermalinkUrl } = require('./git-permalink');
+const { parseRemote, buildCommitUrl, isPermalinkUrl, SUPPORTED_PLATFORMS } = require('./git-permalink');
 const credentialInspect = require('./credential-inspect');
 const { classifyFindings } = require('./credential-prepass');
 const { renderCredentialReportHtml } = require('./credential-report-html');
@@ -3731,6 +3731,22 @@ class LeakLockPanel {
     }
 
     /**
+     * Custom hostname → platform mappings from user configuration.
+     * Keys are lowercased hostnames; values are validated platform names.
+     * Computed on every call (config can change); cheap enough for the call rate.
+     */
+    _customHostTypes() {
+        const raw = vscode.workspace.getConfiguration('leakLock').get('git.customHostTypes') || {};
+        const result = {};
+        for (const [hostname, platform] of Object.entries(raw)) {
+            if (typeof hostname === 'string' && hostname && SUPPORTED_PLATFORMS.includes(platform)) {
+                result[hostname.toLowerCase()] = platform;
+            }
+        }
+        return result;
+    }
+
+    /**
      * Resolved once per scan: the remote does not change mid-run, and every row
      * in the table would otherwise shell out to git for the same answer.
      */
@@ -3741,10 +3757,10 @@ class LeakLockPanel {
         }
         try {
             const remoteUrl = await gitRewrite.getRemoteUrl(scanPath);
-            this._remoteInfo = parseRemote(remoteUrl);
+            this._remoteInfo = parseRemote(remoteUrl, this._customHostTypes());
         } catch {
-            // No remote, not a repository, or a host we do not build URLs for.
-            // The SHA simply stays plain text; this must never fail a scan.
+            // No remote or not a repository. The SHA stays as plain text;
+            // this must never fail a scan.
             this._remoteInfo = null;
         }
     }
@@ -3890,7 +3906,7 @@ class LeakLockPanel {
         }
         await Promise.all([...roots.keys()].map(async (repoRoot) => {
             try {
-                roots.set(repoRoot, parseRemote(await gitRewrite.getRemoteUrl(repoRoot)));
+                roots.set(repoRoot, parseRemote(await gitRewrite.getRemoteUrl(repoRoot), this._customHostTypes()));
             } catch {
                 roots.set(repoRoot, null);
             }
@@ -3934,7 +3950,7 @@ class LeakLockPanel {
             file,
             line: finding.line
         });
-        return url && isPermalinkUrl(url) ? url : null;
+        return url && isPermalinkUrl(url, remoteInfo) ? url : null;
     }
 
     /**
@@ -3972,7 +3988,7 @@ class LeakLockPanel {
             || (repoDir === this._scanRepoRoot ? this._remoteInfo : null);
         if (!remoteInfo) {
             try {
-                remoteInfo = parseRemote(await gitRewrite.getRemoteUrl(repoDir));
+                remoteInfo = parseRemote(await gitRewrite.getRemoteUrl(repoDir), this._customHostTypes());
             } catch {
                 remoteInfo = null;
             }
@@ -3996,7 +4012,7 @@ class LeakLockPanel {
             file,
             line: finding.line
         });
-        return url && isPermalinkUrl(url) ? url : null;
+        return url && isPermalinkUrl(url, remoteInfo) ? url : null;
     }
 
     async _openCommitUrl(findingIndex) {

@@ -108,7 +108,7 @@
         },
         "leakLock.scan.timeoutSeconds": {
           "type": "number",
-          "default": 300,
+          "default": 600,
           "minimum": 30,
           "maximum": 7200,
           "description": "Maximum time for a single engine's scan. On expiry, findings gathered so far are reported and the results are marked incomplete rather than discarded."
@@ -117,6 +117,15 @@
           "type": "boolean",
           "default": true,
           "description": "Run 'git fetch --tags' before scanning, so a branch that exists only as an unfetched remote ref is not missed and the repository cannot be reported clean while the secret is still on the server. The scan's fetch is read-only: it does not pass --prune, so scanning never deletes remote-tracking refs. (The refresh immediately before a history rewrite does prune, because there the plan must match the server exactly.)"
+        },
+        "leakLock.git.customHostTypes": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["github", "gitlab", "bitbucket", "gitea"]
+          },
+          "markdownDescription": "Map self-hosted Git hostnames to their platform type so commit links are built with the right URL format. Keys are hostnames (e.g. `\"git.acme.com\"`), values are one of `\"github\"` (GitHub Enterprise), `\"gitlab\"` (self-hosted GitLab), `\"bitbucket\"` (hosts using Bitbucket Cloud URL layout), or `\"gitea\"` (Gitea / Forgejo / Gogs). Well-known SaaS hosts (`github.com`, `gitlab.com`, `bitbucket.org`) are detected automatically and do not need an entry here. For any host that has no entry and no recognisable platform keyword in its hostname, `\"github\"` URL format is assumed as the most common self-hosted layout."
         },
         "leakLock.noseyParker.image": {
           "type": "string",
