@@ -31,7 +31,7 @@ function validateReleaseNotes(markdown) {
     throw new Error('RELEASE_NOTES.md must not contain control characters.');
   }
 
-  const rawHtmlPattern = /<!--|<![A-Za-z][^>\n]*>|<\?[A-Za-z][^>\n]*\?>|<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^>\n]*)?\/?>/;
+  const rawHtmlPattern = /<!--|<![A-Za-z][^>\n]*>|<\?[A-Za-z][^>\n]*\?>|<\/?[A-Za-z][A-Za-z0-9-]*(?:[\s/][^>\n]*)?\/?>/;
   if (rawHtmlPattern.test(markdown)) {
     throw new Error('RELEASE_NOTES.md must not contain raw HTML.');
   }
