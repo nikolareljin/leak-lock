@@ -94,37 +94,43 @@ jobs:
           node -e "
             const pkg = require('./package.json');
             console.log('Package name:', pkg.name);
+            const fs = require('fs');
+            const version = fs.readFileSync('VERSION', 'utf8').trim();
             console.log('Version:', pkg.version);
+            console.log('VERSION file:', version);
             console.log('Publisher:', pkg.publisher);
             console.log('Engine requirement:', pkg.engines?.vscode);
             if (!pkg.name || !pkg.version || !pkg.publisher) {
               throw new Error('Missing required package.json fields');
             }
+            if (pkg.version !== version) {
+              throw new Error('VERSION must match package.json version');
+            }
           "
 
       - name: Get current version
         id: version
-        run: echo "version=$(node -p -e "require('./package.json').version")" >> $GITHUB_OUTPUT
-
-      - name: Check if version exists
-        id: check_version
         run: |
-          # Check if this version already exists as a git tag
+          version="$(node -p "require('./package.json').version")"
+          node -e "const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/; if (!semver.test(process.argv[1])) { throw new Error('package.json version must be strict SemVer like 0.9.0, with no wildcards or ranges.'); }" "$version"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release sources
+        run: node tools/release-notes.js --check
+
+      - name: Check version tag is new
+        run: |
+          # VERSION, package.json, and RELEASE_NOTES.md are source-controlled together.
+          # A duplicate tag means the release version must be updated in a new commit.
           if git tag -l | grep -q "^v${{ steps.version.outputs.version }}$"; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Version ${{ steps.version.outputs.version }} already exists, skipping publish"
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Version ${{ steps.version.outputs.version }} is new, will publish"
+            echo "Version ${{ steps.version.outputs.version }} already exists. Update VERSION, package.json, and RELEASE_NOTES.md together."
+            exit 1
           fi
+          echo "Version ${{ steps.version.outputs.version }} is new, will publish"
 
-      - name: Bump version
-        if: steps.check_version.outputs.exists == 'true'
-        run: |
-          # Auto-bump patch version if current version already exists
-          npm version patch --no-git-tag-version
-          echo "version=$(node -p -e "require('./package.json').version")" >> $GITHUB_OUTPUT
-        id: new_version
+      - name: Generate release notes
+        if: github.event_name == 'push'
+        run: node tools/release-notes.js
 
       - name: Package extension
         run: |
@@ -228,11 +234,11 @@ jobs:
       - name: Create Git Tag
         if: github.event_name == 'push'
         run: |
-          FINAL_VERSION=${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          FINAL_VERSION=${{ steps.version.outputs.version }}
           echo "Creating git tag v${FINAL_VERSION}"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git tag "v${FINAL_VERSION}"
+          git tag -a "v${FINAL_VERSION}" -F .release-notes.md
           # Ensure remote is authenticated with GITHUB_TOKEN for pushing tags
           git remote set-url origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git"
           git push origin "v${FINAL_VERSION}"
@@ -241,41 +247,9 @@ jobs:
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
-          tag_name: v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
-          name: Release v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
-          body: |
-            ## Changes in this Release
-            
-            ### 🛡️ Security Scanning
-            - Enhanced dependency directory handling (node_modules, vendor, etc.)
-            - Improved UI with sidebar controls and main area results
-            - Dynamic progress indicators during scanning operations
-            - Cross-platform security protection for Windows and Unix systems
-            - Fixed XSS vulnerabilities in file path display
-            - Enhanced path validation with directory traversal protection
-            
-            ### 🔧 Technical Improvements  
-            - Separated installation/setup controls to sidebar
-            - Streamlined main panel for scan results and BFG execution
-            - Added spinner animations for better user feedback
-            - Improved error handling and cleanup operations
-            - Centralized configuration constants for better maintainability
-            - Enhanced dependency installation with detailed instructions
-            
-            ### 🚀 Deployment
-            - Automated publishing pipeline with version management
-            - Comprehensive testing before release
-            - Updated GitHub Actions to latest versions
-            - Fixed Node.js compatibility issues with VSCE packaging
-            - Resolved VSCE command line option compatibility
-            
-            **Installation:** Search for "leak-lock" in VS Code Extensions marketplace
-            
-            **Usage:** 
-            1. Open the Leak Lock sidebar panel
-            2. Install dependencies and select target directory  
-            3. Click "Start Scan" to analyze for secrets
-            4. Review results and run BFG cleanup as needed
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Release v${{ steps.version.outputs.version }}
+          body_path: .release-notes.md
           draft: false
           prerelease: false
           files: "*.vsix"
@@ -286,7 +260,7 @@ jobs:
         if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: leak-lock-extension-v${{ steps.new_version.outputs.version || steps.version.outputs.version }}
+          name: leak-lock-extension-v${{ steps.version.outputs.version }}
           path: "*.vsix"
           retention-days: 30
           compression-level: 6
