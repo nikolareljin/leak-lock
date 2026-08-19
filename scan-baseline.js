@@ -378,6 +378,21 @@ function buildFirstCommitArgs(repoDir, value) {
  * case - and that needs deleting rather than a history rewrite, so it must not be
  * reported as resolved just because history is clean.
  */
+/**
+ * Can this value be searched for with a line-oriented tool?
+ *
+ * `git grep` splits a pattern carrying newlines into one pattern per line and
+ * ORs the results, so a multi-line value "matches" any file holding any single
+ * one of its lines. For a PEM key that line is the standard
+ * -----BEGIN RSA PRIVATE KEY----- header, which every other key file also has,
+ * so a key that was successfully removed still reads as still present. The
+ * history search is unaffected: `git log -S` compares blob bytes and matches
+ * the whole value, multi-line or not.
+ */
+function isLineSearchable(value) {
+    return typeof value === 'string' && value !== '' && !/[\r\n]/.test(value);
+}
+
 function buildWorkingTreePresenceArgs(repoDir, value) {
     return [...RAW_OBJECT_FLAGS, '-C', repoDir, 'grep', '--fixed-strings', '--quiet', '--untracked', '-e', value];
 }
@@ -565,6 +580,7 @@ module.exports = {
     buildHistoryPresenceArgs,
     buildFirstCommitArgs,
     buildWorkingTreePresenceArgs,
+    isLineSearchable,
     parseFirstCommit,
     describeGitFailure,
     describeRepoMatch,
