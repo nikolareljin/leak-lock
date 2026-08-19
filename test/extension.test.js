@@ -6825,6 +6825,32 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.ok(panel._importedReport.warnings.some(w => /cannot be searched for/.test(w)));
 	});
 
+	// Copilot review: when only the shortened display form of a value was ever
+	// recorded, export writes that form into `secret`. Searching history for text
+	// ending in an ellipsis matches nothing, and "nothing found" rendered as
+	// Resolved -- the report would have looked cleaner than the repository.
+	test('a value recorded only in shortened form is unverifiable, never resolved', async () => {
+		const panel = panelFor(reportJson([finding({
+			secret: 'AKIAIOSF\u2026', secretDisplay: 'AKIAIOSF\u2026',
+			isSecretDisplayTruncated: true, fingerprint: null
+		})]));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+		assert.strictEqual(comparison.summary.resolved, 0);
+		assert.match(comparison.entries[0].reason, /shortened form/);
+	});
+
+	// The full value being recorded is the common case for any long secret: the
+	// table shortens it for display while the export still carries the real bytes.
+	// Those stay searchable, or the flag would cost every long value its check.
+	test('a shortened display alongside the recorded full value stays verifiable', () => {
+		const normalized = scanBaseline.normalizeImportedFinding({
+			secret: LEAKED, secretDisplay: 'AKIAIOSF\u2026', isSecretDisplayTruncated: true
+		}, 0);
+		assert.strictEqual(normalized.verifiable, true);
+		assert.strictEqual(normalized.unverifiableReason, null);
+	});
+
 	test('a decoded value is unverifiable, because it is not the bytes the blob holds', async () => {
 		const panel = panelFor(reportJson([finding({
 			secret: 'decoded-value', valueIsLiteral: false, decoder: 'base64', fingerprint: null
