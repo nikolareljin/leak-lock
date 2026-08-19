@@ -16,6 +16,7 @@
 - Allow the release notes tool to sync the current release into CHANGELOG.md while preserving the existing heading style.
 
 ## Fixed
+- Say when a report carries nothing to recognise its findings by, so what is listed as new since it is not read as certain.
 - Build commit permalinks over the scheme the remote names, so an http-only self-hosted instance gets a link that answers.
 - Strip credentials from the origin URL before recording it, so an exported report never carries a token from an HTTPS remote.
 - Check a commit permalink against the layout and repository it claims, not only its hostname, before opening it in a browser.

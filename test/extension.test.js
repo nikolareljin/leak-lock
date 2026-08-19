@@ -6934,6 +6934,33 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.match(comparison.newFindings[0].firstCommit.hash, /^[0-9a-f]{7,40}$/);
 	});
 
+	// Copilot review: "new since this report" is an absence claim. A redacted export
+	// replaces every value and many engines emit no fingerprint, so those findings
+	// carry no identity key, nothing in the current scan can be recognised as having
+	// been in the report, and everything reads as new.
+	test('a report that cannot be matched on says so beside what it calls new', async () => {
+		const panel = panelFor(
+			reportJson([finding({ secret: '[REDACTED_SECRET]', fingerprint: null })], { redacted: true }),
+			[{ file: 'app.py', line: 1, secret: 'AKIAIOSFO…', fullSecret: LEAKED,
+				severity: 'high', ruleName: 'aws-access-token', fingerprint: null }]
+		);
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.summary.unmatchable, 1);
+		const html = panel._renderImportedReport();
+		assert.match(html, /may have been in the report already/);
+	});
+
+	test('a report that can be matched on carries no such caveat', async () => {
+		const panel = panelFor(
+			reportJson([finding({ secret: 'AKIAGONEGONEGONE0000', fingerprint: 'fp-gone' })]),
+			[{ file: 'app.py', line: 1, secret: 'AKIAIOSFO…', fullSecret: LEAKED,
+				severity: 'high', ruleName: 'aws-access-token', fingerprint: 'fp-new' }]
+		);
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.summary.unmatchable, 0);
+		assert.doesNotMatch(panel._renderImportedReport(), /may have been in the report already/);
+	});
+
 	test('a bounded verification says so instead of reporting the remainder as resolved', async () => {
 		const original = scanBaseline.DEFAULT_VERIFY_LIMIT;
 		Object.defineProperty(scanBaseline, 'DEFAULT_VERIFY_LIMIT', { value: 1, configurable: true });
