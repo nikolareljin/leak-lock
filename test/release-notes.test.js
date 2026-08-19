@@ -329,6 +329,9 @@ suite('release notes', () => {
         // Checking the working tree let an unstaged fix pass a broken commit.
         assert.ok(hook.includes('git show'));
         assert.ok(hook.includes('node tools/release-notes.js --check --root'));
+        // BSD mktemp (macOS) requires a template; a bare `mktemp -d` is GNU-only
+        // and would fail the hook outright there.
+        assert.match(hook, /mktemp -d "\$\{TMPDIR:-\/tmp\}\/[^"]*X{6,}"/);
         assert.strictEqual(pkg.scripts.prepare, 'node tools/install-git-hooks.js');
         assert.strictEqual(pkg.scripts['check:release'], 'node tools/release-notes.js --check');
     });

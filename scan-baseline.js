@@ -80,8 +80,12 @@ function parseImportedReport(text, options = {}) {
         warnings.push('The report does not record when it was generated, so "new since" is relative to an unknown time.');
     }
 
+    // `typeof [] === 'object'`, so an array entry would have passed as a finding
+    // and normalised into one with every field null -- while the warning below
+    // said the opposite. The top-level report check above already draws this
+    // distinction; the entries need it too.
     const findings = raw.findings
-        .filter(finding => finding && typeof finding === 'object')
+        .filter(finding => finding && typeof finding === 'object' && !Array.isArray(finding))
         .map((finding, index) => normalizeImportedFinding(finding, index));
 
     const dropped = raw.findings.length - findings.length;

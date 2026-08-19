@@ -6779,6 +6779,22 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.match(noFindings.error, /findings/);
 	});
 
+	// `typeof [] === 'object'`, so array entries used to pass the findings filter
+	// and normalise into findings with every field null, while the warning
+	// counted them as readable and said the opposite of what happened.
+	test('an array entry is dropped like any other non-object, and counted as one', () => {
+		const parsed = scanBaseline.parseImportedReport(JSON.stringify({
+			generatedAt: '2026-01-01T00:00:00Z',
+			findings: [finding(), [], [1, 2], null, 'x', 7]
+		}));
+		assert.strictEqual(parsed.ok, true);
+		assert.strictEqual(parsed.report.findings.length, 1);
+		assert.ok(
+			parsed.report.warnings.some(warning => /5 entries were not an object/.test(warning)),
+			'every non-object entry has to be counted, arrays included'
+		);
+	});
+
 	test('a value still in history is reported present, not resolved', async () => {
 		const panel = panelFor(reportJson([finding()]));
 		const comparison = await panel._verifyImportedReport();
