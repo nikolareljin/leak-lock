@@ -33,6 +33,7 @@ docs/**
 
 # CI, release and Dependabot configuration — build-time only.
 .github/**
+.githooks/**
 
 # Screenshot tooling — development only.
 tools/**
