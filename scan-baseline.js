@@ -158,14 +158,27 @@ function parseImportedReport(text, options = {}) {
  */
 function normalizeImportedFinding(finding, index) {
     const secret = typeof finding.secret === 'string' ? finding.secret : null;
+    const secretDisplay = typeof finding.secretDisplay === 'string' ? finding.secretDisplay : (secret || '');
     const valueIsLiteral = finding.valueIsLiteral !== false;
     const decoder = typeof finding.decoder === 'string' && finding.decoder ? finding.decoder : null;
+
+    // Export writes `fullSecret || secret` into `secret` and the shortened form
+    // into `secretDisplay`, so the two are equal exactly when the full value was
+    // never recorded and only the display form survives -- the same finding the
+    // panel already refuses to build a cleanup rule from. That form ends in an
+    // ellipsis, so a history search for it matches nothing, and "nothing found"
+    // would have rendered as Resolved: the report would look cleaner than the
+    // repository it describes. Where the full value was recorded the two differ,
+    // `secret` holds the real bytes, and the finding stays verifiable.
+    const onlyShortenedForm = finding.isSecretDisplayTruncated === true && secret === secretDisplay;
 
     let unverifiableReason = null;
     if (!secret) {
         unverifiableReason = 'the report carries no value for this finding';
     } else if (secret === REDACTED_SECRET) {
         unverifiableReason = 'the report was exported with redaction, so the value is not in it';
+    } else if (onlyShortenedForm) {
+        unverifiableReason = 'the report holds only a shortened form of this value, which is not the text any commit contains';
     } else if (!valueIsLiteral || decoder) {
         unverifiableReason = decoder
             ? `the engine reported a ${decoder} decoding rather than the bytes stored in the file`
@@ -177,7 +190,7 @@ function normalizeImportedFinding(finding, index) {
         file: typeof finding.file === 'string' ? finding.file : null,
         line: Number.isFinite(finding.line) ? finding.line : null,
         secret,
-        secretDisplay: typeof finding.secretDisplay === 'string' ? finding.secretDisplay : (secret || ''),
+        secretDisplay,
         description: typeof finding.description === 'string' ? finding.description : '',
         severity: typeof finding.severity === 'string' ? finding.severity : 'info',
         ruleName: typeof finding.ruleName === 'string' ? finding.ruleName : null,

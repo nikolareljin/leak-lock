@@ -18,7 +18,7 @@
 ## Fixed
 - Check a commit permalink against the layout and repository it claims, not only its hostname, before opening it in a browser.
 - Run verification searches with object replacement disabled, so rewritten commits cannot hide original objects.
-- Treat redacted reports, decoded scanner values, and bounded checks as unverifiable instead of resolved.
+- Treat redacted reports, decoded scanner values, values recorded only in shortened form, and bounded checks as unverifiable instead of resolved.
 - Refuse cross-repository report imports unless the user explicitly compares anyway.
 - Prevent a verification in flight from overwriting a newer report result.
 - Avoid rendering unreadable dates as Invalid Date.
