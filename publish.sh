@@ -44,6 +44,27 @@ set +a
 
 export NODE_OPTIONS="--max-old-space-size=4096"
 
+# The workflow validates release sources and refuses a duplicate tag before it
+# packages anything. Publishing from a laptop skipped all of that and shipped
+# whatever happened to be in the working tree.
+preflight() {
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "Error: the working tree is dirty. Commit or stash before publishing."
+    git status --short
+    exit 1
+  fi
+
+  echo "Validating release sources..."
+  node tools/release-notes.js --check
+
+  local version
+  version="$(node -p "require('./package.json').version")"
+  if [ -n "$(git tag -l "v$version")" ]; then
+    echo "Error: v$version is already tagged. Bump VERSION, package.json and RELEASE_NOTES.md together."
+    exit 1
+  fi
+}
+
 package_vsix() {
   if ! command -v vsce >/dev/null 2>&1; then
     echo "vsce not found. Installing..."
@@ -74,6 +95,7 @@ case "$TYPE" in
       echo "Error: VSCE_PAT is not set in .env."
       exit 1
     fi
+    preflight
     package_vsix
     echo "Publishing to VS Code Marketplace..."
     vsce publish --pat "$VSCE_PAT"
@@ -90,6 +112,7 @@ case "$TYPE" in
       exit 1
     fi
     # OVSX_NAMESPACE is not required for ovsx CLI; publisher is set in package.json
+    preflight
     package_vsix
     echo "Publishing to Open VSX..."
     ovsx publish "$VSIX_FILE" -p "$OVSX_PAT"

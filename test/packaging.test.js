@@ -20,6 +20,18 @@ suite('packaging', () => {
         );
     });
 
+    // tools/release-notes.js writes .release-notes.md, and publish.yml writes it
+    // *before* packaging, so it exists exactly when the .vsix is built.
+    // .gitignore covers it for the repository, but vsce stops reading .gitignore
+    // once a .vscodeignore exists, so only this line keeps it out of the package.
+    test('.vscodeignore excludes the generated release notes', () => {
+        const ignore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
+        assert.ok(
+            /^\.release-notes\.md$/m.test(ignore),
+            '.vscodeignore must exclude .release-notes.md'
+        );
+    });
+
     test('the dependency is pinned exactly, not to a range', () => {
         const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
         assert.strictEqual(pkg.dependencies['@nikolareljin/credential-lens'], '0.3.0');
@@ -71,7 +83,7 @@ suite('packaging', () => {
         // packages locally, so without these rules a working copy ships its
         // session notes and local settings to the Marketplace.
         const ignore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
-        for (const rule of ['.remember/**', '.claude/**']) {
+        for (const rule of ['.remember/**', '.claude/**', '.githooks/**']) {
             assert.ok(
                 ignore.split('\n').some(line => line.trim() === rule),
                 `.vscodeignore must exclude ${rule}`

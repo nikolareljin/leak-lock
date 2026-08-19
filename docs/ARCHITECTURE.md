@@ -180,6 +180,32 @@ so they need to be directly assertable.
 
 See [SCANNING_ENGINES.md](SCANNING_ENGINES.md) for the full comparison.
 
+### Reading a report back in
+
+`scan-baseline.js` parses a previously exported report and decides, per finding, whether it
+is resolved. It has no `vscode` import either, so the matching tiers and the
+never-resolve-what-was-not-checked rule are unit-testable directly.
+
+Presence is measured against the repository rather than against a scanner, because that is
+what a rewrite actually changes:
+
+```javascript
+git -C <repo> log --all --max-count=1 --format=%H -S<value>   // history, incl. deleted content
+git -C <repo> grep --fixed-strings --quiet --untracked -e <value>   // working tree
+git -C <repo> log --all --reverse --max-count=1 --format='%H %aI' -S<value>  // when it appeared
+```
+
+Identity is matched by `fingerprint`, then value plus file plus rule, then value alone;
+never by file and line, which drift. A value that cannot be searched for (redacted export,
+or an engine-decoded value) is reported unverifiable, never resolved.
+
+**Repository identity** is recorded in the export (`repository.rootCommits`,
+`repository.remote`) and checked on import. Root commits are the strong signal: every clone,
+fork and mirror shares them, and two unrelated repositories do not. The remote is the
+fallback for reports that predate it. The path is recorded for a human reader and never
+compared, because a repository is not where it happens to sit on one machine. A known
+mismatch refuses the import; an unknown identity allows it with the uncertainty stated.
+
 ```javascript
 // Nosey Parker — pinned image, no inherited truncation.
 // The image was previously :latest; the report flags were previously absent, and the
@@ -244,10 +270,16 @@ class LeakLockPanel {
         this._isScanning = false;                    // Scanning state flag
         this._scanProgress = null;                   // Progress tracking
         this._dependenciesInstalled = false;         // Dependency status
+        this._importedReport = null;                 // A previous export, read back in
+        this._importedComparison = null;             // Its findings, checked against now
         this._panel = null;                          // Webview panel reference
     }
 }
 ```
+
+The imported report sits outside `_scanCleanup` deliberately. Its findings describe a past
+state: they are never cleanup targets, are not selectable, and survive a re-scan, because
+comparing them against a fresh scan is the whole point of holding them.
 
 ### Static Panel Management
 ```javascript

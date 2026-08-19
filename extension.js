@@ -224,6 +224,15 @@ function activate(context) {
 		LeakLockPanel.createOrShow(context.extensionUri);
 	});
 
+	// Import a previously exported report and check its findings against the
+	// repository now. Reachable without a current scan on screen: the question it
+	// answers comes up after a cleanup, when the new scan shows nothing.
+	const importScanResultsCommand = vscode.commands.registerCommand('leak-lock.importScanResults', function () {
+		LeakLockPanel.createOrShow(context.extensionUri, panel => {
+			panel.importScanReport();
+		});
+	});
+
 	// Update repo shown in Remove Files UI from sidebar selection
 	const updateRemoveFilesRepoCommand = vscode.commands.registerCommand('leak-lock.updateRemoveFilesRepo', function (options) {
 		if (LeakLockPanel.currentPanel && typeof LeakLockPanel.currentPanel.updateRemoveFilesRepoFromSidebar === 'function') {
@@ -280,6 +289,7 @@ function activate(context) {
 		fixSecretsCommand,
 		saveRawEngineOutputCommand,
 		openPanelCommand,
+		importScanResultsCommand,
 		openRemoveFilesCommand,
 		updateRemoveFilesRepoCommand,
 		startScanCommand,

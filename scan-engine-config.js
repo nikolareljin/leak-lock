@@ -27,7 +27,7 @@ const NOSEYPARKER_ARCHIVED_NOTICE =
 const REPORT_NO_LIMIT = '-1';
 const REPORT_NO_MIN_SCORE = '0';
 
-const DEFAULT_SCAN_TIMEOUT_MS = 300000; // 5 minutes
+const DEFAULT_SCAN_TIMEOUT_MS = 600000; // 10 minutes
 const DEFAULT_MAX_FILE_SIZE_MB = 100; // matches Nosey Parker's own default
 
 /**

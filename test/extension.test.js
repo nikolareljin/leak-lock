@@ -1113,7 +1113,7 @@ suite('Scan engine configuration', () => {
 	test('settings are clamped so an out-of-range value cannot reach the engine', () => {
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 5 }).timeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 99999 }).timeoutMs, 7200000);
-		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 'abc' }).timeoutMs, 300000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 'abc' }).timeoutMs, 600000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ maxFileSizeMb: -4 }).maxFileSizeMb, 0);
 	});
 
@@ -6698,5 +6698,917 @@ suite('Prepare always produces a visible outcome', () => {
 		} finally {
 			vscode.window.showErrorMessage = original;
 		}
+	});
+});
+
+suite('Importing a previous report and checking what was resolved', () => {
+	const scanBaseline = require('../scan-baseline');
+	const LeakLockPanel = require('../leakLockPanel');
+	const cp = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	const LEAKED = 'AKIAIOSFODNN7EXAMPLE';
+	let repo;
+
+	function git(args) {
+		cp.execFileSync('git', ['-C', repo, ...args], {
+			env: {
+				...process.env,
+				GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+				GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+				GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+			}
+		});
+	}
+
+	suiteSetup(() => {
+		repo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-import-'));
+		cp.execFileSync('git', ['-C', repo, 'init', '-q', '-b', 'main']);
+		fs.writeFileSync(path.join(repo, 'app.py'), `KEY = "${LEAKED}"\n`);
+		git(['add', '-A']); git(['commit', '-qm', 'add key']);
+		// Deleted from the working tree, still in history: the shape of every value
+		// a cleanup is supposed to remove and a working-tree grep would miss.
+		fs.writeFileSync(path.join(repo, 'app.py'), 'KEY = os.environ["KEY"]\n');
+		git(['add', '-A']); git(['commit', '-qm', 'read from env']);
+	});
+
+	suiteTeardown(() => {
+		try { fs.rmSync(repo, { recursive: true, force: true }); } catch (e) { void e; }
+	});
+
+	function reportJson(findings, extra = {}) {
+		return JSON.stringify({
+			generatedAt: '2026-08-01T10:00:00.000Z',
+			scanPath: repo,
+			totalFindings: findings.length,
+			redacted: false,
+			findings,
+			...extra
+		});
+	}
+
+	function finding(overrides = {}) {
+		return {
+			file: 'app.py', line: 1, secret: LEAKED, secretDisplay: 'AKIAIOSFODNN7…',
+			description: 'AWS Access Token', severity: 'high', ruleName: 'aws-access-token',
+			engine: 'gitleaks', engines: ['gitleaks'], fingerprint: 'fp-1',
+			valueIsLiteral: true, decoder: null, isGitHistory: true,
+			...overrides
+		};
+	}
+
+	function panelFor(reportText, results = []) {
+		const parsed = scanBaseline.parseImportedReport(reportText, { sourceName: 'report.json' });
+		assert.ok(parsed.ok, parsed.error);
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanRepoRoot = repo;
+		panel._scanResults = results;
+		panel._resetScanSelection();
+		panel._importedReport = parsed.report;
+		return panel;
+	}
+
+	test('a file that is not a Leak Lock report is refused, not half-read', () => {
+		assert.strictEqual(scanBaseline.parseImportedReport('{ not json').ok, false);
+		assert.strictEqual(scanBaseline.parseImportedReport('[]').ok, false);
+		const noFindings = scanBaseline.parseImportedReport('{"generatedAt":"x"}');
+		assert.strictEqual(noFindings.ok, false);
+		assert.match(noFindings.error, /findings/);
+	});
+
+	// `typeof [] === 'object'`, so array entries used to pass the findings filter
+	// and normalise into findings with every field null, while the warning
+	// counted them as readable and said the opposite of what happened.
+	test('an array entry is dropped like any other non-object, and counted as one', () => {
+		const parsed = scanBaseline.parseImportedReport(JSON.stringify({
+			generatedAt: '2026-01-01T00:00:00Z',
+			findings: [finding(), [], [1, 2], null, 'x', 7]
+		}));
+		assert.strictEqual(parsed.ok, true);
+		assert.strictEqual(parsed.report.findings.length, 1);
+		assert.ok(
+			parsed.report.warnings.some(warning => /5 entries were not an object/.test(warning)),
+			'every non-object entry has to be counted, arrays included'
+		);
+	});
+
+	test('a value still in history is reported present, not resolved', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries.length, 1);
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.PRESENT);
+		assert.match(comparison.entries[0].reason, /git history/);
+		assert.strictEqual(comparison.summary.resolved, 0);
+	});
+
+	test('a value that is nowhere in the repository is reported resolved', async () => {
+		const panel = panelFor(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000', fingerprint: 'fp-gone' })]));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.RESOLVED);
+		assert.strictEqual(comparison.summary.resolved, 1);
+	});
+
+	// The rule this feature turns on: a check that could not run never renders as a
+	// tick. A redacted report carries no value to search for.
+	test('a redacted report is unverifiable, never resolved', async () => {
+		const panel = panelFor(reportJson(
+			[finding({ secret: '[REDACTED_SECRET]', fingerprint: null })],
+			{ redacted: true }
+		));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+		assert.strictEqual(comparison.summary.resolved, 0);
+		assert.strictEqual(comparison.summary.unverifiable, 1);
+		assert.ok(panel._importedReport.warnings.some(w => /cannot be searched for/.test(w)));
+	});
+
+	// Copilot review: when only the shortened display form of a value was ever
+	// recorded, export writes that form into `secret`. Searching history for text
+	// ending in an ellipsis matches nothing, and "nothing found" rendered as
+	// Resolved -- the report would have looked cleaner than the repository.
+	test('a value recorded only in shortened form is unverifiable, never resolved', async () => {
+		const panel = panelFor(reportJson([finding({
+			secret: 'AKIAIOSF\u2026', secretDisplay: 'AKIAIOSF\u2026',
+			isSecretDisplayTruncated: true, fingerprint: null
+		})]));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+		assert.strictEqual(comparison.summary.resolved, 0);
+		assert.match(comparison.entries[0].reason, /shortened form/);
+	});
+
+	// The full value being recorded is the common case for any long secret: the
+	// table shortens it for display while the export still carries the real bytes.
+	// Those stay searchable, or the flag would cost every long value its check.
+	test('a shortened display alongside the recorded full value stays verifiable', () => {
+		const normalized = scanBaseline.normalizeImportedFinding({
+			secret: LEAKED, secretDisplay: 'AKIAIOSF\u2026', isSecretDisplayTruncated: true
+		}, 0);
+		assert.strictEqual(normalized.verifiable, true);
+		assert.strictEqual(normalized.unverifiableReason, null);
+	});
+
+	// Copilot review: git grep splits a pattern carrying newlines into one pattern
+	// per line and ORs them, so a multi-line value matches any file holding any one
+	// of its lines. Every PEM file carries the same header, so a key that really was
+	// removed kept reading as still present.
+	test('a multi-line value is not answered by a line-oriented working-tree search', async () => {
+		// An unrelated key, sharing only the standard header and footer. Written
+		// here rather than in the shared fixture so no other test sees it.
+		const unrelated = path.join(repo, 'unrelated.pem');
+		fs.writeFileSync(
+			unrelated,
+			'-----BEGIN RSA PRIVATE KEY-----\nUNRELATEDKEYBODY\n-----END RSA PRIVATE KEY-----\n'
+		);
+		try {
+			const removedKey = [
+				'-----BEGIN RSA PRIVATE KEY-----',
+				'THISKEYWASREMOVEDFROMTHEREPO',
+				'-----END RSA PRIVATE KEY-----'
+			].join('\n');
+			const panel = panelFor(reportJson([finding({
+				file: 'removed.pem', secret: removedKey, secretDisplay: removedKey, fingerprint: null
+			})]));
+			const comparison = await panel._verifyImportedReport();
+			// The old line-oriented search matched the shared header and called a key
+			// that is not in this repository still present.
+			assert.notStrictEqual(
+				comparison.entries[0].status, scanBaseline.STATUS.PRESENT,
+				'another key sharing the PEM header is not this key'
+			);
+			assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+			assert.match(comparison.entries[0].reason, /spans lines/);
+		} finally {
+			fs.rmSync(unrelated, { force: true });
+		}
+	});
+
+	test('a line-oriented search is refused only for values that span lines', () => {
+		assert.strictEqual(scanBaseline.isLineSearchable(LEAKED), true);
+		assert.strictEqual(scanBaseline.isLineSearchable('a\nb'), false);
+		assert.strictEqual(scanBaseline.isLineSearchable('a\r\nb'), false);
+		assert.strictEqual(scanBaseline.isLineSearchable(''), false);
+	});
+
+	test('a decoded value is unverifiable, because it is not the bytes the blob holds', async () => {
+		const panel = panelFor(reportJson([finding({
+			secret: 'decoded-value', valueIsLiteral: false, decoder: 'base64', fingerprint: null
+		})]));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+		assert.match(comparison.entries[0].reason, /base64/);
+	});
+
+	test('a finding the current scan still reports is present even without a repository search', async () => {
+		const panel = panelFor(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000' })]), [
+			{ file: 'other.py', line: 99, secret: 'AKIAGONE…', fullSecret: 'AKIAGONEGONEGONE0000',
+				severity: 'high', ruleName: 'aws-access-token', fingerprint: 'fp-1' }
+		]);
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.PRESENT);
+		assert.match(comparison.entries[0].reason, /current scan/);
+	});
+
+	// A moved line is not a resolved finding. Identity comes from the fingerprint or
+	// the value, never from file and line alone.
+	test('a finding that only moved is still matched', () => {
+		const previous = scanBaseline.normalizeImportedFinding(finding({ line: 1 }), 0);
+		const index = scanBaseline.indexCurrentFindings([
+			{ file: 'app.py', line: 412, fullSecret: LEAKED, ruleName: 'aws-access-token', fingerprint: null }
+		]);
+		assert.ok(scanBaseline.matchInCurrentScan(previous, index), 'the value matches across a line move');
+	});
+
+	test('findings absent from the report are listed as new, with the commit that introduced them', async () => {
+		const panel = panelFor(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000', fingerprint: 'fp-gone' })]), [
+			{ file: 'app.py', line: 1, secret: 'AKIAIOSFO…', fullSecret: LEAKED,
+				severity: 'high', ruleName: 'aws-access-token', fingerprint: 'fp-new' }
+		]);
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.newFindings.length, 1);
+		assert.strictEqual(comparison.summary.newFindings, 1);
+		assert.ok(comparison.newFindings[0].firstCommit, 'the introducing commit is looked up');
+		assert.match(comparison.newFindings[0].firstCommit.hash, /^[0-9a-f]{7,40}$/);
+	});
+
+	// Copilot review: "new since this report" is an absence claim. A redacted export
+	// replaces every value and many engines emit no fingerprint, so those findings
+	// carry no identity key, nothing in the current scan can be recognised as having
+	// been in the report, and everything reads as new.
+	test('a report that cannot be matched on says so beside what it calls new', async () => {
+		const panel = panelFor(
+			reportJson([finding({ secret: '[REDACTED_SECRET]', fingerprint: null })], { redacted: true }),
+			[{ file: 'app.py', line: 1, secret: 'AKIAIOSFO…', fullSecret: LEAKED,
+				severity: 'high', ruleName: 'aws-access-token', fingerprint: null }]
+		);
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.summary.unmatchable, 1);
+		const html = panel._renderImportedReport();
+		assert.match(html, /may have been in the report already/);
+	});
+
+	test('a report that can be matched on carries no such caveat', async () => {
+		const panel = panelFor(
+			reportJson([finding({ secret: 'AKIAGONEGONEGONE0000', fingerprint: 'fp-gone' })]),
+			[{ file: 'app.py', line: 1, secret: 'AKIAIOSFO…', fullSecret: LEAKED,
+				severity: 'high', ruleName: 'aws-access-token', fingerprint: 'fp-new' }]
+		);
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.summary.unmatchable, 0);
+		assert.doesNotMatch(panel._renderImportedReport(), /may have been in the report already/);
+	});
+
+	test('a bounded verification says so instead of reporting the remainder as resolved', async () => {
+		const original = scanBaseline.DEFAULT_VERIFY_LIMIT;
+		Object.defineProperty(scanBaseline, 'DEFAULT_VERIFY_LIMIT', { value: 1, configurable: true });
+		try {
+			const panel = panelFor(reportJson([
+				finding({ secret: 'AKIAGONEGONEGONE0001', fingerprint: 'a' }),
+				finding({ secret: 'AKIAGONEGONEGONE0002', fingerprint: 'b' })
+			]));
+			const comparison = await panel._verifyImportedReport();
+			assert.strictEqual(comparison.summary.bounded, true);
+			assert.strictEqual(comparison.summary.resolved, 1);
+			assert.strictEqual(comparison.summary.unverifiable, 1);
+			assert.match(comparison.entries[1].reason, /limit/);
+		} finally {
+			Object.defineProperty(scanBaseline, 'DEFAULT_VERIFY_LIMIT', { value: original, configurable: true });
+		}
+	});
+
+	// A different path is not a different repository, so it is stated as information
+	// rather than as a warning. Identity is checked at import time instead.
+	test('a report exported from another path is reported as the same repository, moved', async () => {
+		const panel = panelFor(JSON.stringify({
+			generatedAt: '2026-08-01T10:00:00.000Z',
+			scanPath: '/somewhere/else',
+			totalFindings: 1,
+			findings: [finding()]
+		}));
+		const comparison = await panel._verifyImportedReport();
+		assert.strictEqual(comparison.repoMatch.matches, false);
+		const html = panel._renderImportedReport();
+		assert.match(html, /Exported from/);
+		assert.doesNotMatch(html, /from a different repository/);
+		// The path check cannot show two paths are one repository, so the note must
+		// not claim it does.
+		assert.doesNotMatch(html, /Same repository/);
+		assert.match(html, /Identity could not be confirmed/);
+	});
+
+	test('imported findings are rendered but never selectable for cleanup', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		await panel._verifyImportedReport();
+		const html = panel._renderImportedReport();
+		assert.match(html, /Imported report/);
+		assert.match(html, /Still present/);
+		assert.match(html, /disabled/);
+		// The cleanup model is untouched: an imported finding is a record of a past
+		// scan, not a rewrite input.
+		assert.strictEqual(panel._eligibleFindingIndexes().length, 0);
+		assert.strictEqual(panel._ensureScanSelection().size, 0);
+	});
+
+	test('a report from a clone at another path is still the same repository', () => {
+		// Path is not identity: a clone lives wherever the user put it.
+		const verdict = scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111'], remote: 'git@github.com:acme/app.git', path: '/home/a/app' },
+			{ rootCommits: ['aaa111'], remote: 'https://github.com/acme/app.git', path: '/srv/build/app' }
+		);
+		assert.strictEqual(verdict.verdict, 'match');
+	});
+
+	test('the same remote written five ways is one repository', () => {
+		// Copilot review: an explicit SSH port was being folded into the path, which
+		// turned one repository into two and refused a valid import.
+		const forms = [
+			'git@github.com:acme/app.git',
+			'https://github.com/acme/app.git',
+			'ssh://git@github.com/acme/app',
+			'ssh://git@github.com:2222/acme/app.git',
+			'https://github.com/acme/app/'
+		].map(scanBaseline.normalizeRemoteUrl);
+		assert.deepStrictEqual(new Set(forms).size, 1, forms.join(' | '));
+		// A port is not identity, but a host still is.
+		assert.notStrictEqual(
+			scanBaseline.normalizeRemoteUrl('ssh://git@gitlab.com:2222/acme/app.git'),
+			scanBaseline.normalizeRemoteUrl('ssh://git@github.com:2222/acme/app.git')
+		);
+		assert.strictEqual(scanBaseline.normalizeRemoteUrl('   '), null);
+	});
+
+	// Copilot review: every port was being dropped, so two Git UIs on different
+	// ports of one host read as one repository. That is the cross-repository import
+	// this feature refuses, and it decides precisely when the roots disagree -- the
+	// rewrite case -- where a false match makes another repository's values, absent
+	// here, all read as resolved.
+	// Copilot review: the recorded remote was whatever `git remote get-url` returned,
+	// which for an HTTPS remote commonly carries a token. That string is written into
+	// the exported report -- redaction only dropped the local path -- and rendered in
+	// the cross-repository banner and prompt, so a report shared on purpose handed
+	// over a working credential.
+	test('a credential in the remote is never recorded', () => {
+		const redact = scanBaseline.redactRemoteUserinfo;
+		assert.strictEqual(redact('https://ghp_SECRETTOKEN@github.com/o/r.git'), 'https://github.com/o/r.git');
+		assert.strictEqual(redact('https://user:ghp_SECRET@github.com/o/r.git'), 'https://github.com/o/r.git');
+		assert.strictEqual(redact('http://user:pw@git.acme.com:8443/o/r.git'), 'http://git.acme.com:8443/o/r.git');
+		assert.strictEqual(redact('ssh://user:pw@host/o/r.git'), 'ssh://host/o/r.git');
+		assert.strictEqual(redact('user:pw@host:o/r.git'), 'host:o/r.git');
+		// A conventional SSH user is how the remote is written everywhere and is not
+		// a secret, so it survives and the remote stays recognisable.
+		assert.strictEqual(redact('git@github.com:o/r.git'), 'git@github.com:o/r.git');
+		assert.strictEqual(redact('ssh://git@github.com:2222/o/r.git'), 'ssh://git@github.com:2222/o/r.git');
+		assert.strictEqual(redact('https://github.com/o/r.git'), 'https://github.com/o/r.git');
+		assert.strictEqual(redact('  '), null);
+	});
+
+	// A report exported before writes were redacted still carries whatever the
+	// remote held, and a hand-edited one carries whatever was put there. Both are
+	// rendered in the mismatch banner and prompt, so reading is redacted too.
+	test('a credential in an imported report is redacted on the way in', () => {
+		const parsed = scanBaseline.parseImportedReport(JSON.stringify({
+			generatedAt: '2026-01-01T00:00:00Z',
+			repository: { remote: 'https://ghp_LEAKEDTOKEN@github.com/o/r.git', rootCommits: ['aaa'], path: null },
+			findings: [finding()]
+		}));
+		assert.strictEqual(parsed.ok, true);
+		assert.strictEqual(parsed.report.repository.remote, 'https://github.com/o/r.git');
+		assert.ok(!JSON.stringify(parsed.report.repository).includes('ghp_LEAKEDTOKEN'));
+	});
+
+	test('redacting the remote does not change which repository it names', () => {
+		assert.strictEqual(
+			scanBaseline.normalizeRemoteUrl(scanBaseline.redactRemoteUserinfo('https://ghp_x@github.com/o/r.git')),
+			scanBaseline.normalizeRemoteUrl('https://github.com/o/r.git')
+		);
+	});
+
+	test('a web port is identity, a transport port is not', () => {
+		const norm = scanBaseline.normalizeRemoteUrl;
+		assert.notStrictEqual(
+			norm('https://git.acme.com:8443/o/r.git'),
+			norm('https://git.acme.com/o/r.git'),
+			'two services on one host are two repositories'
+		);
+		assert.notStrictEqual(
+			norm('https://git.acme.com:8443/o/r.git'),
+			norm('https://git.acme.com:9443/o/r.git')
+		);
+		// The port the scheme already implies is not a difference, or the same
+		// repository written two equally valid ways would refuse its own report.
+		assert.strictEqual(norm('https://git.acme.com:443/o/r.git'), norm('https://git.acme.com/o/r.git'));
+		assert.strictEqual(norm('http://git.acme.com:80/o/r.git'), norm('http://git.acme.com/o/r.git'));
+		// Unchanged: ssh:// and git:// ports belong to the transport.
+		assert.strictEqual(norm('ssh://git@github.com:2222/acme/app.git'), norm('git@github.com:acme/app.git'));
+		assert.strictEqual(norm('git://host:9418/acme/app.git'), norm('git://host/acme/app'));
+	});
+
+	test('a report from another service on the same host is refused', () => {
+		const verdict = scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111'], remote: 'https://git.acme.com:8443/o/r.git' },
+			{ rootCommits: ['bbb222'], remote: 'https://git.acme.com/o/r.git' }
+		);
+		assert.strictEqual(verdict.verdict, 'mismatch');
+	});
+
+	test('a different repository is a mismatch, on roots and on remote alike', () => {
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111'] }, { rootCommits: ['bbb222'] }
+		).verdict, 'mismatch');
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ remote: 'git@github.com:acme/app.git' }, { remote: 'git@github.com:acme/other.git' }
+		).verdict, 'mismatch');
+		// Roots win: they are the signal that survives a fork or a renamed remote.
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111'], remote: 'git@github.com:acme/app.git' },
+			{ rootCommits: ['aaa111'], remote: 'git@github.com:fork/app.git' }
+		).verdict, 'match');
+	});
+
+	// Copilot review: a rewrite that touches the initial commit gives the root a new
+	// hash, so a report exported before the cleanup has different roots afterwards.
+	// Refusing there would break the one workflow this feature is for.
+	test('a rewritten history is still the same repository when the remote agrees', () => {
+		const verdict = scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['before00'], remote: 'git@github.com:acme/app.git' },
+			{ rootCommits: ['after001'], remote: 'https://github.com/acme/app.git' }
+		);
+		assert.strictEqual(verdict.verdict, 'match');
+		assert.match(verdict.basis, /rewritten/);
+		// A different remote is still a different repository, rewrite or not.
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['before00'], remote: 'git@github.com:acme/app.git' },
+			{ rootCommits: ['after001'], remote: 'git@github.com:acme/other.git' }
+		).verdict, 'mismatch');
+		// With no remote to fall back on, differing roots are all there is.
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['before00'] }, { rootCommits: ['after001'] }
+		).verdict, 'mismatch');
+	});
+
+	test('repository identity is read from the real objects', async () => {
+		const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const fn = source.slice(source.indexOf('async _readRepositoryIdentity('));
+		const revList = fn.indexOf("'rev-list'");
+		assert.ok(revList > -1);
+		const call = fn.slice(Math.max(0, revList - 300), revList + 600);
+		assert.ok(call.includes('RAW_OBJECT_FLAGS'), 'roots read through replace refs report the wrong repository');
+		assert.ok(call.includes('GIT_NO_REPLACE_OBJECTS'));
+	});
+
+	test('a report with no recorded identity is unknown, not a mismatch', () => {
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity(null, { rootCommits: ['aaa111'] }).verdict, 'unknown');
+		assert.strictEqual(scanBaseline.describeRepositoryIdentity({ rootCommits: ['aaa111'] }, null).verdict, 'unknown');
+	});
+
+	test("a report from repository B is refused against repository A", async () => {
+		const panel = panelFor(reportJson([finding()], {
+			repository: { rootCommits: ['0000000000000000000000000000000000000000'], remote: 'git@github.com:acme/other.git', path: '/elsewhere' }
+		}));
+		const report = panel._importedReport;
+		panel._importedReport = null;
+
+		const original = vscode.window.showWarningMessage;
+		let asked = null;
+		vscode.window.showWarningMessage = async (message) => { asked = message; return undefined; };
+		try {
+			const gate = await panel._checkImportBelongsHere(report);
+			assert.strictEqual(gate.allowed, false, 'a foreign report must not be imported by default');
+			assert.match(asked || '', /different repository/);
+			assert.match(asked || '', /reported as resolved/);
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	test('overriding the refusal labels the comparison rather than hiding it', async () => {
+		const panel = panelFor(reportJson([finding()], {
+			repository: { rootCommits: ['0000000000000000000000000000000000000000'], remote: 'git@github.com:acme/other.git' }
+		}));
+		const report = panel._importedReport;
+
+		const original = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = async () => 'Compare anyway';
+		try {
+			const gate = await panel._checkImportBelongsHere(report);
+			assert.strictEqual(gate.allowed, true);
+			assert.strictEqual(gate.crossRepository, true);
+			report.identity = gate.identity;
+			report.crossRepository = true;
+			await panel._verifyImportedReport();
+			assert.match(panel._renderImportedReport(), /from a different repository/);
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	test('a report from this repository imports without a prompt', async () => {
+		const identity = await new (require('../leakLockPanel'))({ fsPath: '/tmp/ext' })._readRepositoryIdentity(repo);
+		assert.ok(identity && identity.rootCommits.length, 'the repository identifies itself by its root commit');
+		const panel = panelFor(reportJson([finding()], { repository: identity }));
+		const report = panel._importedReport;
+
+		const original = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = async () => { throw new Error('must not prompt for the same repository'); };
+		try {
+			const gate = await panel._checkImportBelongsHere(report);
+			assert.strictEqual(gate.allowed, true);
+			assert.strictEqual(gate.crossRepository, false);
+			assert.strictEqual(gate.identity.verdict, 'match');
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	test('the export records the repository it is about', async () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		panel._scanRepoRoot = repo;
+		panel._scanResults = [];
+		const repository = await panel._readRepositoryIdentity(repo);
+		const payload = panel._buildScanExportPayload({ repository });
+		assert.ok(payload.repository, 'without this an import cannot tell which repository a report is about');
+		assert.ok(payload.repository.rootCommits.length > 0);
+	});
+
+	// Copilot review: an unverified report rendered "no findings to check", which
+	// reads as an empty report rather than as work not done.
+	test('an unverified report says its findings were not checked, not that there are none', () => {
+		const panel = panelFor(reportJson([finding()]));
+		const html = panel._renderImportedReport();
+		assert.match(html, /have not been checked/);
+		assert.doesNotMatch(html, /contains no findings to check/);
+		assert.match(html, /Not verified yet/);
+	});
+
+	test('a genuinely empty report is still described as empty', () => {
+		const panel = panelFor(reportJson([]));
+		panel._importedComparison = { entries: [], newFindings: [], summary: { total: 0, resolved: 0, present: 0, unverifiable: 0, newFindings: 0, bounded: false, verifyLimit: 250 }, repoMatch: { known: false, matches: null, recorded: null }, repoDir: repo };
+		assert.match(panel._renderImportedReport(), /contains no findings to check/);
+	});
+
+	// Copilot review: a report exported on Windows is read back on another host, and
+	// `C:\\repo` against `C:/repo` claimed the repository had moved.
+	test('a Windows path is not reported as a different location because of its separators', () => {
+		const report = { scanPath: 'C:\\Users\\dev\\app' };
+		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'C:/Users/dev/app').matches, true);
+		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'c:/users/dev/app').matches, true);
+		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'C:/Users/dev/app/sub').matches, true);
+		assert.strictEqual(scanBaseline.describeRepoMatch(report, 'C:/Users/dev/other').matches, false);
+		// POSIX paths keep their case sensitivity.
+		assert.strictEqual(scanBaseline.describeRepoMatch({ scanPath: '/home/dev/App' }, '/home/dev/app').matches, false);
+	});
+
+	// Copilot review: git honours refs/replace/*, so a pickaxe run after a filter-repo
+	// rewrite walks the rewritten history and calls a surviving value resolved. That is
+	// a false all-clear in the exact workflow this feature is for.
+	test('every presence check reads the real objects, not replaced ones', () => {
+		for (const args of [
+			scanBaseline.buildHistoryPresenceArgs('/repo', 'value'),
+			scanBaseline.buildFirstCommitArgs('/repo', 'value'),
+			scanBaseline.buildWorkingTreePresenceArgs('/repo', 'value')
+		]) {
+			assert.strictEqual(args[0], '--no-replace-objects', args.join(' '));
+			assert.ok(args.indexOf('--no-replace-objects') < args.indexOf('-C'), 'the flag is global, so it precedes the subcommand');
+		}
+	});
+
+	test('a value hidden behind a replace ref is still reported present', async () => {
+		const cpx = require('child_process');
+		const env = {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+			GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+			GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+		};
+		const replaced = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-replace-'));
+		const run = (args) => cpx.execFileSync('git', ['-C', replaced, ...args], { env }).toString().trim();
+		try {
+			cpx.execFileSync('git', ['-C', replaced, 'init', '-q', '-b', 'main']);
+			fs.writeFileSync(path.join(replaced, 'a.txt'), `KEY = "${LEAKED}"\n`);
+			run(['add', '-A']); run(['commit', '-qm', 'leak']);
+			const leaky = run(['rev-parse', 'HEAD']);
+			// A commit with the value removed, standing in for the leaky one - which is
+			// exactly the state `git filter-repo` leaves behind.
+			fs.writeFileSync(path.join(replaced, 'a.txt'), 'KEY = os.environ["KEY"]\n');
+			run(['add', '-A']); run(['commit', '-qm', 'clean']);
+			const clean = run(['rev-parse', 'HEAD']);
+			run(['replace', leaky, clean]);
+
+			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+			panel._updateWebviewContent = () => {};
+			const presence = await panel._checkValuePresence(replaced, LEAKED);
+			assert.strictEqual(presence.checked, true);
+			assert.strictEqual(presence.inHistory, true, 'the original object still holds the value, so it is not resolved');
+		} finally {
+			try { fs.rmSync(replaced, { recursive: true, force: true }); } catch (e) { void e; }
+		}
+	});
+
+	// Rather than sending the user away to reopen a folder and start over, a report
+	// whose repository is on this machine offers to switch to it.
+	test('a report for another repository on this machine offers to switch to it', async () => {
+		const cpx = require('child_process');
+		const env = {
+			...process.env,
+			GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+			GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@e.com',
+			GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@e.com'
+		};
+		const other = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-other-'));
+		try {
+			cpx.execFileSync('git', ['-C', other, 'init', '-q', '-b', 'main']);
+			fs.writeFileSync(path.join(other, 'x.txt'), 'nothing\n');
+			cpx.execFileSync('git', ['-C', other, 'add', '-A'], { env });
+			cpx.execFileSync('git', ['-C', other, 'commit', '-qm', 'init'], { env });
+
+			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+			panel._updateWebviewContent = () => {};
+			panel._scanRepoRoot = repo;
+			panel._scanResults = [];
+			panel._resetScanSelection();
+
+			const otherIdentity = await panel._readRepositoryIdentity(other);
+			const parsed = scanBaseline.parseImportedReport(JSON.stringify({
+				generatedAt: '2026-08-01T10:00:00.000Z',
+				scanPath: other,
+				repository: otherIdentity,
+				totalFindings: 1,
+				findings: [finding()]
+			}));
+			assert.ok(parsed.ok);
+
+			const original = vscode.window.showWarningMessage;
+			let offered = null;
+			vscode.window.showWarningMessage = async (message, options, ...choices) => {
+				offered = { message, choices };
+				return choices[0];
+			};
+			try {
+				const gate = await panel._checkImportBelongsHere(parsed.report);
+				assert.match(offered.message, new RegExp('on this machine'));
+				assert.strictEqual(offered.choices[0], `Switch to ${path.basename(other)}`);
+				assert.strictEqual(gate.allowed, true);
+				// Switching resolves the mismatch, so the result is not a
+				// cross-repository comparison.
+				assert.strictEqual(gate.crossRepository, false);
+				assert.strictEqual(panel._scanRepoRoot, other);
+				assert.strictEqual(panel._selectedDirectory, other);
+			} finally {
+				vscode.window.showWarningMessage = original;
+			}
+		} finally {
+			try { fs.rmSync(other, { recursive: true, force: true }); } catch (e) { void e; }
+		}
+	});
+
+	test('no switch is offered when the recorded repository is not on this machine', async () => {
+		const panel = panelFor(reportJson([finding()], {
+			repository: { rootCommits: ['0000000000000000000000000000000000000000'], remote: 'git@github.com:acme/other.git', path: '/no/such/place/app' }
+		}));
+		const report = panel._importedReport;
+		const original = vscode.window.showWarningMessage;
+		let offered = null;
+		vscode.window.showWarningMessage = async (message, options, ...choices) => { offered = choices; return undefined; };
+		try {
+			const gate = await panel._checkImportBelongsHere(report);
+			assert.deepStrictEqual(offered, ['Compare anyway'], 'offering to switch somewhere that does not exist helps nobody');
+			assert.strictEqual(gate.allowed, false);
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	test('switching away from a scan asks first, and keeps the results when refused', async () => {
+		const panel = panelFor(reportJson([finding()]), [
+			{ file: 'app.py', line: 1, secret: 'x', fullSecret: LEAKED, severity: 'high', ruleName: 'r' }
+		]);
+		const original = vscode.window.showWarningMessage;
+		vscode.window.showWarningMessage = async () => undefined; // declines
+		try {
+			assert.strictEqual(await panel._switchToRepository(repo), false);
+			assert.strictEqual(panel._scanResults.length, 1, 'a declined switch changes nothing');
+		} finally {
+			vscode.window.showWarningMessage = original;
+		}
+	});
+
+	// Copilot review: the warnings described the file's own `redacted` flag, which a
+	// hand-edited file can set while carrying plaintext values.
+	test('redaction is described from the values, not from the flag', () => {
+		const carriesPlaintext = scanBaseline.parseImportedReport(reportJson([finding()], { redacted: true }));
+		assert.ok(carriesPlaintext.ok);
+		assert.strictEqual(carriesPlaintext.report.redactedFindings, 0);
+		assert.ok(carriesPlaintext.report.warnings.some(w => /carries readable values/.test(w)),
+			'a report claiming redaction while holding secrets must say so');
+		assert.ok(!carriesPlaintext.report.warnings.some(w => /cannot be searched for/.test(w)));
+
+		const actuallyRedacted = scanBaseline.parseImportedReport(reportJson(
+			[finding({ secret: '[REDACTED_SECRET]' })], { redacted: false }
+		));
+		assert.strictEqual(actuallyRedacted.report.redactedFindings, 1);
+		assert.ok(actuallyRedacted.report.warnings.some(w => /cannot be searched for/.test(w)));
+		assert.ok(actuallyRedacted.report.warnings.some(w => /may have been edited/.test(w)));
+	});
+
+	// Copilot review: cancelling stopped the loop with the progress bar and then ran up
+	// to 25 full-history walks anyway.
+	test('cancelling verification also stops the new-since lookups', async () => {
+		const panel = panelFor(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000' })]), [
+			{ file: 'app.py', line: 1, secret: 'AKIA…', fullSecret: LEAKED, severity: 'high', ruleName: 'r' }
+		]);
+		let lookups = 0;
+		const realDescribe = panel._describeFindingsNewSince.bind(panel);
+		panel._describeFindingsNewSince = (report, repoDir, options) => {
+			lookups = options && options.lookupCommits === false ? 0 : 1;
+			return realDescribe(report, repoDir, options);
+		};
+		const originalProgress = vscode.window.withProgress;
+		vscode.window.withProgress = async (opts, task) => task(
+			{ report() {} },
+			{ isCancellationRequested: true, onCancellationRequested() { return { dispose() {} }; } }
+		);
+		try {
+			const comparison = await panel._verifyImportedReport();
+			assert.strictEqual(lookups, 0, 'a cancelled run must not start a fresh history walk');
+			assert.strictEqual(comparison.summary.bounded, true);
+			assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+			assert.match(comparison.entries[0].reason, /cancelled/);
+			// The new findings are still listed; only their dating is skipped.
+			assert.strictEqual(comparison.newFindings.length, 1);
+			assert.strictEqual(comparison.newFindings[0].firstCommit, null);
+		} finally {
+			vscode.window.withProgress = originalProgress;
+		}
+	});
+
+	// Copilot review: execFile puts the whole command line into error.message, and
+	// these commands carry the secret as -S<value> / -e <value>. A failure reason must
+	// not print it into the results table.
+	test('a failed search never repeats what it was searching for', async () => {
+		const secret = 'AKIASHOULDNEVERAPPEAR';
+		assert.match(scanBaseline.describeGitFailure({ code: 128 }), /code 128/);
+		assert.strictEqual(scanBaseline.describeGitFailure({ code: 'ENOENT' }), 'git was not found on this machine');
+		assert.match(scanBaseline.describeGitFailure({ killed: true, signal: 'SIGTERM' }), /SIGTERM/);
+		const raw = new Error(`Command failed: git log --all -S${secret}\n`);
+		raw.code = 128;
+		assert.ok(!scanBaseline.describeGitFailure(raw).includes(secret), 'the value must not reach the reason');
+
+		// And end to end: a search against a directory that is not a repository fails,
+		// and the row rendered from it carries no value.
+		const notARepo = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-norepo-'));
+		try {
+			const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+			panel._updateWebviewContent = () => {};
+			const presence = await panel._checkValuePresence(notARepo, secret);
+			assert.strictEqual(presence.checked, false, 'a search that could not run has not shown the value to be absent');
+			assert.ok(!presence.reason.includes(secret), presence.reason);
+		} finally {
+			try { fs.rmSync(notARepo, { recursive: true, force: true }); } catch (e) { void e; }
+		}
+	});
+
+	test('an unreadable recorded path is no switch target, not a crash', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		const broken = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-broken-'));
+		try {
+			const link = path.join(broken, 'dangling');
+			fs.symlinkSync(path.join(broken, 'missing'), link);
+			const target = await panel._resolveSwitchTarget(link, panel._importedReport);
+			assert.strictEqual(target, null);
+		} finally {
+			try { fs.rmSync(broken, { recursive: true, force: true }); } catch (e) { void e; }
+		}
+	});
+
+	// Copilot review: a verification still walking history when the report is cleared
+	// or replaced used to write its answer anyway.
+	test('clearing during verification discards the run in flight', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		let release;
+		const gate = new Promise(resolve => { release = resolve; });
+		const originalProgress = vscode.window.withProgress;
+		vscode.window.withProgress = async (opts, task) => {
+			await gate;
+			return task({ report() {} }, { isCancellationRequested: false, onCancellationRequested() { return { dispose() {} }; } });
+		};
+		try {
+			const running = panel._verifyImportedReport();
+			panel._clearImportedReport();
+			release();
+			assert.strictEqual(await running, null, 'a superseded run reports nothing');
+			assert.strictEqual(panel._importedReport, null);
+			assert.strictEqual(panel._importedComparison, null, 'a cleared report must not gain statuses afterwards');
+		} finally {
+			vscode.window.withProgress = originalProgress;
+		}
+	});
+
+	test('a second report is verified rather than blocked by the first run', async () => {
+		const panel = panelFor(reportJson([finding()]));
+		let release;
+		const gate = new Promise(resolve => { release = resolve; });
+		const originalProgress = vscode.window.withProgress;
+		let first = true;
+		vscode.window.withProgress = async (opts, task) => {
+			if (first) {
+				first = false;
+				await gate;
+			}
+			return task({ report() {} }, { isCancellationRequested: false, onCancellationRequested() { return { dispose() {} }; } });
+		};
+		try {
+			const stale = panel._verifyImportedReport();
+			// The user imports another report while the first is still running.
+			const second = scanBaseline.parseImportedReport(reportJson([finding({ secret: 'AKIAGONEGONEGONE0000', fingerprint: 'fp-2' })]));
+			panel._importedReport = second.report;
+			const fresh = await panel._verifyImportedReport();
+			release();
+			assert.strictEqual(await stale, null, 'the older run does not report');
+			assert.ok(fresh, 'the newer report is verified rather than refused');
+			assert.strictEqual(panel._importedComparison.entries[0].status, scanBaseline.STATUS.RESOLVED);
+			assert.strictEqual(panel._verifyingImport, false);
+		} finally {
+			vscode.window.withProgress = originalProgress;
+		}
+	});
+
+	// Copilot review: the count was denominated in every finding the report held,
+	// while it only advanced for the ones that actually get searched, so a report
+	// full of redacted findings counted towards a total it could never reach.
+	test('the verification count is denominated in the values actually searched', async () => {
+		const messages = [];
+		const withProgress = vscode.window.withProgress;
+		vscode.window.withProgress = async (_options, task) =>
+			task({ report: value => messages.push(value.message) }, { isCancellationRequested: false });
+		try {
+			const panel = panelFor(JSON.stringify({
+				generatedAt: '2026-01-01T00:00:00Z',
+				scanPath: repo,
+				findings: [
+					finding({ fingerprint: 'fp-1' }),
+					finding({ fingerprint: 'fp-2', secret: scanBaseline.REDACTED_SECRET }),
+					finding({ fingerprint: 'fp-3', secret: scanBaseline.REDACTED_SECRET }),
+					finding({ fingerprint: 'fp-4', valueIsLiteral: false, decoder: 'base64' })
+				]
+			}));
+			await panel._verifyImportedReport();
+			assert.deepStrictEqual(messages, ['1 of 1 value(s)'],
+				'only the one searchable finding counts, towards a total of one');
+		} finally {
+			vscode.window.withProgress = withProgress;
+		}
+	});
+
+	// Copilot review: a hand-edited or older-format date rendered the words
+	// "Invalid Date" into the panel.
+	test('an unreadable date never renders as Invalid Date', async () => {
+		const panel = panelFor(JSON.stringify({
+			generatedAt: 'last tuesday',
+			scanPath: repo,
+			totalFindings: 1,
+			findings: [finding()]
+		}));
+		await panel._verifyImportedReport();
+		const html = panel._renderImportedReport();
+		assert.doesNotMatch(html, /Invalid Date/);
+		assert.match(html, /an unrecorded time/);
+	});
+
+	// Copilot review: the verdict displayed the first hash of each list, so a
+	// repository with several roots showed two different hashes as the evidence for
+	// calling them the same repository.
+	test('a matching root is reported as the hash that actually matched', () => {
+		const verdict = scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111', 'shared0'] },
+			{ rootCommits: ['bbb222', 'shared0'] }
+		);
+		assert.strictEqual(verdict.verdict, 'match');
+		assert.strictEqual(verdict.recorded, 'shared0');
+		assert.strictEqual(verdict.current, 'shared0');
+	});
+
+	// Copilot review: identity came from the cleanup target, which follows the current
+	// selection, so the same scan could export two different identities.
+	test('the exported identity comes from the scan, not from what is selected', () => {
+		const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+		const fn = source.slice(source.indexOf('async _exportScanResultsJson('));
+		const call = fn.slice(0, fn.indexOf('_buildScanExportPayload') + 400);
+		assert.ok(call.includes('_scanRepoRoot'), 'the scan repository is what a report is about');
+		// The identity argument itself, not the prose around it: the cleanup target
+		// follows the current selection and is not identity.
+		assert.match(call, /_readRepositoryIdentity\(scanRepo/);
+		assert.doesNotMatch(call, /_readRepositoryIdentity\(this\._resolveCleanupRepo/);
+	});
+
+	test('the imported card is reachable with no scan on screen', () => {
+		const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+		panel._updateWebviewContent = () => {};
+		const html = panel._getScanResultsSection();
+		assert.match(html, /Verify a previous report/);
+		assert.match(html, /importScanResultsJson\(\)/);
 	});
 });
