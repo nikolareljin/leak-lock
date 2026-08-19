@@ -5497,6 +5497,9 @@ class LeakLockPanel {
                        <p style="font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 0;">
                            Reported by the current scan and absent from the imported report.
                        </p>
+                       ${summary && summary.unmatchable
+                    ? `<div class="coverage-note coverage-warn">⚠️ ${summary.unmatchable} finding(s) in this report carry no value or fingerprint to recognise them by, so anything listed here may have been in the report already. A redacted export is the usual reason.</div>`
+                    : ''}
                        <table class="results-table">
                         <thead><tr><th>File</th><th style="width: 60px;">Line</th><th style="width: 25%;">Value</th><th style="width: 90px;">Severity</th><th style="width: 180px;">Introduced by</th></tr></thead>
                         <tbody>${newRows}</tbody>
@@ -5885,6 +5888,7 @@ class LeakLockPanel {
                 newFindings,
                 summary: scanBaseline.summarize(entries, {
                     newFindings: newFindings.length,
+                    unmatchable: scanBaseline.countUnmatchableFindings(report.findings),
                     bounded,
                     verifyLimit: limit
                 }),

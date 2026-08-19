@@ -280,6 +280,27 @@ function matchInCurrentScan(importedFinding, currentIndex) {
  * written. This is the half that turns two scans into a history rather than two
  * unrelated snapshots.
  */
+/**
+ * How many of a report's findings carry nothing to match a current finding against.
+ *
+ * "New since this report" is an absence claim: it says a value the current scan
+ * reports was not in the report. A finding with no fingerprint and no usable
+ * value -- every finding in a redacted export, since the value is replaced and
+ * many engines emit no fingerprint -- contributes no identity key, so it cannot
+ * be recognised in the current scan and everything looks new. The count is
+ * reported rather than the list being dropped, the same way a bounded
+ * verification states its bound instead of resolving the remainder.
+ */
+function countUnmatchableFindings(importedFindings) {
+    let count = 0;
+    for (const finding of importedFindings || []) {
+        if (findingIdentityKeys(finding).length === 0) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
 function findingsNewSince(importedFindings, currentFindings) {
     const importedKeys = new Set();
     for (const finding of importedFindings || []) {
@@ -351,7 +372,10 @@ function summarize(entries, extra = {}) {
         // True when the verification bound stopped the run short. Rendered, never
         // swallowed: a bounded check that reads as a complete one is a false all-clear.
         bounded: Boolean(extra.bounded),
-        verifyLimit: extra.verifyLimit || null
+        verifyLimit: extra.verifyLimit || null,
+        // Findings the report could not be matched on at all, which makes every
+        // "new since" entry a maybe rather than a fact.
+        unmatchable: extra.unmatchable || 0
     };
 }
 
@@ -617,6 +641,7 @@ module.exports = {
     indexCurrentFindings,
     matchInCurrentScan,
     findingsNewSince,
+    countUnmatchableFindings,
     resolveStatus,
     summarize,
     buildHistoryPresenceArgs,
