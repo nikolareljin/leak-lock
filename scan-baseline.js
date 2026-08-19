@@ -134,7 +134,14 @@ function parseImportedReport(text, options = {}) {
             // report has none, which is an unknown identity rather than a mismatch.
             repository: raw.repository && typeof raw.repository === 'object'
                 ? {
-                    remote: typeof raw.repository.remote === 'string' ? raw.repository.remote : null,
+                    // Redacted on the way in as well as on the way out. A report
+                    // exported before writes were redacted still carries whatever
+                    // the remote held, and a hand-edited one carries whatever
+                    // someone put there; both are rendered in the mismatch banner
+                    // and prompt.
+                    remote: typeof raw.repository.remote === 'string'
+                        ? redactRemoteUserinfo(raw.repository.remote)
+                        : null,
                     rootCommits: Array.isArray(raw.repository.rootCommits)
                         ? raw.repository.rootCommits.filter(hash => typeof hash === 'string')
                         : [],

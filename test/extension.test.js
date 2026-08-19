@@ -7038,6 +7038,20 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.strictEqual(redact('  '), null);
 	});
 
+	// A report exported before writes were redacted still carries whatever the
+	// remote held, and a hand-edited one carries whatever was put there. Both are
+	// rendered in the mismatch banner and prompt, so reading is redacted too.
+	test('a credential in an imported report is redacted on the way in', () => {
+		const parsed = scanBaseline.parseImportedReport(JSON.stringify({
+			generatedAt: '2026-01-01T00:00:00Z',
+			repository: { remote: 'https://ghp_LEAKEDTOKEN@github.com/o/r.git', rootCommits: ['aaa'], path: null },
+			findings: [finding()]
+		}));
+		assert.strictEqual(parsed.ok, true);
+		assert.strictEqual(parsed.report.repository.remote, 'https://github.com/o/r.git');
+		assert.ok(!JSON.stringify(parsed.report.repository).includes('ghp_LEAKEDTOKEN'));
+	});
+
 	test('redacting the remote does not change which repository it names', () => {
 		assert.strictEqual(
 			scanBaseline.normalizeRemoteUrl(scanBaseline.redactRemoteUserinfo('https://ghp_x@github.com/o/r.git')),
