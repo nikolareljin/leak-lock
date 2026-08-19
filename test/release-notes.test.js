@@ -119,6 +119,10 @@ suite('release notes', () => {
             '- Handle A && B correctly.',
             '- Contact <security@example.com> for reports.',
             '- See <https://example.com/releases> for details.',
+            // URI schemes are case-insensitive, so an uppercase autolink is an
+            // ordinary one and must not read as an unsupported scheme.
+            '- See <HTTPS://example.com/releases> for details.',
+            '- Mail <MAILTO:security@example.com> works too.',
             '- Read [the guide](https://example.com/guide).',
             '- Read [the guide](https://example.com/a%20b).',
             '- Read [the guide](https://example.com/100%25).'
@@ -157,13 +161,16 @@ suite('release notes', () => {
         for (const bullet of [
             '- See <javascript:alert(1)>.',
             '- See <FILE:///etc/passwd>.',
-            '- See <&#106;avascript:alert(1)>.'
+            '- See <&#106;avascript:alert(1)>.',
+            '- See <JAVASCRIPT:alert(1)>.'
         ]) {
             const dir = fixture({ notes: releaseNotes(bullet) });
             assert.throws(() => generate(dir), /unsafe markdown autolink target/, bullet);
         }
-        const dir = fixture({ notes: releaseNotes('- See <ftp://example.com/x>.') });
-        assert.throws(() => generate(dir), /may only autolink http, https and mailto targets/);
+        for (const bullet of ['- See <ftp://example.com/x>.', '- See <FTP://example.com/x>.']) {
+            const dir = fixture({ notes: releaseNotes(bullet) });
+            assert.throws(() => generate(dir), /may only autolink http, https and mailto targets/, bullet);
+        }
     });
 
     test('generator rejects raw HTML in release notes', () => {
