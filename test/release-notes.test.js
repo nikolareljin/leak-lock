@@ -143,16 +143,23 @@ suite('release notes', () => {
         const originalReleaseNotes = fs.readFileSync(releaseNotesPath, 'utf8');
         const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
         try {
-            fs.writeFileSync(
-                releaseNotesPath,
-                [`# Release notes, ${version}`, '', '## Fixed', '- Hide <script>alert(1)</script>.'].join('\n'),
-                'utf8'
-            );
-            assert.throws(
-                () => execFileSync(process.execPath, ['tools/release-notes.js'], { cwd: root, stdio: 'pipe' }),
-                /raw HTML/
-            );
-            assert.ok(!fs.existsSync(outputPath));
+            for (const rawHtml of [
+                '<script>alert(1)</script>',
+                '<!-- hidden release note -->',
+                '<!DOCTYPE html>',
+                '<?xml version="1.0"?>'
+            ]) {
+                fs.writeFileSync(
+                    releaseNotesPath,
+                    [`# Release notes, ${version}`, '', '## Fixed', `- Hide ${rawHtml}.`].join('\n'),
+                    'utf8'
+                );
+                assert.throws(
+                    () => execFileSync(process.execPath, ['tools/release-notes.js'], { cwd: root, stdio: 'pipe' }),
+                    /raw HTML/
+                );
+                assert.ok(!fs.existsSync(outputPath));
+            }
         } finally {
             fs.writeFileSync(releaseNotesPath, originalReleaseNotes, 'utf8');
             fs.rmSync(outputPath, { force: true });
