@@ -6971,6 +6971,39 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.strictEqual(scanBaseline.normalizeRemoteUrl('   '), null);
 	});
 
+	// Copilot review: every port was being dropped, so two Git UIs on different
+	// ports of one host read as one repository. That is the cross-repository import
+	// this feature refuses, and it decides precisely when the roots disagree -- the
+	// rewrite case -- where a false match makes another repository's values, absent
+	// here, all read as resolved.
+	test('a web port is identity, a transport port is not', () => {
+		const norm = scanBaseline.normalizeRemoteUrl;
+		assert.notStrictEqual(
+			norm('https://git.acme.com:8443/o/r.git'),
+			norm('https://git.acme.com/o/r.git'),
+			'two services on one host are two repositories'
+		);
+		assert.notStrictEqual(
+			norm('https://git.acme.com:8443/o/r.git'),
+			norm('https://git.acme.com:9443/o/r.git')
+		);
+		// The port the scheme already implies is not a difference, or the same
+		// repository written two equally valid ways would refuse its own report.
+		assert.strictEqual(norm('https://git.acme.com:443/o/r.git'), norm('https://git.acme.com/o/r.git'));
+		assert.strictEqual(norm('http://git.acme.com:80/o/r.git'), norm('http://git.acme.com/o/r.git'));
+		// Unchanged: ssh:// and git:// ports belong to the transport.
+		assert.strictEqual(norm('ssh://git@github.com:2222/acme/app.git'), norm('git@github.com:acme/app.git'));
+		assert.strictEqual(norm('git://host:9418/acme/app.git'), norm('git://host/acme/app'));
+	});
+
+	test('a report from another service on the same host is refused', () => {
+		const verdict = scanBaseline.describeRepositoryIdentity(
+			{ rootCommits: ['aaa111'], remote: 'https://git.acme.com:8443/o/r.git' },
+			{ rootCommits: ['bbb222'], remote: 'https://git.acme.com/o/r.git' }
+		);
+		assert.strictEqual(verdict.verdict, 'mismatch');
+	});
+
 	test('a different repository is a mismatch, on roots and on remote alike', () => {
 		assert.strictEqual(scanBaseline.describeRepositoryIdentity(
 			{ rootCommits: ['aaa111'] }, { rootCommits: ['bbb222'] }
