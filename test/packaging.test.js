@@ -71,7 +71,7 @@ suite('packaging', () => {
         // packages locally, so without these rules a working copy ships its
         // session notes and local settings to the Marketplace.
         const ignore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
-        for (const rule of ['.remember/**', '.claude/**']) {
+        for (const rule of ['.remember/**', '.claude/**', '.githooks/**']) {
             assert.ok(
                 ignore.split('\n').some(line => line.trim() === rule),
                 `.vscodeignore must exclude ${rule}`
