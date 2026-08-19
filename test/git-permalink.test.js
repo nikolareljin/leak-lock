@@ -35,35 +35,35 @@ suite('parseRemote', () => {
     test('parses the SCP-like SSH form', () => {
         assert.deepStrictEqual(
             parseRemote('git@github.com:nikolareljin/leak-lock.git'),
-            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
+            { scheme: 'https', host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
         );
     });
 
     test('parses the HTTPS form', () => {
         assert.deepStrictEqual(
             parseRemote('https://github.com/nikolareljin/leak-lock.git'),
-            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
+            { scheme: 'https', host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
         );
     });
 
     test('parses the ssh:// form', () => {
         assert.deepStrictEqual(
             parseRemote('ssh://git@github.com/nikolareljin/leak-lock.git'),
-            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
+            { scheme: 'https', host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
         );
     });
 
     test('the .git suffix is optional', () => {
         assert.deepStrictEqual(
             parseRemote('https://github.com/nikolareljin/leak-lock'),
-            { host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
+            { scheme: 'https', host: 'github.com', owner: 'nikolareljin', repo: 'leak-lock', platform: 'github' }
         );
     });
 
     test('keeps GitLab subgroups in the owner', () => {
         assert.deepStrictEqual(
             parseRemote('git@gitlab.com:group/subgroup/thing.git'),
-            { host: 'gitlab.com', owner: 'group/subgroup', repo: 'thing', platform: 'gitlab' }
+            { scheme: 'https', host: 'gitlab.com', owner: 'group/subgroup', repo: 'thing', platform: 'gitlab' }
         );
     });
 
@@ -74,28 +74,28 @@ suite('parseRemote', () => {
     test('a self-hosted GitLab is detected by platform keyword in the hostname', () => {
         assert.deepStrictEqual(
             parseRemote('https://gitlab.example.com/o/r.git'),
-            { host: 'gitlab.example.com', owner: 'o', repo: 'r', platform: 'gitlab' }
+            { scheme: 'https', host: 'gitlab.example.com', owner: 'o', repo: 'r', platform: 'gitlab' }
         );
     });
 
     test('an unrecognised hostname defaults to the github URL layout', () => {
         assert.deepStrictEqual(
             parseRemote('git@git.internal.example:o/r.git'),
-            { host: 'git.internal.example', owner: 'o', repo: 'r', platform: 'github' }
+            { scheme: 'https', host: 'git.internal.example', owner: 'o', repo: 'r', platform: 'github' }
         );
     });
 
     test('customHostTypes overrides heuristic detection', () => {
         assert.deepStrictEqual(
             parseRemote('https://git.acme.com/o/r.git', { 'git.acme.com': 'gitlab' }),
-            { host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'gitlab' }
+            { scheme: 'https', host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'gitlab' }
         );
     });
 
     test('customHostTypes is case-insensitive on the hostname key', () => {
         assert.deepStrictEqual(
             parseRemote('https://git.acme.com/o/r.git', { 'GIT.ACME.COM': 'gitea' }),
-            { host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'gitea' }
+            { scheme: 'https', host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'gitea' }
         );
     });
 
@@ -206,7 +206,7 @@ suite('buildCommitUrl', () => {
 
 suite('isPermalinkUrl', () => {
 
-    const customRemote = { host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'github' };
+    const customRemote = { scheme: 'https', host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'github' };
 
     test('accepts a URL built for a well-known host', () => {
         assert.strictEqual(isPermalinkUrl(`https://github.com/o/r/blob/${SHA}/a.js#L1`), true);
@@ -273,8 +273,8 @@ suite('isPermalinkUrl', () => {
     });
 
     test('accepts a subgroup path and a bitbucket line anchor', () => {
-        const gitlab = { host: 'gitlab.com', owner: 'grp/sub', repo: 'r', platform: 'gitlab' };
-        const bitbucket = { host: 'bitbucket.org', owner: 'o', repo: 'r', platform: 'bitbucket' };
+        const gitlab = { scheme: 'https', host: 'gitlab.com', owner: 'grp/sub', repo: 'r', platform: 'gitlab' };
+        const bitbucket = { scheme: 'https', host: 'bitbucket.org', owner: 'o', repo: 'r', platform: 'bitbucket' };
         assert.strictEqual(isPermalinkUrl(`https://gitlab.com/grp/sub/r/-/blob/${SHA}/a.js#L3`, gitlab), true);
         assert.strictEqual(isPermalinkUrl(`https://bitbucket.org/o/r/src/${SHA}/a.js#lines-9`, bitbucket), true);
     });
@@ -297,6 +297,34 @@ suite('isPermalinkUrl', () => {
                 assert.strictEqual(isPermalinkUrl(url, info), true, `${remote} line=${line}`);
             }
         }
+    });
+
+    // Copilot review: every builder hard-coded https, so an http-only instance --
+    // ordinary on an intranet -- got an https link that simply did not answer, and
+    // the port fix made it sharper still by emitting https against a port serving
+    // http. The remote's own scheme is honoured now.
+    test('an http remote produces an http permalink, and the guard expects it', () => {
+        const http = parseRemote('http://git.acme.com:3000/o/r.git');
+        assert.strictEqual(http.scheme, 'http');
+        const url = buildCommitUrl(http, { commitHash: SHA, file: 'a.js', line: 1 });
+        assert.strictEqual(url, `http://git.acme.com:3000/o/r/blob/${SHA}/a.js#L1`);
+        assert.strictEqual(isPermalinkUrl(url, http), true);
+        // The scheme is pinned like everything else: it comes from the remote, so a
+        // crafted message cannot pick it.
+        assert.strictEqual(isPermalinkUrl(`https://git.acme.com:3000/o/r/blob/${SHA}/a.js#L1`, http), false);
+    });
+
+    test('a remote that is not http keeps https, including ssh and scp forms', () => {
+        assert.strictEqual(parseRemote('https://git.acme.com/o/r.git').scheme, 'https');
+        assert.strictEqual(parseRemote('ssh://git@git.acme.com:2222/o/r.git').scheme, 'https');
+        assert.strictEqual(parseRemote('git@github.com:o/r.git').scheme, 'https');
+        assert.strictEqual(parseRemote('git://host/o/r.git').scheme, 'https');
+        const https = parseRemote('https://git.acme.com/o/r.git');
+        assert.strictEqual(isPermalinkUrl(`http://git.acme.com/o/r/blob/${SHA}/a.js`, https), false);
+    });
+
+    test('http is never accepted without a remote to name it', () => {
+        assert.strictEqual(isPermalinkUrl(`http://github.com/o/r/blob/${SHA}/a.js`), false);
     });
 
     test('a ported self-hosted remote is pinned with its port', () => {

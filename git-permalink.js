@@ -11,34 +11,35 @@
 // Azure DevOps-style, generic self-hosted — gets GitHub's /blob/ shape, which is
 // the most widely adopted layout).
 
-// URL builders per platform. The host is the first argument so the same
-// function serves both well-known SaaS hosts and any self-hosted instance at an
-// arbitrary hostname.
+// URL builders per platform. The scheme and host are the first arguments so the
+// same function serves both well-known SaaS hosts and any self-hosted instance at
+// an arbitrary hostname -- including one served over plain http, which is normal
+// on an intranet and used to yield an https link that simply did not answer.
 // `path` mirrors the layout `build` writes, and exists to read the fields back
 // out of a URL that claims to be a permalink. It only has to be permissive
 // enough to extract them: isPermalinkUrl rebuilds the address with `build` and
 // compares, so the builder stays the authority on what a permalink looks like.
 const PLATFORMS = Object.freeze({
     github: {
-        build: (host, owner, repo, sha, encodedPath, line) =>
-            `https://${host}/${owner}/${repo}/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
+        build: (scheme, host, owner, repo, sha, encodedPath, line) =>
+            `${scheme}://${host}/${owner}/${repo}/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
         path: /^\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/blob\/(?<sha>[0-9a-f]{7,64})\/(?<file>.+)$/i
     },
     gitlab: {
-        build: (host, owner, repo, sha, encodedPath, line) =>
-            `https://${host}/${owner}/${repo}/-/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
+        build: (scheme, host, owner, repo, sha, encodedPath, line) =>
+            `${scheme}://${host}/${owner}/${repo}/-/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
         // The owner is greedy because GitLab subgroups are part of it; the
         // literal /-/ segment is what ends it.
         path: /^\/(?<owner>.+)\/(?<repo>[^/]+)\/-\/blob\/(?<sha>[0-9a-f]{7,64})\/(?<file>.+)$/i
     },
     bitbucket: {
-        build: (host, owner, repo, sha, encodedPath, line) =>
-            `https://${host}/${owner}/${repo}/src/${sha}/${encodedPath}` + (line ? `#lines-${line}` : ''),
+        build: (scheme, host, owner, repo, sha, encodedPath, line) =>
+            `${scheme}://${host}/${owner}/${repo}/src/${sha}/${encodedPath}` + (line ? `#lines-${line}` : ''),
         path: /^\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/src\/(?<sha>[0-9a-f]{7,64})\/(?<file>.+)$/i
     },
     gitea: {
-        build: (host, owner, repo, sha, encodedPath, line) =>
-            `https://${host}/${owner}/${repo}/src/commit/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
+        build: (scheme, host, owner, repo, sha, encodedPath, line) =>
+            `${scheme}://${host}/${owner}/${repo}/src/commit/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
         path: /^\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/src\/commit\/(?<sha>[0-9a-f]{7,64})\/(?<file>.+)$/i
     }
 });
@@ -139,6 +140,9 @@ function parseRemote(url, customHostTypes = {}) {
     let host;
     let hostname;
     let pathPart;
+    // The web UI is https unless the remote itself says otherwise. ssh:// and
+    // git:// say nothing about it, so those keep the default.
+    let scheme = 'https';
 
     if (SCHEME_PREFIX.test(trimmed)) {
         let parsed;
@@ -155,6 +159,9 @@ function parseRemote(url, customHostTypes = {}) {
         // carry the port of the git transport, which the web UI does not answer
         // on, so ssh://git@host:2222/o/r must still link to https://host/...
         const isWebScheme = parsed.protocol === 'https:' || parsed.protocol === 'http:';
+        if (parsed.protocol === 'http:') {
+            scheme = 'http';
+        }
         host = isWebScheme && parsed.port ? `${hostname}:${parsed.port}` : hostname;
         pathPart = parsed.pathname;
     } else {
@@ -180,7 +187,7 @@ function parseRemote(url, customHostTypes = {}) {
             ? normalizedHostTypes[hostname]
             : null) ||
         inferPlatform(hostname);
-    return { host, owner: ownerRepo.owner, repo: ownerRepo.repo, platform };
+    return { scheme, host, owner: ownerRepo.owner, repo: ownerRepo.repo, platform };
 }
 
 function encodePath(file) {
@@ -201,6 +208,7 @@ function buildCommitUrl(remote, { commitHash, file, line } = {}) {
     }
     const anchorLine = Number.isFinite(line) && line > 0 ? line : null;
     return PLATFORMS[remote.platform].build(
+        remote.scheme === 'http' ? 'http' : 'https',
         remote.host,
         encodePath(remote.owner),
         encodeURIComponent(remote.repo),
@@ -240,7 +248,11 @@ function isPermalinkUrl(url, remoteInfo = null) {
     } catch {
         return false;
     }
-    if (parsed.protocol !== 'https:') {
+    // Without a remote to name one, https only: no well-known SaaS host serves
+    // permalinks over http. With a remote, the scheme is the repository's own,
+    // so a crafted message still cannot choose it.
+    const expectedScheme = remoteInfo && remoteInfo.scheme === 'http' ? 'http' : 'https';
+    if (parsed.protocol !== `${expectedScheme}:`) {
         return false;
     }
 
@@ -288,7 +300,7 @@ function isPermalinkUrl(url, remoteInfo = null) {
         line = Number(anchor[1]);
     }
 
-    return PLATFORMS[platform].build(authority, owner, repo, sha, file, line) === url;
+    return PLATFORMS[platform].build(expectedScheme, authority, owner, repo, sha, file, line) === url;
 }
 
 module.exports = { parseRemote, buildCommitUrl, isPermalinkUrl, SUPPORTED_PLATFORMS };
