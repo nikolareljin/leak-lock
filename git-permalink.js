@@ -14,24 +14,39 @@
 // URL builders per platform. The host is the first argument so the same
 // function serves both well-known SaaS hosts and any self-hosted instance at an
 // arbitrary hostname.
+// `path` mirrors the layout `build` writes, and exists to read the fields back
+// out of a URL that claims to be a permalink. It only has to be permissive
+// enough to extract them: isPermalinkUrl rebuilds the address with `build` and
+// compares, so the builder stays the authority on what a permalink looks like.
 const PLATFORMS = Object.freeze({
     github: {
         build: (host, owner, repo, sha, encodedPath, line) =>
-            `https://${host}/${owner}/${repo}/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : '')
+            `https://${host}/${owner}/${repo}/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
+        path: /^\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/blob\/(?<sha>[0-9a-f]{7,64})\/(?<file>.+)$/i
     },
     gitlab: {
         build: (host, owner, repo, sha, encodedPath, line) =>
-            `https://${host}/${owner}/${repo}/-/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : '')
+            `https://${host}/${owner}/${repo}/-/blob/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
+        // The owner is greedy because GitLab subgroups are part of it; the
+        // literal /-/ segment is what ends it.
+        path: /^\/(?<owner>.+)\/(?<repo>[^/]+)\/-\/blob\/(?<sha>[0-9a-f]{7,64})\/(?<file>.+)$/i
     },
     bitbucket: {
         build: (host, owner, repo, sha, encodedPath, line) =>
-            `https://${host}/${owner}/${repo}/src/${sha}/${encodedPath}` + (line ? `#lines-${line}` : '')
+            `https://${host}/${owner}/${repo}/src/${sha}/${encodedPath}` + (line ? `#lines-${line}` : ''),
+        path: /^\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/src\/(?<sha>[0-9a-f]{7,64})\/(?<file>.+)$/i
     },
     gitea: {
         build: (host, owner, repo, sha, encodedPath, line) =>
-            `https://${host}/${owner}/${repo}/src/commit/${sha}/${encodedPath}` + (line ? `#L${line}` : '')
+            `https://${host}/${owner}/${repo}/src/commit/${sha}/${encodedPath}` + (line ? `#L${line}` : ''),
+        path: /^\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/src\/commit\/(?<sha>[0-9a-f]{7,64})\/(?<file>.+)$/i
     }
 });
+
+// Line anchors differ per platform (#L12, #lines-12). Only the number is read
+// here; whether the form is the right one for the platform falls out of the
+// rebuild-and-compare below.
+const LINE_ANCHOR = /^#(?:L|lines-)([1-9]\d*)$/;
 
 // Canonical SaaS hostnames → platform key.
 const BUILT_IN_HOSTS = Object.freeze({
@@ -185,14 +200,24 @@ function buildCommitUrl(remote, { commitHash, file, line } = {}) {
 }
 
 /**
- * Would this URL have been produced by `buildCommitUrl`? The host re-checks
- * before opening a browser, so that a message from the webview can never turn
- * `openExternal` into a launcher for an arbitrary address.
+ * Would this URL have been produced by `buildCommitUrl`?
  *
- * For well-known SaaS hosts the hostname alone is the guard. For self-hosted
- * instances, remoteInfo (the parsed origin remote of the scanned repository)
- * is required so the check remains specific: only the host the repository
- * actually lives on is accepted, not any arbitrary https address.
+ * The webview never receives a permalink; it sends a finding index back and the
+ * address is rebuilt here. This is the second line of that defence: it is what
+ * stops `openExternal` becoming a launcher for an arbitrary address if a URL
+ * ever reaches it from somewhere less trusted.
+ *
+ * Checking scheme and hostname was not enough to answer the question the name
+ * asks. `https://github.com/anything` passed, and so did any path on a
+ * self-hosted host once its hostname matched. The URL is now taken apart along
+ * the platform's own layout, the commit is required to be a hex SHA, and the
+ * address is rebuilt with the same builder that writes permalinks and compared
+ * byte for byte -- so anything the layout pattern let through (a normalised
+ * path, a query string, credentials, a port, the wrong anchor form) fails here.
+ *
+ * With remoteInfo the owner and repository are pinned to the scanned repository
+ * as well, which is the only check that keeps a self-hosted host from resolving
+ * to somebody else's project on the same server.
  */
 function isPermalinkUrl(url, remoteInfo = null) {
     if (typeof url !== 'string' || !url) {
@@ -207,13 +232,42 @@ function isPermalinkUrl(url, remoteInfo = null) {
     if (parsed.protocol !== 'https:') {
         return false;
     }
+
     const host = parsed.hostname.toLowerCase();
-    if (Object.hasOwn(BUILT_IN_HOSTS, host)) {
-        return true;
+    // Without a remote to pin it to, only the well-known SaaS hosts are
+    // recognised, and the URL still has to be shaped like a commit permalink.
+    const platform = remoteInfo && remoteInfo.platform
+        ? remoteInfo.platform
+        : BUILT_IN_HOSTS[host];
+    if (!platform || !Object.hasOwn(PLATFORMS, platform)) {
+        return false;
     }
-    // Custom host: accept only if it matches the repository's own remote,
-    // so a crafted webview message cannot redirect the browser elsewhere.
-    return remoteInfo != null && host === remoteInfo.host.toLowerCase();
+    if (remoteInfo && host !== String(remoteInfo.host || '').toLowerCase()) {
+        return false;
+    }
+
+    const layout = PLATFORMS[platform].path.exec(parsed.pathname);
+    if (!layout) {
+        return false;
+    }
+    const { owner, repo, sha, file } = layout.groups;
+
+    if (remoteInfo) {
+        if (owner !== encodePath(remoteInfo.owner || '') || repo !== encodeURIComponent(remoteInfo.repo || '')) {
+            return false;
+        }
+    }
+
+    let line = null;
+    if (parsed.hash) {
+        const anchor = LINE_ANCHOR.exec(parsed.hash);
+        if (!anchor) {
+            return false;
+        }
+        line = Number(anchor[1]);
+    }
+
+    return PLATFORMS[platform].build(host, owner, repo, sha, file, line) === url;
 }
 
 module.exports = { parseRemote, buildCommitUrl, isPermalinkUrl, SUPPORTED_PLATFORMS };

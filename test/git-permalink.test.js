@@ -206,6 +206,65 @@ suite('isPermalinkUrl', () => {
         );
     });
 
+    // The check is named for the question it answers -- "did buildCommitUrl
+    // write this?" -- but scheme plus hostname could not answer it. Any path on
+    // an accepted host passed, so a crafted webview message reaching
+    // openExternal could have opened a repository's settings page, or somebody
+    // else's project on the same self-hosted server.
+    test('rejects an arbitrary path on a well-known host', () => {
+        assert.strictEqual(isPermalinkUrl('https://github.com/attacker/phish'), false);
+        assert.strictEqual(isPermalinkUrl('https://github.com/o/r/settings/secrets'), false);
+    });
+
+    test('rejects another project on the repository own host', () => {
+        assert.strictEqual(
+            isPermalinkUrl(`https://git.acme.com/attacker/phish/blob/${SHA}/a.js`, customRemote),
+            false
+        );
+    });
+
+    test('rejects a commit that is not a hex SHA', () => {
+        assert.strictEqual(isPermalinkUrl(`https://github.com/o/r/blob/HEAD/a.js`), false);
+        assert.strictEqual(isPermalinkUrl(`https://github.com/o/r/blob/notasha/a.js`), false);
+    });
+
+    test('rejects anything the builder would not have written', () => {
+        const base = `https://github.com/o/r/blob/${SHA}/a.js`;
+        assert.strictEqual(isPermalinkUrl(`${base}?x=1`), false, 'query string');
+        assert.strictEqual(isPermalinkUrl(`${base}#evil`), false, 'anchor that is not a line');
+        assert.strictEqual(isPermalinkUrl(`${base}#lines-1`), false, 'the wrong platform anchor');
+        assert.strictEqual(isPermalinkUrl(`https://user:pw@github.com/o/r/blob/${SHA}/a.js`), false, 'credentials');
+        assert.strictEqual(isPermalinkUrl(`https://github.com:8443/o/r/blob/${SHA}/a.js`), false, 'port');
+        assert.strictEqual(isPermalinkUrl(`https://git.acme.com/o/r/../../evil`, customRemote), false, 'dot segments');
+    });
+
+    test('accepts a subgroup path and a bitbucket line anchor', () => {
+        const gitlab = { host: 'gitlab.com', owner: 'grp/sub', repo: 'r', platform: 'gitlab' };
+        const bitbucket = { host: 'bitbucket.org', owner: 'o', repo: 'r', platform: 'bitbucket' };
+        assert.strictEqual(isPermalinkUrl(`https://gitlab.com/grp/sub/r/-/blob/${SHA}/a.js#L3`, gitlab), true);
+        assert.strictEqual(isPermalinkUrl(`https://bitbucket.org/o/r/src/${SHA}/a.js#lines-9`, bitbucket), true);
+    });
+
+    // The guard has to accept everything the builder writes, or a legitimate
+    // permalink silently stops opening.
+    test('accepts every URL buildCommitUrl produces', () => {
+        const remotes = [
+            'git@github.com:o/r.git',
+            'https://gitlab.com/grp/sub/r.git',
+            'https://bitbucket.org/o/r.git',
+            'git@gitea.internal:team/app.git',
+            'git@git.acme.com:team/app.git'
+        ];
+        for (const remote of remotes) {
+            const info = parseRemote(remote);
+            for (const line of [null, 12]) {
+                const url = buildCommitUrl(info, { commitHash: SHA, file: 'src/a b/c.js', line });
+                assert.ok(url, remote);
+                assert.strictEqual(isPermalinkUrl(url, info), true, `${remote} line=${line}`);
+            }
+        }
+    });
+
     test('rejects a lookalike host', () => {
         assert.strictEqual(isPermalinkUrl('https://github.com.evil.example/o/r'), false);
     });

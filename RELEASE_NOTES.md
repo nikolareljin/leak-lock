@@ -16,6 +16,7 @@
 - Allow the release notes tool to sync the current release into CHANGELOG.md while preserving the existing heading style.
 
 ## Fixed
+- Check a commit permalink against the layout and repository it claims, not only its hostname, before opening it in a browser.
 - Run verification searches with object replacement disabled, so rewritten commits cannot hide original objects.
 - Treat redacted reports, decoded scanner values, and bounded checks as unverifiable instead of resolved.
 - Refuse cross-repository report imports unless the user explicitly compares anyway.
