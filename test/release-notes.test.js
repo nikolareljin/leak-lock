@@ -147,6 +147,7 @@ suite('release notes', () => {
         try {
             for (const rawHtml of [
                 '<script>alert(1)</script>',
+                '<svg/onload=alert(1)>',
                 '<!-- hidden release note -->',
                 '<!DOCTYPE html>',
                 '<?xml version="1.0"?>'
