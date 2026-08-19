@@ -472,12 +472,24 @@ function normalizeRemoteUrl(url) {
     // that wrong is not cosmetic: `ssh://git@host:2222/acme/app` read as scp-style
     // becomes `host/2222/acme/app`, which no longer matches `git@host:acme/app` and
     // would refuse a perfectly valid import as a different repository.
-    const hadScheme = /^[a-z+]+:\/\//i.test(value);
+    const scheme = (/^([a-z+]+):\/\//i.exec(value)?.[1] || '').toLowerCase();
     value = value.replace(/^[a-z+]+:\/\//i, '');    // scheme
     value = value.replace(/^[^/@]+@/, '');          // user
-    value = hadScheme
-        ? value.replace(/^([^/:]+):\d+(?=\/|$)/, '$1')  // port, which is not identity
-        : value.replace(/:(?=[^/])/, '/');              // scp-style host:path
+    if (!scheme) {
+        value = value.replace(/:(?=[^/])/, '/');    // scp-style host:path
+    } else if (scheme === 'http' || scheme === 'https') {
+        // A web port is part of which service this is: two Git UIs on different
+        // ports of one host are different repositories, and folding them together
+        // would let another repository's report import as this one's and read as
+        // resolved. Only the port the scheme already implies is dropped, so
+        // https://host:443/o/r and https://host/o/r stay one repository.
+        const defaultPort = scheme === 'https' ? '443' : '80';
+        value = value.replace(new RegExp(`^([^/:]+):${defaultPort}(?=/|$)`), '$1');
+    } else {
+        // ssh:// and git:// carry the port of the transport, not of a service, so
+        // ssh://git@host:2222/acme/app is the same repository as git@host:acme/app.
+        value = value.replace(/^([^/:]+):\d+(?=\/|$)/, '$1');
+    }
     value = value.replace(/\.git$/i, '');
     value = value.replace(/\/+$/, '');
     return value.toLowerCase() || null;
