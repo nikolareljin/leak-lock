@@ -125,7 +125,7 @@
             "type": "string",
             "enum": ["github", "gitlab", "bitbucket", "gitea"]
           },
-          "markdownDescription": "Map self-hosted Git hostnames to their platform type so commit links are built with the right URL format. Keys are hostnames (e.g. `\"git.acme.com\"`), values are one of `\"github\"` (GitHub Enterprise), `\"gitlab\"` (self-hosted GitLab), `\"bitbucket\"` (Bitbucket Server/DC), or `\"gitea\"` (Gitea / Forgejo / Gogs). Well-known SaaS hosts (`github.com`, `gitlab.com`, `bitbucket.org`) are detected automatically and do not need an entry here. For any host that has no entry and no recognisable platform keyword in its hostname, `\"github\"` URL format is assumed as the most common self-hosted layout."
+          "markdownDescription": "Map self-hosted Git hostnames to their platform type so commit links are built with the right URL format. Keys are hostnames (e.g. `\"git.acme.com\"`), values are one of `\"github\"` (GitHub Enterprise), `\"gitlab\"` (self-hosted GitLab), `\"bitbucket\"` (hosts using Bitbucket Cloud URL layout), or `\"gitea\"` (Gitea / Forgejo / Gogs). Well-known SaaS hosts (`github.com`, `gitlab.com`, `bitbucket.org`) are detected automatically and do not need an entry here. For any host that has no entry and no recognisable platform keyword in its hostname, `\"github\"` URL format is assumed as the most common self-hosted layout."
         },
         "leakLock.noseyParker.image": {
           "type": "string",

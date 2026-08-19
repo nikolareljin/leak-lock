@@ -66,14 +66,9 @@ suite('parseRemote', () => {
     });
 
     test('customHostTypes is case-insensitive on the hostname key', () => {
-        assert.strictEqual(
+        assert.deepStrictEqual(
             parseRemote('https://git.acme.com/o/r.git', { 'GIT.ACME.COM': 'gitea' }),
-            null // key not matched because we lowercase the parsed host; user must provide lowercase key
-        );
-        // But a lowercase key works:
-        assert.strictEqual(
-            parseRemote('https://git.acme.com/o/r.git', { 'git.acme.com': 'gitea' }).platform,
-            'gitea'
+            { host: 'git.acme.com', owner: 'o', repo: 'r', platform: 'gitea' }
         );
     });
 
