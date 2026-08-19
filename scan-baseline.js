@@ -149,7 +149,10 @@ function parseImportedReport(text, options = {}) {
                 }
                 : null,
             totalFindings: findings.length,
-            coverage: raw.coverage && typeof raw.coverage === 'object' ? raw.coverage : null,
+            // No coverage field: it was the one object carried through from the file
+            // untouched, against the narrowing every other field here gets, and
+            // nothing read it. Rendering it later would put attacker-shaped values
+            // in a webview, so re-add it a named primitive at a time, not wholesale.
             findings,
             warnings
         }
