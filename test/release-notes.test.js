@@ -64,7 +64,9 @@ suite('release notes', () => {
             '- Read ${process.env.HOME} before publishing.',
             '- Use ${{ github.sha }} before publishing.',
             '- Call require("fs") before publishing.',
-            '- Run node tools/release-notes.js before publishing.'
+            '- Run node tools/release-notes.js before publishing.',
+            '- Redirect echo hi > out.txt before publishing.',
+            '- Redirect cmd < in.txt before publishing.'
         ];
         try {
             for (const line of badLines) {
