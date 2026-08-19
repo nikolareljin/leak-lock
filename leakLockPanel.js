@@ -5935,6 +5935,21 @@ class LeakLockPanel {
             return { checked: false, reason: `the history search failed (${scanBaseline.describeGitFailure(error)})` };
         }
 
+        // A value spanning lines cannot be answered by a line-oriented grep: git
+        // splits the pattern per line and ORs it, so a PEM key would match any
+        // file carrying the standard -----BEGIN ...----- header and a key that
+        // was successfully removed would still read as still present. History
+        // already answered reliably above; where it did not, this is reported as
+        // unsearched rather than guessed at.
+        if (!scanBaseline.isLineSearchable(value)) {
+            return {
+                checked: inHistory,
+                inHistory,
+                inWorkingTree: false,
+                reason: inHistory ? null : 'the working tree cannot be searched for a value that spans lines'
+            };
+        }
+
         let inWorkingTree = false;
         try {
             await execFileAsync(

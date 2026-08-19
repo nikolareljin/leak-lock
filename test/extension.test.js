@@ -6851,6 +6851,48 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.strictEqual(normalized.unverifiableReason, null);
 	});
 
+	// Copilot review: git grep splits a pattern carrying newlines into one pattern
+	// per line and ORs them, so a multi-line value matches any file holding any one
+	// of its lines. Every PEM file carries the same header, so a key that really was
+	// removed kept reading as still present.
+	test('a multi-line value is not answered by a line-oriented working-tree search', async () => {
+		// An unrelated key, sharing only the standard header and footer. Written
+		// here rather than in the shared fixture so no other test sees it.
+		const unrelated = path.join(repo, 'unrelated.pem');
+		fs.writeFileSync(
+			unrelated,
+			'-----BEGIN RSA PRIVATE KEY-----\nUNRELATEDKEYBODY\n-----END RSA PRIVATE KEY-----\n'
+		);
+		try {
+			const removedKey = [
+				'-----BEGIN RSA PRIVATE KEY-----',
+				'THISKEYWASREMOVEDFROMTHEREPO',
+				'-----END RSA PRIVATE KEY-----'
+			].join('\n');
+			const panel = panelFor(reportJson([finding({
+				file: 'removed.pem', secret: removedKey, secretDisplay: removedKey, fingerprint: null
+			})]));
+			const comparison = await panel._verifyImportedReport();
+			// The old line-oriented search matched the shared header and called a key
+			// that is not in this repository still present.
+			assert.notStrictEqual(
+				comparison.entries[0].status, scanBaseline.STATUS.PRESENT,
+				'another key sharing the PEM header is not this key'
+			);
+			assert.strictEqual(comparison.entries[0].status, scanBaseline.STATUS.UNVERIFIABLE);
+			assert.match(comparison.entries[0].reason, /spans lines/);
+		} finally {
+			fs.rmSync(unrelated, { force: true });
+		}
+	});
+
+	test('a line-oriented search is refused only for values that span lines', () => {
+		assert.strictEqual(scanBaseline.isLineSearchable(LEAKED), true);
+		assert.strictEqual(scanBaseline.isLineSearchable('a\nb'), false);
+		assert.strictEqual(scanBaseline.isLineSearchable('a\r\nb'), false);
+		assert.strictEqual(scanBaseline.isLineSearchable(''), false);
+	});
+
 	test('a decoded value is unverifiable, because it is not the bytes the blob holds', async () => {
 		const panel = panelFor(reportJson([finding({
 			secret: 'decoded-value', valueIsLiteral: false, decoder: 'base64', fingerprint: null
