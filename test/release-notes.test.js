@@ -109,6 +109,56 @@ suite('release notes', () => {
         }
     });
 
+    test('generator allows safe autolinks and rejects unsafe autolinks', () => {
+        const outputPath = path.join(root, '.release-notes.md');
+        const releaseNotesPath = path.join(root, 'RELEASE_NOTES.md');
+        const originalReleaseNotes = fs.readFileSync(releaseNotesPath, 'utf8');
+        const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
+        try {
+            fs.writeFileSync(
+                releaseNotesPath,
+                [`# Release notes, ${version}`, '', '## Fixed', '- See <https://example.com/releases>.'].join('\n'),
+                'utf8'
+            );
+            execFileSync(process.execPath, ['tools/release-notes.js'], { cwd: root, stdio: 'pipe' });
+            fs.rmSync(outputPath, { force: true });
+            fs.writeFileSync(
+                releaseNotesPath,
+                [`# Release notes, ${version}`, '', '## Fixed', '- See <javascript:alert(1)>.'].join('\n'),
+                'utf8'
+            );
+            assert.throws(
+                () => execFileSync(process.execPath, ['tools/release-notes.js'], { cwd: root, stdio: 'pipe' }),
+                /unsafe markdown autolink target/
+            );
+        } finally {
+            fs.writeFileSync(releaseNotesPath, originalReleaseNotes, 'utf8');
+            fs.rmSync(outputPath, { force: true });
+        }
+    });
+
+    test('generator rejects raw HTML in release notes', () => {
+        const outputPath = path.join(root, '.release-notes.md');
+        const releaseNotesPath = path.join(root, 'RELEASE_NOTES.md');
+        const originalReleaseNotes = fs.readFileSync(releaseNotesPath, 'utf8');
+        const version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim();
+        try {
+            fs.writeFileSync(
+                releaseNotesPath,
+                [`# Release notes, ${version}`, '', '## Fixed', '- Hide <script>alert(1)</script>.'].join('\n'),
+                'utf8'
+            );
+            assert.throws(
+                () => execFileSync(process.execPath, ['tools/release-notes.js'], { cwd: root, stdio: 'pipe' }),
+                /raw HTML/
+            );
+            assert.ok(!fs.existsSync(outputPath));
+        } finally {
+            fs.writeFileSync(releaseNotesPath, originalReleaseNotes, 'utf8');
+            fs.rmSync(outputPath, { force: true });
+        }
+    });
+
     test('generator accepts release note titles without v and normalizes output', () => {
         const outputPath = path.join(root, '.release-notes.md');
         const releaseNotesPath = path.join(root, 'RELEASE_NOTES.md');

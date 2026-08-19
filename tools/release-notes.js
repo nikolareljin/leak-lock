@@ -31,7 +31,7 @@ function validateReleaseNotes(markdown) {
     throw new Error('RELEASE_NOTES.md must not contain control characters.');
   }
 
-  if (/<\/?[a-z][^>\n]*>/i.test(markdown)) {
+  if (/<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^>\n]*)?\/?>/.test(markdown)) {
     throw new Error('RELEASE_NOTES.md must not contain raw HTML.');
   }
 
@@ -42,7 +42,7 @@ function validateReleaseNotes(markdown) {
     { pattern: /(?:^|\s)(?:eval|Function|require|import)\s*\(/, label: 'JavaScript call syntax' },
     { pattern: /(?:^|\s)(?:process|globalThis)\s*\./, label: 'JavaScript global access' },
     { pattern: /(?:^|\s)(?:bash|sh|zsh|fish|powershell|pwsh|cmd(?:\.exe)?|node|npm|npx|python3?|ruby|perl|curl|wget|git|gh|pip)\s+[-./\w]/, label: 'command invocation syntax' },
-    { pattern: /\s(?:&&|\|\||[;|<>])\s*/, label: 'shell control syntax' }
+    { pattern: /\s(?:&&|\|\||[;|])\s*/, label: 'shell control syntax' }
   ];
 
   for (const { pattern, label } of executablePatterns) {
@@ -51,11 +51,19 @@ function validateReleaseNotes(markdown) {
     }
   }
 
+  const unsafeTargetPattern = /^(?:javascript|data|vbscript):|^\/\//i;
   const unsafeLinkPattern = /!?\[[^\]\n]*\]\(([^)\s]+)(?:\s+["'][^)]*["'])?\)/g;
   for (const match of markdown.matchAll(unsafeLinkPattern)) {
     const target = match[1].trim().replace(/^<|>$/g, '');
-    if (/^(?:javascript|data|vbscript):/i.test(target) || target.startsWith('//')) {
+    if (unsafeTargetPattern.test(target)) {
       throw new Error('RELEASE_NOTES.md contains an unsafe markdown link target.');
+    }
+  }
+
+  const autolinkPattern = /<([^<>\s]+)>/g;
+  for (const match of markdown.matchAll(autolinkPattern)) {
+    if (unsafeTargetPattern.test(match[1])) {
+      throw new Error('RELEASE_NOTES.md contains an unsafe markdown autolink target.');
     }
   }
 
