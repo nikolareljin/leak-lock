@@ -119,7 +119,9 @@ suite('release notes', () => {
             '- Handle A && B correctly.',
             '- Contact <security@example.com> for reports.',
             '- See <https://example.com/releases> for details.',
-            '- Read [the guide](https://example.com/guide).'
+            '- Read [the guide](https://example.com/guide).',
+            '- Read [the guide](https://example.com/a%20b).',
+            '- Read [the guide](https://example.com/100%25).'
         ];
         for (const bullet of bullets) {
             const dir = fixture({ notes: releaseNotes(bullet) });
@@ -137,7 +139,12 @@ suite('release notes', () => {
             '- [Open release](<javascript:alert(1)>)',
             '- [Open release](file:///etc/passwd)',
             '- [Open release](//evil.example/release)',
-            '- [Open release](DATA:text/html;base64,PHN2Zz4=)'
+            '- [Open release](DATA:text/html;base64,PHN2Zz4=)',
+            // A renderer decodes these before it uses the href, so the raw text
+            // and the decoded text have to agree about what the scheme is.
+            '- [Open release](&#106;avascript:alert(1))',
+            '- [Open release](&#x6A;avascript:alert(1))',
+            '- [Open release](%6Aavascript:alert(1))'
         ];
         for (const bullet of bullets) {
             const dir = fixture({ notes: releaseNotes(bullet) });
@@ -147,7 +154,11 @@ suite('release notes', () => {
     });
 
     test('generator rejects unsafe autolinks and unsupported autolink schemes', () => {
-        for (const bullet of ['- See <javascript:alert(1)>.', '- See <FILE:///etc/passwd>.']) {
+        for (const bullet of [
+            '- See <javascript:alert(1)>.',
+            '- See <FILE:///etc/passwd>.',
+            '- See <&#106;avascript:alert(1)>.'
+        ]) {
             const dir = fixture({ notes: releaseNotes(bullet) });
             assert.throws(() => generate(dir), /unsafe markdown autolink target/, bullet);
         }
@@ -212,6 +223,12 @@ suite('release notes', () => {
             const dir = fixture({ version: badVersion, notes: releaseNotes('- One.', { version: badVersion }) });
             assert.throws(() => generate(dir, ['--check']), /strict SemVer/, badVersion);
         }
+    });
+
+    test('generator reports a missing package.json clearly', () => {
+        const dir = fixture({ notes: releaseNotes('- One.') });
+        fs.rmSync(path.join(dir, 'package.json'));
+        assert.throws(() => generate(dir, ['--check']), /package.json is missing/);
     });
 
     test('generator rejects a VERSION that disagrees with package.json', () => {

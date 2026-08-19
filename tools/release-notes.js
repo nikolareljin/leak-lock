@@ -34,6 +34,26 @@ function validateSemver(label, value) {
   }
 }
 
+// A Markdown renderer decodes entity and percent escapes before it uses the
+// href, so `&#106;avascript:` and `%6Aavascript:` are the same link as
+// `javascript:`. Comparing the raw text against the scheme list would have read
+// all three as different.
+function normalizeTarget(raw) {
+  let value = raw.trim().replace(/^<+/, '').replace(/>+$/, '');
+  value = value.replace(/&#x([0-9a-fA-F]{1,6});?/g, (match, hex) => codePoint(parseInt(hex, 16), match));
+  value = value.replace(/&#(\d{1,7});?/g, (match, dec) => codePoint(parseInt(dec, 10), match));
+  try {
+    value = decodeURIComponent(value);
+  } catch {
+    // A stray '%' is not an escape; the undecoded text is still worth checking.
+  }
+  return value.replace(/\s/g, '');
+}
+
+function codePoint(value, fallback) {
+  return Number.isInteger(value) && value >= 0 && value <= 0x10FFFF ? String.fromCodePoint(value) : fallback;
+}
+
 function validateReleaseNotes(markdown) {
   if (CONTROL_CHARACTERS.test(markdown)) {
     throw new Error('RELEASE_NOTES.md must not contain control characters.');
@@ -57,15 +77,14 @@ function validateReleaseNotes(markdown) {
   // the opening paren let a single leading space walk past this check.
   const linkTargetPattern = /!?\[[^\]\n]*\]\(\s*([^)\s]*)/g;
   for (const match of markdown.matchAll(linkTargetPattern)) {
-    const target = match[1].trim().replace(/^<+/, '').replace(/>+$/, '');
-    if (UNSAFE_TARGET.test(target)) {
+    if (UNSAFE_TARGET.test(normalizeTarget(match[1]))) {
       throw new Error('RELEASE_NOTES.md contains an unsafe markdown link target.');
     }
   }
 
   const autolinkPattern = /<([^<>\s]+)>/g;
   for (const match of markdown.matchAll(autolinkPattern)) {
-    if (UNSAFE_TARGET.test(match[1])) {
+    if (UNSAFE_TARGET.test(normalizeTarget(match[1]))) {
       throw new Error('RELEASE_NOTES.md contains an unsafe markdown autolink target.');
     }
   }
@@ -122,6 +141,10 @@ function readReleaseSources(root) {
 
   if (!fs.existsSync(versionPath)) {
     throw new Error('VERSION is missing.');
+  }
+
+  if (!fs.existsSync(packagePath)) {
+    throw new Error('package.json is missing.');
   }
 
   const version = fs.readFileSync(versionPath, 'utf8').trim();
