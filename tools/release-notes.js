@@ -3,18 +3,26 @@
 const fs = require('fs');
 const path = require('path');
 
-const root = path.resolve(__dirname, '..');
-const versionPath = path.join(root, 'VERSION');
-const packagePath = path.join(root, 'package.json');
-const releaseNotesPath = path.join(root, 'RELEASE_NOTES.md');
-const changelogPath = path.join(root, 'CHANGELOG.md');
-const outputPath = path.join(root, '.release-notes.md');
-
-const args = new Set(process.argv.slice(2));
-const syncChangelog = args.has('--sync-changelog');
-const checkOnly = args.has('--check');
+const defaultRoot = path.resolve(__dirname, '..');
 
 const semverPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+// RELEASE_NOTES.md is consumed in exactly three places: as the message of an
+// annotated git tag (`git tag -F`), as the body of a GitHub Release, and as a
+// CHANGELOG.md section. None of them hand the text to a shell or to a
+// JavaScript evaluator, so banning shell metacharacters or command names buys
+// no safety and costs real release notes: "- Values < 10 are ignored.",
+// "- Support Node >= 22." and "- Rewrite history with git filter-repo." are all
+// legitimate, and all were rejected by such rules. What the consumers do is
+// render Markdown and carry the text through workflow files, so the guards here
+// are scoped to that: no control characters, no raw HTML, no unsafe link or
+// autolink targets, and no syntax a shell or GitHub Actions would expand if the
+// text ever landed inside a `run:` block or a `${{ }}` expression.
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+const SAFE_AUTOLINK = /<(?:https?:\/\/[^<>\s]+|mailto:[^<>\s]+|[^<>\s@]+@[^<>\s@.]+(?:\.[^<>\s@.]+)+)>/g;
+const UNSAFE_TARGET = /^(?:javascript|data|vbscript|file|blob|filesystem):|^\/\//i;
+const AUTOLINK_SCHEME = /^<[A-Za-z][A-Za-z0-9+.-]*:/;
+const ALLOWED_SECTIONS = new Set(['Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security']);
 
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -27,58 +35,65 @@ function validateSemver(label, value) {
 }
 
 function validateReleaseNotes(markdown) {
-  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(markdown)) {
+  if (CONTROL_CHARACTERS.test(markdown)) {
     throw new Error('RELEASE_NOTES.md must not contain control characters.');
   }
 
-  const rawHtmlPattern = /<!--|<![A-Za-z][^>\n]*>|<\?[A-Za-z][^>\n]*\?>|<\/?[A-Za-z][A-Za-z0-9-]*(?:[\s/][^>\n]*)?\/?>/;
-  if (rawHtmlPattern.test(markdown)) {
-    throw new Error('RELEASE_NOTES.md must not contain raw HTML.');
-  }
-
-  const executablePatterns = [
+  const interpolationPatterns = [
     { pattern: /`/, label: 'backticks' },
     { pattern: /\$\s*\(/, label: 'shell command substitution' },
-    { pattern: /\$\s*\{/, label: 'template or workflow expression syntax' },
-    { pattern: /(?:^|\s)(?:eval|Function|require|import)\s*\(/, label: 'JavaScript call syntax' },
-    { pattern: /(?:^|\s)(?:process|globalThis)\s*\./, label: 'JavaScript global access' },
-    { pattern: /(?:^|\s)(?:bash|sh|zsh|fish|powershell|pwsh|cmd(?:\.exe)?|node|npm|npx|python3?|ruby|perl|curl|wget|git|gh|pip)\s+[-./\w]/, label: 'command invocation syntax' },
-    { pattern: /\s(?:&&|\|\||[;|])\s*/, label: 'shell control syntax' },
-    { pattern: /\s>\s*\S/, label: 'shell output redirection syntax' },
-    { pattern: /\s<(?![A-Za-z][A-Za-z0-9+.-]*:[^<>\s]*>)/, label: 'shell input redirection syntax' }
+    { pattern: /\$\s*\{/, label: 'template or workflow expression syntax' }
   ];
 
-  for (const { pattern, label } of executablePatterns) {
+  for (const { pattern, label } of interpolationPatterns) {
     if (pattern.test(markdown)) {
       throw new Error(`RELEASE_NOTES.md must not contain ${label}.`);
     }
   }
 
-  const unsafeTargetPattern = /^(?:javascript|data|vbscript):|^\/\//i;
-  const unsafeLinkPattern = /!?\[[^\]\n]*\]\(([^)\s]+)(?:\s+["'][^)]*["'])?\)/g;
-  for (const match of markdown.matchAll(unsafeLinkPattern)) {
-    const target = match[1].trim().replace(/^<|>$/g, '');
-    if (unsafeTargetPattern.test(target)) {
+  // The target is captured up to the first whitespace or closing paren rather
+  // than by matching a whole well-formed link, so `[x](  javascript:alert(1))`
+  // is inspected instead of skipped: requiring the target to sit flush against
+  // the opening paren let a single leading space walk past this check.
+  const linkTargetPattern = /!?\[[^\]\n]*\]\(\s*([^)\s]*)/g;
+  for (const match of markdown.matchAll(linkTargetPattern)) {
+    const target = match[1].trim().replace(/^<+/, '').replace(/>+$/, '');
+    if (UNSAFE_TARGET.test(target)) {
       throw new Error('RELEASE_NOTES.md contains an unsafe markdown link target.');
     }
   }
 
   const autolinkPattern = /<([^<>\s]+)>/g;
   for (const match of markdown.matchAll(autolinkPattern)) {
-    if (unsafeTargetPattern.test(match[1])) {
+    if (UNSAFE_TARGET.test(match[1])) {
       throw new Error('RELEASE_NOTES.md contains an unsafe markdown autolink target.');
     }
   }
 
-  const allowedSections = new Set(['Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security']);
+  // Raw HTML is detected by removing the autolinks that are allowed and then
+  // rejecting any `<` that still introduces a tag, comment, declaration or
+  // processing instruction. One rule covers `<script>`, `</script>`,
+  // `<svg/onload=...>`, `<!-- ... -->`, `<!DOCTYPE ...>`, `<?xml ... ?>` and
+  // tags split across any number of lines, which a `[^>\n]*` tag pattern cannot.
+  // Comparisons such as `< 10`, `<100 ms` and `<=` are left alone.
+  const withoutSafeAutolinks = markdown.replace(SAFE_AUTOLINK, '');
+  const rawMarkup = withoutSafeAutolinks.match(/<[A-Za-z!/?][^\n]{0,60}/);
+  if (rawMarkup) {
+    if (AUTOLINK_SCHEME.test(rawMarkup[0])) {
+      throw new Error('RELEASE_NOTES.md may only autolink http, https and mailto targets.');
+    }
+    throw new Error('RELEASE_NOTES.md must not contain raw HTML.');
+  }
+
   let inSection = false;
+  let bullets = 0;
   for (const [index, line] of markdown.split(/\r?\n/).entries()) {
     if (index === 0 || line.trim() === '') {
       continue;
     }
     const heading = line.match(/^##\s+(.+)$/);
     if (heading) {
-      if (!allowedSections.has(heading[1].trim())) {
+      if (!ALLOWED_SECTIONS.has(heading[1].trim())) {
         throw new Error(`RELEASE_NOTES.md has unsupported section "${heading[1].trim()}".`);
       }
       inSection = true;
@@ -90,49 +105,51 @@ function validateReleaseNotes(markdown) {
     if (!inSection || !line.startsWith('- ')) {
       throw new Error('RELEASE_NOTES.md content must be bullet items under allowed sections.');
     }
+    bullets += 1;
+  }
+
+  // A title-only file passed every rule above and produced an empty annotated
+  // tag message and an empty GitHub Release body.
+  if (bullets === 0) {
+    throw new Error('RELEASE_NOTES.md must list at least one bullet under an allowed section.');
   }
 }
 
-if (checkOnly && syncChangelog) {
-  throw new Error('--check cannot be combined with --sync-changelog.');
+function readReleaseSources(root) {
+  const versionPath = path.join(root, 'VERSION');
+  const packagePath = path.join(root, 'package.json');
+  const releaseNotesPath = path.join(root, 'RELEASE_NOTES.md');
+
+  if (!fs.existsSync(versionPath)) {
+    throw new Error('VERSION is missing.');
+  }
+
+  const version = fs.readFileSync(versionPath, 'utf8').trim();
+  validateSemver('VERSION', version);
+
+  const packageVersion = JSON.parse(fs.readFileSync(packagePath, 'utf8')).version;
+  validateSemver('package.json version', packageVersion);
+  if (packageVersion !== version) {
+    throw new Error(`VERSION (${version}) does not match package.json (${packageVersion}).`);
+  }
+
+  if (!fs.existsSync(releaseNotesPath)) {
+    throw new Error('RELEASE_NOTES.md is missing.');
+  }
+
+  const releaseNotes = fs.readFileSync(releaseNotesPath, 'utf8').trim();
+  const titlePattern = new RegExp(`^#\\s+Release notes,\\s+v?${escapeRegex(version)}(?:\\s|$)`, 'i');
+  if (!titlePattern.test(releaseNotes)) {
+    throw new Error(`RELEASE_NOTES.md must start with "# Release notes, ${version}" or "# Release notes, v${version}".`);
+  }
+  validateReleaseNotes(releaseNotes);
+
+  const body = releaseNotes.replace(/^#\s+Release notes,\s+v?[^\n]+/i, `## Release notes, v${version}`);
+  return { version, body };
 }
 
-if (!fs.existsSync(versionPath)) {
-  throw new Error('VERSION is missing.');
-}
-
-const version = fs.readFileSync(versionPath, 'utf8').trim();
-validateSemver('VERSION', version);
-
-const packageVersion = JSON.parse(fs.readFileSync(packagePath, 'utf8')).version;
-validateSemver('package.json version', packageVersion);
-if (packageVersion !== version) {
-  throw new Error(`VERSION (${version}) does not match package.json (${packageVersion}).`);
-}
-
-if (!fs.existsSync(releaseNotesPath)) {
-  throw new Error('RELEASE_NOTES.md is missing.');
-}
-
-const releaseNotes = fs.readFileSync(releaseNotesPath, 'utf8').trim();
-const escapedVersion = escapeRegex(version);
-const titlePattern = new RegExp(`^#\\s+Release notes,\\s+v?${escapedVersion}(?:\\s|$)`, 'i');
-if (!titlePattern.test(releaseNotes)) {
-  throw new Error(`RELEASE_NOTES.md must start with "# Release notes, ${version}" or "# Release notes, v${version}".`);
-}
-validateReleaseNotes(releaseNotes);
-
-const body = releaseNotes.replace(/^#\s+Release notes,\s+v?[^\n]+/i, `## Release notes, v${version}`);
-
-if (checkOnly) {
-  console.log('Release sources are valid.');
-  process.exit(0);
-}
-
-fs.writeFileSync(outputPath, `${body}\n`, 'utf8');
-console.log(`Wrote release notes for v${version} to ${path.relative(root, outputPath)}.`);
-
-if (syncChangelog) {
+function writeChangelog(root, version, body, { force }) {
+  const changelogPath = path.join(root, 'CHANGELOG.md');
   if (!fs.existsSync(changelogPath)) {
     throw new Error('CHANGELOG.md is missing.');
   }
@@ -141,6 +158,15 @@ if (syncChangelog) {
   const headingPattern = /^## .*\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b.*$/gm;
   const headings = [...changelog.matchAll(headingPattern)];
   const existingIndex = headings.findIndex((match) => match[1] === version);
+
+  // A CHANGELOG section gets edited after it is generated: v0.9.0's entry is
+  // long-form prose that RELEASE_NOTES.md cannot express, and replacing it with
+  // the short bullets is a silent, unrecoverable loss. Overwriting is a
+  // deliberate act, not the default one.
+  if (existingIndex !== -1 && !force) {
+    throw new Error(`CHANGELOG.md already has a v${version} section. Re-run with --force to replace it, or edit CHANGELOG.md directly.`);
+  }
+
   const firstHeading = headings[0];
   const separator = firstHeading ? (firstHeading[0].match(/\s+([^\d\w\s]+)\s+v?\d+\.\d+\.\d+/u)?.[1] || '-') : '-';
   const date = new Date().toISOString().slice(0, 10);
@@ -162,5 +188,74 @@ if (syncChangelog) {
   }
 
   fs.writeFileSync(changelogPath, nextChangelog, 'utf8');
-  console.log(`Synced v${version} release notes into CHANGELOG.md.`);
 }
+
+function parseArgs(argv) {
+  const options = { root: defaultRoot, checkOnly: false, sync: false, force: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--check') {
+      options.checkOnly = true;
+    } else if (arg === '--sync-changelog') {
+      options.sync = true;
+    } else if (arg === '--force') {
+      options.force = true;
+    } else if (arg === '--root') {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error('--root requires a directory.');
+      }
+      options.root = path.resolve(value);
+      index += 1;
+    } else if (arg.startsWith('--root=')) {
+      options.root = path.resolve(arg.slice('--root='.length));
+    } else {
+      throw new Error(`Unknown argument "${arg}".`);
+    }
+  }
+  return options;
+}
+
+// --root exists so the tests can drive the generator against a fixture
+// directory. They used to overwrite the repository's own RELEASE_NOTES.md and
+// restore it in a finally block, which left the file corrupted whenever a run
+// was interrupted.
+function main(argv) {
+  const options = parseArgs(argv);
+  if (options.checkOnly && options.sync) {
+    throw new Error('--check cannot be combined with --sync-changelog.');
+  }
+  if (options.force && !options.sync) {
+    throw new Error('--force only applies to --sync-changelog.');
+  }
+
+  const { root } = options;
+  const { version, body } = readReleaseSources(root);
+
+  if (options.checkOnly) {
+    console.log('Release sources are valid.');
+    return;
+  }
+
+  // CHANGELOG.md is written before .release-notes.md so a refused overwrite
+  // leaves no generated file behind to suggest the run succeeded.
+  if (options.sync) {
+    writeChangelog(root, version, body, { force: options.force });
+    console.log(`Synced v${version} release notes into CHANGELOG.md.`);
+  }
+
+  const outputPath = path.join(root, '.release-notes.md');
+  fs.writeFileSync(outputPath, `${body}\n`, 'utf8');
+  console.log(`Wrote release notes for v${version} to ${path.relative(root, outputPath)}.`);
+}
+
+if (require.main === module) {
+  try {
+    main(process.argv.slice(2));
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+}
+
+module.exports = { validateReleaseNotes, validateSemver, readReleaseSources, main };

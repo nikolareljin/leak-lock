@@ -119,6 +119,16 @@ private/
 # JAR files
 bfg.jar
 
+# Agent scratch notes. .vscodeignore keeps CLAUDE.md out of the .vsix, but that
+# is a packaging rule -- nothing stopped a generated docs/CLAUDE.md or
+# test/CLAUDE.md from being committed.
+CLAUDE.md
+**/CLAUDE.md
+.remember/
+.claude/
+.cursor/
+.aider*
+
 # Planning artifacts are a working method, not project documentation. They go
 # stale the moment implementation diverges from them, and a stale plan in-repo
 # reads as authoritative. The decisions worth keeping belong in ARCHITECTURE.md

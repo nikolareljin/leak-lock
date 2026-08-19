@@ -468,7 +468,7 @@ We welcome contributions! Areas for improvement:
 
 ## 📋 Release Notes
 
-Current version lives in [VERSION](VERSION), and `package.json` must match it. Current release text lives in [RELEASE_NOTES.md](RELEASE_NOTES.md). The release script uses that file for GitHub Releases and annotated git tags, and can sync it into [CHANGELOG](CHANGELOG.md) before publishing.
+Current version lives in [VERSION](VERSION), and `package.json` must match it. Current release text lives in [RELEASE_NOTES.md](RELEASE_NOTES.md). The release script uses that file for GitHub Releases and annotated git tags, and can insert it into [CHANGELOG](CHANGELOG.md) before publishing with `--sync-changelog`. Sync will not overwrite a changelog section that already exists unless `--force` is passed, since those entries are expanded by hand after they are generated. `npm run check:release` validates all three sources and runs on every pull request.
 
 ### v0.9.0
 - Import previous scan reports and check which findings are resolved.
