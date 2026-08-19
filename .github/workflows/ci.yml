@@ -49,7 +49,16 @@ jobs:
       # vscode-test launches a real VS Code (Electron) instance, which needs a
       # virtual display on Linux. node_modules is already present from the lint
       # step, which runs first.
-      test_command: "sudo apt-get update && sudo apt-get install -y xvfb && xvfb-run -a -s '-screen 0 1024x768x24' npm test"
+      # ubuntu-latest already ships xvfb, so the install is a network round-trip
+      # that buys nothing on the normal path -- and one run stalled inside
+      # `apt-get update` with no output until the 20 minute job timeout killed it,
+      # turning a green commit red. It now runs only if xvfb-run is genuinely
+      # missing, so a changed runner image is still covered.
+      test_command: |
+        command -v xvfb-run >/dev/null 2>&1 || {
+          sudo apt-get update && sudo apt-get install -y xvfb
+        }
+        xvfb-run -a -s '-screen 0 1024x768x24' npm test
       # The extension ships its sources directly, so there is nothing to compile
       # (the package.json "build" script targets a src/ directory that does not
       # exist). Packaging runs here anyway because `vsce package` is the only
