@@ -5,6 +5,33 @@ const SHA = 'abc1234567890abcdef1234567890abcdef12345';
 
 suite('parseRemote', () => {
 
+    // A web scheme's port is part of the address a browser needs. An ssh:// or
+    // SCP-like port is the git transport's, and the web UI does not answer on it,
+    // so carrying it into an https link would point at nothing.
+    test('a web port is kept, a git transport port is not', () => {
+        assert.strictEqual(parseRemote('https://git.acme.com:8443/o/r.git').host, 'git.acme.com:8443');
+        assert.strictEqual(parseRemote('http://git.acme.com:3000/o/r.git').host, 'git.acme.com:3000');
+        assert.strictEqual(parseRemote('ssh://git@git.acme.com:2222/o/r.git').host, 'git.acme.com');
+        assert.strictEqual(parseRemote('git@git.acme.com:o/r.git').host, 'git.acme.com');
+    });
+
+    test('a port does not hide the platform or a customHostTypes override', () => {
+        assert.strictEqual(parseRemote('https://gitlab.acme.com:8443/g/s/r.git').platform, 'gitlab');
+        assert.strictEqual(
+            parseRemote('https://git.acme.com:8443/o/r.git', { 'git.acme.com': 'gitea' }).platform,
+            'gitea',
+            'the override is keyed on the hostname, so a port must not defeat it'
+        );
+    });
+
+    test('a ported remote builds a link that keeps the port', () => {
+        const info = parseRemote('https://git.acme.com:8443/o/r.git');
+        assert.strictEqual(
+            buildCommitUrl(info, { commitHash: SHA, file: 'a.js', line: 1 }),
+            `https://git.acme.com:8443/o/r/blob/${SHA}/a.js#L1`
+        );
+    });
+
     test('parses the SCP-like SSH form', () => {
         assert.deepStrictEqual(
             parseRemote('git@github.com:nikolareljin/leak-lock.git'),
@@ -270,6 +297,25 @@ suite('isPermalinkUrl', () => {
                 assert.strictEqual(isPermalinkUrl(url, info), true, `${remote} line=${line}`);
             }
         }
+    });
+
+    test('a ported self-hosted remote is pinned with its port', () => {
+        const ported = parseRemote('https://git.acme.com:8443/o/r.git');
+        assert.strictEqual(ported.host, 'git.acme.com:8443');
+        assert.strictEqual(
+            isPermalinkUrl(`https://git.acme.com:8443/o/r/blob/${SHA}/a.js#L1`, ported),
+            true
+        );
+        assert.strictEqual(
+            isPermalinkUrl(`https://git.acme.com/o/r/blob/${SHA}/a.js#L1`, ported),
+            false,
+            'dropping the port addresses a different service'
+        );
+        assert.strictEqual(
+            isPermalinkUrl(`https://git.acme.com:9999/o/r/blob/${SHA}/a.js#L1`, ported),
+            false,
+            'another port on the same host is another service'
+        );
     });
 
     test('rejects a lookalike host', () => {
