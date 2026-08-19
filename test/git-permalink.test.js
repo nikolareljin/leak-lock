@@ -233,7 +233,14 @@ suite('isPermalinkUrl', () => {
         assert.strictEqual(isPermalinkUrl(`${base}?x=1`), false, 'query string');
         assert.strictEqual(isPermalinkUrl(`${base}#evil`), false, 'anchor that is not a line');
         assert.strictEqual(isPermalinkUrl(`${base}#lines-1`), false, 'the wrong platform anchor');
-        assert.strictEqual(isPermalinkUrl(`https://user:pw@github.com/o/r/blob/${SHA}/a.js`), false, 'credentials');
+        // Userinfo is valid URL syntax, so this reaches the rebuild-and-compare
+        // rather than failing to parse: asserted here because a masked rendering
+        // of the credentials makes the URL look malformed when it is not.
+        const withCredentials = `https://user:pw@github.com/o/r/blob/${SHA}/a.js`;
+        const parsedCredentials = new URL(withCredentials);
+        assert.strictEqual(parsedCredentials.hostname, 'github.com');
+        assert.strictEqual(parsedCredentials.username, 'user');
+        assert.strictEqual(isPermalinkUrl(withCredentials), false, 'credentials');
         assert.strictEqual(isPermalinkUrl(`https://github.com:8443/o/r/blob/${SHA}/a.js`), false, 'port');
         assert.strictEqual(isPermalinkUrl(`https://git.acme.com/o/r/../../evil`, customRemote), false, 'dot segments');
     });
