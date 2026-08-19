@@ -40,7 +40,6 @@ tools/**
 
 # Contributor and scratch notes, not shipped to users.
 AGENTS.md
-TODO.txt
 CLAUDE.md
 
 # Local agent/tooling state. These are gitignored, but .vscodeignore is a

@@ -22,7 +22,9 @@ Recent history uses Conventional Commit prefixes (`feat:`, `chore:`, `fix:`). Fo
 ## Release Workflow
 - Treat `VERSION` as the current release version source. Keep `package.json` version exactly equal to it.
 - Keep current release notes in `RELEASE_NOTES.md`. Its first line must be `# Release notes, vX.Y.Z`, matching `VERSION`.
-- Before publishing, run `node tools/release-notes.js --sync-changelog` to copy current release notes into `CHANGELOG.md`.
+- Before publishing, run `node tools/release-notes.js --sync-changelog` to insert the current release notes into `CHANGELOG.md`.
+- Sync refuses to touch a `CHANGELOG.md` section that already exists, because those entries get expanded by hand after they are generated. Pass `--force` only when you mean to discard the existing text.
+- Validation runs on every pull request (`npm run check:release`), in the pre-commit hook against the staged files, and again in the publish workflow.
 - The publish workflow runs `node tools/release-notes.js`, writes `.release-notes.md`, creates an annotated git tag from that file, and uses the same file for the GitHub Release body.
 - Do not edit generated `.release-notes.md`; it is ignored and recreated during release.
 
