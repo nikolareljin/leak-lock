@@ -2560,6 +2560,148 @@ suite('Engine binaries are found outside the shell PATH', () => {
 	});
 });
 
+suite('Java and git-filter-repo are found the same way engines are', () => {
+	const lookup = require('../binary-lookup');
+	const engines = require('../scan-engines');
+	const gitRewrite = require('../git-rewrite');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+
+	test('scan-engines re-exports the search path itself, not a copy', () => {
+		// addBinarySearchDir mutates the array in place. A copy here would split it
+		// into two lists, and a directory registered through one name would be
+		// invisible to the other -- the engine install directory being the case that
+		// matters, since nothing else knows about it.
+		assert.strictEqual(engines.COMMON_BIN_DIRS, lookup.COMMON_BIN_DIRS);
+		assert.strictEqual(engines.resolveBinary, lookup.resolveBinary);
+	});
+
+	test('JAVA_HOME is honoured before anything is guessed', () => {
+		const dirs = lookup.javaSearchDirs({ JAVA_HOME: '/opt/jdk-21' }, 'linux');
+		assert.strictEqual(dirs[0], path.join('/opt/jdk-21', 'bin'),
+			'a user who set JAVA_HOME has stated which JVM they mean');
+	});
+
+	test("Homebrew's keg-only openjdk prefixes are searched on macOS", () => {
+		// `brew install openjdk` deliberately does not link java onto PATH, which is
+		// why issue #121 needed a ~/.zshrc edit. Probing the keg directly removes it.
+		const dirs = lookup.javaSearchDirs({}, 'darwin');
+		assert.ok(dirs.includes('/opt/homebrew/opt/openjdk/bin'), 'Apple silicon');
+		assert.ok(dirs.includes('/usr/local/opt/openjdk/bin'), 'Intel');
+		assert.ok(dirs.includes('/opt/homebrew/opt/openjdk@21/bin'),
+			'a versioned formula is its own prefix');
+	});
+
+	test('the keg prefixes are macOS-only, and the common dirs always follow', () => {
+		const linux = lookup.javaSearchDirs({}, 'linux');
+		assert.ok(!linux.some(d => d.includes('opt/openjdk')),
+			'no Homebrew keg exists to search on Linux');
+		for (const dir of lookup.COMMON_BIN_DIRS) {
+			assert.ok(linux.includes(dir), `${dir} is still searched`);
+		}
+	});
+
+	test('an explicit leakLock.java.path wins outright', async () => {
+		assert.strictEqual(await lookup.resolveJavaCommand('/opt/jdk/bin/java'), '/opt/jdk/bin/java');
+	});
+
+	test('Java resolution never returns nothing, so the run can still be attempted', async () => {
+		// A bare `java` is still right on a machine whose PATH is set up; it is only
+		// wrong as the *only* strategy. Returning null would turn "we could not find
+		// it" into "it cannot be run", which is a different and stronger claim.
+		const java = await lookup.resolveJavaCommand();
+		assert.strictEqual(typeof java, 'string');
+		assert.ok(java.length > 0);
+		assert.ok(java === 'java' || path.isAbsolute(java));
+	});
+
+	test('findInDirs resolves an executable and reports absence as null', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-lookup-'));
+		const file = path.join(dir, 'toolish');
+		fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+		try {
+			assert.strictEqual(lookup.findInDirs('toolish', [dir]), file);
+			assert.strictEqual(lookup.findInDirs('absent', [dir]), null);
+			assert.strictEqual(lookup.findInDirs('toolish', [null, undefined, dir]), file,
+				'an unset directory is skipped, not thrown on');
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('the git-filter-repo launcher search is no longer Windows-only', async () => {
+		// The Windows Scripts-directory rescue existed; POSIX did not, so pip could
+		// report success into ~/.local/bin and the panel would still say "missing".
+		assert.strictEqual(typeof gitRewrite.findFilterRepoLauncher, 'function');
+		const found = await gitRewrite.findFilterRepoLauncher();
+		if (found !== null) {
+			assert.ok(path.isAbsolute(found.path), 'a launcher is reported by absolute path');
+			assert.ok(found.form, 'and says which kind of install it came from');
+		}
+	});
+
+	test('an explicit interpreter still selects the pip install command', () => {
+		const { command, args } = gitRewrite.buildFilterRepoInstallCommand('python3.12');
+		assert.strictEqual(command, 'python3.12');
+		assert.deepStrictEqual(args, ['-m', 'pip', 'install', '--user', '--upgrade', 'git-filter-repo']);
+	});
+
+	test('off macOS the install command is unchanged', function () {
+		if (process.platform === 'darwin') {
+			this.skip();
+		}
+		const { command, args } = gitRewrite.buildFilterRepoInstallCommand();
+		assert.strictEqual(command, process.platform === 'win32' ? 'python' : 'python3');
+		assert.ok(args.includes('--user'), '--user avoids elevation and PEP 668');
+	});
+});
+
+suite('AI attribution trailers are refused before they reach history', () => {
+	const { execFileSync } = require('child_process');
+	const fs = require('fs');
+	const os = require('os');
+	const path = require('path');
+	const hook = path.join(__dirname, '..', '.githooks', 'commit-msg');
+
+	function check(message) {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-msg-'));
+		const file = path.join(dir, 'COMMIT_EDITMSG');
+		fs.writeFileSync(file, message);
+		try {
+			execFileSync(hook, [file], { stdio: 'pipe' });
+			return true;
+		} catch {
+			return false;
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	test('the hook is installed and executable', () => {
+		fs.accessSync(hook, fs.constants.X_OK);
+	});
+
+	test('an AI co-author trailer is rejected', () => {
+		// GitHub's contributors graph counts trailers, not just authors: two of these
+		// lines put a bot on this repository's contributors page, and taking one back
+		// out costs a rewrite of every commit that follows it.
+		assert.strictEqual(check('feat: x\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\n'), false);
+		assert.strictEqual(check('feat: x\n\nCo-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>\n'), false);
+	});
+
+	test('a human co-author is left alone', () => {
+		assert.strictEqual(check('feat: x\n\nCo-authored-by: Jane Roe <jane@example.com>\n'), true);
+	});
+
+	test('prose naming an assistant is not a trailer', () => {
+		// The rule is about attribution, not vocabulary. A message that explains why
+		// Copilot's review was wrong must still be committable.
+		assert.strictEqual(check('docs: explain why claude and copilot trailers are rejected\n'), true);
+		assert.strictEqual(check('fix: address Copilot review feedback on the parser\n'), true);
+	});
+});
+
 suite('Occurrence aggregation keeps what it merges', () => {
 	const LeakLockPanel = require('../leakLockPanel');
 
@@ -4996,7 +5138,13 @@ suite('PR #105 fourth review pass', () => {
 		const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
 		assert.ok(!/java -version 2>&1/.test(code), 'no shell redirection');
 		assert.ok(!/javaVersion\.stderr/.test(code), 'and no single-stream read');
-		assert.match(code, /execFileAsync\('java', \['-version'\]/);
+		// execFile, both streams read. The command is now resolved rather than the
+		// literal 'java': a Finder-launched VS Code on macOS inherits no shell PATH,
+		// so a bare name reported "not installed" on a machine with a working JDK
+		// (#121). Asserting the literal here would pin that defect in place.
+		assert.match(code, /execFileAsync\(java, \['-version'\]/);
+		assert.match(code, /const java = await resolveJavaCommand\(\)/,
+			'the banner is read from whatever the lookup resolved');
 
 		// And it actually produces a banner on a machine that has Java.
 		let systemJava = true;

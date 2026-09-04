@@ -294,6 +294,22 @@ If your binary lives somewhere else, point at it directly:
 "leakLock.gitleaks.binaryPath": "/opt/tools/gitleaks"
 ```
 
+### The same applies to Java and git-filter-repo
+
+Those two are not scan engines — Java runs BFG, git-filter-repo runs the Git-only
+rewrite — but they were looked up by bare name only, so they failed on macOS in exactly
+the way the engines used to. They now use the same absolute-path search, plus two
+locations specific to them:
+
+| Tool | Also searched |
+|---|---|
+| `java` | `$JAVA_HOME/bin`, Homebrew's keg-only `openjdk` prefixes (`/opt/homebrew/opt/openjdk*/bin`, `/usr/local/opt/openjdk*/bin`), then `/usr/libexec/java_home` — macOS's own resolver, which knows about every JDK under `/Library/Java/JavaVirtualMachines` |
+| `git-filter-repo` | the Python user scripts directory that `sysconfig` reports, which is `~/Library/Python/<version>/bin` on macOS's framework Python and **not** `~/.local/bin` |
+
+Override with `leakLock.java.path` when a specific JVM is wanted. There is no equivalent
+setting for git-filter-repo: it is invoked as `git filter-repo` when git can see it, and
+as the launcher otherwise, so a path setting would have to override both.
+
 ---
 
 ## How many engines run at once

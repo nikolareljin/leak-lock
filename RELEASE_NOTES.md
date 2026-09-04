@@ -1,35 +1,17 @@
-# Release notes, v0.9.0
-
-## Added
-- Import a previous scan report and check each finding as resolved, still present, or unverifiable.
-- Record repository identity in exported reports and enforce it on import, using root commits and origin URL rather than local path.
-- Offer to switch to the repository a report belongs to when that repository is available on this machine.
-- Show findings introduced since an imported report, including the commit that first introduced each value.
-- Keep imported findings as historical records, separate from current cleanup selections.
-- Build commit permalinks for self-hosted Git remotes, with GitHub, GitLab, Bitbucket, and Gitea URL layouts plus leakLock.git.customHostTypes overrides.
-- Add VERSION and RELEASE_NOTES.md as release sources, with tooling that generates GitHub Release text and annotated tag notes from the same file.
-
-## Changed
-- Increase the default per-engine scan timeout from 300 seconds to 600 seconds for larger repositories.
-- Refresh the README first screen with current badges, project positioning, screenshot, and release workflow links.
-- Publish releases from the checked-in version and release notes; duplicate tags now fail fast instead of auto-bumping in CI.
-- Allow the release notes tool to sync the current release into CHANGELOG.md while preserving the existing heading style.
+# Release notes, v0.9.1
 
 ## Fixed
-- Say when a report carries nothing to recognise its findings by, so what is listed as new since it is not read as certain.
-- Build commit permalinks over the scheme the remote names, so an http-only self-hosted instance gets a link that answers.
-- Strip credentials from the origin URL before recording it, so an exported report never carries a token from an HTTPS remote.
-- Check a commit permalink against the layout and repository it claims, not only its hostname, before opening it in a browser.
-- Stop matching a value that spans lines, such as a PEM key, against any file that merely shares one of its lines.
-- Run verification searches with object replacement disabled, so rewritten commits cannot hide original objects.
-- Treat redacted reports, decoded scanner values, values recorded only in shortened form, and bounded checks as unverifiable instead of resolved.
-- Refuse cross-repository report imports unless the user explicitly compares anyway.
-- Prevent a verification in flight from overwriting a newer report result.
-- Avoid rendering unreadable dates as Invalid Date.
-- Stop failed searches from logging the value they searched for.
-- Compare SSH remotes consistently when the URL includes a port.
-- Read repository identity from scan results instead of current selection state.
-- Find and run the Windows git-filter-repo executable from user-level Python installs on Windows, even when the user Scripts directory is not on PATH.
-- Label Windows user-level Python discovery distinctly from a normal PATH launcher.
-- Keep Bitbucket custom-host documentation aligned with the URL layout the extension builds.
-- Treat custom host type keys case-insensitively.
+- Find Java and git-filter-repo on macOS without a shell profile edit. A VS Code launched from Finder inherits no shell PATH, so both tools were reported missing on machines that had them; they now use the same absolute-path search the scan engines already used.
+- Search Homebrew's keg-only openjdk prefixes, JAVA_HOME and /usr/libexec/java_home for a JVM, so brew install openjdk works without linking java onto PATH.
+- Ask Python where pip install --user actually writes instead of assuming ~/.local/bin, so a git-filter-repo installed by macOS's framework Python into a versioned directory under ~/Library/Python is found.
+- Prefer Homebrew for installing git-filter-repo on macOS when it is present, since Homebrew's Python refuses a --user pip install under PEP 668.
+- Run BFG through the resolved Java rather than a bare java, so a rewrite cannot fail on a machine whose dependency panel reported Java as present.
+- Correct the macOS Java install guidance, which recommended the keg-only formula that produced the failure it was shown next to.
+
+## Added
+- A leakLock.java.path setting, to point at a specific JVM.
+- A commit-msg hook that refuses AI attribution trailers. GitHub's contributors graph counts Co-authored-by lines, so one trailer adds a bot to the contributors page and removing it later costs a rewrite of every commit that follows.
+
+## Changed
+- Update @humanfs/node to 0.16.8 (GHSA-p498-v437-472g) and bump eslint and @types/node. Development-only dependencies; packaging excludes them, so no published extension was affected.
+- Exclude @types/vscode from grouped Dependabot bumps. It is pinned to engines.vscode on purpose, and raising it to satisfy a types update would drop support for every user below that VS Code build.
