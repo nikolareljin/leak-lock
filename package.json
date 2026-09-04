@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -198,6 +198,11 @@
           "default": "",
           "description": "Path to the trufflehog binary. Empty resolves 'trufflehog' from PATH."
         },
+        "leakLock.java.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `java` executable, used only to run BFG. Empty searches `JAVA_HOME`, Homebrew's keg-only `openjdk` prefixes and `/usr/libexec/java_home` before falling back to `PATH` \u2014 a GUI-launched VS Code inherits no shell `PATH` on macOS, so a working JDK is otherwise reported as missing."
+        },
         "leakLock.trufflehog.runtime": {
           "type": "string",
           "default": "auto",
@@ -343,11 +348,11 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "@types/vscode": "1.125.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
-    "eslint": "^10.8.1",
+    "eslint": "^10.9.1",
     "globals": "^17.11.0"
   },
   "overrides": {

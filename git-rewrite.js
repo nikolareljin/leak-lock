@@ -15,6 +15,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+// Where a tool actually lives when PATH is not to be trusted. A Finder-launched
+// VS Code on macOS inherits no shell PATH, so `pip install --user git-filter-repo`
+// routinely succeeds into a directory this process cannot see (issue #121).
+const binaryLookup = require('./binary-lookup');
+
 const execFileAsync = util.promisify(execFile);
 
 const DEFAULT_REMOTE = 'origin';
@@ -209,19 +214,88 @@ function describeSandboxedFilterRepo(output, rulesPath) {
  * Tries the same Python interpreters that the install command may have used, in
  * the same priority order, so what we find matches what pip wrote.
  *
- * @returns {Promise<string|null>} Absolute path to the Scripts directory, or null.
+ * @returns {Promise<string[]>} Absolute paths to the Scripts directories.
  */
-async function findWindowsUserScriptsDir() {
+async function findWindowsUserScriptsDirs() {
     const script = "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))";
-    for (const cmd of ['python', 'py', 'python3']) {
+    const dirs = [];
+    for (const name of ['python', 'py', 'python3']) {
+        // Resolved rather than bare, and every interpreter is asked rather than
+        // only the first that answers: %APPDATA%\Python\PythonXY\Scripts is
+        // per-version, so an install made by 3.12 is invisible to whatever 3.9
+        // reports.
+        const cmd = binaryLookup.findInDirs(name, binaryLookup.COMMON_BIN_DIRS) || name;
         try {
             const { stdout } = await execFileAsync(cmd, ['-c', script],
                 { maxBuffer: MAX_BUFFER, timeout: 10000 });
             const dir = String(stdout).trim();
-            if (dir) {
-                return dir;
+            if (dir && !dirs.includes(dir)) {
+                dirs.push(dir);
             }
         } catch { /* try next interpreter */ }
+    }
+    return dirs;
+}
+
+/**
+ * The git-filter-repo launcher, at an absolute path, when PATH does not have it.
+ *
+ * Both platforms hit the same wall from opposite directions: Windows pip writes to
+ * a per-version Scripts directory nobody adds to PATH, and POSIX pip writes to
+ * ~/.local/bin, which IS on a login shell's PATH and is on no GUI application's.
+ * The Windows rescue existed already; without the POSIX one, `_installFilterRepo`
+ * could run pip, watch it succeed, and still report the tool as missing — which is
+ * the normal outcome on macOS, not an edge case.
+ *
+ * The cheap filesystem scan runs before asking Python, so the common case costs no
+ * process spawn at all.
+ *
+ * Every input is injectable, because the alternative test -- call it and accept
+ * whatever the host has -- asserts nothing on a machine without git-filter-repo,
+ * which is every CI runner here. Defaults are the real ones.
+ *
+ * @param {object} [options]
+ * @param {string} [options.platform] defaults to `process.platform`
+ * @param {string[]} [options.searchDirs] absolute directories to scan first
+ * @param {() => Promise<string[]>} [options.findScriptsDirs] pip's scripts directories
+ * @returns {Promise<{path: string, form: string}|null>}
+ */
+async function findFilterRepoLauncher(options = {}) {
+    const {
+        platform = process.platform,
+        searchDirs = binaryLookup.COMMON_BIN_DIRS,
+        findScriptsDirs = platform === 'win32'
+            ? findWindowsUserScriptsDirs
+            : binaryLookup.findPosixUserScriptsDirs
+    } = options;
+
+    // The shared directories are scanned first on every platform. Returning early
+    // on Windows skipped them, so a launcher sitting in an already-searched common
+    // directory -- Chocolatey's bin, for one -- stayed undetectable there while
+    // being found everywhere else. findInDirs tries the `.exe` name too.
+    const known = binaryLookup.findInDirs('git-filter-repo', searchDirs);
+    if (known) {
+        return { path: known, form: 'off-PATH launcher' };
+    }
+
+    // Every candidate, not just the first: the scripts directory is per Python
+    // version, so an install made by 3.12 is not in the directory 3.9 reports.
+    for (const scriptsDir of await findScriptsDirs()) {
+        // pip writes `git-filter-repo.exe` on Windows and an extensionless script
+        // elsewhere. existsSync rather than an execute check on Windows, where the
+        // X_OK bit does not mean what it means on POSIX.
+        if (platform === 'win32') {
+            const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
+            if (fs.existsSync(launcherPath)) {
+                return { path: launcherPath, form: 'pip --user launcher' };
+            }
+            continue;
+        }
+        const launcherPath = path.join(scriptsDir, 'git-filter-repo');
+        try {
+            fs.accessSync(launcherPath, fs.constants.X_OK);
+            return { path: launcherPath, form: 'pip --user launcher' };
+        } catch { /* pip has not installed it here */ }
     }
     return null;
 }
@@ -278,24 +352,23 @@ async function detectFilterRepo() {
     } catch (launcherError) {
         const output = failureText(launcherError);
 
-        // On Windows, pip --user installs to a Scripts directory that is often not
-        // on PATH. Try to find the launcher there before reporting it as missing.
-        if (process.platform === 'win32' && /ENOENT|not found/i.test(output)) {
+        // Neither name resolved through PATH. That is not the same fact as "not
+        // installed": pip writes the launcher somewhere a GUI-launched VS Code
+        // cannot see, on Windows and on macOS alike. Look there before reporting
+        // it as missing, on every platform.
+        if (/ENOENT|not found/i.test(output)) {
             try {
-                const scriptsDir = await findWindowsUserScriptsDir();
-                if (scriptsDir) {
-                    const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
-                    if (fs.existsSync(launcherPath)) {
-                        const version = await readVersion(launcherPath, ['--version']);
-                        return {
-                            installed: true,
-                            form: 'pip --user launcher',
-                            version,
-                            path: launcherPath,
-                            confined: false,
-                            error: null
-                        };
-                    }
+                const launcher = await findFilterRepoLauncher();
+                if (launcher) {
+                    const version = await readVersion(launcher.path, ['--version']);
+                    return {
+                        installed: true,
+                        form: launcher.form,
+                        version,
+                        path: launcher.path,
+                        confined: launcher.path.startsWith('/snap/'),
+                        error: null
+                    };
                 }
             } catch { /* probe failed, fall through to the not-installed report */ }
         }
@@ -318,9 +391,42 @@ async function detectFilterRepo() {
  *
  * `--user` keeps it out of a system prefix, so no elevation is needed and a
  * managed Python (Debian's PEP 668 marker) does not refuse the install.
+ *
+ * On macOS, Homebrew is preferred when present. Two reasons, both from issue #121:
+ * Homebrew's own Python is externally managed, so `pip install --user` fails there
+ * outright; and macOS's framework Python puts `--user` scripts in
+ * ~/Library/Python/<ver>/bin rather than ~/.local/bin, a location no PATH covers.
+ * `brew install git-filter-repo` lands in a Homebrew bin directory that is already
+ * searched, so the tool is usable with no shell-profile edit. An explicit
+ * interpreter still wins — a caller naming one has stated which Python it means.
+ *
+ * The pip fallback resolves its interpreter too. Returning a bare `python3` would
+ * leave the install button failing before pip even starts on the machine this is
+ * all for: no Homebrew, and a Python at /usr/local/bin that the GUI process's PATH
+ * does not cover.
+ *
+ * `platform` and `searchDirs` are injectable because CI here is Linux-only, so
+ * neither macOS branch is otherwise reachable by a test.
+ *
+ * @param {string|null} [python] an explicit interpreter, which wins outright
+ * @param {object} [options]
+ * @param {string} [options.platform] defaults to `process.platform`
+ * @param {string[]} [options.searchDirs] directories to resolve brew/python in
  */
-function buildFilterRepoInstallCommand(python = null) {
-    const interpreter = python || (process.platform === 'win32' ? 'python' : 'python3');
+function buildFilterRepoInstallCommand(python = null, options = {}) {
+    const {
+        platform = process.platform,
+        searchDirs = binaryLookup.COMMON_BIN_DIRS
+    } = options;
+
+    if (!python && platform === 'darwin') {
+        const brew = binaryLookup.findInDirs('brew', searchDirs);
+        if (brew) {
+            return { command: brew, args: ['install', 'git-filter-repo'] };
+        }
+    }
+    const name = python || (platform === 'win32' ? 'python' : 'python3');
+    const interpreter = python || binaryLookup.findInDirs(name, searchDirs) || name;
     return { command: interpreter, args: ['-m', 'pip', 'install', '--user', '--upgrade', 'git-filter-repo'] };
 }
 
@@ -382,27 +488,24 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
                 throw withSandboxHint(launcherError);
             }
 
-            // On Windows, pip --user installs git-filter-repo.exe into a Scripts
-            // directory that is typically not on PATH. Try to find and invoke it
-            // directly before giving up, so the rewrite works without the user
-            // having to modify their environment.
-            if (process.platform === 'win32') {
-                try {
-                    const scriptsDir = await findWindowsUserScriptsDir();
-                    if (scriptsDir) {
-                        const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
-                        if (fs.existsSync(launcherPath)) {
-                            return await execFileAsync(launcherPath, args, {
-                                cwd: repoDir,
-                                maxBuffer: MAX_BUFFER,
-                                ...options
-                            });
-                        }
-                    }
-                } catch (userPathError) {
-                    if (userPathError.code !== 'ENOENT') {
-                        throw withSandboxHint(userPathError);
-                    }
+            // pip --user installs the launcher somewhere PATH does not cover:
+            // a per-version Scripts directory on Windows, ~/.local/bin on POSIX.
+            // Find and invoke it directly before giving up, so the rewrite works
+            // without the user having to modify their environment. detectFilterRepo
+            // reports availability from this same helper, so the panel cannot say
+            // "installed" for a tool the rewrite then fails to launch.
+            try {
+                const launcher = await findFilterRepoLauncher();
+                if (launcher) {
+                    return await execFileAsync(launcher.path, args, {
+                        cwd: repoDir,
+                        maxBuffer: MAX_BUFFER,
+                        ...options
+                    });
+                }
+            } catch (userPathError) {
+                if (userPathError.code !== 'ENOENT') {
+                    throw withSandboxHint(userPathError);
                 }
             }
 
@@ -411,7 +514,9 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
             // into a second dead end.
             const installHint = process.platform === 'win32'
                 ? 'py -3 -m pip install --user git-filter-repo'
-                : 'python3 -m pip install --user git-filter-repo';
+                : process.platform === 'darwin'
+                    ? 'brew install git-filter-repo'
+                    : 'python3 -m pip install --user git-filter-repo';
             throw new Error(
                 `git-filter-repo is not installed or is not on PATH. Install it with "${installHint}", ` +
                 'then restart VS Code so its environment picks up the installation.'
@@ -1918,6 +2023,7 @@ module.exports = {
     describeSandboxedFilterRepo,
     runGitFilterRepo,
     detectFilterRepo,
+    findFilterRepoLauncher,
     buildFilterRepoInstallCommand,
     hasRemote,
     getRemoteUrl,

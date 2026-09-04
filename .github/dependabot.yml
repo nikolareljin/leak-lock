@@ -27,6 +27,15 @@ updates:
           - "minor"
           - "patch"
 
+    # @types/vscode is the VS Code API surface the extension compiles against, and
+    # `vsce package` refuses to build when it exceeds engines.vscode. It is pinned
+    # exactly (no caret) for that reason, and moves only when the engine floor
+    # moves -- raising it to satisfy a types bump would drop Marketplace support
+    # for every user below that build. Left in the group, it produced PR #120:
+    # lint green, 650 tests green, packaging red, every Monday.
+    ignore:
+      - dependency-name: "@types/vscode"
+
   # ---- GitHub Actions used by ci.yml, pages.yml and publish.yml ----
   # Only semver refs are considered, so the reusable workflow pinned to
   # ci-helpers@production is left alone — that floating tag is advanced by

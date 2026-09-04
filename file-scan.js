@@ -6,6 +6,9 @@
 const vscode = require('vscode');
 
 const dockerImage = require('./scan-engine-config').NOSEYPARKER_IMAGE;
+// One resolved client for every Docker call in the extension; a bare name is not
+// found in a Finder-launched VS Code on macOS.
+const binaryLookup = require('./binary-lookup');
 
 /**
  * Perform Security Scan on the currently edited file.
@@ -23,7 +26,7 @@ function activate(context) {
         const key = filename.replace(/\s/g, '_').replace(/\//g, '_').replace(/\./g, '_').replace(/:/g, '_');
         const spawn = require('child_process').spawn;
         const args = ['run', '--rm', '-v', `${filename}:/scan/${key}`, dockerImage, 'report', '--datastore', `np.${key}`, '--format', 'json'];
-        const docker = spawn('docker', args);
+        const docker = spawn(binaryLookup.resolveDockerCommand(), args);
         docker.stdout.on('data', (data) => {
             console.log
             vscode.window.showInformationMessage(data.toString());
