@@ -470,6 +470,28 @@ The generated cleanup script applies the same rule: it exits non-zero and prints
 - Check repository is not corrupted
 - Ensure sufficient disk space
 
+**macOS: "Java not installed" on a Mac that has Java, or git-filter-repo missing right after installing it**
+
+A VS Code launched from Finder inherits no shell `PATH` on macOS — so a tool that
+answers in Terminal is invisible to the extension. Leak Lock looks for both tools by
+absolute path instead, and the installs below need no `~/.zshrc` edit:
+
+```bash
+brew install --cask temurin      # Java for BFG; a system JDK, nothing to add to PATH
+brew install git-filter-repo     # avoids PEP 668, lands in a directory already searched
+```
+
+Two things that look like a broken install but are not:
+
+- `brew install openjdk` is **keg-only** — Homebrew does not link `java` onto your
+  `PATH` on purpose. Leak Lock searches the keg prefixes, `JAVA_HOME` and
+  `/usr/libexec/java_home`, so it still finds the JVM; `java -version` in a terminal
+  will keep failing until you add the prefix yourself. Set `leakLock.java.path` to
+  choose a specific JVM.
+- `pip install --user git-filter-repo` on macOS's system Python writes to
+  `~/Library/Python/<version>/bin`, **not** `~/.local/bin`. Leak Lock asks Python where
+  it actually wrote rather than assuming, so both work.
+
 **Git-only cleanup fails with `FileNotFoundError: .../replacements.txt`**
 
 A snap-packaged `git-filter-repo` is confined: it gets a private `/tmp` and can

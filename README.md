@@ -386,6 +386,35 @@ GUI-launched VS Code does not inherit your shell's. Leak Lock searches the usual
 locations (`~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, …); for anything else,
 set `leakLock.trufflehog.binaryPath` or `leakLock.gitleaks.binaryPath`.
 
+### **macOS: installing Java and git-filter-repo**
+
+A VS Code launched from Finder inherits no shell `PATH` at all on macOS, so a tool that
+works in Terminal can still be reported as missing. Leak Lock searches for these tools by
+absolute path, which means the installs below need **no `~/.zshrc` edit**.
+
+```bash
+brew install --cask temurin      # Java, for BFG — installs a system JDK
+brew install git-filter-repo     # the Git-only rewrite path
+```
+
+Two traps worth naming, because both look like a broken install:
+
+- **`brew install openjdk` is keg-only.** Homebrew deliberately does not put `java` on
+  your `PATH`, because macOS ships its own stub. Leak Lock searches Homebrew's `openjdk`
+  prefixes (`/opt/homebrew/opt/openjdk*/bin`, `/usr/local/opt/openjdk*/bin`), `JAVA_HOME`
+  and `/usr/libexec/java_home`, so it finds the JVM anyway — but `java -version` in a
+  terminal keeps saying "not found" until you add the prefix yourself. The `temurin` cask
+  avoids the question entirely. To point Leak Lock at a specific JVM, set
+  `leakLock.java.path`.
+- **`pip install --user git-filter-repo` does not write to `~/.local/bin` on the system
+  Python.** macOS's framework Python uses `~/Library/Python/<version>/bin`. Leak Lock asks
+  Python where it actually wrote (`sysconfig`) rather than assuming, so either location is
+  found; Homebrew's Python refuses `--user` outright under PEP 668, which is why `brew` is
+  the recommended route on macOS.
+
+Everything is optional: Java is needed only for BFG, and git-filter-repo only for the
+Git-only rewrite. Scanning needs neither.
+
 ### **BFG Repo Cleaner**
 - **Purpose**: Git history rewriting and cleanup
 - **Project**: BFG Repo-Cleaner — https://rtyley.github.io/bfg-repo-cleaner/

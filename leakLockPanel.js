@@ -9,6 +9,8 @@ const os = require('os');
 const gitRewrite = require('./git-rewrite');
 const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
+// Absolute-path lookup for tools PATH does not cover; see binary-lookup.js.
+const binaryLookup = require('./binary-lookup');
 const redactionRules = require('./redaction-rules');
 const scanBaseline = require('./scan-baseline');
 const valueEncodings = require('./value-encodings');
@@ -2741,9 +2743,14 @@ class LeakLockPanel {
                                 this._escapeRegex(t.base)
                             ])
                             : [this._buildBfgArgs(targets)];
+                        // Same resolution the dependency panel used to report Java as
+                        // present: a Finder-launched VS Code on macOS has no shell PATH,
+                        // so a bare `java` here would fail on a machine the panel just
+                        // ticked. Resolved once per rewrite, not per BFG run.
+                        const java = await this._resolveJavaCommand();
                         for (const args of runs) {
                             await execFileAsync(
-                                'java',
+                                java,
                                 ['-jar', bfgPath, ...args, repo],
                                 { cwd: repo, maxBuffer: GIT_MAX_BUFFER }
                             );
@@ -7656,6 +7663,24 @@ class LeakLockPanel {
         }
         return ` The replacement rules were kept at ${file} so you can retry without rebuilding them; ` +
             'they contain the values you asked to redact, so delete that file once you are done.';
+    }
+
+    /**
+     * The `java` this process should exec to run BFG.
+     *
+     * Only for in-process runs. The generated shell and PowerShell scripts keep a
+     * bare `java`, and should: they execute in the user's own terminal, where PATH
+     * is the shell's and an absolute path baked in here would be wrong the moment
+     * the script is copied to another machine.
+     *
+     * @returns {Promise<string>}
+     */
+    async _resolveJavaCommand() {
+        let configured = '';
+        try {
+            configured = vscode.workspace.getConfiguration('leakLock').get('java.path') || '';
+        } catch { /* not registered in this context; fall through to the search */ }
+        return binaryLookup.resolveJavaCommand(configured || undefined);
     }
 
     _buildScanBfgReplaceCommand(scanPath, replacements, flavor = this._defaultScriptFlavor()) {

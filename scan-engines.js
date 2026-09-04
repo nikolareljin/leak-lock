@@ -78,74 +78,18 @@ function makeFinding(fields) {
  * frequently misses ~/.local/bin — so an engine the user has definitely installed is
  * reported "not installed" and silently skipped. Fall back to the places these tools
  * actually get installed before giving up.
- */
-const COMMON_BIN_DIRS = [
-    path.join(os.homedir(), '.local', 'bin'),
-    path.join(os.homedir(), 'bin'),
-    path.join(os.homedir(), 'go', 'bin'),
-    '/usr/local/bin',
-    '/usr/bin',
-    '/opt/homebrew/bin',      // Apple silicon Homebrew
-    '/home/linuxbrew/.linuxbrew/bin',
-    'C:\\Program Files\\gitleaks',
-    'C:\\ProgramData\\chocolatey\\bin'
-];
-
-const resolvedBinaries = new Map();
-
-/**
- * Register a directory to search ahead of the common locations.
  *
- * Engines that Leak Lock installed itself land in extension storage, which is on no
- * PATH anywhere. Without this the extension could download a binary and then report
- * the engine as missing — the same silence the download was meant to end. Placed
- * first because a Leak-Lock-managed install is the one whose version Leak Lock knows;
- * an explicit `leakLock.<engine>.binaryPath` still wins over both, since `resolveBinary`
- * returns it before consulting any directory.
+ * The lookup itself now lives in ./binary-lookup, because the Java and
+ * git-filter-repo probes need the identical answer and used to resolve by bare
+ * name only. Re-exported here — the SAME array object, not a copy — so a directory
+ * registered through `scanEngines.addBinarySearchDir` is visible to every consumer.
  */
-function addBinarySearchDir(dir) {
-    if (typeof dir !== 'string' || !dir) {
-        return;
-    }
-    const existing = COMMON_BIN_DIRS.indexOf(dir);
-    if (existing !== -1) {
-        COMMON_BIN_DIRS.splice(existing, 1);
-    }
-    COMMON_BIN_DIRS.unshift(dir);
-    // A new search location can change an answer already cached in this session —
-    // including the "not installed" the user just acted on.
-    resolvedBinaries.clear();
-}
-
-function resolveBinary(name, explicit) {
-    if (explicit) {
-        return explicit;
-    }
-    if (resolvedBinaries.has(name)) {
-        return resolvedBinaries.get(name);
-    }
-    for (const dir of COMMON_BIN_DIRS) {
-        for (const candidate of [path.join(dir, name), path.join(dir, `${name}.exe`)]) {
-            try {
-                fs.accessSync(candidate, fs.constants.X_OK);
-                resolvedBinaries.set(name, candidate);
-                return candidate;
-            } catch {
-                // Keep looking.
-            }
-        }
-    }
-    // Deliberately not cached. A negative result is only true until the user installs
-    // the engine, and caching it would keep reporting "not installed" for the rest of
-    // the session — including right after someone follows the install hint we just
-    // showed them. Only a successful absolute resolution is worth remembering.
-    return name;
-}
-
-/** Test seam: forget cached binary locations. */
-function resetBinaryCache() {
-    resolvedBinaries.clear();
-}
+const {
+    COMMON_BIN_DIRS,
+    addBinarySearchDir,
+    resolveBinary,
+    resetBinaryCache
+} = require('./binary-lookup');
 
 async function runTool(command, args, options = {}) {
     return execFileAsync(command, args, {

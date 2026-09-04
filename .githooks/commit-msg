@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+# Reject AI co-authorship trailers before they reach history.
+#
+# GitHub's contributors graph counts `Co-authored-by:` trailers, not just commit
+# authors -- so two trailer lines were enough to put a bot on this repository's
+# contributors page, and removing them afterwards costs a full history rewrite of
+# every descendant commit. The cheap moment to catch one is here.
+#
+# Scope is deliberately narrow: only trailer lines, only AI identities. A commit
+# message that merely mentions Copilot or Claude in prose is fine, and so is a
+# genuine human co-author.
+
+msg_file="$1"
+
+# Strip comment lines -- the commit template lists nothing relevant, but a user
+# pasting a rejected message into the editor would otherwise re-trigger on it.
+offenders=$(
+  grep -v '^#' "$msg_file" \
+    | grep -iE '^[[:space:]]*(co-authored-by|signed-off-by)[[:space:]]*:' \
+    | grep -iE 'claude|anthropic|copilot|chatgpt|openai|gemini|codex|cursor|aider|\[bot\]' \
+    || true
+)
+
+if [ -n "$offenders" ]; then
+  echo "commit-msg: refusing an AI attribution trailer." >&2
+  echo "" >&2
+  echo "$offenders" | sed 's/^/  /' >&2
+  echo "" >&2
+  echo "GitHub's contributors graph counts these trailers, so each one adds a bot" >&2
+  echo "to the repository's contributors page. Removing one later requires" >&2
+  echo "rewriting every commit that follows it." >&2
+  echo "" >&2
+  echo "Delete the line and commit again. The code change is what is being kept;" >&2
+  echo "the attribution is what is not." >&2
+  exit 1
+fi

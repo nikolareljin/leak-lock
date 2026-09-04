@@ -16,11 +16,36 @@ const engineInstall = require('./engine-install');
 // Docker will.
 const engineDocker = require('./engine-docker');
 const gitRewrite = require('./git-rewrite');
+// Absolute-path lookup for tools PATH does not cover. Shared with scan-engines and
+// git-rewrite so the Java, engine and git-filter-repo probes cannot disagree about
+// whether something is installed.
+const binaryLookup = require('./binary-lookup');
 // Keywords are user-supplied and land in both element text and attribute values,
 // so they must be escaped before interpolation into the webview HTML. Shared with
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 const credentialInspect = require('./credential-inspect');
+
+/**
+ * The `java` to run: the configured path, or whatever the lookup can find.
+ *
+ * Bare `java` was the only strategy here, and on macOS it is close to the worst one.
+ * Homebrew's openjdk is keg-only so it is never linked onto PATH, and a
+ * Finder-launched VS Code inherits no shell PATH at all — so a machine with a
+ * perfectly good JDK reported "Java not installed", and the panel's own advice
+ * (`brew install openjdk@21`) reproduced the failure rather than fixing it. Issue #121.
+ *
+ * @returns {Promise<string>} an absolute path when one is found, else `'java'`
+ */
+async function resolveJavaCommand() {
+    // Read defensively: this module is exercised in tests where the workspace
+    // configuration may not be registered.
+    let configured = '';
+    try {
+        configured = vscode.workspace.getConfiguration('leakLock').get('java.path') || '';
+    } catch { /* fall through to the search */ }
+    return binaryLookup.resolveJavaCommand(configured || undefined);
+}
 
 /**
  * Java's version banner, from whichever stream it lands on.
@@ -35,7 +60,8 @@ const credentialInspect = require('./credential-inspect');
  */
 async function readJavaVersionBanner() {
     const execFileAsync = require('util').promisify(require('child_process').execFile);
-    const { stdout, stderr } = await execFileAsync('java', ['-version'], { timeout: 15000 });
+    const java = await resolveJavaCommand();
+    const { stdout, stderr } = await execFileAsync(java, ['-version'], { timeout: 15000 });
     return `${stderr || ''}${stdout || ''}`.trim().split('\n')[0] || 'installed, version not reported';
 }
 
@@ -1037,9 +1063,10 @@ class LeakLockSidebarProvider {
                                 <div class="install-platform">
                                     <strong>🍎 macOS:</strong>
                                     <ol>
-                                        <li>Using Homebrew: <code>brew install openjdk@21</code></li>
+                                        <li>Recommended: <code>brew install --cask temurin</code> — installs a system JDK that needs no PATH changes</li>
+                                        <li>Or: <code>brew install openjdk@21</code>. This formula is <em>keg-only</em>: Homebrew deliberately does not put <code>java</code> on your PATH. Leak Lock searches Homebrew's <code>openjdk</code> prefixes directly, so no shell-profile edit is needed here — but <code>java -version</code> in a terminal will still say "not found" until you add it yourself.</li>
                                         <li>Or download from <a href="https://adoptium.net/temurin/releases/" target="_blank">Adoptium</a></li>
-                                        <li>Verify: <code>java -version</code></li>
+                                        <li>If Leak Lock still cannot find it, set <code>leakLock.java.path</code> to the executable.</li>
                                     </ol>
                                 </div>
                                 <div class="install-platform">
@@ -1312,14 +1339,17 @@ class LeakLockSidebarProvider {
     }
 
     /**
-     * Install git-filter-repo with pip, into the user site rather than a system
-     * prefix, so no elevation is needed and PEP 668's "externally managed
-     * environment" refusal does not apply.
+     * Install git-filter-repo, using whichever installer suits the platform:
+     * Homebrew on macOS when it is present, otherwise pip into the user site
+     * rather than a system prefix, so no elevation is needed and PEP 668's
+     * "externally managed environment" refusal does not apply.
      *
-     * The install is verified by re-probing rather than by trusting pip's exit
+     * The install is verified by re-probing rather than by trusting the exit
      * code: a successful install into a directory that is not on this VS Code
      * window's PATH is indistinguishable from no install at all, from here, and
-     * that is precisely the case the user has to be told about.
+     * that is precisely the case the user has to be told about. `detectFilterRepo`
+     * now searches those directories itself, so this warning means the tool is
+     * genuinely unreachable, not merely off PATH.
      */
     async _installFilterRepo() {
         const execFileAsync = require('util').promisify(require('child_process').execFile);
@@ -1353,18 +1383,24 @@ class LeakLockSidebarProvider {
             );
             return;
         }
-        // pip put it somewhere this process cannot see - almost always ~/.local/bin
-        // missing from PATH, and a VS Code window started from the desktop never
-        // picks up a PATH change made in a terminal.
+        // The installer exited 0 and the re-probe still cannot reach the tool. That
+        // probe already searches ~/.local/bin, the Homebrew prefixes and the Python
+        // user scripts directory that sysconfig reports, so this is no longer the
+        // ordinary "off PATH" case — it means the launcher is somewhere none of
+        // those cover.
         // The user scripts directory differs per platform, and naming the wrong one
-        // sends people editing a PATH entry that was never involved.
+        // sends people editing a PATH entry that was never involved: macOS framework
+        // Python writes to ~/Library/Python/<version>/bin, not ~/.local/bin.
         const scriptsDir = process.platform === 'win32'
             ? 'your Python user Scripts directory (%APPDATA%\\Python\\PythonXY\\Scripts) — '
                 + '`python -m site --user-base` prints its parent'
-            : 'your user scripts directory (usually ~/.local/bin) — '
-                + '`python3 -m site --user-base` prints its parent';
+            : process.platform === 'darwin'
+                ? 'your user scripts directory (~/.local/bin, or ~/Library/Python/<version>/bin '
+                    + 'for the system Python) — `python3 -m site --user-base` prints its parent'
+                : 'your user scripts directory (usually ~/.local/bin) — '
+                    + '`python3 -m site --user-base` prints its parent';
         vscode.window.showWarningMessage(
-            `pip reported success, but git-filter-repo is still not on this window's PATH. Add ${scriptsDir} `
+            `${command} reported success, but git-filter-repo still cannot be located. Add ${scriptsDir} `
             + 'to PATH, then reload the window.'
         );
     }
