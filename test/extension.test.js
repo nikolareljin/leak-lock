@@ -2668,6 +2668,55 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 		assert.strictEqual(fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim(), pkg.version);
 	});
 
+	// The java_home branch is the part of this release that matters most on macOS,
+	// and calling resolveJavaCommand() with the host platform never reaches it on
+	// this Linux-only CI. Injected instead, so all four outcomes are pinned.
+	test('java_home wins over the /usr/bin/java stub', async () => {
+		const java = await lookup.resolveJavaCommand(undefined, {
+			platform: 'darwin',
+			preferredDirs: [],
+			commonDirs: ['/usr/bin'],
+			findViaJavaHome: async () => '/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home/bin/java'
+		});
+		assert.strictEqual(java,
+			'/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home/bin/java',
+			'a Temurin JDK registers with java_home and puts nothing on PATH');
+	});
+
+	test('the stub is still used when java_home knows of no JDK', async () => {
+		// Not nothing: /usr/bin/java is what the user has, and its own error message
+		// is more useful than a guess from here.
+		const java = await lookup.resolveJavaCommand(undefined, {
+			platform: 'darwin',
+			preferredDirs: [],
+			commonDirs: ['/usr/bin'],
+			findViaJavaHome: async () => null
+		});
+		assert.strictEqual(java, '/usr/bin/java');
+	});
+
+	test('a preferred directory short-circuits java_home entirely', async () => {
+		let consulted = false;
+		const java = await lookup.resolveJavaCommand(undefined, {
+			platform: 'darwin',
+			preferredDirs: ['/usr/bin'],
+			commonDirs: [],
+			findViaJavaHome: async () => { consulted = true; return '/never'; }
+		});
+		assert.strictEqual(java, '/usr/bin/java');
+		assert.strictEqual(consulted, false, 'no exec when the directory scan answered');
+	});
+
+	test('java_home is never consulted off macOS', async () => {
+		const java = await lookup.resolveJavaCommand(undefined, {
+			platform: 'linux',
+			preferredDirs: [],
+			commonDirs: [],
+			findViaJavaHome: async () => { throw new Error('must not run'); }
+		});
+		assert.strictEqual(java, 'java', 'and the bare name is the last resort');
+	});
+
 	test('Java resolution never returns nothing, so the run can still be attempted', async () => {
 		// A bare `java` is still right on a machine whose PATH is set up; it is only
 		// wrong as the *only* strategy. Returning null would turn "we could not find

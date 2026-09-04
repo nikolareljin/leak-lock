@@ -261,13 +261,27 @@ async function findJavaViaJavaHome() {
  * failure carry the real message. A bare `java` is still correct on a machine
  * whose PATH is genuinely set up; it is only insufficient as the *only* strategy.
  *
+ * Every input is injectable, because CI here is Linux-only and the `java_home`
+ * branch is the part of this release that matters most on macOS -- calling the
+ * function with the host platform never reaches it. Defaults are the real ones.
+ *
  * @param {string} [explicit] the `leakLock.java.path` setting, which wins outright
+ * @param {object} [options]
+ * @param {string} [options.platform] defaults to `process.platform`
+ * @param {string[]} [options.preferredDirs] JAVA_HOME and the keg prefixes
+ * @param {string[]} [options.commonDirs] the general search path
+ * @param {() => Promise<string|null>} [options.findViaJavaHome] macOS's own resolver
  */
-async function resolveJavaCommand(explicit) {
+async function resolveJavaCommand(explicit, options = {}) {
     if (explicit) {
         return explicit;
     }
-
+    const {
+        platform = process.platform,
+        preferredDirs = null,
+        commonDirs = COMMON_BIN_DIRS,
+        findViaJavaHome = findJavaViaJavaHome
+    } = options;
     // Three passes, in this order, and the order is the whole point.
     //
     // macOS ships /usr/bin/java: an always-executable stub that prints "No Java
@@ -276,19 +290,22 @@ async function resolveJavaCommand(explicit) {
     // java_home -- the authoritative resolver -- was never reached. A JDK
     // installed by Temurin or an Oracle installer registers with java_home and
     // puts nothing on PATH, so that is exactly the case it was added for.
-    const preferred = findInDirs('java', javaPreferredDirs());
+    const preferred = findInDirs(
+        'java',
+        preferredDirs === null ? javaPreferredDirs(process.env, platform) : preferredDirs
+    );
     if (preferred) {
         return preferred;
     }
 
-    if (process.platform === 'darwin') {
-        const viaJavaHome = await findJavaViaJavaHome();
+    if (platform === 'darwin') {
+        const viaJavaHome = await findViaJavaHome();
         if (viaJavaHome) {
             return viaJavaHome;
         }
     }
 
-    const common = findInDirs('java', COMMON_BIN_DIRS);
+    const common = findInDirs('java', commonDirs);
     if (common) {
         return common;
     }
