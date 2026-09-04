@@ -7,7 +7,7 @@
 - Record the released version in package-lock.json, which still named the previous one.
 - Ask Python where pip install --user actually writes instead of assuming ~/.local/bin, so a git-filter-repo installed by macOS's framework Python into a versioned directory under ~/Library/Python is found.
 - Prefer Homebrew for installing git-filter-repo on macOS when it is present, since Homebrew's Python refuses a --user pip install under PEP 668.
-- Run BFG through the resolved Java rather than a bare java, so a rewrite cannot fail on a machine whose dependency panel reported Java as present.
+- Run BFG through the resolved Java rather than a bare java in both flows, path removal and secret cleanup, so a rewrite cannot fail on a machine whose dependency panel reported Java as present.
 - Resolve Java and Docker on the activation path too. checkDependencies and installDependencies still probed with a shell and a bare name, so activation reported Java and Docker missing on the machines this release is about, while the sidebar reported them present.
 - Use one resolved Docker client everywhere. The dependency panel, the scan gate, the engine runner, the image pull and the file scan each invoked a bare docker, so they could disagree about whether Docker exists and an engine could be skipped on a machine able to run it. A test asserts no call site reintroduces a bare name.
 - Resolve the interpreter for the pip install fallback as well, so the install button does not fail before pip starts on a Mac without Homebrew.
@@ -20,7 +20,7 @@
 
 ## Added
 - A leakLock.java.path setting, to point at a specific JVM.
-- A commit-msg hook that refuses AI attribution trailers. GitHub's contributors graph counts Co-authored-by lines, so one trailer adds a bot to the contributors page and removing it later costs a rewrite of every commit that follows. The match is on the address, not on words in the line, so a co-author who happens to be named Claude or Cursor is unaffected.
+- A commit-msg hook that refuses AI attribution trailers, reading git's own trailer block so body prose that quotes one is not mistaken for one. GitHub's contributors graph counts Co-authored-by lines, so one trailer adds a bot to the contributors page and removing it later costs a rewrite of every commit that follows. The match is on the address, not on words in the line, so a co-author who happens to be named Claude or Cursor is unaffected.
 
 ## Changed
 - Update @humanfs/node to 0.16.8 (GHSA-p498-v437-472g) and bump eslint and @types/node. Development-only dependencies; packaging excludes them, so no published extension was affected.

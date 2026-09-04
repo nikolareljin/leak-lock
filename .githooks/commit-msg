@@ -16,16 +16,20 @@ set -eu
 #   Co-authored-by: Claude Smith <claude@example.com>
 #
 # which is a person, and the hook would then be lying about allowing human
-# co-authors. Prose in the subject or body is never examined at all -- a commit
-# explaining why a Copilot review was wrong must stay committable.
+# co-authors. Only git's real trailer block is examined, so a commit explaining why
+# a Copilot review was wrong -- or quoting in its body the trailer it removed --
+# stays committable.
 
 msg_file="$1"
 
-# Trailer lines only, comments dropped: a rejected message pasted back into the
-# editor arrives with the previous attempt quoted below the cut line.
+# Git's actual trailer block, not every line that looks like one. A body paragraph
+# quoting a trailer -- explaining which one was removed, say -- is prose, and
+# rejecting it would contradict what this hook claims to do. `interpret-trailers
+# --parse` applies git's own rules: last paragraph only, comments and the scissors
+# line ignored, folded continuations joined.
 trailers=$(
-  grep -v '^#' "$msg_file" \
-    | grep -iE '^[[:space:]]*(co-authored-by|signed-off-by)[[:space:]]*:' \
+  git interpret-trailers --parse "$msg_file" 2>/dev/null \
+    | grep -iE '^(co-authored-by|signed-off-by)[[:space:]]*:' \
     || true
 )
 

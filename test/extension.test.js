@@ -2847,6 +2847,21 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 		assert.ok(args.includes('--user'));
 	});
 
+	test('every BFG invocation uses the resolved Java', () => {
+		// Two flows run BFG in-process: path removal and secret cleanup. The second
+		// used a double-quoted "java", so a grep for the single-quoted form missed it
+		// and the main cleanup still failed on a Mac the panel had ticked.
+		const code = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+		assert.ok(!/execFileAsync\(\s*['"]java['"]/s.test(code),
+			'a bare java is still executed somewhere in the panel');
+		const resolved = (code.match(/await this\._resolveJavaCommand\(\)/g) || []).length;
+		assert.ok(resolved >= 2, `both BFG flows must resolve Java (found ${resolved})`);
+		// The generated scripts keep a bare `java` deliberately: they run in the
+		// user's terminal, where an absolute path from this machine would be wrong.
+		assert.match(code, /requiredCommands: \['git', 'java'\]/);
+	});
+
 	test('every Docker call site uses one resolved client', () => {
 		// Activation resolving Docker while the sidebar and the scan gate did not
 		// meant the panel could report Docker available and the scan skip the engine
@@ -2930,6 +2945,20 @@ suite('AI attribution trailers are refused before they reach history', () => {
 		assert.strictEqual(
 			check('x\n\nCo-authored-by: nikolareljin <11724900+nikolareljin@users.noreply.github.com>\n'),
 			true, 'the numeric-id form is normal for people too');
+	});
+
+	test("body prose that quotes a trailer is not a trailer", () => {
+		// Scanning every matching line rejected a commit whose body explained which
+		// trailer had been removed. Git's own parser is used now: last paragraph only.
+		assert.strictEqual(check(
+			'subject\n\nBody prose quoting the removed line:\n'
+			+ 'Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>\n'
+			+ 'and the explanation continues here.\n\nReviewed-by: Jane <jane@example.com>\n'
+		), true);
+		// The same line in the real trailer block is still refused.
+		assert.strictEqual(check(
+			'subject\n\nbody\n\nCo-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>\n'
+		), false);
 	});
 
 	test('prose naming an assistant is not a trailer', () => {
