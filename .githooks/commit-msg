@@ -58,9 +58,22 @@ if [ -n "$offenders" ]; then
   echo "" >&2
   printf '%s\n' "$offenders" | sed 's/^/  /' >&2
   echo "" >&2
-  echo "GitHub's contributors graph counts these trailers, so each one adds a bot" >&2
-  echo "to the repository's contributors page. Removing one later requires" >&2
-  echo "rewriting every commit that follows it." >&2
+
+  # The two trailer kinds are refused for different reasons, and saying so matters:
+  # only Co-authored-by feeds GitHub's contributors graph. Telling someone their
+  # DCO sign-off would need a history rewrite "for attribution" is simply untrue,
+  # and a hook that misstates its own rule is one people learn to bypass.
+  if printf '%s\n' "$offenders" | grep -qiE '^co-authored-by[[:space:]]*:'; then
+    echo "GitHub's contributors graph counts Co-authored-by trailers, so each one" >&2
+    echo "adds a bot to the repository's contributors page. Removing one later" >&2
+    echo "requires rewriting every commit that follows it." >&2
+  fi
+  if printf '%s\n' "$offenders" | grep -qiE '^signed-off-by[[:space:]]*:'; then
+    echo "A Signed-off-by does not reach the contributors graph. It is refused" >&2
+    echo "because a sign-off is a statement by a person about the change, and a" >&2
+    echo "tool cannot make it." >&2
+  fi
+
   echo "" >&2
   echo "Matched on the address, not the name: a human co-author is unaffected." >&2
   echo "Delete the line and commit again. The code change is what is being kept;" >&2
