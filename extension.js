@@ -16,6 +16,9 @@ const dockerImage = NOSEYPARKER_IMAGE;
 // machines issue #121 is about -- a Finder-launched VS Code inherits no shell
 // PATH -- while the sidebar, resolving properly, said it was installed.
 const binaryLookup = require('./binary-lookup');
+// The downloader the engine installs already use: no shell, no curl dependency,
+// and a destination path containing spaces stays one value.
+const engineInstall = require('./engine-install');
 
 /**
  * The `java` and `docker` commands to probe with.
@@ -85,9 +88,8 @@ async function checkDependencies() {
  * Install the dependencies required for the extension.
  */
 async function installDependencies(forceReinstall = false) {
-	const { exec, execFile } = require('child_process');
+	const { execFile } = require('child_process');
 	const util = require('util');
-	const execAsync = util.promisify(exec);
 	const execFileAsync = util.promisify(execFile);
 	const path = require('path');
 	
@@ -139,7 +141,11 @@ async function installDependencies(forceReinstall = false) {
 			const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
 			
 			try {
-				await execAsync(`curl -L -o "${bfgPath}" "${bfgUrl}"`);
+				// The same downloader the engine installs use. A shelled-out curl
+				// depends on a tool that need not exist, and interpolates an
+				// installation path that can contain spaces or quotes into a command
+				// line -- both of which turn a download into a shell problem.
+				await engineInstall.downloadFile(bfgUrl, bfgPath);
 				progress.report({ increment: 20, message: "BFG tool downloaded ✓" });
 			} catch (error) {
 				console.error('Failed to download BFG tool:', error);
@@ -150,7 +156,7 @@ async function installDependencies(forceReinstall = false) {
 			
 			// Pull Nosey Parker Docker image
 			try {
-				await execAsync(`docker pull ${dockerImage}`);
+				await execFileAsync(binaryLookup.resolveDockerCommand(), ['pull', dockerImage]);
 				progress.report({ increment: 0, message: "Nosey Parker image ready ✓" });
 			} catch (error) {
 				console.error('Failed to pull Nosey Parker image:', error);
@@ -363,9 +369,9 @@ async function deactivate() {
  * Clean up all installed dependencies when extension is uninstalled
  */
 async function cleanupDependencies() {
-	const { exec } = require('child_process');
+	const { execFile } = require('child_process');
 	const util = require('util');
-	const execAsync = util.promisify(exec);
+	const execFileAsync = util.promisify(execFile);
 	const fs = require('fs');
 	const path = require('path');
 	
@@ -375,7 +381,7 @@ async function cleanupDependencies() {
 		// 1. Remove Nosey Parker Docker image
 		try {
 			console.log('Removing Nosey Parker Docker image...');
-			await execAsync(`docker rmi ${dockerImage}`);
+			await execFileAsync(binaryLookup.resolveDockerCommand(), ['rmi', dockerImage]);
 			console.log('✓ Nosey Parker Docker image removed');
 		} catch {
 			console.log('Nosey Parker Docker image not found or already removed');
@@ -417,12 +423,13 @@ async function cleanupDependencies() {
 		
 		// 4. Remove any Docker volumes created by the extension
 		try {
-			const { stdout } = await execAsync('docker volume ls -q --filter label=leak-lock');
+			const docker = binaryLookup.resolveDockerCommand();
+			const { stdout } = await execFileAsync(docker, ['volume', 'ls', '-q', '--filter', 'label=leak-lock']);
 			if (stdout.trim()) {
 				const volumes = stdout.trim().split('\n');
 				for (const volume of volumes) {
 					try {
-						await execAsync(`docker volume rm ${volume}`);
+						await execFileAsync(docker, ['volume', 'rm', volume]);
 						console.log(`✓ Removed Docker volume: ${volume}`);
 					} catch (error) {
 						console.log(`Could not remove volume ${volume}:`, error.message);

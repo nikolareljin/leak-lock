@@ -263,30 +263,36 @@ async function findFilterRepoLauncher(options = {}) {
             : binaryLookup.findPosixUserScriptsDir
     } = options;
 
-    if (platform === 'win32') {
-        const scriptsDir = await findScriptsDir();
-        if (scriptsDir) {
-            const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
-            if (fs.existsSync(launcherPath)) {
-                return { path: launcherPath, form: 'pip --user launcher' };
-            }
-        }
-        return null;
-    }
-
+    // The shared directories are scanned first on every platform. Returning early
+    // on Windows skipped them, so a launcher sitting in an already-searched common
+    // directory -- Chocolatey's bin, for one -- stayed undetectable there while
+    // being found everywhere else. findInDirs tries the `.exe` name too.
     const known = binaryLookup.findInDirs('git-filter-repo', searchDirs);
     if (known) {
         return { path: known, form: 'off-PATH launcher' };
     }
 
     const scriptsDir = await findScriptsDir();
-    if (scriptsDir) {
-        const launcherPath = path.join(scriptsDir, 'git-filter-repo');
-        try {
-            fs.accessSync(launcherPath, fs.constants.X_OK);
-            return { path: launcherPath, form: 'pip --user launcher' };
-        } catch { /* pip has not installed it here */ }
+    if (!scriptsDir) {
+        return null;
     }
+
+    // pip writes `git-filter-repo.exe` on Windows and an extensionless script
+    // elsewhere. existsSync rather than an execute check on Windows, where the
+    // X_OK bit does not mean what it means on POSIX.
+    if (platform === 'win32') {
+        const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
+        if (fs.existsSync(launcherPath)) {
+            return { path: launcherPath, form: 'pip --user launcher' };
+        }
+        return null;
+    }
+
+    const launcherPath = path.join(scriptsDir, 'git-filter-repo');
+    try {
+        fs.accessSync(launcherPath, fs.constants.X_OK);
+        return { path: launcherPath, form: 'pip --user launcher' };
+    } catch { /* pip has not installed it here */ }
     return null;
 }
 
