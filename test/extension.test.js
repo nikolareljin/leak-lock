@@ -2714,6 +2714,30 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 		});
 	});
 
+	test('Windows searches the shared directories too, not only pip\'s', async () => {
+		// The win32 branch used to return early, so an off-PATH launcher in a common
+		// directory (Chocolatey's bin, say) was findable on every platform but that one.
+		await withLauncher('leaklock-win-', 'git-filter-repo.exe', async (dir, file) => {
+			const found = await gitRewrite.findFilterRepoLauncher({
+				platform: 'win32',
+				searchDirs: [dir],
+				findScriptsDir: async () => { throw new Error('must not be reached'); }
+			});
+			assert.deepStrictEqual(found, { path: file, form: 'off-PATH launcher' });
+		});
+	});
+
+	test("Windows still falls back to pip's Scripts directory", async () => {
+		await withLauncher('leaklock-winpip-', 'git-filter-repo.exe', async (dir, file) => {
+			const found = await gitRewrite.findFilterRepoLauncher({
+				platform: 'win32',
+				searchDirs: [],
+				findScriptsDir: async () => dir
+			});
+			assert.deepStrictEqual(found, { path: file, form: 'pip --user launcher' });
+		});
+	});
+
 	test('absence is reported as null, not as a guess', async () => {
 		const found = await gitRewrite.findFilterRepoLauncher({
 			platform: 'linux',

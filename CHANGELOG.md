@@ -11,6 +11,8 @@
 - Resolve Java and Docker on the activation path too. checkDependencies and installDependencies still probed with a shell and a bare name, so activation reported Java and Docker missing on the machines this release is about, while the sidebar reported them present.
 - Use one resolved Docker client everywhere. The dependency panel, the scan gate, the engine runner, the image pull and the file scan each invoked a bare docker, so they could disagree about whether Docker exists and an engine could be skipped on a machine able to run it. A test asserts no call site reintroduces a bare name.
 - Resolve the interpreter for the pip install fallback as well, so the install button does not fail before pip starts on a Mac without Homebrew.
+- Search the shared directories on Windows too when locating git-filter-repo. The Windows path returned early, so a launcher in an already-searched common directory such as Chocolatey's bin was findable on every platform except that one.
+- Stop running Docker and the BFG download through a shell. The image pull, image removal and volume cleanup interpolated values into a command line, and the download depended on curl being present; the BFG download now uses the same downloader the engine installs use.
 - Discover every openjdk keg Homebrew has installed by reading its opt directory, rather than matching a fixed list of versions, and include openjdk@8 since BFG is documented as needing Java 8+.
 - Resolve the Python interpreter before spawning it to ask where pip installed things, so the probe is not defeated by the same missing PATH it exists to work around.
 - Name the installer the git-filter-repo button will actually run. Label and command now come from one call, so the button cannot offer pip and then invoke Homebrew.
