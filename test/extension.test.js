@@ -2586,11 +2586,40 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 	test("Homebrew's keg-only openjdk prefixes are searched on macOS", () => {
 		// `brew install openjdk` deliberately does not link java onto PATH, which is
 		// why issue #121 needed a ~/.zshrc edit. Probing the keg directly removes it.
-		const dirs = lookup.javaSearchDirs({}, 'darwin');
+		const dirs = lookup.javaSearchDirs({}, 'darwin', []);
 		assert.ok(dirs.includes('/opt/homebrew/opt/openjdk/bin'), 'Apple silicon');
 		assert.ok(dirs.includes('/usr/local/opt/openjdk/bin'), 'Intel');
 		assert.ok(dirs.includes('/opt/homebrew/opt/openjdk@21/bin'),
 			'a versioned formula is its own prefix');
+		// The panel states "Java 8+ recommended" for BFG, so the oldest JDK this
+		// extension claims to support must not be the one the search misses.
+		assert.ok(dirs.includes('/opt/homebrew/opt/openjdk@8/bin'), 'openjdk@8 is supported');
+	});
+
+	test('an openjdk version nobody listed is still discovered', () => {
+		// A hard-coded formula list is out of date the day openjdk@26 ships. Reading
+		// the Homebrew opt directory covers every version, now and later.
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-brew-'));
+		try {
+			for (const keg of ['openjdk@26', 'openjdk', 'openjdk@21', 'ripgrep']) {
+				fs.mkdirSync(path.join(root, 'opt', keg, 'bin'), { recursive: true });
+			}
+			const found = lookup.discoverJavaKegDirs([root]);
+			assert.ok(found.includes(path.join(root, 'opt', 'openjdk@26', 'bin')),
+				'a version newer than the static list');
+			assert.ok(!found.some(d => d.includes('ripgrep')), 'only openjdk kegs');
+			assert.strictEqual(found[0], path.join(root, 'opt', 'openjdk', 'bin'),
+				'the unversioned current release is preferred');
+			assert.strictEqual(found[1], path.join(root, 'opt', 'openjdk@26', 'bin'),
+				'then newest version first');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('an unreadable Homebrew prefix degrades to the static list', () => {
+		// A dependency probe must not throw because a directory is not there.
+		assert.deepStrictEqual(lookup.discoverJavaKegDirs(['/nonexistent-brew-root']), []);
 	});
 
 	test('the keg prefixes are macOS-only, and the common dirs always follow', () => {
@@ -2630,15 +2659,77 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 		}
 	});
 
-	test('the git-filter-repo launcher search is no longer Windows-only', async () => {
-		// The Windows Scripts-directory rescue existed; POSIX did not, so pip could
-		// report success into ~/.local/bin and the panel would still say "missing".
-		assert.strictEqual(typeof gitRewrite.findFilterRepoLauncher, 'function');
-		const found = await gitRewrite.findFilterRepoLauncher();
-		if (found !== null) {
-			assert.ok(path.isAbsolute(found.path), 'a launcher is reported by absolute path');
-			assert.ok(found.form, 'and says which kind of install it came from');
+	// Fixtures, not "whatever this host happens to have": asserting only when a
+	// launcher exists means the whole suite is vacuous on a CI runner without
+	// git-filter-repo -- which is every runner here -- so POSIX discovery could
+	// break and CI would stay green.
+	// async, and the body is awaited: a synchronous try/finally around an async body
+	// deletes the fixture the moment `body` returns its promise, so the assertions
+	// then run against a directory that is already gone.
+	async function withLauncher(dirName, fileName, body) {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), dirName));
+		const file = path.join(dir, fileName);
+		fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+		try {
+			return await body(dir, file);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
 		}
+	}
+
+	test('a launcher in a searched directory is found at its exact path', async () => {
+		await withLauncher('leaklock-bin-', 'git-filter-repo', async (dir, file) => {
+			const found = await gitRewrite.findFilterRepoLauncher({
+				platform: 'linux',
+				searchDirs: [dir],
+				findScriptsDir: async () => null
+			});
+			assert.deepStrictEqual(found, { path: file, form: 'off-PATH launcher' });
+		});
+	});
+
+	test("pip's scripts directory is searched when the common ones miss", async () => {
+		// The case that was Windows-only before: pip reports success into a
+		// directory no PATH covers, and the panel said "not installed".
+		await withLauncher('leaklock-pipbin-', 'git-filter-repo', async (dir, file) => {
+			const found = await gitRewrite.findFilterRepoLauncher({
+				platform: 'darwin',
+				searchDirs: [],
+				findScriptsDir: async () => dir
+			});
+			assert.deepStrictEqual(found, { path: file, form: 'pip --user launcher' });
+		});
+	});
+
+	test('the common directories win over the scripts directory, and cost no spawn', async () => {
+		await withLauncher('leaklock-bin2-', 'git-filter-repo', async (dir, file) => {
+			let probed = false;
+			const found = await gitRewrite.findFilterRepoLauncher({
+				platform: 'linux',
+				searchDirs: [dir],
+				findScriptsDir: async () => { probed = true; return '/nowhere'; }
+			});
+			assert.strictEqual(found.path, file);
+			assert.strictEqual(probed, false, 'Python is not spawned when the scan already answered');
+		});
+	});
+
+	test('absence is reported as null, not as a guess', async () => {
+		const found = await gitRewrite.findFilterRepoLauncher({
+			platform: 'linux',
+			searchDirs: [path.join(os.tmpdir(), `leaklock-absent-${process.pid}`)],
+			findScriptsDir: async () => null
+		});
+		assert.strictEqual(found, null);
+	});
+
+	test('the Python interpreter is itself resolved before being spawned', () => {
+		// Spawning a bare `python3` to ask where pip installed things reproduces,
+		// one level down, the exact PATH failure this module exists to fix.
+		const code = fs.readFileSync(path.join(__dirname, '..', 'binary-lookup.js'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+		assert.match(code, /const cmd = findInDirs\(name, COMMON_BIN_DIRS\) \|\| name;/);
+		assert.ok(!/execFileAsync\(['"]python3?['"]/.test(code), 'no bare interpreter is spawned');
 	});
 
 	test('an explicit interpreter still selects the pip install command', () => {
@@ -2692,6 +2783,27 @@ suite('AI attribution trailers are refused before they reach history', () => {
 
 	test('a human co-author is left alone', () => {
 		assert.strictEqual(check('feat: x\n\nCo-authored-by: Jane Roe <jane@example.com>\n'), true);
+	});
+
+	test('a person whose name contains an assistant name is not a bot', () => {
+		// The first version matched those words anywhere in the line, so it rejected
+		// real people and the hook's own promise about human co-authors was false.
+		// The rule is the address, which is what GitHub actually attributes by.
+		assert.strictEqual(check('feat: x\n\nCo-authored-by: Claude Smith <claude@example.com>\n'), true);
+		assert.strictEqual(check('feat: x\n\nCo-authored-by: Ada Cursor <ada.cursor@example.org>\n'), true);
+		assert.strictEqual(check('feat: x\n\nCo-authored-by: Gemini Ng <gemini.ng@example.net>\n'), true);
+	});
+
+	test('a bot is caught by its address, however it is named', () => {
+		assert.strictEqual(check('x\n\nCo-authored-by: Some Name <175728472+Copilot@users.noreply.github.com>\n'), false);
+		assert.strictEqual(check('x\n\nCo-authored-by: copilot-swe-agent[bot] <a@b.c>\n'), false);
+		assert.strictEqual(check('x\n\nSigned-off-by: dependabot[bot] <support@github.com>\n'), false);
+	});
+
+	test("a real contributor's GitHub noreply address is untouched", () => {
+		assert.strictEqual(
+			check('x\n\nCo-authored-by: nikolareljin <11724900+nikolareljin@users.noreply.github.com>\n'),
+			true, 'the numeric-id form is normal for people too');
 	});
 
 	test('prose naming an assistant is not a trailer', () => {

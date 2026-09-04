@@ -910,6 +910,14 @@ class LeakLockSidebarProvider {
         // Installed but confined is not ready: a snap build cannot read a repository
         // outside $HOME, so the rewrite fails before it touches a commit.
         const filterRepoStatus = filterRepo.installed ? (filterRepo.confined ? '⚠️' : '✅') : '⚠️';
+        // Label and action are derived from the SAME call the button runs, so the
+        // button cannot promise pip and then invoke Homebrew. Naming the installer
+        // matters here: it is what the user has to uninstall or re-run by hand.
+        const filterRepoInstall = gitRewrite.buildFilterRepoInstallCommand();
+        const filterRepoInstaller = /(^|[\\/])brew$/.test(filterRepoInstall.command) ? 'Homebrew' : 'pip';
+        const filterRepoInstallCommand = filterRepoInstaller === 'Homebrew'
+            ? 'brew install git-filter-repo'
+            : `${filterRepoInstall.command} ${filterRepoInstall.args.join(' ')}`;
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
         // BFG without a JVM is not a tool, it is a file. Marked unavailable rather than
         // merely "not downloaded", which would suggest downloading it would help.
@@ -1020,10 +1028,10 @@ class LeakLockSidebarProvider {
                         <div style="font-size: 11px; margin-top: 4px;">
                             A snap cannot read a repository outside your home directory, so a cleanup fails
                             before it changes anything. Install the unconfined tool instead:
-                            <code>python3 -m pip install --user git-filter-repo</code>
+                            <code>${escapeHtml(filterRepoInstallCommand)}</code>
                             (<code>sudo snap remove git-filter-repo</code> first, or it stays first on PATH).
                         </div>
-                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (pip)</button>
+                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (${filterRepoInstaller})</button>
                     </div>
                 ` : ''}
                 ${!filterRepo.installed ? `
@@ -1033,7 +1041,7 @@ class LeakLockSidebarProvider {
                             Without it the Git-only cleanup cannot rewrite history. The prepared script and the
                             manual commands are still shown, and BFG remains available if you have Java.
                         </div>
-                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (pip)</button>
+                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (${filterRepoInstaller})</button>
                     </div>
                 ` : ''}
 

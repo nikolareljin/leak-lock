@@ -11,14 +11,33 @@ const vscode = require('vscode');
 // reported an image the scanner never uses, and uninstall left the real one behind.
 const { NOSEYPARKER_IMAGE } = require('./scan-engine-config');
 const dockerImage = NOSEYPARKER_IMAGE;
+// Same absolute-path lookup the sidebar and the rewrite use. These probes run on
+// activation, so a bare `java` here reported "Java not available" on exactly the
+// machines issue #121 is about -- a Finder-launched VS Code inherits no shell
+// PATH -- while the sidebar, resolving properly, said it was installed.
+const binaryLookup = require('./binary-lookup');
+
+/**
+ * The `java` and `docker` commands to probe with.
+ *
+ * execFile, not exec: no shell, so nothing here depends on quoting, and an
+ * absolute path containing a space cannot be split into two arguments.
+ */
+async function resolveJavaForProbe() {
+    let configured = '';
+    try {
+        configured = vscode.workspace.getConfiguration('leakLock').get('java.path') || '';
+    } catch { /* configuration not registered yet; fall through to the search */ }
+    return binaryLookup.resolveJavaCommand(configured || undefined);
+}
 
 /**
  * Check if dependencies are already installed
  */
 async function checkDependencies() {
-	const { exec } = require('child_process');
+	const { execFile } = require('child_process');
 	const util = require('util');
-	const execAsync = util.promisify(exec);
+	const execFileAsync = util.promisify(execFile);
 	const fs = require('fs');
 	const path = require('path');
 	
@@ -29,14 +48,17 @@ async function checkDependencies() {
 		java: false
 	};
 	
+	// Resolved, not bare: Docker Desktop's client is not on a GUI process's PATH
+	// on macOS either, so this reported "Docker not available" on a machine
+	// running Docker.
+	const docker = binaryLookup.resolveBinary('docker');
 	try {
 		// Check Docker
-		await execAsync('docker --version');
-		// await execAsync('docker info');
+		await execFileAsync(docker, ['--version']);
 		dependencies.docker = true;
 		
 		// Check Nosey Parker image
-		await execAsync(`docker image inspect ${dockerImage}`);
+		await execFileAsync(docker, ['image', 'inspect', dockerImage]);
 		dependencies.noseyparker = true;
 	} catch {
 		console.log('Docker or Nosey Parker not available');
@@ -44,7 +66,7 @@ async function checkDependencies() {
 	
 	try {
 		// Check Java
-		await execAsync('java -version');
+		await execFileAsync(await resolveJavaForProbe(), ['-version']);
 		dependencies.java = true;
 	} catch {
 		console.log('Java not available');
@@ -63,9 +85,10 @@ async function checkDependencies() {
  * Install the dependencies required for the extension.
  */
 async function installDependencies(forceReinstall = false) {
-	const { exec } = require('child_process');
+	const { exec, execFile } = require('child_process');
 	const util = require('util');
 	const execAsync = util.promisify(exec);
+	const execFileAsync = util.promisify(execFile);
 	const path = require('path');
 	
 	try {
@@ -92,8 +115,7 @@ async function installDependencies(forceReinstall = false) {
 			
 			// Check Docker availability
 			try {
-				await execAsync('docker --version');
-				// await execAsync('docker info');
+				await execFileAsync(binaryLookup.resolveBinary('docker'), ['--version']);
 				progress.report({ increment: 20, message: "Docker is available ✓" });
 			} catch {
 				throw new Error('Docker is not installed or not running. Please install Docker and start the daemon.');
@@ -101,10 +123,13 @@ async function installDependencies(forceReinstall = false) {
 			
 			// Check Java availability
 			try {
-				await execAsync('java -version');
+				await execFileAsync(await resolveJavaForProbe(), ['-version']);
 				progress.report({ increment: 10, message: "Java is available ✓" });
 			} catch {
-				vscode.window.showWarningMessage('Java is not installed. BFG tool may not work properly. Please install Java.');
+				vscode.window.showWarningMessage(
+					'Java is not installed, so BFG cleanup is unavailable. On macOS, `brew install --cask temurin` '
+					+ 'needs no PATH changes; set leakLock.java.path to point at a specific JVM.'
+				);
 			}
 			
 			progress.report({ increment: 20, message: "Downloading BFG tool..." });

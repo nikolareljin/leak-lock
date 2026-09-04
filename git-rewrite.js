@@ -244,11 +244,27 @@ async function findWindowsUserScriptsDir() {
  * The cheap filesystem scan runs before asking Python, so the common case costs no
  * process spawn at all.
  *
+ * Every input is injectable, because the alternative test -- call it and accept
+ * whatever the host has -- asserts nothing on a machine without git-filter-repo,
+ * which is every CI runner here. Defaults are the real ones.
+ *
+ * @param {object} [options]
+ * @param {string} [options.platform] defaults to `process.platform`
+ * @param {string[]} [options.searchDirs] absolute directories to scan first
+ * @param {() => Promise<string|null>} [options.findScriptsDir] pip's scripts directory
  * @returns {Promise<{path: string, form: string}|null>}
  */
-async function findFilterRepoLauncher() {
-    if (process.platform === 'win32') {
-        const scriptsDir = await findWindowsUserScriptsDir();
+async function findFilterRepoLauncher(options = {}) {
+    const {
+        platform = process.platform,
+        searchDirs = binaryLookup.COMMON_BIN_DIRS,
+        findScriptsDir = platform === 'win32'
+            ? findWindowsUserScriptsDir
+            : binaryLookup.findPosixUserScriptsDir
+    } = options;
+
+    if (platform === 'win32') {
+        const scriptsDir = await findScriptsDir();
         if (scriptsDir) {
             const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
             if (fs.existsSync(launcherPath)) {
@@ -258,12 +274,12 @@ async function findFilterRepoLauncher() {
         return null;
     }
 
-    const known = binaryLookup.findInDirs('git-filter-repo', binaryLookup.COMMON_BIN_DIRS);
+    const known = binaryLookup.findInDirs('git-filter-repo', searchDirs);
     if (known) {
         return { path: known, form: 'off-PATH launcher' };
     }
 
-    const scriptsDir = await binaryLookup.findPosixUserScriptsDir();
+    const scriptsDir = await findScriptsDir();
     if (scriptsDir) {
         const launcherPath = path.join(scriptsDir, 'git-filter-repo');
         try {
