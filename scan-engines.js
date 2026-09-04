@@ -88,6 +88,7 @@ const {
     COMMON_BIN_DIRS,
     addBinarySearchDir,
     resolveBinary,
+    resolveDockerCommand,
     resetBinaryCache
 } = require('./binary-lookup');
 
@@ -139,16 +140,18 @@ function chooseRuntime({ preference = 'auto', binaryAvailable = false, dockerAva
  * image, which would turn "check whether the fallback is available" into a multi-hundred
  * megabyte download in the middle of a scan the user thought had started.
  */
-async function isDockerImagePresent(image, { command = 'docker', timeoutMs = 20000 } = {}) {
+async function isDockerImagePresent(image, { command = null, timeoutMs = 20000 } = {}) {
     if (!image) {
         return false;
     }
+    // The client comes from the caller for the same reason `invoke()` takes it from
+    // the execution: otherwise `docker run` could be redirected at an alternate
+    // client while the image probe kept asking the default one, and the two would
+    // disagree about whether the image exists. Unset resolves rather than assuming
+    // `docker` is on PATH, which it is not in a Finder-launched VS Code.
+    const client = command || resolveDockerCommand();
     try {
-        // The client comes from the caller for the same reason `invoke()` takes it from
-        // the execution: otherwise `docker run` could be redirected at an alternate
-        // client while the image probe kept asking the default one, and the two would
-        // disagree about whether the image exists.
-        await runTool(command, engineDocker.buildImageInspectArgs(image), { timeoutMs });
+        await runTool(client, engineDocker.buildImageInspectArgs(image), { timeoutMs });
         return true;
     } catch {
         return false;
@@ -163,7 +166,7 @@ async function isDockerImagePresent(image, { command = 'docker', timeoutMs = 200
 async function resolveExecution(engine, options = {}) {
     const binaryExecution = { mode: 'binary', command: resolveBinary(engine.binary, options.binary), image: null };
     const image = engineDocker.engineImage(engine.id, options.image);
-    const dockerExecution = { mode: 'docker', command: 'docker', image };
+    const dockerExecution = { mode: 'docker', command: resolveDockerCommand(), image };
     const preference = options.runtime || 'auto';
 
     // Probe only what the preference could select: an explicit `binary` must not pay
@@ -197,7 +200,7 @@ async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform 
         // means something in one branch and is ignored in the other — and would leave
         // no way to point at an alternate client (a podman shim, a sandbox wrapper).
         return runTool(
-            execution.command || 'docker',
+            execution.command || resolveDockerCommand(),
             engineDocker.buildDockerRunArgs({ image: execution.image, mounts, args: engineArgs, platform }),
             { timeoutMs }
         );

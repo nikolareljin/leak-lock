@@ -272,6 +272,23 @@ async function resolveJavaCommand(explicit) {
 }
 
 /**
+ * The `docker` command to invoke.
+ *
+ * One name, one answer. Docker Desktop's client lives in `/usr/local/bin` on
+ * macOS and a Finder-launched VS Code sees none of it, so a bare `docker` in one
+ * probe and a resolved one in another produced the worst possible result: the
+ * dependency panel and the scan gate disagreeing about whether Docker exists, and
+ * an engine silently skipped on a machine that could have run it.
+ *
+ * Cached by `resolveBinary`, so calling it at each site costs nothing.
+ *
+ * @returns {string} an absolute path when one is found, else `'docker'`
+ */
+function resolveDockerCommand() {
+    return resolveBinary('docker');
+}
+
+/**
  * Where `pip install --user` puts executables on this platform.
  *
  * The Windows counterpart already existed, because a Scripts directory nobody
@@ -313,6 +330,7 @@ module.exports = {
     addBinarySearchDir,
     findInDirs,
     resolveBinary,
+    resolveDockerCommand,
     resetBinaryCache,
     javaSearchDirs,
     findJavaViaJavaHome,

@@ -2738,13 +2738,74 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 		assert.deepStrictEqual(args, ['-m', 'pip', 'install', '--user', '--upgrade', 'git-filter-repo']);
 	});
 
-	test('off macOS the install command is unchanged', function () {
-		if (process.platform === 'darwin') {
-			this.skip();
+	// Both macOS outcomes, with fixtures. Skipping darwin meant the Homebrew branch
+	// and its fallback were unreachable on this Linux-only CI, so the platform the
+	// release is about had no coverage at all.
+	function withBin(names) {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-installbin-'));
+		for (const name of names) {
+			fs.writeFileSync(path.join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 		}
-		const { command, args } = gitRewrite.buildFilterRepoInstallCommand();
-		assert.strictEqual(command, process.platform === 'win32' ? 'python' : 'python3');
-		assert.ok(args.includes('--user'), '--user avoids elevation and PEP 668');
+		return dir;
+	}
+
+	test('on macOS with Homebrew, the install runs brew', () => {
+		const dir = withBin(['brew', 'python3']);
+		try {
+			const { command, args } = gitRewrite.buildFilterRepoInstallCommand(
+				null, { platform: 'darwin', searchDirs: [dir] });
+			assert.strictEqual(command, path.join(dir, 'brew'), 'the resolved brew, by absolute path');
+			assert.deepStrictEqual(args, ['install', 'git-filter-repo']);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('on macOS without Homebrew, pip is used and its interpreter is resolved', () => {
+		// The fallback used to return a bare `python3`, so on the very machine this
+		// targets -- no Homebrew, Python at a location the GUI PATH misses -- the
+		// install button failed before pip started.
+		const dir = withBin(['python3']);
+		try {
+			const { command, args } = gitRewrite.buildFilterRepoInstallCommand(
+				null, { platform: 'darwin', searchDirs: [dir] });
+			assert.strictEqual(command, path.join(dir, 'python3'), 'absolute, not a bare name');
+			assert.ok(args.includes('--user'), '--user avoids elevation and PEP 668');
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('an unresolvable interpreter still yields a runnable-looking command', () => {
+		// Never null: the run is attempted and the real failure carries the message.
+		const { command } = gitRewrite.buildFilterRepoInstallCommand(
+			null, { platform: 'linux', searchDirs: [] });
+		assert.strictEqual(command, 'python3');
+	});
+
+	test('Windows is unaffected by the macOS branch', () => {
+		const { command, args } = gitRewrite.buildFilterRepoInstallCommand(
+			null, { platform: 'win32', searchDirs: [] });
+		assert.strictEqual(command, 'python');
+		assert.ok(args.includes('--user'));
+	});
+
+	test('every Docker call site uses one resolved client', () => {
+		// Activation resolving Docker while the sidebar and the scan gate did not
+		// meant the panel could report Docker available and the scan skip the engine
+		// anyway. A bare name in any one of them reintroduces that disagreement.
+		const files = ['extension.js', 'scan-engines.js', 'leakLockPanel.js',
+			'leakLockSidebarProvider.js', 'file-scan.js'];
+		for (const file of files) {
+			const code = fs.readFileSync(path.join(__dirname, '..', file), 'utf8')
+				.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+			// \s* spans newlines: the call that slipped through first time was
+			// `execFileAsync(\n    'docker',` across two lines.
+			assert.ok(!/(exec|execFile|execFileAsync|spawn)\(\s*['"]docker['"]/s.test(code),
+				`${file} still invokes a bare docker`);
+			assert.ok(!/command:\s*['"]docker['"]/.test(code),
+				`${file} still hard-codes 'docker' as an execution command`);
+		}
 	});
 });
 
@@ -5130,7 +5191,10 @@ suite('PR #105 second review pass', () => {
 		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
 		const body = src.slice(src.indexOf('async _pullEngineImage('), src.indexOf('async _installEngine('));
 
-		assert.match(body, /execution: \{ mode: 'docker', command: 'docker', image \}/);
+		// The command is resolved rather than the literal 'docker': a bare name is not
+		// found in a Finder-launched VS Code on macOS. What this test is about is that
+		// the execution is reused, not re-derived, so that is what is asserted.
+		assert.match(body, /execution: \{ mode: 'docker', command: binaryLookup\.resolveDockerCommand\(\), image \}/);
 		assert.ok(!/version\(\{ runtime: 'docker', image \}\)/.test(body), 'must not re-resolve the runtime');
 	});
 
@@ -5420,7 +5484,9 @@ suite('PR #105 seventh review pass', () => {
 		assert.ok(seen.error || seen.stdout !== undefined, 'the configured command must be the one executed');
 		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'scan-engines.js'), 'utf8');
 		const body = src.slice(src.indexOf('async function invoke('), src.indexOf('async function invoke(') + 900);
-		assert.match(body, /execution\.command \|\| 'docker'/);
+		// execution.command still wins; the fallback is the resolved client rather
+		// than a bare name, which is a stricter version of the same guarantee.
+		assert.match(body, /execution\.command \|\| resolveDockerCommand\(\)/);
 	});
 });
 
@@ -5606,7 +5672,10 @@ suite('PR #105 ninth review pass', () => {
 
 		assert.ok(!/promisify\(exec\)/.test(code), 'exec runs a shell; execFile does not');
 		assert.ok(!/execAsync\(`docker/.test(code), 'and no interpolated docker command line');
-		assert.match(code, /execFileAsync\('docker', \['--version'\]\)/);
+		// execFile with a resolved client. Pinning the literal 'docker' here would
+		// pin the PATH defect this release exists to fix.
+		assert.match(code, /execFileAsync\(docker, \['--version'\]\)/);
+		assert.match(code, /const docker = binaryLookup\.resolveDockerCommand\(\)/);
 	});
 });
 

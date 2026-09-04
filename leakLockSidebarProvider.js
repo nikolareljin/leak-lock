@@ -1432,13 +1432,17 @@ class LeakLockSidebarProvider {
 
         // Check Docker
         try {
-            const dockerVersion = await execFileAsync('docker', ['--version']);
+            // Resolved once, and the same command is used for the daemon check and
+            // the image inspect below: a probe that finds Docker and a follow-up that
+            // does not would report "installed" beside "daemon not running".
+            const docker = binaryLookup.resolveDockerCommand();
+            const dockerVersion = await execFileAsync(docker, ['--version']);
             this._dependencyStatus.docker.installed = true;
             this._dependencyStatus.docker.version = dockerVersion.stdout.trim();
 
             // Check if Docker daemon is running
             try {
-                await execFileAsync('docker', ['info']);
+                await execFileAsync(docker, ['info']);
             } catch {
                 this._dependencyStatus.docker.error = 'Docker daemon not running';
                 this._dependencyStatus.docker.installed = false;
@@ -1462,7 +1466,7 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.noseyparker.error = 'Cannot tell — Docker is unavailable, so the image cannot be checked or pulled';
         } else {
             try {
-                await execFileAsync('docker', engineDocker.buildImageInspectArgs(scanEngineConfig.NOSEYPARKER_IMAGE));
+                await execFileAsync(binaryLookup.resolveDockerCommand(), engineDocker.buildImageInspectArgs(scanEngineConfig.NOSEYPARKER_IMAGE));
                 this._dependencyStatus.noseyparker.installed = true;
             } catch {
                 this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not pulled';
@@ -1818,7 +1822,7 @@ class LeakLockSidebarProvider {
                     const execFileAsync = require('util').promisify(require('child_process').execFile);
 
                     try {
-                        await execFileAsync('docker', ['--version']);
+                        await execFileAsync(binaryLookup.resolveDockerCommand(), ['--version']);
                     } catch {
                         throw new Error('Docker is not installed or not accessible. Please install Docker first.');
                     }
@@ -1827,7 +1831,7 @@ class LeakLockSidebarProvider {
 
                     // Pull the Nosey Parker Docker image
                     await execFileAsync(
-                        'docker',
+                        binaryLookup.resolveDockerCommand(),
                         engineDocker.buildImagePullArgs(scanEngineConfig.NOSEYPARKER_IMAGE),
                         { timeout: 300000 }
                     );
@@ -2008,7 +2012,7 @@ class LeakLockSidebarProvider {
             progress?.report({ message: `Pulling ${image}…` });
             const { execFile } = require('child_process');
             const execFileAsync = require('util').promisify(execFile);
-            await execFileAsync('docker', engineDocker.buildImagePullArgs(image), { timeout: 600000 });
+            await execFileAsync(binaryLookup.resolveDockerCommand(), engineDocker.buildImagePullArgs(image), { timeout: 600000 });
 
             // Verified the same way a binary install is: by running it. A pulled image
             // that cannot execute here is not an installed engine.
@@ -2017,7 +2021,7 @@ class LeakLockSidebarProvider {
             // image was just pulled, so re-resolving would repeat an `image inspect` and
             // a probe run to rediscover what this line already knows.
             const engine = scanEngines.getEngine(engineId);
-            const version = await engine.version({ execution: { mode: 'docker', command: 'docker', image } });
+            const version = await engine.version({ execution: { mode: 'docker', command: binaryLookup.resolveDockerCommand(), image } });
             if (!version) {
                 throw new Error(`${image} was pulled but did not report a version when run`);
             }

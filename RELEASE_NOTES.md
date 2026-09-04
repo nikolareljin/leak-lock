@@ -7,6 +7,8 @@
 - Prefer Homebrew for installing git-filter-repo on macOS when it is present, since Homebrew's Python refuses a --user pip install under PEP 668.
 - Run BFG through the resolved Java rather than a bare java, so a rewrite cannot fail on a machine whose dependency panel reported Java as present.
 - Resolve Java and Docker on the activation path too. checkDependencies and installDependencies still probed with a shell and a bare name, so activation reported Java and Docker missing on the machines this release is about, while the sidebar reported them present.
+- Use one resolved Docker client everywhere. The dependency panel, the scan gate, the engine runner, the image pull and the file scan each invoked a bare docker, so they could disagree about whether Docker exists and an engine could be skipped on a machine able to run it. A test asserts no call site reintroduces a bare name.
+- Resolve the interpreter for the pip install fallback as well, so the install button does not fail before pip starts on a Mac without Homebrew.
 - Discover every openjdk keg Homebrew has installed by reading its opt directory, rather than matching a fixed list of versions, and include openjdk@8 since BFG is documented as needing Java 8+.
 - Resolve the Python interpreter before spawning it to ask where pip installed things, so the probe is not defeated by the same missing PATH it exists to work around.
 - Name the installer the git-filter-repo button will actually run. Label and command now come from one call, so the button cannot offer pip and then invoke Homebrew.
