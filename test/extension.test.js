@@ -2764,7 +2764,7 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 			const found = await gitRewrite.findFilterRepoLauncher({
 				platform: 'linux',
 				searchDirs: [dir],
-				findScriptsDir: async () => null
+				findScriptsDirs: async () => []
 			});
 			assert.deepStrictEqual(found, { path: file, form: 'off-PATH launcher' });
 		});
@@ -2777,7 +2777,7 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 			const found = await gitRewrite.findFilterRepoLauncher({
 				platform: 'darwin',
 				searchDirs: [],
-				findScriptsDir: async () => dir
+				findScriptsDirs: async () => [dir]
 			});
 			assert.deepStrictEqual(found, { path: file, form: 'pip --user launcher' });
 		});
@@ -2789,7 +2789,7 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 			const found = await gitRewrite.findFilterRepoLauncher({
 				platform: 'linux',
 				searchDirs: [dir],
-				findScriptsDir: async () => { probed = true; return '/nowhere'; }
+				findScriptsDirs: async () => { probed = true; return ['/nowhere']; }
 			});
 			assert.strictEqual(found.path, file);
 			assert.strictEqual(probed, false, 'Python is not spawned when the scan already answered');
@@ -2803,7 +2803,7 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 			const found = await gitRewrite.findFilterRepoLauncher({
 				platform: 'win32',
 				searchDirs: [dir],
-				findScriptsDir: async () => { throw new Error('must not be reached'); }
+				findScriptsDirs: async () => { throw new Error('must not be reached'); }
 			});
 			assert.deepStrictEqual(found, { path: file, form: 'off-PATH launcher' });
 		});
@@ -2814,17 +2814,49 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 			const found = await gitRewrite.findFilterRepoLauncher({
 				platform: 'win32',
 				searchDirs: [],
-				findScriptsDir: async () => dir
+				findScriptsDirs: async () => [dir]
 			});
 			assert.deepStrictEqual(found, { path: file, form: 'pip --user launcher' });
 		});
+	});
+
+	test('a launcher installed by another Python version is still found', async () => {
+		// The scripts directory is per version. Returning after the first interpreter
+		// that answered meant a 3.12 install was invisible to whatever 3.9 reported.
+		const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-py39-'));
+		await withLauncher('leaklock-py312-', 'git-filter-repo', async (dir, file) => {
+			const found = await gitRewrite.findFilterRepoLauncher({
+				platform: 'darwin',
+				searchDirs: [],
+				findScriptsDirs: async () => [empty, dir]
+			});
+			assert.deepStrictEqual(found, { path: file, form: 'pip --user launcher' });
+		});
+		fs.rmSync(empty, { recursive: true, force: true });
+	});
+
+	test('sibling version directories expand, ordinary ones do not', () => {
+		const base = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-pyver-'));
+		try {
+			for (const v of ['3.9', '3.12', 'notaversion']) {
+				fs.mkdirSync(path.join(base, v, 'bin'), { recursive: true });
+			}
+			const siblings = lookup.expandVersionSiblings(path.join(base, '3.9', 'bin'));
+			assert.ok(siblings.includes(path.join(base, '3.12', 'bin')), 'the other version');
+			assert.ok(!siblings.some(d => d.includes('notaversion')), 'only version dirs');
+			// ~/.local/bin must never expand into every directory in the home folder.
+			assert.deepStrictEqual(
+				lookup.expandVersionSiblings(path.join(os.homedir(), '.local', 'bin')), []);
+		} finally {
+			fs.rmSync(base, { recursive: true, force: true });
+		}
 	});
 
 	test('absence is reported as null, not as a guess', async () => {
 		const found = await gitRewrite.findFilterRepoLauncher({
 			platform: 'linux',
 			searchDirs: [path.join(os.tmpdir(), `leaklock-absent-${process.pid}`)],
-			findScriptsDir: async () => null
+			findScriptsDirs: async () => []
 		});
 		assert.strictEqual(found, null);
 	});
@@ -2836,6 +2868,10 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 			.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
 		assert.match(code, /const cmd = findInDirs\(name, COMMON_BIN_DIRS\) \|\| name;/);
 		assert.ok(!/execFileAsync\(['"]python3?['"]/.test(code), 'no bare interpreter is spawned');
+		const win = fs.readFileSync(path.join(__dirname, '..', 'git-rewrite.js'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+		assert.ok(!/execFileAsync\(\s*['"](python|py|python3)['"]/.test(win),
+			'the Windows probe resolves its interpreters too');
 	});
 
 	test('an explicit interpreter still selects the pip install command', () => {

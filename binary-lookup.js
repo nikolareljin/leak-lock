@@ -330,20 +330,36 @@ function resolveDockerCommand() {
 }
 
 /**
- * Where `pip install --user` puts executables on this platform.
+ * Every directory `pip install --user` may have put executables in.
  *
- * The Windows counterpart already existed, because a Scripts directory nobody
- * adds to PATH is an obvious trap. The POSIX case is the same trap with a more
- * familiar path: `~/.local/bin` is on the PATH of a login shell on most systems
- * and on the PATH of a Finder-launched VS Code on none of them.
+ * A list, not one answer. Returning after the first interpreter that replies is
+ * wrong whenever the install was made by a different Python: macOS's
+ * /usr/bin/python3 reports ~/Library/Python/3.9/bin while a 3.12 install went to
+ * ~/Library/Python/3.12/bin, and the launcher sitting in 3.12 was reported missing.
  *
- * Asking sysconfig rather than assuming `~/.local/bin` covers a virtualenv, a
- * Homebrew Python with its own user base, and PYTHONUSERBASE.
+ * Two sources, in order:
+ *  1. every interpreter that can be resolved and asked -- sysconfig is the only
+ *     way to cover a virtualenv, a Homebrew Python, or PYTHONUSERBASE;
+ *  2. sibling version directories of each answer, which catches an install made by
+ *     a Python that is no longer on this machine at all.
  *
- * @returns {Promise<string|null>} absolute path to the scripts directory, or null
+ * The sibling scan only fires when the parent segment looks like a version, so
+ * `~/.local/bin` -- whose parent is `.local` -- never expands into every directory
+ * under the home directory.
+ *
+ * @returns {Promise<string[]>} absolute paths, most authoritative first
  */
-async function findPosixUserScriptsDir() {
+async function findPosixUserScriptsDirs() {
     const script = "import sysconfig; print(sysconfig.get_path('scripts', 'posix_user'))";
+    const dirs = [];
+    const add = (...values) => {
+        for (const value of values) {
+            if (value && !dirs.includes(value)) {
+                dirs.push(value);
+            }
+        }
+    };
+
     for (const name of ['python3', 'python']) {
         // Resolve the interpreter the same way everything else here is resolved.
         // Spawning a bare `python3` would reproduce, one level down, the exact
@@ -353,13 +369,44 @@ async function findPosixUserScriptsDir() {
         const cmd = findInDirs(name, COMMON_BIN_DIRS) || name;
         try {
             const { stdout } = await execFileAsync(cmd, ['-c', script], { timeout: 10000 });
-            const dir = String(stdout).trim();
-            if (dir) {
-                return dir;
-            }
-        } catch { /* try next interpreter */ }
+            add(String(stdout).trim());
+        } catch { /* try the next interpreter */ }
     }
-    return null;
+
+    for (const dir of [...dirs]) {
+        add(...expandVersionSiblings(dir));
+    }
+    return dirs;
+}
+
+/**
+ * Sibling version directories of a scripts path, or nothing.
+ *
+ * `~/Library/Python/3.9/bin` -> every `~/Library/Python/<version>/bin` that exists.
+ * `~/.local/bin` -> nothing, because `.local` is not a version and expanding it
+ * would return every directory in the home directory.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function expandVersionSiblings(dir) {
+    if (!dir) {
+        return [];
+    }
+    const leaf = path.basename(dir);              // bin
+    const versionDir = path.dirname(dir);         // .../3.9
+    const base = path.dirname(versionDir);        // .../Python
+    if (!/^\d+(\.\d+)*$/.test(path.basename(versionDir))) {
+        return [];
+    }
+    try {
+        return fs.readdirSync(base)
+            .filter(name => /^\d+(\.\d+)*$/.test(name))
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+            .map(name => path.join(base, name, leaf));
+    } catch {
+        return [];
+    }
 }
 
 module.exports = {
@@ -377,5 +424,6 @@ module.exports = {
     javaSearchDirs,
     findJavaViaJavaHome,
     resolveJavaCommand,
-    findPosixUserScriptsDir
+    findPosixUserScriptsDirs,
+    expandVersionSiblings
 };

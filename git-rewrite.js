@@ -214,21 +214,27 @@ function describeSandboxedFilterRepo(output, rulesPath) {
  * Tries the same Python interpreters that the install command may have used, in
  * the same priority order, so what we find matches what pip wrote.
  *
- * @returns {Promise<string|null>} Absolute path to the Scripts directory, or null.
+ * @returns {Promise<string[]>} Absolute paths to the Scripts directories.
  */
-async function findWindowsUserScriptsDir() {
+async function findWindowsUserScriptsDirs() {
     const script = "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))";
-    for (const cmd of ['python', 'py', 'python3']) {
+    const dirs = [];
+    for (const name of ['python', 'py', 'python3']) {
+        // Resolved rather than bare, and every interpreter is asked rather than
+        // only the first that answers: %APPDATA%\Python\PythonXY\Scripts is
+        // per-version, so an install made by 3.12 is invisible to whatever 3.9
+        // reports.
+        const cmd = binaryLookup.findInDirs(name, binaryLookup.COMMON_BIN_DIRS) || name;
         try {
             const { stdout } = await execFileAsync(cmd, ['-c', script],
                 { maxBuffer: MAX_BUFFER, timeout: 10000 });
             const dir = String(stdout).trim();
-            if (dir) {
-                return dir;
+            if (dir && !dirs.includes(dir)) {
+                dirs.push(dir);
             }
         } catch { /* try next interpreter */ }
     }
-    return null;
+    return dirs;
 }
 
 /**
@@ -251,16 +257,16 @@ async function findWindowsUserScriptsDir() {
  * @param {object} [options]
  * @param {string} [options.platform] defaults to `process.platform`
  * @param {string[]} [options.searchDirs] absolute directories to scan first
- * @param {() => Promise<string|null>} [options.findScriptsDir] pip's scripts directory
+ * @param {() => Promise<string[]>} [options.findScriptsDirs] pip's scripts directories
  * @returns {Promise<{path: string, form: string}|null>}
  */
 async function findFilterRepoLauncher(options = {}) {
     const {
         platform = process.platform,
         searchDirs = binaryLookup.COMMON_BIN_DIRS,
-        findScriptsDir = platform === 'win32'
-            ? findWindowsUserScriptsDir
-            : binaryLookup.findPosixUserScriptsDir
+        findScriptsDirs = platform === 'win32'
+            ? findWindowsUserScriptsDirs
+            : binaryLookup.findPosixUserScriptsDirs
     } = options;
 
     // The shared directories are scanned first on every platform. Returning early
@@ -272,27 +278,25 @@ async function findFilterRepoLauncher(options = {}) {
         return { path: known, form: 'off-PATH launcher' };
     }
 
-    const scriptsDir = await findScriptsDir();
-    if (!scriptsDir) {
-        return null;
-    }
-
-    // pip writes `git-filter-repo.exe` on Windows and an extensionless script
-    // elsewhere. existsSync rather than an execute check on Windows, where the
-    // X_OK bit does not mean what it means on POSIX.
-    if (platform === 'win32') {
-        const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
-        if (fs.existsSync(launcherPath)) {
-            return { path: launcherPath, form: 'pip --user launcher' };
+    // Every candidate, not just the first: the scripts directory is per Python
+    // version, so an install made by 3.12 is not in the directory 3.9 reports.
+    for (const scriptsDir of await findScriptsDirs()) {
+        // pip writes `git-filter-repo.exe` on Windows and an extensionless script
+        // elsewhere. existsSync rather than an execute check on Windows, where the
+        // X_OK bit does not mean what it means on POSIX.
+        if (platform === 'win32') {
+            const launcherPath = path.join(scriptsDir, 'git-filter-repo.exe');
+            if (fs.existsSync(launcherPath)) {
+                return { path: launcherPath, form: 'pip --user launcher' };
+            }
+            continue;
         }
-        return null;
+        const launcherPath = path.join(scriptsDir, 'git-filter-repo');
+        try {
+            fs.accessSync(launcherPath, fs.constants.X_OK);
+            return { path: launcherPath, form: 'pip --user launcher' };
+        } catch { /* pip has not installed it here */ }
     }
-
-    const launcherPath = path.join(scriptsDir, 'git-filter-repo');
-    try {
-        fs.accessSync(launcherPath, fs.constants.X_OK);
-        return { path: launcherPath, form: 'pip --user launcher' };
-    } catch { /* pip has not installed it here */ }
     return null;
 }
 
