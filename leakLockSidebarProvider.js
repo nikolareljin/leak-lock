@@ -1396,20 +1396,26 @@ class LeakLockSidebarProvider {
         // user scripts directory that sysconfig reports, so this is no longer the
         // ordinary "off PATH" case — it means the launcher is somewhere none of
         // those cover.
-        // The user scripts directory differs per platform, and naming the wrong one
-        // sends people editing a PATH entry that was never involved: macOS framework
-        // Python writes to ~/Library/Python/<version>/bin, not ~/.local/bin.
-        const scriptsDir = process.platform === 'win32'
-            ? 'your Python user Scripts directory (%APPDATA%\\Python\\PythonXY\\Scripts) — '
-                + '`python -m site --user-base` prints its parent'
-            : process.platform === 'darwin'
-                ? 'your user scripts directory (~/.local/bin, or ~/Library/Python/<version>/bin '
-                    + 'for the system Python) — `python3 -m site --user-base` prints its parent'
-                : 'your user scripts directory (usually ~/.local/bin) — '
-                    + '`python3 -m site --user-base` prints its parent';
+        // The remedy has to match the installer that just ran. Telling someone who
+        // installed through Homebrew to add a Python user-scripts directory to PATH
+        // names a directory with nothing to do with what they did -- and the same
+        // applies to naming ~/.local/bin on the macOS system Python, which writes to
+        // ~/Library/Python/<version>/bin instead.
+        const usedBrew = /(^|[\\/])brew$/.test(command);
+        const remedy = usedBrew
+            ? 'Homebrew installed it, but Leak Lock cannot see it. Check `brew --prefix` is one of '
+                + 'the searched locations, or reinstall with `brew reinstall git-filter-repo`'
+            : process.platform === 'win32'
+                ? 'Add your Python user Scripts directory (%APPDATA%\\Python\\PythonXY\\Scripts) to PATH — '
+                    + '`python -m site --user-base` prints its parent'
+                : process.platform === 'darwin'
+                    ? 'Add your user scripts directory (~/.local/bin, or ~/Library/Python/<version>/bin '
+                        + 'for the system Python) to PATH — `python3 -m site --user-base` prints its parent'
+                    : 'Add your user scripts directory (usually ~/.local/bin) to PATH — '
+                        + '`python3 -m site --user-base` prints its parent';
         vscode.window.showWarningMessage(
-            `${command} reported success, but git-filter-repo still cannot be located. Add ${scriptsDir} `
-            + 'to PATH, then reload the window.'
+            `${command} reported success, but git-filter-repo still cannot be located. ${remedy}, `
+            + 'then reload the window.'
         );
     }
 

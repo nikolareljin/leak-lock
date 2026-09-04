@@ -35,12 +35,17 @@ trailers=$(
 # adding an identity is a one-line change.
 #   [bot]                         - GitHub's own marker for an App account
 #   <n>+Name@users.noreply...     - a GitHub App's commit address
-#   an assistant vendor's domain  - the address such tools sign commits with
+#   a bot mailbox at a vendor     - the address such tools sign commits with
+#
+# The vendor rule is deliberately scoped to bot mailbox local parts. Matching the
+# whole domain would reject `Co-authored-by: Alice <alice@openai.com>` -- a person
+# who happens to work there -- and the hook would again be claiming to allow human
+# co-authors while rejecting one.
 offenders=$(
   printf '%s\n' "$trailers" | grep -iE \
     -e '\[bot\][[:space:]]*<' \
     -e '<[0-9]+\+(copilot|claude|chatgpt|codex|devin|cursor)[^@]*@users\.noreply\.github\.com>' \
-    -e '@(anthropic|openai|cursor|anysphere|cognition-labs)\.(com|sh|co|ai)>' \
+    -e '<(noreply|no-reply|bot|agent|claude|copilot|codex|devin|cursor)@(anthropic|openai|cursor|anysphere|cognition-labs)\.(com|sh|co|ai)>' \
     || true
 )
 

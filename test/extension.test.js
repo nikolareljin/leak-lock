@@ -2635,6 +2635,39 @@ suite('Java and git-filter-repo are found the same way engines are', () => {
 		assert.strictEqual(await lookup.resolveJavaCommand('/opt/jdk/bin/java'), '/opt/jdk/bin/java');
 	});
 
+	test("macOS's /usr/bin/java stub cannot shadow the authoritative resolver", () => {
+		// /usr/bin/java exists and is executable on every Mac, and prints "No Java
+		// runtime present". It lives in COMMON_BIN_DIRS, so a single pass over the
+		// full list resolved to the stub and /usr/libexec/java_home -- which knows
+		// about every installed JDK -- was never reached.
+		const preferred = lookup.javaPreferredDirs({ JAVA_HOME: '/opt/jdk' }, 'darwin', []);
+		assert.ok(!preferred.includes('/usr/bin'), 'the stub is not in the first pass');
+		assert.ok(!preferred.includes('/usr/local/bin'));
+		assert.strictEqual(preferred[0], path.join('/opt/jdk', 'bin'), 'JAVA_HOME still wins');
+		// The full list is still the full list, for callers that want to show it.
+		assert.ok(lookup.javaSearchDirs({}, 'darwin', []).includes('/usr/bin'));
+	});
+
+	test('the common directories are still searched, after java_home', () => {
+		const all = lookup.javaSearchDirs({}, 'darwin', []);
+		const preferred = lookup.javaPreferredDirs({}, 'darwin', []);
+		assert.deepStrictEqual(all.slice(0, preferred.length), preferred, 'preferred first');
+		for (const dir of lookup.COMMON_BIN_DIRS) {
+			assert.ok(all.includes(dir), `${dir} is still reachable`);
+		}
+	});
+
+	test('the lockfile records the version being released', () => {
+		// npm install before the version bump leaves the lock at the old version,
+		// and nothing else in the release check looks at it.
+		const root = path.join(__dirname, '..');
+		const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+		const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+		assert.strictEqual(lock.version, pkg.version);
+		assert.strictEqual(lock.packages[''].version, pkg.version);
+		assert.strictEqual(fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim(), pkg.version);
+	});
+
 	test('Java resolution never returns nothing, so the run can still be attempted', async () => {
 		// A bare `java` is still right on a machine whose PATH is set up; it is only
 		// wrong as the *only* strategy. Returning null would turn "we could not find
@@ -2868,6 +2901,14 @@ suite('AI attribution trailers are refused before they reach history', () => {
 
 	test('a human co-author is left alone', () => {
 		assert.strictEqual(check('feat: x\n\nCo-authored-by: Jane Roe <jane@example.com>\n'), true);
+	});
+
+	test('a person with a vendor email address is not a bot', () => {
+		// Matching a whole vendor domain rejects employees. The rule is the mailbox.
+		assert.strictEqual(check('x\n\nCo-authored-by: Alice <alice@openai.com>\n'), true);
+		assert.strictEqual(check('x\n\nCo-authored-by: Bob <bob@anthropic.com>\n'), true);
+		assert.strictEqual(check('x\n\nCo-authored-by: Claude Bot <noreply@anthropic.com>\n'), false);
+		assert.strictEqual(check('x\n\nCo-authored-by: agent <agent@cursor.com>\n'), false);
 	});
 
 	test('a person whose name contains an assistant name is not a bot', () => {

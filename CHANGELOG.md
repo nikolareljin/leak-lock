@@ -4,7 +4,9 @@
 
 ### Fixed
 - Find Java and git-filter-repo on macOS without a shell profile edit. A VS Code launched from Finder inherits no shell PATH, so both tools were reported missing on machines that had them; they now use the same absolute-path search the scan engines already used.
-- Search Homebrew's keg-only openjdk prefixes, JAVA_HOME and /usr/libexec/java_home for a JVM, so brew install openjdk works without linking java onto PATH.
+- Search Homebrew's keg-only openjdk prefixes, JAVA_HOME and /usr/libexec/java_home for a JVM, so brew install openjdk works without linking java onto PATH. The Java-specific locations are searched before the common ones, because macOS ships an always-executable /usr/bin/java stub that would otherwise be resolved first and prevent java_home from ever being consulted.
+- Match the installer that actually ran when reporting that git-filter-repo still cannot be found. A Homebrew install was told to add a Python user-scripts directory to PATH, which had nothing to do with what it did.
+- Record the released version in package-lock.json, which still named the previous one.
 - Ask Python where pip install --user actually writes instead of assuming ~/.local/bin, so a git-filter-repo installed by macOS's framework Python into a versioned directory under ~/Library/Python is found.
 - Prefer Homebrew for installing git-filter-repo on macOS when it is present, since Homebrew's Python refuses a --user pip install under PEP 668.
 - Run BFG through the resolved Java rather than a bare java, so a rewrite cannot fail on a machine whose dependency panel reported Java as present.
