@@ -304,7 +304,15 @@ locations specific to them:
 | Tool | Also searched |
 |---|---|
 | `java` | `$JAVA_HOME/bin`, Homebrew's keg-only `openjdk` prefixes (`/opt/homebrew/opt/openjdk*/bin`, `/usr/local/opt/openjdk*/bin`), then `/usr/libexec/java_home` — macOS's own resolver, which knows about every JDK under `/Library/Java/JavaVirtualMachines` |
-| `git-filter-repo` | the Python user scripts directory that `sysconfig` reports, which is `~/Library/Python/<version>/bin` on macOS's framework Python and **not** `~/.local/bin` |
+| `git-filter-repo` | the Python user scripts directory that `sysconfig` reports, which is `~/Library/Python/<version>/bin` on macOS's framework Python and **not** `~/.local/bin`. The interpreter used to ask is itself resolved by absolute path, so the probe is not defeated by the same missing `PATH` |
+
+Every `openjdk*` keg Homebrew has installed is discovered by reading its `opt`
+directory, so a version newer than anything hard-coded here is still found, and
+`openjdk@8` is included because BFG is documented as needing Java 8+.
+
+The **Install git-filter-repo** button names the installer it will actually run --
+Homebrew on a Mac that has it, pip otherwise -- because both the label and the
+command come from the same call.
 
 Override with `leakLock.java.path` when a specific JVM is wanted. There is no equivalent
 setting for git-filter-repo: it is invoked as `git filter-repo` when git can see it, and

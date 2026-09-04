@@ -53,11 +53,58 @@ const COMMON_BIN_DIRS = [
  * somewhere `openjdk` alone would not be found. Both Homebrew roots are listed:
  * `/opt/homebrew` on Apple silicon, `/usr/local` on Intel.
  */
+const BREW_ROOTS = ['/opt/homebrew', '/usr/local'];
+
+// `openjdk@8` is listed because the panel states "Java 8+ recommended" for BFG,
+// so a JDK this extension supports must not be the one the search misses.
+const JAVA_KEG_FORMULAE = ['openjdk', 'openjdk@25', 'openjdk@21', 'openjdk@17', 'openjdk@11', 'openjdk@8'];
+
 const JAVA_KEG_BIN_DIRS = [];
-for (const brewRoot of ['/opt/homebrew', '/usr/local']) {
-    for (const formula of ['openjdk', 'openjdk@25', 'openjdk@21', 'openjdk@17', 'openjdk@11']) {
+for (const brewRoot of BREW_ROOTS) {
+    for (const formula of JAVA_KEG_FORMULAE) {
         JAVA_KEG_BIN_DIRS.push(path.join(brewRoot, 'opt', formula, 'bin'));
     }
+}
+
+/**
+ * Every `openjdk*` keg Homebrew has actually linked, newest first.
+ *
+ * The static list above can only ever name the versions known when it was
+ * written; `openjdk@26` will exist and would be invisible. Reading the `opt`
+ * directory covers every version, present and future, and costs one readdir on a
+ * path that usually does not exist. Sorted descending so a newer JDK is preferred
+ * over an older one, and `openjdk` (unversioned, the current release) sorts last
+ * by that rule so it is placed first explicitly.
+ *
+ * Falls back to nothing on any error: the static list still applies, so a
+ * permission-denied readdir degrades to the previous behaviour rather than
+ * throwing during a dependency probe.
+ *
+ * @param {string[]} [roots] Homebrew prefixes to inspect
+ * @returns {string[]} absolute bin directories
+ */
+function discoverJavaKegDirs(roots = BREW_ROOTS) {
+    const dirs = [];
+    for (const root of roots) {
+        const optDir = path.join(root, 'opt');
+        let entries;
+        try {
+            entries = fs.readdirSync(optDir);
+        } catch {
+            continue;
+        }
+        const kegs = entries
+            .filter(name => /^openjdk(@[\d.]+)?$/.test(name))
+            .sort((a, b) => {
+                if (a === 'openjdk') { return -1; }
+                if (b === 'openjdk') { return 1; }
+                return b.localeCompare(a, undefined, { numeric: true });
+            });
+        for (const keg of kegs) {
+            dirs.push(path.join(optDir, keg, 'bin'));
+        }
+    }
+    return dirs;
 }
 
 const resolvedBinaries = new Map();
@@ -137,22 +184,34 @@ function resetBinaryCache() {
 /**
  * Directories to search for a JVM, most specific first.
  *
- * Pure: derived from `env` and `platform` alone and never touches the filesystem,
- * so the ordering is assertable in a test on any host. `JAVA_HOME` comes first
- * because a user who set it has stated which JVM they mean, and the keg prefixes
- * come before the generic bin directories because on macOS the generic
- * `/usr/bin/java` is a stub that reports no JVM rather than a real runtime.
+ * `JAVA_HOME` comes first because a user who set it has stated which JVM they
+ * mean, and the keg prefixes come before the generic bin directories because on
+ * macOS the generic `/usr/bin/java` is a stub that reports no JVM rather than a
+ * real runtime.
+ *
+ * Reads the filesystem only to discover installed kegs, and only on darwin. Pass
+ * `kegDirs` to make the result depend on `env` and `platform` alone, which is how
+ * the ordering is asserted on a host that has no Homebrew.
  *
  * @param {object} [env] defaults to `process.env`
  * @param {string} [platform] defaults to `process.platform`
+ * @param {string[]|null} [kegDirs] discovered keg bin dirs; null discovers them
  */
-function javaSearchDirs(env = process.env, platform = process.platform) {
+function javaSearchDirs(env = process.env, platform = process.platform, kegDirs = null) {
     const dirs = [];
     if (env && env.JAVA_HOME) {
         dirs.push(path.join(env.JAVA_HOME, 'bin'));
     }
     if (platform === 'darwin') {
-        dirs.push(...JAVA_KEG_BIN_DIRS);
+        // Discovered kegs first (they are what is actually installed), then the
+        // static names, so a version nobody thought to list is still found and the
+        // list still applies when the directory cannot be read.
+        const discovered = kegDirs === null ? discoverJavaKegDirs() : kegDirs;
+        for (const dir of [...discovered, ...JAVA_KEG_BIN_DIRS]) {
+            if (!dirs.includes(dir)) {
+                dirs.push(dir);
+            }
+        }
     }
     dirs.push(...COMMON_BIN_DIRS);
     return dirs;
@@ -227,7 +286,13 @@ async function resolveJavaCommand(explicit) {
  */
 async function findPosixUserScriptsDir() {
     const script = "import sysconfig; print(sysconfig.get_path('scripts', 'posix_user'))";
-    for (const cmd of ['python3', 'python']) {
+    for (const name of ['python3', 'python']) {
+        // Resolve the interpreter the same way everything else here is resolved.
+        // Spawning a bare `python3` would reproduce, one level down, the exact
+        // failure this module exists to fix: in a Finder-launched VS Code the
+        // probe would never run, and the launcher it was meant to locate would
+        // still be reported missing.
+        const cmd = findInDirs(name, COMMON_BIN_DIRS) || name;
         try {
             const { stdout } = await execFileAsync(cmd, ['-c', script], { timeout: 10000 });
             const dir = String(stdout).trim();
@@ -241,7 +306,10 @@ async function findPosixUserScriptsDir() {
 
 module.exports = {
     COMMON_BIN_DIRS,
+    BREW_ROOTS,
+    JAVA_KEG_FORMULAE,
     JAVA_KEG_BIN_DIRS,
+    discoverJavaKegDirs,
     addBinarySearchDir,
     findInDirs,
     resolveBinary,
