@@ -197,7 +197,7 @@ function resetBinaryCache() {
  * @param {string} [platform] defaults to `process.platform`
  * @param {string[]|null} [kegDirs] discovered keg bin dirs; null discovers them
  */
-function javaSearchDirs(env = process.env, platform = process.platform, kegDirs = null) {
+function javaPreferredDirs(env = process.env, platform = process.platform, kegDirs = null) {
     const dirs = [];
     if (env && env.JAVA_HOME) {
         dirs.push(path.join(env.JAVA_HOME, 'bin'));
@@ -213,8 +213,17 @@ function javaSearchDirs(env = process.env, platform = process.platform, kegDirs 
             }
         }
     }
-    dirs.push(...COMMON_BIN_DIRS);
     return dirs;
+}
+
+/**
+ * The full ordered search path: Java-specific locations, then the common ones.
+ *
+ * Kept as one list for callers that just want to know where Java is looked for.
+ * `resolveJavaCommand` deliberately does NOT use it in one pass -- see there.
+ */
+function javaSearchDirs(env = process.env, platform = process.platform, kegDirs = null) {
+    return [...javaPreferredDirs(env, platform, kegDirs), ...COMMON_BIN_DIRS];
 }
 
 /**
@@ -258,15 +267,30 @@ async function resolveJavaCommand(explicit) {
     if (explicit) {
         return explicit;
     }
-    const found = findInDirs('java', javaSearchDirs());
-    if (found) {
-        return found;
+
+    // Three passes, in this order, and the order is the whole point.
+    //
+    // macOS ships /usr/bin/java: an always-executable stub that prints "No Java
+    // runtime present" and exits non-zero. It lives in COMMON_BIN_DIRS, so a
+    // single pass over the full list resolved to the stub on every Mac and
+    // java_home -- the authoritative resolver -- was never reached. A JDK
+    // installed by Temurin or an Oracle installer registers with java_home and
+    // puts nothing on PATH, so that is exactly the case it was added for.
+    const preferred = findInDirs('java', javaPreferredDirs());
+    if (preferred) {
+        return preferred;
     }
+
     if (process.platform === 'darwin') {
         const viaJavaHome = await findJavaViaJavaHome();
         if (viaJavaHome) {
             return viaJavaHome;
         }
+    }
+
+    const common = findInDirs('java', COMMON_BIN_DIRS);
+    if (common) {
+        return common;
     }
     return 'java';
 }
@@ -332,6 +356,7 @@ module.exports = {
     resolveBinary,
     resolveDockerCommand,
     resetBinaryCache,
+    javaPreferredDirs,
     javaSearchDirs,
     findJavaViaJavaHome,
     resolveJavaCommand,
