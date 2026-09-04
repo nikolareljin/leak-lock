@@ -2951,8 +2951,35 @@ suite('AI attribution trailers are refused before they reach history', () => {
 		}
 	}
 
+	function reason(message) {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-msg-'));
+		const file = path.join(dir, 'COMMIT_EDITMSG');
+		fs.writeFileSync(file, message);
+		try {
+			execFileSync(hook, [file], { stdio: 'pipe' });
+			return '';
+		} catch (error) {
+			return String(error.stderr || '');
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
 	test('the hook is installed and executable', () => {
 		fs.accessSync(hook, fs.constants.X_OK);
+	});
+
+	test('each trailer kind is refused for its own, accurate reason', () => {
+		// Only Co-authored-by reaches the contributors graph. Telling someone a DCO
+		// sign-off needs a history rewrite for attribution is untrue, and a hook that
+		// misstates its own rule is one people learn to bypass.
+		const coauthor = reason('x\n\nCo-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>\n');
+		assert.match(coauthor, /contributors graph counts Co-authored-by/);
+		assert.ok(!/sign-off is a statement/.test(coauthor), 'no sign-off text for a co-author');
+
+		const signoff = reason('x\n\nSigned-off-by: dependabot[bot] <support@github.com>\n');
+		assert.match(signoff, /does not reach the contributors graph/);
+		assert.ok(!/Removing one later/.test(signoff), 'no rewrite claim for a sign-off');
 	});
 
 	test('an AI co-author trailer is rejected', () => {
