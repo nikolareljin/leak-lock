@@ -9275,8 +9275,12 @@ class LeakLockPanel {
                         push: false,
                         progress: (message) => progress.report({ increment: 10, message }),
                         rewrite: async () => {
+                            // Resolved, like the path-removal flow: this is the main
+                            // cleanup, so a bare "java" here failed the rewrite on a
+                            // Mac whose dependency panel had just ticked Java present.
+                            const java = await this._resolveJavaCommand();
                             const bfgResult = await execFileAsync(
-                                "java",
+                                java,
                                 ["-jar", bfgPath, "--replace-text", replacementsFile],
                                 { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
                             );
