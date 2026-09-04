@@ -1,7 +1,7 @@
 // Main area panel provider that uses the Webview API to display security issues in the main editor area.
 
 const vscode = require('vscode');
-const { exec, spawn, execFile } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 const path = require('path');
 const fs = require('fs');
@@ -74,7 +74,7 @@ const SENSITIVE_DIRECTORIES = {
 function runDockerCommand(args, options = {}) {
     const { timeout, ...spawnOptions } = options;
     return new Promise((resolve, reject) => {
-        const dockerProcess = spawn('docker', args, {
+        const dockerProcess = spawn(binaryLookup.resolveDockerCommand(), args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             ...spawnOptions
         });
@@ -6431,13 +6431,18 @@ class LeakLockPanel {
 
     // Essential utility methods for scanning functionality
     async _checkDockerAvailability() {
+        // Resolved, and execFile rather than a shell: this gate decides whether an
+        // engine runs at all, so answering "not in PATH" on a machine with Docker
+        // silently drops a scanner. Same command the sidebar and the engines use, so
+        // the panel and the dependency list cannot disagree.
+        const docker = binaryLookup.resolveDockerCommand();
         return new Promise((resolve) => {
-            exec('docker --version', (error, stdout) => {
+            execFile(docker, ['--version'], (error, stdout) => {
                 if (error) {
                     resolve({ available: false, error: 'Docker not installed or not in PATH' });
                 } else {
                     // Check if Docker daemon is running
-                    exec('docker info', (daemonError) => {
+                    execFile(docker, ['info'], (daemonError) => {
                         if (daemonError) {
                             resolve({ available: false, error: 'Docker daemon not running' });
                         } else {
@@ -6478,7 +6483,7 @@ class LeakLockPanel {
     async _pullNoseyParkerImage(settings) {
         const cfg = settings || this._getScanEngineSettings();
         return new Promise((resolve) => {
-            execFile('docker', ['pull', cfg.image], { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
+            execFile(binaryLookup.resolveDockerCommand(), ['pull', cfg.image], { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
                 if (!error) {
                     resolve({ pulled: true, error: null });
                     return;

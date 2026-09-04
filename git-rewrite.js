@@ -389,15 +389,34 @@ async function detectFilterRepo() {
  * `brew install git-filter-repo` lands in a Homebrew bin directory that is already
  * searched, so the tool is usable with no shell-profile edit. An explicit
  * interpreter still wins — a caller naming one has stated which Python it means.
+ *
+ * The pip fallback resolves its interpreter too. Returning a bare `python3` would
+ * leave the install button failing before pip even starts on the machine this is
+ * all for: no Homebrew, and a Python at /usr/local/bin that the GUI process's PATH
+ * does not cover.
+ *
+ * `platform` and `searchDirs` are injectable because CI here is Linux-only, so
+ * neither macOS branch is otherwise reachable by a test.
+ *
+ * @param {string|null} [python] an explicit interpreter, which wins outright
+ * @param {object} [options]
+ * @param {string} [options.platform] defaults to `process.platform`
+ * @param {string[]} [options.searchDirs] directories to resolve brew/python in
  */
-function buildFilterRepoInstallCommand(python = null) {
-    if (!python && process.platform === 'darwin') {
-        const brew = binaryLookup.findInDirs('brew', binaryLookup.COMMON_BIN_DIRS);
+function buildFilterRepoInstallCommand(python = null, options = {}) {
+    const {
+        platform = process.platform,
+        searchDirs = binaryLookup.COMMON_BIN_DIRS
+    } = options;
+
+    if (!python && platform === 'darwin') {
+        const brew = binaryLookup.findInDirs('brew', searchDirs);
         if (brew) {
             return { command: brew, args: ['install', 'git-filter-repo'] };
         }
     }
-    const interpreter = python || (process.platform === 'win32' ? 'python' : 'python3');
+    const name = python || (platform === 'win32' ? 'python' : 'python3');
+    const interpreter = python || binaryLookup.findInDirs(name, searchDirs) || name;
     return { command: interpreter, args: ['-m', 'pip', 'install', '--user', '--upgrade', 'git-filter-repo'] };
 }
 
