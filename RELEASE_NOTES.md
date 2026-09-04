@@ -1,35 +1,27 @@
-# Release notes, v0.9.0
-
-## Added
-- Import a previous scan report and check each finding as resolved, still present, or unverifiable.
-- Record repository identity in exported reports and enforce it on import, using root commits and origin URL rather than local path.
-- Offer to switch to the repository a report belongs to when that repository is available on this machine.
-- Show findings introduced since an imported report, including the commit that first introduced each value.
-- Keep imported findings as historical records, separate from current cleanup selections.
-- Build commit permalinks for self-hosted Git remotes, with GitHub, GitLab, Bitbucket, and Gitea URL layouts plus leakLock.git.customHostTypes overrides.
-- Add VERSION and RELEASE_NOTES.md as release sources, with tooling that generates GitHub Release text and annotated tag notes from the same file.
-
-## Changed
-- Increase the default per-engine scan timeout from 300 seconds to 600 seconds for larger repositories.
-- Refresh the README first screen with current badges, project positioning, screenshot, and release workflow links.
-- Publish releases from the checked-in version and release notes; duplicate tags now fail fast instead of auto-bumping in CI.
-- Allow the release notes tool to sync the current release into CHANGELOG.md while preserving the existing heading style.
+# Release notes, v0.9.1
 
 ## Fixed
-- Say when a report carries nothing to recognise its findings by, so what is listed as new since it is not read as certain.
-- Build commit permalinks over the scheme the remote names, so an http-only self-hosted instance gets a link that answers.
-- Strip credentials from the origin URL before recording it, so an exported report never carries a token from an HTTPS remote.
-- Check a commit permalink against the layout and repository it claims, not only its hostname, before opening it in a browser.
-- Stop matching a value that spans lines, such as a PEM key, against any file that merely shares one of its lines.
-- Run verification searches with object replacement disabled, so rewritten commits cannot hide original objects.
-- Treat redacted reports, decoded scanner values, values recorded only in shortened form, and bounded checks as unverifiable instead of resolved.
-- Refuse cross-repository report imports unless the user explicitly compares anyway.
-- Prevent a verification in flight from overwriting a newer report result.
-- Avoid rendering unreadable dates as Invalid Date.
-- Stop failed searches from logging the value they searched for.
-- Compare SSH remotes consistently when the URL includes a port.
-- Read repository identity from scan results instead of current selection state.
-- Find and run the Windows git-filter-repo executable from user-level Python installs on Windows, even when the user Scripts directory is not on PATH.
-- Label Windows user-level Python discovery distinctly from a normal PATH launcher.
-- Keep Bitbucket custom-host documentation aligned with the URL layout the extension builds.
-- Treat custom host type keys case-insensitively.
+- Find Java and git-filter-repo on macOS without a shell profile edit. A VS Code launched from Finder inherits no shell PATH, so both tools were reported missing on machines that had them; they now use the same absolute-path search the scan engines already used.
+- Search Homebrew's keg-only openjdk prefixes, JAVA_HOME and /usr/libexec/java_home for a JVM, so brew install openjdk works without linking java onto PATH. The Java-specific locations are searched before the common ones, because macOS ships an always-executable /usr/bin/java stub that would otherwise be resolved first and prevent java_home from ever being consulted.
+- Match the installer that actually ran when reporting that git-filter-repo still cannot be found. A Homebrew install was told to add a Python user-scripts directory to PATH, which had nothing to do with what it did.
+- Record the released version in package-lock.json, which still named the previous one.
+- Ask Python where pip install --user actually writes instead of assuming ~/.local/bin, so a git-filter-repo installed by macOS's framework Python into a versioned directory under ~/Library/Python is found. Every interpreter is asked rather than only the first that answers, and sibling version directories are searched too, because the scripts directory is per Python version: an install made by 3.12 is not where 3.9 reports.
+- Prefer Homebrew for installing git-filter-repo on macOS when it is present, since Homebrew's Python refuses a --user pip install under PEP 668.
+- Run BFG through the resolved Java rather than a bare java in both flows, path removal and secret cleanup, so a rewrite cannot fail on a machine whose dependency panel reported Java as present.
+- Resolve Java and Docker on the activation path too. checkDependencies and installDependencies still probed with a shell and a bare name, so activation reported Java and Docker missing on the machines this release is about, while the sidebar reported them present.
+- Use one resolved Docker client everywhere. The dependency panel, the scan gate, the engine runner, the image pull and the file scan each invoked a bare docker, so they could disagree about whether Docker exists and an engine could be skipped on a machine able to run it. A test asserts no call site reintroduces a bare name.
+- Resolve the interpreter for the pip install fallback as well, so the install button does not fail before pip starts on a Mac without Homebrew.
+- Search the shared directories on Windows too when locating git-filter-repo. The Windows path returned early, so a launcher in an already-searched common directory such as Chocolatey's bin was findable on every platform except that one.
+- Stop running Docker and the BFG download through a shell. The image pull, image removal and volume cleanup interpolated values into a command line, and the download depended on curl being present; the BFG download now uses the same downloader the engine installs use.
+- Discover every openjdk keg Homebrew has installed by reading its opt directory, rather than matching a fixed list of versions, and include openjdk@8 since BFG is documented as needing Java 8+.
+- Resolve the Python interpreter before spawning it to ask where pip installed things, so the probe is not defeated by the same missing PATH it exists to work around.
+- Name the installer the git-filter-repo button will actually run. Label and command now come from one call, so the button cannot offer pip and then invoke Homebrew.
+- Correct the macOS Java install guidance, which recommended the keg-only formula that produced the failure it was shown next to.
+
+## Added
+- A leakLock.java.path setting, to point at a specific JVM.
+- A commit-msg hook that refuses AI attribution trailers, reading git's own trailer block so body prose that quotes one is not mistaken for one. GitHub's contributors graph counts Co-authored-by lines, so one trailer adds a bot to the contributors page and removing it later costs a rewrite of every commit that follows. The match is on the address, not on words in the line, so a co-author who happens to be named Claude or Cursor is unaffected.
+
+## Changed
+- Update @humanfs/node to 0.16.8 (GHSA-p498-v437-472g) and bump eslint and @types/node. Development-only dependencies; packaging excludes them, so no published extension was affected.
+- Exclude @types/vscode from grouped Dependabot bumps. It is pinned to engines.vscode on purpose, and raising it to satisfy a types update would drop support for every user below that VS Code build.

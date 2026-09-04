@@ -16,11 +16,36 @@ const engineInstall = require('./engine-install');
 // Docker will.
 const engineDocker = require('./engine-docker');
 const gitRewrite = require('./git-rewrite');
+// Absolute-path lookup for tools PATH does not cover. Shared with scan-engines and
+// git-rewrite so the Java, engine and git-filter-repo probes cannot disagree about
+// whether something is installed.
+const binaryLookup = require('./binary-lookup');
 // Keywords are user-supplied and land in both element text and attribute values,
 // so they must be escaped before interpolation into the webview HTML. Shared with
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 const credentialInspect = require('./credential-inspect');
+
+/**
+ * The `java` to run: the configured path, or whatever the lookup can find.
+ *
+ * Bare `java` was the only strategy here, and on macOS it is close to the worst one.
+ * Homebrew's openjdk is keg-only so it is never linked onto PATH, and a
+ * Finder-launched VS Code inherits no shell PATH at all — so a machine with a
+ * perfectly good JDK reported "Java not installed", and the panel's own advice
+ * (`brew install openjdk@21`) reproduced the failure rather than fixing it. Issue #121.
+ *
+ * @returns {Promise<string>} an absolute path when one is found, else `'java'`
+ */
+async function resolveJavaCommand() {
+    // Read defensively: this module is exercised in tests where the workspace
+    // configuration may not be registered.
+    let configured = '';
+    try {
+        configured = vscode.workspace.getConfiguration('leakLock').get('java.path') || '';
+    } catch { /* fall through to the search */ }
+    return binaryLookup.resolveJavaCommand(configured || undefined);
+}
 
 /**
  * Java's version banner, from whichever stream it lands on.
@@ -35,7 +60,8 @@ const credentialInspect = require('./credential-inspect');
  */
 async function readJavaVersionBanner() {
     const execFileAsync = require('util').promisify(require('child_process').execFile);
-    const { stdout, stderr } = await execFileAsync('java', ['-version'], { timeout: 15000 });
+    const java = await resolveJavaCommand();
+    const { stdout, stderr } = await execFileAsync(java, ['-version'], { timeout: 15000 });
     return `${stderr || ''}${stdout || ''}`.trim().split('\n')[0] || 'installed, version not reported';
 }
 
@@ -884,6 +910,14 @@ class LeakLockSidebarProvider {
         // Installed but confined is not ready: a snap build cannot read a repository
         // outside $HOME, so the rewrite fails before it touches a commit.
         const filterRepoStatus = filterRepo.installed ? (filterRepo.confined ? '⚠️' : '✅') : '⚠️';
+        // Label and action are derived from the SAME call the button runs, so the
+        // button cannot promise pip and then invoke Homebrew. Naming the installer
+        // matters here: it is what the user has to uninstall or re-run by hand.
+        const filterRepoInstall = gitRewrite.buildFilterRepoInstallCommand();
+        const filterRepoInstaller = /(^|[\\/])brew$/.test(filterRepoInstall.command) ? 'Homebrew' : 'pip';
+        const filterRepoInstallCommand = filterRepoInstaller === 'Homebrew'
+            ? 'brew install git-filter-repo'
+            : `${filterRepoInstall.command} ${filterRepoInstall.args.join(' ')}`;
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
         // BFG without a JVM is not a tool, it is a file. Marked unavailable rather than
         // merely "not downloaded", which would suggest downloading it would help.
@@ -994,10 +1028,10 @@ class LeakLockSidebarProvider {
                         <div style="font-size: 11px; margin-top: 4px;">
                             A snap cannot read a repository outside your home directory, so a cleanup fails
                             before it changes anything. Install the unconfined tool instead:
-                            <code>python3 -m pip install --user git-filter-repo</code>
+                            <code>${escapeHtml(filterRepoInstallCommand)}</code>
                             (<code>sudo snap remove git-filter-repo</code> first, or it stays first on PATH).
                         </div>
-                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (pip)</button>
+                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (${filterRepoInstaller})</button>
                     </div>
                 ` : ''}
                 ${!filterRepo.installed ? `
@@ -1007,7 +1041,7 @@ class LeakLockSidebarProvider {
                             Without it the Git-only cleanup cannot rewrite history. The prepared script and the
                             manual commands are still shown, and BFG remains available if you have Java.
                         </div>
-                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (pip)</button>
+                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (${filterRepoInstaller})</button>
                     </div>
                 ` : ''}
 
@@ -1037,9 +1071,10 @@ class LeakLockSidebarProvider {
                                 <div class="install-platform">
                                     <strong>🍎 macOS:</strong>
                                     <ol>
-                                        <li>Using Homebrew: <code>brew install openjdk@21</code></li>
+                                        <li>Recommended: <code>brew install --cask temurin</code> — installs a system JDK that needs no PATH changes</li>
+                                        <li>Or: <code>brew install openjdk@21</code>. This formula is <em>keg-only</em>: Homebrew deliberately does not put <code>java</code> on your PATH. Leak Lock searches Homebrew's <code>openjdk</code> prefixes directly, so no shell-profile edit is needed here — but <code>java -version</code> in a terminal will still say "not found" until you add it yourself.</li>
                                         <li>Or download from <a href="https://adoptium.net/temurin/releases/" target="_blank">Adoptium</a></li>
-                                        <li>Verify: <code>java -version</code></li>
+                                        <li>If Leak Lock still cannot find it, set <code>leakLock.java.path</code> to the executable.</li>
                                     </ol>
                                 </div>
                                 <div class="install-platform">
@@ -1312,14 +1347,17 @@ class LeakLockSidebarProvider {
     }
 
     /**
-     * Install git-filter-repo with pip, into the user site rather than a system
-     * prefix, so no elevation is needed and PEP 668's "externally managed
-     * environment" refusal does not apply.
+     * Install git-filter-repo, using whichever installer suits the platform:
+     * Homebrew on macOS when it is present, otherwise pip into the user site
+     * rather than a system prefix, so no elevation is needed and PEP 668's
+     * "externally managed environment" refusal does not apply.
      *
-     * The install is verified by re-probing rather than by trusting pip's exit
+     * The install is verified by re-probing rather than by trusting the exit
      * code: a successful install into a directory that is not on this VS Code
      * window's PATH is indistinguishable from no install at all, from here, and
-     * that is precisely the case the user has to be told about.
+     * that is precisely the case the user has to be told about. `detectFilterRepo`
+     * now searches those directories itself, so this warning means the tool is
+     * genuinely unreachable, not merely off PATH.
      */
     async _installFilterRepo() {
         const execFileAsync = require('util').promisify(require('child_process').execFile);
@@ -1353,19 +1391,31 @@ class LeakLockSidebarProvider {
             );
             return;
         }
-        // pip put it somewhere this process cannot see - almost always ~/.local/bin
-        // missing from PATH, and a VS Code window started from the desktop never
-        // picks up a PATH change made in a terminal.
-        // The user scripts directory differs per platform, and naming the wrong one
-        // sends people editing a PATH entry that was never involved.
-        const scriptsDir = process.platform === 'win32'
-            ? 'your Python user Scripts directory (%APPDATA%\\Python\\PythonXY\\Scripts) — '
-                + '`python -m site --user-base` prints its parent'
-            : 'your user scripts directory (usually ~/.local/bin) — '
-                + '`python3 -m site --user-base` prints its parent';
+        // The installer exited 0 and the re-probe still cannot reach the tool. That
+        // probe already searches ~/.local/bin, the Homebrew prefixes and the Python
+        // user scripts directory that sysconfig reports, so this is no longer the
+        // ordinary "off PATH" case — it means the launcher is somewhere none of
+        // those cover.
+        // The remedy has to match the installer that just ran. Telling someone who
+        // installed through Homebrew to add a Python user-scripts directory to PATH
+        // names a directory with nothing to do with what they did -- and the same
+        // applies to naming ~/.local/bin on the macOS system Python, which writes to
+        // ~/Library/Python/<version>/bin instead.
+        const usedBrew = /(^|[\\/])brew$/.test(command);
+        const remedy = usedBrew
+            ? 'Homebrew installed it, but Leak Lock cannot see it. Check `brew --prefix` is one of '
+                + 'the searched locations, or reinstall with `brew reinstall git-filter-repo`'
+            : process.platform === 'win32'
+                ? 'Add your Python user Scripts directory (%APPDATA%\\Python\\PythonXY\\Scripts) to PATH — '
+                    + '`python -m site --user-base` prints its parent'
+                : process.platform === 'darwin'
+                    ? 'Add your user scripts directory (~/.local/bin, or ~/Library/Python/<version>/bin '
+                        + 'for the system Python) to PATH — `python3 -m site --user-base` prints its parent'
+                    : 'Add your user scripts directory (usually ~/.local/bin) to PATH — '
+                        + '`python3 -m site --user-base` prints its parent';
         vscode.window.showWarningMessage(
-            `pip reported success, but git-filter-repo is still not on this window's PATH. Add ${scriptsDir} `
-            + 'to PATH, then reload the window.'
+            `${command} reported success, but git-filter-repo still cannot be located. ${remedy}, `
+            + 'then reload the window.'
         );
     }
 
@@ -1388,13 +1438,17 @@ class LeakLockSidebarProvider {
 
         // Check Docker
         try {
-            const dockerVersion = await execFileAsync('docker', ['--version']);
+            // Resolved once, and the same command is used for the daemon check and
+            // the image inspect below: a probe that finds Docker and a follow-up that
+            // does not would report "installed" beside "daemon not running".
+            const docker = binaryLookup.resolveDockerCommand();
+            const dockerVersion = await execFileAsync(docker, ['--version']);
             this._dependencyStatus.docker.installed = true;
             this._dependencyStatus.docker.version = dockerVersion.stdout.trim();
 
             // Check if Docker daemon is running
             try {
-                await execFileAsync('docker', ['info']);
+                await execFileAsync(docker, ['info']);
             } catch {
                 this._dependencyStatus.docker.error = 'Docker daemon not running';
                 this._dependencyStatus.docker.installed = false;
@@ -1418,7 +1472,7 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.noseyparker.error = 'Cannot tell — Docker is unavailable, so the image cannot be checked or pulled';
         } else {
             try {
-                await execFileAsync('docker', engineDocker.buildImageInspectArgs(scanEngineConfig.NOSEYPARKER_IMAGE));
+                await execFileAsync(binaryLookup.resolveDockerCommand(), engineDocker.buildImageInspectArgs(scanEngineConfig.NOSEYPARKER_IMAGE));
                 this._dependencyStatus.noseyparker.installed = true;
             } catch {
                 this._dependencyStatus.noseyparker.error = 'Nosey Parker Docker image not pulled';
@@ -1774,7 +1828,7 @@ class LeakLockSidebarProvider {
                     const execFileAsync = require('util').promisify(require('child_process').execFile);
 
                     try {
-                        await execFileAsync('docker', ['--version']);
+                        await execFileAsync(binaryLookup.resolveDockerCommand(), ['--version']);
                     } catch {
                         throw new Error('Docker is not installed or not accessible. Please install Docker first.');
                     }
@@ -1783,7 +1837,7 @@ class LeakLockSidebarProvider {
 
                     // Pull the Nosey Parker Docker image
                     await execFileAsync(
-                        'docker',
+                        binaryLookup.resolveDockerCommand(),
                         engineDocker.buildImagePullArgs(scanEngineConfig.NOSEYPARKER_IMAGE),
                         { timeout: 300000 }
                     );
@@ -1964,7 +2018,7 @@ class LeakLockSidebarProvider {
             progress?.report({ message: `Pulling ${image}…` });
             const { execFile } = require('child_process');
             const execFileAsync = require('util').promisify(execFile);
-            await execFileAsync('docker', engineDocker.buildImagePullArgs(image), { timeout: 600000 });
+            await execFileAsync(binaryLookup.resolveDockerCommand(), engineDocker.buildImagePullArgs(image), { timeout: 600000 });
 
             // Verified the same way a binary install is: by running it. A pulled image
             // that cannot execute here is not an installed engine.
@@ -1973,7 +2027,7 @@ class LeakLockSidebarProvider {
             // image was just pulled, so re-resolving would repeat an `image inspect` and
             // a probe run to rediscover what this line already knows.
             const engine = scanEngines.getEngine(engineId);
-            const version = await engine.version({ execution: { mode: 'docker', command: 'docker', image } });
+            const version = await engine.version({ execution: { mode: 'docker', command: binaryLookup.resolveDockerCommand(), image } });
             if (!version) {
                 throw new Error(`${image} was pulled but did not report a version when run`);
             }

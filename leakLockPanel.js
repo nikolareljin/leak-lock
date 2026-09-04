@@ -1,7 +1,7 @@
 // Main area panel provider that uses the Webview API to display security issues in the main editor area.
 
 const vscode = require('vscode');
-const { exec, spawn, execFile } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 const path = require('path');
 const fs = require('fs');
@@ -9,6 +9,8 @@ const os = require('os');
 const gitRewrite = require('./git-rewrite');
 const scanEngineConfig = require('./scan-engine-config');
 const scanEngines = require('./scan-engines');
+// Absolute-path lookup for tools PATH does not cover; see binary-lookup.js.
+const binaryLookup = require('./binary-lookup');
 const redactionRules = require('./redaction-rules');
 const scanBaseline = require('./scan-baseline');
 const valueEncodings = require('./value-encodings');
@@ -72,7 +74,7 @@ const SENSITIVE_DIRECTORIES = {
 function runDockerCommand(args, options = {}) {
     const { timeout, ...spawnOptions } = options;
     return new Promise((resolve, reject) => {
-        const dockerProcess = spawn('docker', args, {
+        const dockerProcess = spawn(binaryLookup.resolveDockerCommand(), args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             ...spawnOptions
         });
@@ -2741,9 +2743,14 @@ class LeakLockPanel {
                                 this._escapeRegex(t.base)
                             ])
                             : [this._buildBfgArgs(targets)];
+                        // Same resolution the dependency panel used to report Java as
+                        // present: a Finder-launched VS Code on macOS has no shell PATH,
+                        // so a bare `java` here would fail on a machine the panel just
+                        // ticked. Resolved once per rewrite, not per BFG run.
+                        const java = await this._resolveJavaCommand();
                         for (const args of runs) {
                             await execFileAsync(
-                                'java',
+                                java,
                                 ['-jar', bfgPath, ...args, repo],
                                 { cwd: repo, maxBuffer: GIT_MAX_BUFFER }
                             );
@@ -6424,13 +6431,18 @@ class LeakLockPanel {
 
     // Essential utility methods for scanning functionality
     async _checkDockerAvailability() {
+        // Resolved, and execFile rather than a shell: this gate decides whether an
+        // engine runs at all, so answering "not in PATH" on a machine with Docker
+        // silently drops a scanner. Same command the sidebar and the engines use, so
+        // the panel and the dependency list cannot disagree.
+        const docker = binaryLookup.resolveDockerCommand();
         return new Promise((resolve) => {
-            exec('docker --version', (error, stdout) => {
+            execFile(docker, ['--version'], (error, stdout) => {
                 if (error) {
                     resolve({ available: false, error: 'Docker not installed or not in PATH' });
                 } else {
                     // Check if Docker daemon is running
-                    exec('docker info', (daemonError) => {
+                    execFile(docker, ['info'], (daemonError) => {
                         if (daemonError) {
                             resolve({ available: false, error: 'Docker daemon not running' });
                         } else {
@@ -6471,7 +6483,7 @@ class LeakLockPanel {
     async _pullNoseyParkerImage(settings) {
         const cfg = settings || this._getScanEngineSettings();
         return new Promise((resolve) => {
-            execFile('docker', ['pull', cfg.image], { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
+            execFile(binaryLookup.resolveDockerCommand(), ['pull', cfg.image], { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
                 if (!error) {
                     resolve({ pulled: true, error: null });
                     return;
@@ -7656,6 +7668,24 @@ class LeakLockPanel {
         }
         return ` The replacement rules were kept at ${file} so you can retry without rebuilding them; ` +
             'they contain the values you asked to redact, so delete that file once you are done.';
+    }
+
+    /**
+     * The `java` this process should exec to run BFG.
+     *
+     * Only for in-process runs. The generated shell and PowerShell scripts keep a
+     * bare `java`, and should: they execute in the user's own terminal, where PATH
+     * is the shell's and an absolute path baked in here would be wrong the moment
+     * the script is copied to another machine.
+     *
+     * @returns {Promise<string>}
+     */
+    async _resolveJavaCommand() {
+        let configured = '';
+        try {
+            configured = vscode.workspace.getConfiguration('leakLock').get('java.path') || '';
+        } catch { /* not registered in this context; fall through to the search */ }
+        return binaryLookup.resolveJavaCommand(configured || undefined);
     }
 
     _buildScanBfgReplaceCommand(scanPath, replacements, flavor = this._defaultScriptFlavor()) {
@@ -9245,8 +9275,12 @@ class LeakLockPanel {
                         push: false,
                         progress: (message) => progress.report({ increment: 10, message }),
                         rewrite: async () => {
+                            // Resolved, like the path-removal flow: this is the main
+                            // cleanup, so a bare "java" here failed the rewrite on a
+                            // Mac whose dependency panel had just ticked Java present.
+                            const java = await this._resolveJavaCommand();
                             const bfgResult = await execFileAsync(
-                                "java",
+                                java,
                                 ["-jar", bfgPath, "--replace-text", replacementsFile],
                                 { cwd: scanPath, maxBuffer: GIT_MAX_BUFFER }
                             );

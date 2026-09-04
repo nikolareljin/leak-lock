@@ -1,0 +1,82 @@
+#!/bin/sh
+set -eu
+
+# Reject AI attribution trailers before they reach history.
+#
+# GitHub's contributors graph counts `Co-authored-by:` trailers, not just commit
+# authors -- so two trailer lines were enough to put a bot on this repository's
+# contributors page, and removing them afterwards costs a full history rewrite of
+# every descendant commit. The cheap moment to catch one is here.
+#
+# The match is on IDENTITY, not on vocabulary. GitHub attributes a co-author by
+# the email address, so that is what is tested: a bot domain, a bot's GitHub
+# noreply address, or a "[bot]" account name. Matching the word "claude" or
+# "cursor" anywhere in the line would reject
+#
+#   Co-authored-by: Claude Smith <claude@example.com>
+#
+# which is a person, and the hook would then be lying about allowing human
+# co-authors. Only git's real trailer block is examined, so a commit explaining why
+# a Copilot review was wrong -- or quoting in its body the trailer it removed --
+# stays committable.
+
+msg_file="$1"
+
+# Git's actual trailer block, not every line that looks like one. A body paragraph
+# quoting a trailer -- explaining which one was removed, say -- is prose, and
+# rejecting it would contradict what this hook claims to do. `interpret-trailers
+# --parse` applies git's own rules: last paragraph only, comments and the scissors
+# line ignored, folded continuations joined.
+trailers=$(
+  git interpret-trailers --parse "$msg_file" 2>/dev/null \
+    | grep -iE '^(co-authored-by|signed-off-by)[[:space:]]*:' \
+    || true
+)
+
+[ -n "$trailers" ] || exit 0
+
+# Kept as one alternation so the list of what counts as a bot is readable, and so
+# adding an identity is a one-line change.
+#   [bot]                         - GitHub's own marker for an App account
+#   <n>+Name@users.noreply...     - a GitHub App's commit address
+#   a bot mailbox at a vendor     - the address such tools sign commits with
+#
+# The vendor rule is deliberately scoped to bot mailbox local parts. Matching the
+# whole domain would reject `Co-authored-by: Alice <alice@openai.com>` -- a person
+# who happens to work there -- and the hook would again be claiming to allow human
+# co-authors while rejecting one.
+offenders=$(
+  printf '%s\n' "$trailers" | grep -iE \
+    -e '\[bot\][[:space:]]*<' \
+    -e '<[0-9]+\+(copilot|claude|chatgpt|codex|devin|cursor)[^@]*@users\.noreply\.github\.com>' \
+    -e '<(noreply|no-reply|bot|agent|claude|copilot|codex|devin|cursor)@(anthropic|openai|cursor|anysphere|cognition-labs)\.(com|sh|co|ai)>' \
+    || true
+)
+
+if [ -n "$offenders" ]; then
+  echo "commit-msg: refusing an AI attribution trailer." >&2
+  echo "" >&2
+  printf '%s\n' "$offenders" | sed 's/^/  /' >&2
+  echo "" >&2
+
+  # The two trailer kinds are refused for different reasons, and saying so matters:
+  # only Co-authored-by feeds GitHub's contributors graph. Telling someone their
+  # DCO sign-off would need a history rewrite "for attribution" is simply untrue,
+  # and a hook that misstates its own rule is one people learn to bypass.
+  if printf '%s\n' "$offenders" | grep -qiE '^co-authored-by[[:space:]]*:'; then
+    echo "GitHub's contributors graph counts Co-authored-by trailers, so each one" >&2
+    echo "adds a bot to the repository's contributors page. Removing one later" >&2
+    echo "requires rewriting every commit that follows it." >&2
+  fi
+  if printf '%s\n' "$offenders" | grep -qiE '^signed-off-by[[:space:]]*:'; then
+    echo "A Signed-off-by does not reach the contributors graph. It is refused" >&2
+    echo "because a sign-off is a statement by a person about the change, and a" >&2
+    echo "tool cannot make it." >&2
+  fi
+
+  echo "" >&2
+  echo "Matched on the address, not the name: a human co-author is unaffected." >&2
+  echo "Delete the line and commit again. The code change is what is being kept;" >&2
+  echo "the attribution is what is not." >&2
+  exit 1
+fi
