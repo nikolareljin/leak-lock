@@ -572,16 +572,28 @@ async function installEngine({
                 await fs.promises.mkdir(installDir, { recursive: true });
                 const target = path.join(installDir, executableName(engineId, platform));
                 const staging = `${target}.installing`;
+                await fs.promises.rm(staging, { force: true });
                 await fs.promises.copyFile(archivePath, staging);
                 if (platform !== 'win32') await fs.promises.chmod(staging, 0o755);
-                const reportedVersion = verifyVersion
-                    ? await verifyVersion(engineId, staging)
-                    : await defaultVerifyVersion(engineId, staging, run);
-                if (!reportedVersion) throw new Error(`${assetName} reported no version when run`);
+                let reportedVersion;
+                try {
+                    reportedVersion = verifyVersion
+                        ? await verifyVersion(engineId, staging)
+                        : await defaultVerifyVersion(engineId, staging, run);
+                    if (!reportedVersion) throw new Error(`${assetName} reported no version when run`);
+                } catch (verifyError) {
+                    await fs.promises.rm(staging, { force: true });
+                    throw verifyError;
+                }
                 await promoteInstalledFile(staging, target);
                 result.ok = true; result.version = reportedVersion; result.path = target;
                 result.source = candidate.source; result.checksumVerified = checksumVerified;
                 if (!checksumVerified) result.warnings.push(`Could not fetch checksums.txt; the download was not checksum-verified.`);
+                if (candidate.source === 'latest') {
+                    result.warnings.push(
+                        `Pinned version ${info.pinnedVersion} was unavailable; installed the current release ${candidate.version} instead.`
+                    );
+                }
                 return result;
             }
 

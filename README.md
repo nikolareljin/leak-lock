@@ -365,11 +365,10 @@ it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
 `executionMode` to `parallel`, `sequential` or `single` to decide for yourself.
 
 ### Choosing engines
-`leakLock.scan.engines` sets which run, and in what order. **Gitleaks and TruffleHog are
-enabled by default** — `["gitleaks", "trufflehog"]`. Both are single binaries needing no
-container runtime and no JVM, so a default install scans without Docker. Nosey Parker is
-available but off by default: its upstream is archived and it runs only as a container
-image. Add it with `["gitleaks", "trufflehog", "noseyparker"]`.
+`leakLock.scan.engines` sets which run, and in what order. **Gitleaks, TruffleHog, Nosey
+Parker and Foxguard are enabled by default** — `["gitleaks", "trufflehog", "noseyparker",
+"foxguard"]`. Foxguard reports read-only code issues with source links. Its findings never
+enter the credential replacement or git history cleanup flow.
 
 A missing engine binary disables that engine, never the whole scan, and the coverage panel
 says which engines ran and which did not, so an engine you have not installed is visible

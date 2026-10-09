@@ -1668,7 +1668,7 @@ class LeakLockSidebarProvider {
             // as REQUIRED for a scan that would never run Nosey Parker.
             const engines = Array.isArray(configured) && configured.length
                 ? configured
-                : ['gitleaks', 'trufflehog', 'foxguard'];
+                : ['gitleaks', 'trufflehog', 'noseyparker', 'foxguard'];
             return engines.includes('noseyparker');
         } catch {
             return true;
@@ -1701,7 +1701,7 @@ class LeakLockSidebarProvider {
             const enabled = new Set(
                 Array.isArray(configured) && configured.length
                     ? configured
-                    : ['gitleaks', 'trufflehog', 'foxguard']
+                    : ['gitleaks', 'trufflehog', 'noseyparker', 'foxguard']
             );
 
             this._engineStatus = await Promise.all(

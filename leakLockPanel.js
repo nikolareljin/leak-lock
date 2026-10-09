@@ -3496,6 +3496,7 @@ class LeakLockPanel {
             // Show scanning in progress
             this._isScanning = true;
             this._scanResults = [];
+            this._codeIssues = [];
             this._rawEngineOutput = {};
             this._scanCleanup.preparedCommand = null;
             this._scanCleanup.preparedScripts = null;
@@ -3716,12 +3717,13 @@ class LeakLockPanel {
 
             // Show completion message. An incomplete scan never reports "no findings"
             // as if the repository had been fully examined.
+            const totalFindings = allResults.length + codeIssues.length;
             if (scanRun.incomplete) {
                 vscode.window.showWarningMessage(
-                    `Scan incomplete — ${allResults.length} finding(s) so far. ${scanRun.incompleteReason || ''}`.trim()
+                    `Scan incomplete — ${totalFindings} finding(s) so far. ${scanRun.incompleteReason || ''}`.trim()
                 );
-            } else if (allResults.length > 0) {
-                vscode.window.showWarningMessage(`Scan complete! Found ${allResults.length} findings (potential secrets or policy references). Review them in the main panel.`);
+            } else if (totalFindings > 0) {
+                vscode.window.showWarningMessage(`Scan complete! Found ${totalFindings} finding(s). Review credentials and code issues in the main panel.`);
             } else if (!engineReports.some(engine => engine.ok)) {
                 // Zero findings because no engine ran is not the same as zero findings
                 // because nothing is there. `incomplete` above only covers the Nosey
@@ -5771,6 +5773,7 @@ class LeakLockPanel {
             this._scanPath = null;
             this._scanRepoRoot = findGitRoot(validated) || validated;
             this._scanResults = [];
+            this._codeIssues = [];
             this._scanCoverage = null;
             this._resetScanSelection();
             this._scanCleanup.repoOverride = null;
@@ -6149,7 +6152,7 @@ class LeakLockPanel {
         // The merged count, matching the table. Per-engine counts sum higher because a
         // secret found by two engines is one row; those live in the detail.
         const totalFindings = Array.isArray(this._scanResults)
-            ? this._scanResults.length
+            ? this._scanResults.length + (Array.isArray(this._codeIssues) ? this._codeIssues.length : 0)
             : engines.reduce((sum, e) => sum + (e.ok ? (e.findings || 0) : 0), 0);
         const refTotal = (refs.localBranches || 0) + (refs.remoteBranches || 0) + (refs.tags || 0);
 
@@ -6434,7 +6437,7 @@ class LeakLockPanel {
         }
 
         if (!this._scanResults || this._scanResults.length === 0) {
-            return `${this._renderCodeIssues()}${this._renderImportedReport()}`;
+            return `${this._renderCodeIssues()}${this._renderScanCoverage()}${this._renderImportedReport()}`;
         }
 
         // Show actual results (existing logic)
@@ -6613,10 +6616,10 @@ class LeakLockPanel {
     _getEnabledEngineIds() {
         const config = vscode.workspace.getConfiguration('leakLock');
         const configured = config.get('scan.engines');
-        // Default to the two engines that run without Docker or Java.
+        // Match the contributed setting default when the configuration host has no value.
         const ids = Array.isArray(configured) && configured.length
             ? configured
-            : ['gitleaks', 'trufflehog', 'foxguard'];
+            : ['gitleaks', 'trufflehog', 'noseyparker', 'foxguard'];
         const known = new Set(['gitleaks', 'trufflehog', 'noseyparker', 'foxguard']);
         const valid = ids.filter(id => known.has(id));
         const unknown = ids.filter(id => !known.has(id));
@@ -9363,7 +9366,9 @@ class LeakLockPanel {
             repository: options.repository || null,
             scanPath: redactSensitive ? '[REDACTED_PATH]' : (this._scanPath || null),
             selectedDirectory: redactSensitive ? '[REDACTED_PATH]' : (this._selectedDirectory || null),
-            totalFindings: this._scanResults.length,
+            totalFindings: this._scanResults.length + (this._codeIssues || []).length,
+            totalCredentialFindings: this._scanResults.length,
+            totalCodeIssues: (this._codeIssues || []).length,
             redacted: redactSensitive,
             summary: {
                 severities: severityCounts,
@@ -9445,13 +9450,30 @@ class LeakLockPanel {
                     ruleName: o.ruleName || null,
                     isGitHistory: Boolean(o.isGitHistory)
                 }))
+                })),
+            // Code issues deliberately carry no secret or replacement value. They are
+            // exportable evidence, but never candidates for history cleanup.
+            codeIssues: (this._codeIssues || []).map(issue => ({
+                file: issue.file || null,
+                line: Number.isFinite(issue.line) ? issue.line : null,
+                endLine: Number.isFinite(issue.endLine) ? issue.endLine : null,
+                startColumn: Number.isFinite(issue.startColumn) ? issue.startColumn : null,
+                endColumn: Number.isFinite(issue.endColumn) ? issue.endColumn : null,
+                ruleId: issue.ruleId || null,
+                description: issue.description || null,
+                severity: issue.severity || null,
+                cwe: issue.cwe || null,
+                confidence: issue.confidence ?? null,
+                fix: issue.fix || null,
+                engine: issue.engine || 'foxguard',
+                engineVersion: issue.engineVersion || null
             }))
         };
     }
 
     async _exportScanResultsJson() {
         try {
-            if (!this._scanResults || this._scanResults.length === 0) {
+            if ((!this._scanResults || this._scanResults.length === 0) && (!this._codeIssues || this._codeIssues.length === 0)) {
                 vscode.window.showInformationMessage('No scan results available to export.');
                 return;
             }

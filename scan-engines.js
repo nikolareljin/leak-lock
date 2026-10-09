@@ -801,7 +801,7 @@ function mapFoxguardFinding(raw, repoDir) {
         cwe: raw.cwe || raw.cwes || null,
         confidence: raw.confidence ?? null,
         snippet: raw.snippet || raw.code || null,
-        fix: raw.fix || raw.suggestion || null
+        fix: raw.fix_suggestion || raw.fix || raw.suggestion || null
     };
 }
 
