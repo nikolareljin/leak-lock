@@ -72,19 +72,22 @@
           "default": [
             "gitleaks",
             "trufflehog",
-            "noseyparker"
+            "noseyparker",
+            "foxguard"
           ],
           "items": {
             "type": "string",
             "enum": [
               "gitleaks",
               "trufflehog",
-              "noseyparker"
+              "noseyparker",
+              "foxguard"
             ],
             "enumDescriptions": [
               "Gitleaks — maintained, MIT, scans full git history, no Docker required",
               "TruffleHog — verifies whether a discovered credential is still live (requires the trufflehog binary)",
-              "Nosey Parker — archived upstream on 2026-04-24; ruleset frozen at v0.24.0 (requires Docker)"
+              "Nosey Parker — archived upstream on 2026-04-24; ruleset frozen at v0.24.0 (requires Docker)",
+              "Foxguard — native code-security scan. Results are read-only links and cannot rewrite source or history."
             ]
           },
           "markdownDescription": "Detection engines to run, in order. Findings from every enabled engine are merged and attributed, so a secret found by one engine and missed by another is visible as such. An engine whose binary is not installed is reported in the scan coverage panel and skipped — it never fails the scan. Only `trufflehog` can make network calls, and only when `leakLock.trufflehog.verify` is also enabled."
@@ -162,6 +165,11 @@
           "type": "string",
           "default": "",
           "description": "Path to the gitleaks binary. Empty resolves 'gitleaks' from PATH."
+        },
+        "leakLock.foxguard.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the foxguard binary. Empty resolves 'foxguard' from PATH or Leak Lock's managed install."
         },
         "leakLock.gitleaks.runtime": {
           "type": "string",

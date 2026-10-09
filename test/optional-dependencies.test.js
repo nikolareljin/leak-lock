@@ -216,7 +216,7 @@ suite('optional dependencies', () => {
         const sidebar = require('fs').readFileSync(
             require('path').join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8'
         );
-        const defaults = /\['gitleaks', 'trufflehog'\]/;
+        const defaults = /\['gitleaks', 'trufflehog', 'foxguard'\]/;
         assert.ok(defaults.test(panel), 'panel default changed');
         assert.ok(defaults.test(sidebar), 'sidebar default must track the panel default');
 

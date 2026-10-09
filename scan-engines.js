@@ -777,9 +777,69 @@ const truffleHogEngine = {
     }
 };
 
+// Foxguard is deliberately a code-issue engine. Its output is never treated as a
+// replacement candidate, even when one of its rules reports a hardcoded secret.
+function parseFoxguardJson(text) {
+    const parsed = JSON.parse(String(text || '').trim() || '[]');
+    if (Array.isArray(parsed)) return parsed;
+    return parsed.findings || parsed.results || [];
+}
+
+function mapFoxguardFinding(raw, repoDir) {
+    const location = raw.location || raw.start || raw;
+    const end = raw.end || raw.end_location || {};
+    return {
+        kind: 'code',
+        file: relativizePath(raw.path || raw.file || location.path || location.file || null, repoDir),
+        line: toLineNumber(raw.line || location.line || location.start_line),
+        endLine: toLineNumber(raw.end_line || end.line),
+        startColumn: toLineNumber(raw.column || location.column || location.start_column),
+        endColumn: toLineNumber(raw.end_column || end.column),
+        ruleId: raw.rule_id || raw.ruleId || raw.id || 'foxguard',
+        description: raw.message || raw.description || raw.title || 'Code security issue',
+        severity: String(raw.severity || 'medium').toLowerCase(),
+        cwe: raw.cwe || raw.cwes || null,
+        confidence: raw.confidence ?? null,
+        snippet: raw.snippet || raw.code || null,
+        fix: raw.fix || raw.suggestion || null
+    };
+}
+
+const foxguardEngine = {
+    id: 'foxguard', displayName: 'Foxguard', binary: 'foxguard',
+    installHint: 'https://github.com/0sec-labs/foxguard/releases',
+    capabilities: { gitHistory: false, workingTree: true, verification: false, unavailable: [] },
+    async probeExecution(execution) {
+        try { await invoke(execution, ['--version'], { timeoutMs: 30000 }); return true; } catch { return false; }
+    },
+    async version(options = {}) {
+        try {
+            const execution = options.execution || await resolveExecution(this, options);
+            if (!execution) return null;
+            const { stdout, stderr } = await invoke(execution, ['--version'], { timeoutMs: 30000 });
+            return (`${stdout || ''}${stderr || ''}`.match(/\d+\.\d+\.\d+/) || [null])[0];
+        } catch { return null; }
+    },
+    async scan({ repoDir, binary, runtime, image, execution: resolved, timeoutMs } = {}) {
+        const execution = resolved || await resolveExecution(this, { binary, runtime, image });
+        if (!execution) throw new Error('Foxguard is not installed.');
+        let stdout = ''; const warnings = [];
+        try { ({ stdout } = await invoke(execution, [repoDir, '--format', 'json'], { timeoutMs })); }
+        catch (error) {
+            stdout = error.stdout || '';
+            if (!stdout) throw error;
+        }
+        let findings;
+        try { findings = parseFoxguardJson(stdout).map(raw => mapFoxguardFinding(raw, repoDir)); }
+        catch (error) { throw new Error(`Could not parse Foxguard JSON: ${error.message}`); }
+        return { findings, warnings, runtime: execution.mode, rawOutput: String(stdout).slice(0, RAW_OUTPUT_LIMIT) };
+    }
+};
+
 const ENGINES = Object.freeze({
     [gitleaksEngine.id]: gitleaksEngine,
-    [truffleHogEngine.id]: truffleHogEngine
+    [truffleHogEngine.id]: truffleHogEngine,
+    [foxguardEngine.id]: foxguardEngine
 });
 
 function getEngine(id) {
@@ -808,6 +868,9 @@ module.exports = {
     describeTruffleHogDetector,
     gitleaksEngine,
     truffleHogEngine,
+    foxguardEngine,
+    parseFoxguardJson,
+    mapFoxguardFinding,
     ENGINES,
     getEngine
 };

@@ -88,6 +88,16 @@ const ENGINE_RELEASES = Object.freeze({
         // TruffleHog ships a tarball for Windows too, so a zip-on-Windows assumption
         // would 404 for the engine that verifies live credentials.
         extensions: Object.freeze({ win32: 'tar.gz', linux: 'tar.gz', darwin: 'tar.gz' })
+    }),
+    foxguard: Object.freeze({
+        id: 'foxguard', displayName: 'Foxguard', repo: '0sec-labs/foxguard',
+        pinnedVersion: '0.14.0', executable: 'foxguard', versionArgs: ['--version'],
+        archNames: Object.freeze({
+            win32: Object.freeze({ x64: 'x86_64' }),
+            linux: Object.freeze({ x64: 'x86_64', arm64: 'aarch64' }),
+            darwin: Object.freeze({ x64: 'x86_64', arm64: 'aarch64' })
+        }),
+        directAsset: true
     })
 });
 
@@ -122,6 +132,9 @@ function buildAssetName(engineId, version, platform = process.platform, arch = p
     if (!archName) {
         return null;
     }
+    if (info.directAsset) {
+        return `foxguard-${platform === 'darwin' ? 'macos' : osName}-${archName}${platform === 'win32' ? '.exe' : ''}`;
+    }
     return `${info.id}_${normaliseVersion(version)}_${osName}_${archName}.${info.extensions[platform]}`;
 }
 
@@ -154,7 +167,8 @@ function buildChecksumsUrl(engineId, version) {
         return null;
     }
     const v = normaliseVersion(version);
-    return `https://github.com/${info.repo}/releases/download/v${v}/${info.id}_${v}_checksums.txt`;
+    const file = info.directAsset ? 'checksums.txt' : `${info.id}_${v}_checksums.txt`;
+    return `https://github.com/${info.repo}/releases/download/v${v}/${file}`;
 }
 
 function buildLatestReleaseUrl(engineId) {
@@ -552,6 +566,23 @@ async function installEngine({
                     throw new Error(`checksum mismatch for ${assetName} (expected ${expected}, got ${actual})`);
                 }
                 checksumVerified = true;
+            }
+
+            if (info.directAsset) {
+                await fs.promises.mkdir(installDir, { recursive: true });
+                const target = path.join(installDir, executableName(engineId, platform));
+                const staging = `${target}.installing`;
+                await fs.promises.copyFile(archivePath, staging);
+                if (platform !== 'win32') await fs.promises.chmod(staging, 0o755);
+                const reportedVersion = verifyVersion
+                    ? await verifyVersion(engineId, staging)
+                    : await defaultVerifyVersion(engineId, staging, run);
+                if (!reportedVersion) throw new Error(`${assetName} reported no version when run`);
+                await promoteInstalledFile(staging, target);
+                result.ok = true; result.version = reportedVersion; result.path = target;
+                result.source = candidate.source; result.checksumVerified = checksumVerified;
+                if (!checksumVerified) result.warnings.push(`Could not fetch checksums.txt; the download was not checksum-verified.`);
+                return result;
             }
 
             // Inspect before unpacking. An entry named `../../x` or `/etc/x` writes

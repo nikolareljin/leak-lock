@@ -433,6 +433,9 @@ class LeakLockPanel {
         // Until then _updateWebviewContent must not render.
         this._initialRenderDone = false;
         this._scanResults = [];
+        // Code findings are intentionally separate from credentials. They are links to
+        // source locations, never values that can enter history cleanup.
+        this._codeIssues = [];
         this._replacementValues = {};
         this._selectedDirectory = null;
         this._isScanning = false;
@@ -3594,6 +3597,7 @@ class LeakLockPanel {
 
             let scanRun = { results: [], incomplete: false, incompleteReason: null };
             const engineReports = [];
+            const codeIssues = [];
             let excludedByDependencyRule = 0;
 
             if (engineIds.includes('noseyparker') && this._scanCleanup.noseyParkerUnavailable) {
@@ -3647,6 +3651,9 @@ class LeakLockPanel {
                 if (outcome.results) {
                     engineResults.push(...outcome.results);
                 }
+                if (outcome.codeIssues) {
+                    codeIssues.push(...outcome.codeIssues);
+                }
                 if (outcome.id === 'noseyparker') {
                     pullResult = outcome.pullResult;
                     engineVersion = outcome.version;
@@ -3686,6 +3693,7 @@ class LeakLockPanel {
 
             // Update results
             this._scanResults = allResults;
+            this._codeIssues = codeIssues;
             await this._classifyCredentials();
             this._scanCoverage = await this._buildScanCoverage({
                 scanPath,
@@ -6376,6 +6384,27 @@ class LeakLockPanel {
             `;
     }
 
+    _renderCodeIssues() {
+        const issues = this._codeIssues || [];
+        if (issues.length === 0) return '';
+        const rows = issues.map(issue => {
+            const line = Number.isFinite(issue.line) ? issue.line : 1;
+            const location = `${issue.file || 'unknown'}:${line}`;
+            const cwe = Array.isArray(issue.cwe) ? issue.cwe.join(', ') : (issue.cwe || '');
+            return `<tr>
+                <td><span style="font-weight:600; text-transform:uppercase;">${escapeHtml(issue.severity || 'medium')}</span></td>
+                <td><code>${escapeHtml(issue.ruleId || 'foxguard')}</code>${cwe ? `<div class="hint">${escapeHtml(cwe)}</div>` : ''}</td>
+                <td>${escapeHtml(issue.description || 'Code security issue')}${issue.fix ? `<div class="hint">Fix: ${escapeHtml(issue.fix)}</div>` : ''}</td>
+                <td><a href="#" onclick="openFile(${JSON.stringify(issue.file || '').replace(/"/g, '&quot;')}, ${line}); return false;">${escapeHtml(location)}</a></td>
+            </tr>`;
+        }).join('');
+        return `<div class="scan-section" id="code-issues-section">
+            <h2>Code issues</h2>
+            <p class="hint">Foxguard findings link to source only. They cannot modify files or rewrite git history.</p>
+            <table class="results-table"><thead><tr><th>Severity</th><th>Rule</th><th>Issue</th><th>Location</th></tr></thead><tbody>${rows}</tbody></table>
+        </div>`;
+    }
+
     _getScanResultsSection() {
         // Show scanning progress
         if (this._isScanning) {
@@ -6400,12 +6429,16 @@ class LeakLockPanel {
         // Show results or empty state. The imported-report card is appended to both:
         // "did the cleanup remove what the last report listed" is asked after a
         // rewrite, when a current scan may show nothing at all.
-        if (!this._scanResults || this._scanResults.length === 0) {
+        if ((!this._scanResults || this._scanResults.length === 0) && (!this._codeIssues || this._codeIssues.length === 0)) {
             return `${this._renderEmptyScanState()}${this._renderImportedReport()}`;
         }
 
+        if (!this._scanResults || this._scanResults.length === 0) {
+            return `${this._renderCodeIssues()}${this._renderImportedReport()}`;
+        }
+
         // Show actual results (existing logic)
-        return `${this._getResultsHtml()}${this._renderImportedReport()}`;
+        return `${this._getResultsHtml()}${this._renderCodeIssues()}${this._renderImportedReport()}`;
     }
 
     _generateFixCommand(replacements) {
@@ -6583,8 +6616,8 @@ class LeakLockPanel {
         // Default to the two engines that run without Docker or Java.
         const ids = Array.isArray(configured) && configured.length
             ? configured
-            : ['gitleaks', 'trufflehog'];
-        const known = new Set(['gitleaks', 'trufflehog', 'noseyparker']);
+            : ['gitleaks', 'trufflehog', 'foxguard'];
+        const known = new Set(['gitleaks', 'trufflehog', 'noseyparker', 'foxguard']);
         const valid = ids.filter(id => known.has(id));
         const unknown = ids.filter(id => !known.has(id));
 
@@ -6749,18 +6782,22 @@ class LeakLockPanel {
             // it?" is answered by looking at the output rather than by argument.
             this._rawEngineOutput = this._rawEngineOutput || {};
             this._rawEngineOutput[engine.id] = outcome.rawOutput || null;
-            const results = (outcome.findings || []).map(finding =>
+            const codeIssues = engine.id === 'foxguard'
+                ? (outcome.findings || []).map(finding => ({ ...finding, engine: engine.id, engineVersion: version }))
+                : [];
+            const results = engine.id === 'foxguard' ? [] : (outcome.findings || []).map(finding =>
                 this._createResultFromEngineFinding(finding, engine.id, version, capabilities)
             );
             return {
                 id: engine.id,
                 results,
+                codeIssues,
                 report: {
                     id: engine.id,
                     displayName: engine.displayName,
                     version,
                     ok: true,
-                    findings: results.length,
+                    findings: results.length + codeIssues.length,
                     verified: outcome.verified || 0,
                     warnings: outcome.warnings || [],
                     // Which runtime actually ran. A containerised engine can differ from

@@ -1668,7 +1668,7 @@ class LeakLockSidebarProvider {
             // as REQUIRED for a scan that would never run Nosey Parker.
             const engines = Array.isArray(configured) && configured.length
                 ? configured
-                : ['gitleaks', 'trufflehog'];
+                : ['gitleaks', 'trufflehog', 'foxguard'];
             return engines.includes('noseyparker');
         } catch {
             return true;
@@ -1701,7 +1701,7 @@ class LeakLockSidebarProvider {
             const enabled = new Set(
                 Array.isArray(configured) && configured.length
                     ? configured
-                    : ['gitleaks', 'trufflehog']
+                    : ['gitleaks', 'trufflehog', 'foxguard']
             );
 
             this._engineStatus = await Promise.all(
@@ -2089,6 +2089,9 @@ class LeakLockSidebarProvider {
                 // that refuses to run a downloaded executable, or has no published build
                 // for its architecture, can still scan — and a working scanner is worth
                 // more than a precise account of why there is none.
+                if (!engineDocker.engineImage(engineId)) {
+                    return binaryResult;
+                }
                 progress.report({ message: 'Binary install failed; trying the Docker image…' });
                 const dockerResult = await this._pullEngineImage(engineId, progress);
                 if (dockerResult.ok) {
