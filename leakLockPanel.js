@@ -6457,8 +6457,12 @@ class LeakLockPanel {
     _openFile(file, line) {
         // Open file in editor
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (workspaceFolder) {
-            const filePath = path.isAbsolute(file) ? file : path.join(workspaceFolder.uri.fsPath, file);
+        const scanRoot = this._scanPath || this._selectedDirectory || workspaceFolder?.uri.fsPath;
+        if (scanRoot) {
+            // Engine paths are relative to the directory passed to the scan. Resolving
+            // them against the first workspace folder opens the wrong file when a user
+            // scans a child repository from a multi-root workspace.
+            const filePath = path.isAbsolute(file) ? file : path.join(scanRoot, file);
             vscode.window.showTextDocument(vscode.Uri.file(filePath), {
                 selection: new vscode.Range(line - 1, 0, line - 1, 0)
             });
