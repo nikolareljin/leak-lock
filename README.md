@@ -527,6 +527,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Clone traffic
 
-![Clone traffic](https://raw.githubusercontent.com/nikolareljin/stats/main/charts/leak-lock.svg)
+[Clone traffic chart](https://raw.githubusercontent.com/nikolareljin/stats/main/charts/leak-lock.svg)
 
 _Updated daily. Total and unique cloners over the last 14 days._
