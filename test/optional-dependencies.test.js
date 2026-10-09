@@ -207,7 +207,7 @@ suite('optional dependencies', () => {
     });
 
     test('the sidebar default matches the panel default', () => {
-        // The panel's _getEnabledEngineIds defaults to gitleaks+trufflehog. If
+        // The panel's _getEnabledEngineIds defaults to every configured engine. If
         // the sidebar defaults differently, it demands dependencies for an
         // engine the scan will not run.
         const panel = require('fs').readFileSync(
@@ -216,14 +216,14 @@ suite('optional dependencies', () => {
         const sidebar = require('fs').readFileSync(
             require('path').join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8'
         );
-        const defaults = /\['gitleaks', 'trufflehog'\]/;
+        const defaults = /\['gitleaks', 'trufflehog', 'noseyparker', 'foxguard'\]/;
         assert.ok(defaults.test(panel), 'panel default changed');
         assert.ok(defaults.test(sidebar), 'sidebar default must track the panel default');
 
         const p = provider(ALL_PRESENT, undefined);
         try {
-            assert.strictEqual(p._isNoseyParkerEnabled(), false,
-                'Nosey Parker must be off by default: its upstream is archived and it needs Docker');
+            assert.strictEqual(p._isNoseyParkerEnabled(), true,
+                'Nosey Parker must remain enabled when the scan setting is not overridden');
         } finally { p._restore(); }
     });
 

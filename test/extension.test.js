@@ -1981,7 +1981,7 @@ suite('Engine selection and graceful degradation', () => {
 		const ids = panel._getEnabledEngineIds();
 		// Whatever the workspace config holds, only engines this build knows about
 		// may reach the scan loop.
-		assert.ok(ids.every(id => ['gitleaks', 'trufflehog', 'noseyparker'].includes(id)));
+		assert.ok(ids.every(id => ['gitleaks', 'trufflehog', 'noseyparker', 'foxguard'].includes(id)));
 	});
 
 	test('every engine is enabled by default, led by the maintained one', () => {
@@ -1990,7 +1990,7 @@ suite('Engine selection and graceful degradation', () => {
 		// All three ship on. An engine whose binary is absent is reported and skipped,
 		// so the cost of enabling it is a line in the coverage panel — and the benefit
 		// is that the capability is discoverable instead of hidden in settings.
-		assert.deepStrictEqual(setting.default, ['gitleaks', 'trufflehog', 'noseyparker']);
+		assert.deepStrictEqual(setting.default, ['gitleaks', 'trufflehog', 'noseyparker', 'foxguard']);
 		// Nosey Parker is archived upstream, so it must not be the engine a new user
 		// relies on by default.
 		assert.strictEqual(setting.default[0], 'gitleaks');
@@ -5712,7 +5712,8 @@ suite('PR #105 eighth review pass', () => {
 		);
 		p._engineStatus = [
 			{ id: 'gitleaks', displayName: 'Gitleaks', enabled: true, installed: true, runtime: 'binary', version: 'v8.30.1' },
-			{ id: 'trufflehog', displayName: 'TruffleHog', enabled: true, installed: true, runtime: 'binary', version: 'v3.96.0' }
+			{ id: 'trufflehog', displayName: 'TruffleHog', enabled: true, installed: true, runtime: 'binary', version: 'v3.96.0' },
+			{ id: 'foxguard', displayName: 'Foxguard', enabled: true, installed: true, runtime: 'binary', version: 'v0.14.0' }
 		];
 		p._dependencyStatus = { docker: {}, noseyparker: {}, java: { installed: false }, bfg: {}, missing: [] };
 

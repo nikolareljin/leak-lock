@@ -1668,7 +1668,7 @@ class LeakLockSidebarProvider {
             // as REQUIRED for a scan that would never run Nosey Parker.
             const engines = Array.isArray(configured) && configured.length
                 ? configured
-                : ['gitleaks', 'trufflehog'];
+                : ['gitleaks', 'trufflehog', 'noseyparker', 'foxguard'];
             return engines.includes('noseyparker');
         } catch {
             return true;
@@ -1701,7 +1701,7 @@ class LeakLockSidebarProvider {
             const enabled = new Set(
                 Array.isArray(configured) && configured.length
                     ? configured
-                    : ['gitleaks', 'trufflehog']
+                    : ['gitleaks', 'trufflehog', 'noseyparker', 'foxguard']
             );
 
             this._engineStatus = await Promise.all(
@@ -1814,7 +1814,15 @@ class LeakLockSidebarProvider {
         // for an engine the user switched off is exactly the kind of unrelated failure
         // this release exists to stop. The same condition already governs whether Docker
         // counts as a missing dependency.
-        if (this._isNoseyParkerEnabled()) {
+        // `_engineStatus` is the state rendered to the user and is refreshed before
+        // setup can be requested. Prefer it over a second settings read: it keeps the
+        // Docker decision aligned with the visible engine row when configuration
+        // changes during an open setup panel.
+        const noseyParkerStatus = (this._engineStatus || []).find(engine => engine.id === 'noseyparker');
+        const needsNoseyParker = noseyParkerStatus
+            ? Boolean(noseyParkerStatus.enabled)
+            : this._isNoseyParkerEnabled();
+        if (needsNoseyParker) {
             try {
                 await vscode.window.withProgress({
                     location: vscode.ProgressLocation.Notification,
@@ -2089,6 +2097,9 @@ class LeakLockSidebarProvider {
                 // that refuses to run a downloaded executable, or has no published build
                 // for its architecture, can still scan — and a working scanner is worth
                 // more than a precise account of why there is none.
+                if (!engineDocker.engineImage(engineId)) {
+                    return binaryResult;
+                }
                 progress.report({ message: 'Binary install failed; trying the Docker image…' });
                 const dockerResult = await this._pullEngineImage(engineId, progress);
                 if (dockerResult.ok) {

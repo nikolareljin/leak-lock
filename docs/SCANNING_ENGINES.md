@@ -186,19 +186,19 @@ no-limit values. If a cap is ever reintroduced, the results must say so.
 
 ## Choosing engines
 
-`leakLock.scan.engines` is an ordered list. **Gitleaks and TruffleHog are enabled by
-default:**
+`leakLock.scan.engines` is an ordered list. **Gitleaks, TruffleHog, Nosey Parker and
+Foxguard are enabled by default:**
 
 ```jsonc
-"leakLock.scan.engines": ["gitleaks", "trufflehog"]
+"leakLock.scan.engines": ["gitleaks", "trufflehog", "noseyparker", "foxguard"]
 ```
 
-Both are single binaries needing no container runtime and no JVM, so a default install
-scans without Docker. Nosey Parker is off by default — its upstream is archived and it runs
-only as a container image — but nothing stops you adding it:
+Gitleaks, TruffleHog and Foxguard are single binaries. Nosey Parker is archived upstream
+and requires Docker. Foxguard scans code issues separately from credentials: each result is
+a source link and cannot be selected for file edits or git history cleanup.
 
 ```jsonc
-"leakLock.scan.engines": ["gitleaks", "trufflehog", "noseyparker"]
+"leakLock.scan.engines": ["gitleaks", "trufflehog", "foxguard"]
 ```
 
 - A missing engine binary **disables that engine, never the scan**. The coverage panel
@@ -209,7 +209,7 @@ only as a container image — but nothing stops you adding it:
 - Enabling TruffleHog does **not** on its own make any network call. Verification is a
   separate setting (`leakLock.trufflehog.verify`, off by default).
 
-### Installing Gitleaks and TruffleHog from Dependencies Setup
+### Installing Gitleaks, TruffleHog and Foxguard from Dependencies Setup
 
 **Dependencies Setup installs them per engine**, with its own row per engine offering two
 routes: the native binary (the default, no Docker involved) or the project's container
@@ -478,7 +478,7 @@ caveat.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `leakLock.scan.engines` | `["gitleaks","trufflehog"]` | Which engines run, in order. Add `"noseyparker"` to include the archived container-image engine |
+| `leakLock.scan.engines` | `["gitleaks","trufflehog","noseyparker","foxguard"]` | Which engines run, in order. Foxguard reports read-only code issues; Nosey Parker requires Docker |
 | `leakLock.scan.executionMode` | `auto` | `auto`, `parallel`, `sequential` or `single` — see [How many engines run at once](#how-many-engines-run-at-once) |
 | `leakLock.scan.timeoutSeconds` | `600` | Per-engine timeout. On expiry, partial findings are reported and marked incomplete |
 | `leakLock.scan.refreshRefsBeforeScan` | `true` | `git fetch --tags` first, so remote-only branches are not invisible. Read-only: the scan never prunes — only the refresh immediately before a rewrite does, where the plan must match the server exactly |
