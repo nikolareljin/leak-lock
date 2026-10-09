@@ -5712,7 +5712,8 @@ suite('PR #105 eighth review pass', () => {
 		);
 		p._engineStatus = [
 			{ id: 'gitleaks', displayName: 'Gitleaks', enabled: true, installed: true, runtime: 'binary', version: 'v8.30.1' },
-			{ id: 'trufflehog', displayName: 'TruffleHog', enabled: true, installed: true, runtime: 'binary', version: 'v3.96.0' }
+			{ id: 'trufflehog', displayName: 'TruffleHog', enabled: true, installed: true, runtime: 'binary', version: 'v3.96.0' },
+			{ id: 'foxguard', displayName: 'Foxguard', enabled: true, installed: true, runtime: 'binary', version: 'v0.14.0' }
 		];
 		p._dependencyStatus = { docker: {}, noseyparker: {}, java: { installed: false }, bfg: {}, missing: [] };
 

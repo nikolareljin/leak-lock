@@ -1814,7 +1814,15 @@ class LeakLockSidebarProvider {
         // for an engine the user switched off is exactly the kind of unrelated failure
         // this release exists to stop. The same condition already governs whether Docker
         // counts as a missing dependency.
-        if (this._isNoseyParkerEnabled()) {
+        // `_engineStatus` is the state rendered to the user and is refreshed before
+        // setup can be requested. Prefer it over a second settings read: it keeps the
+        // Docker decision aligned with the visible engine row when configuration
+        // changes during an open setup panel.
+        const noseyParkerStatus = (this._engineStatus || []).find(engine => engine.id === 'noseyparker');
+        const needsNoseyParker = noseyParkerStatus
+            ? Boolean(noseyParkerStatus.enabled)
+            : this._isNoseyParkerEnabled();
+        if (needsNoseyParker) {
             try {
                 await vscode.window.withProgress({
                     location: vscode.ProgressLocation.Notification,
