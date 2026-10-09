@@ -6395,7 +6395,7 @@ class LeakLockPanel {
                 <td><span style="font-weight:600; text-transform:uppercase;">${escapeHtml(issue.severity || 'medium')}</span></td>
                 <td><code>${escapeHtml(issue.ruleId || 'foxguard')}</code>${cwe ? `<div class="hint">${escapeHtml(cwe)}</div>` : ''}</td>
                 <td>${escapeHtml(issue.description || 'Code security issue')}${issue.fix ? `<div class="hint">Fix: ${escapeHtml(issue.fix)}</div>` : ''}</td>
-                <td><a href="#" onclick="openFile(${JSON.stringify(issue.file || '').replace(/"/g, '&quot;')}, ${line}); return false;">${escapeHtml(location)}</a></td>
+                <td><a href="#" onclick="openFile(${escapeHtml(JSON.stringify(issue.file || ''))}, ${line}); return false;">${escapeHtml(location)}</a></td>
             </tr>`;
         }).join('');
         return `<div class="scan-section" id="code-issues-section">
