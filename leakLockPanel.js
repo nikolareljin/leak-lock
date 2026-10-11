@@ -3716,8 +3716,7 @@ class LeakLockPanel {
             // start before it settles; only the scan that started it may render it.
             const scanToken = {};
             this._scanToken = scanToken;
-            const foxguardPromise = foxguardTask
-                ? foxguardTask().catch(error => ({ error })).then(outcome => {
+            const startFoxguard = () => foxguardTask().catch(error => ({ error })).then(outcome => {
                     foxguardSettled = true;
                     if (this._scanToken === scanToken && this._isScanning && !credentialsDone
                         && outcome && !outcome.error && outcome.codeIssues?.length) {
@@ -3726,13 +3725,20 @@ class LeakLockPanel {
                         this._updateWebviewContent();
                     }
                     return outcome;
-                })
-                : null;
+                });
+            // Parallel: Foxguard takes one of the concurrency slots from the start.
+            // Sequential (requested, or chosen for a moderate host): it runs after the
+            // credential engines, so only one engine is ever running.
+            const parallel = strategy.mode === 'parallel';
+            let foxguardPromise = foxguardTask && parallel ? startFoxguard() : null;
 
             const outcomes = await hostCapacity.runWithConcurrency(
                 engineTasks,
-                strategy.mode === 'parallel' ? strategy.concurrency : 1
+                parallel ? Math.max(1, strategy.concurrency - (foxguardPromise ? 1 : 0)) : 1
             );
+            if (foxguardTask && !foxguardPromise) {
+                foxguardPromise = startFoxguard();
+            }
 
             let pullResult = null;
             let engineVersion = null;
@@ -3868,9 +3874,7 @@ class LeakLockPanel {
                 vscode.window.showWarningMessage(
                     `Scan incomplete — ${totalFindings} finding(s) so far. ${scanRun.incompleteReason || ''}`.trim()
                 );
-            } else if (totalFindings > 0) {
-                vscode.window.showWarningMessage(`Scan complete! Found ${totalFindings} finding(s). Review credentials and code issues in the main panel.`);
-            } else if (!engineReports.some(engine => engine.ok)) {
+            } else if (allResults.length === 0 && !engineReports.some(engine => engine.ok && engine.id !== 'foxguard')) {
                 // Zero findings because no engine ran is not the same as zero findings
                 // because nothing is there. `incomplete` above only covers the Nosey
                 // Parker timeout and parse paths, so it does not catch this. The panel
@@ -3881,9 +3885,14 @@ class LeakLockPanel {
                         .map(engine => `${engine.displayName || engine.id}: ${engine.note || 'did not run'}`)
                         .join('; ')
                     : 'No engines were enabled — check leakLock.scan.engines.';
+                // Foxguard looks for code issues, not secrets: its success is no
+                // evidence that the repository holds no credentials.
+                const codeNote = codeIssues.length > 0 ? ` Foxguard found ${codeIssues.length} code issue(s).` : '';
                 vscode.window.showWarningMessage(
-                    `Nothing was scanned — no detection engine ran, so this is NOT a clean result. ${failed}`
+                    `No credential engine ran, so this is NOT a clean result. ${failed}${codeNote}`
                 );
+            } else if (totalFindings > 0) {
+                vscode.window.showWarningMessage(`Scan complete! Found ${totalFindings} finding(s). Review credentials and code issues in the main panel.`);
             } else {
                 vscode.window.showInformationMessage('🎉 Scan complete! No findings (potential secrets or policy references) were found in your repository.');
             }
@@ -3891,6 +3900,15 @@ class LeakLockPanel {
             console.error('Scan error:', error);
             this._isScanning = false;
             this._scanProgress = null;
+            // An engine still shown as running never reports now; leaving it `ok`
+            // would render "Foxguard completed with no code issues".
+            for (const engine of this._scanCoverage?.engines || []) {
+                if (engine.inProgress) {
+                    engine.inProgress = false;
+                    engine.ok = false;
+                    engine.note = 'Did not finish: the scan failed.';
+                }
+            }
             this._updateWebviewContent();
             vscode.window.showErrorMessage(`Scan failed: ${error.message}`);
         }
@@ -5668,9 +5686,10 @@ class LeakLockPanel {
                 // An empty table has two very different causes, and reading one as the
                 // other is the whole failure mode this feature exists to avoid: a report
                 // with nothing in it, versus one whose findings have not been checked.
-                : (report.totalFindings > 0
+                // Code issues are never verified, so only credential rows count here.
+                : ((report.totalCredentialFindings ?? report.totalFindings) > 0
                     ? `<p style="font-size: 0.9em; color: var(--vscode-editorWarning-foreground);">
-                            ⚠️ ${report.totalFindings} finding(s) in this report have not been checked${this._verifyingImport ? ' yet' : ''}.
+                            ⚠️ ${report.totalCredentialFindings ?? report.totalFindings} finding(s) in this report have not been checked${this._verifyingImport ? ' yet' : ''}.
                             Nothing here says they were resolved. ${this._verifyingImport ? '' : 'Use Re-verify.'}
                        </p>`
                     : '<p style="font-size: 0.9em; color: var(--vscode-descriptionForeground);">This report contains no findings to check.</p>')}
@@ -6461,7 +6480,10 @@ class LeakLockPanel {
         // values that filter to nothing — examined the repository just as little as
         // three failing engines did, and must not read differently.
         const engines = this._scanCoverage?.engines || [];
-        const ranSuccessfully = engines.filter(engine => engine.ok);
+        // Foxguard does not look for credentials, so it cannot make this a clean result.
+        const ranSuccessfully = engines.filter(engine => engine.ok && engine.id !== 'foxguard');
+        const codeOnly = engines.some(engine => engine.ok && engine.id === 'foxguard');
+        const notRun = engines.filter(engine => !engine.ok);
         // `ok` is false for an engine that ran but did not finish — a timeout sets
         // it via `ok: !scanRun.incomplete`. That engine *did* examine part of the
         // repository, so claiming "no detection engine ran" would be wrong, and
@@ -6472,21 +6494,27 @@ class LeakLockPanel {
                 <div class="scan-section">
                     <div class="empty-results scan-not-run">
                         <div class="empty-icon">🚫</div>
-                        <h2>Nothing was scanned</h2>
+                        ${codeOnly
+                    ? `<h2>No credential scan ran</h2>
+                        <p>
+                            Foxguard checked for code issues, but no credential engine ran, so this is
+                            <strong>not</strong> a clean result for secrets.
+                        </p>`
+                    : `<h2>Nothing was scanned</h2>
                         <p>
                             No detection engine ran, so this is <strong>not</strong> a clean result —
                             your repository has not been checked at all.
-                        </p>
-                        ${engines.length > 0
+                        </p>`}
+                        ${notRun.length > 0
                     ? `<ul class="not-run-reasons">
-                                ${engines.map(engine => `
+                                ${notRun.map(engine => `
                                     <li><strong>${escapeHtml(engine.displayName)}</strong> — ${escapeHtml(engine.note || 'did not run')}</li>
                                 `).join('')}
                             </ul>`
                     // An empty list here would render as an empty bullet list, which
                     // reads as "no problems" — the opposite of what it means.
                     : `<ul class="not-run-reasons">
-                                <li>No engines were enabled, so there was nothing to run.</li>
+                                <li>${codeOnly ? 'No credential engine is enabled.' : 'No engines were enabled, so there was nothing to run.'}</li>
                             </ul>`}
                         <p class="hint">
                             Install at least one engine, or check <code>leakLock.scan.engines</code>,
@@ -6645,7 +6673,11 @@ class LeakLockPanel {
         }
 
         if (!this._scanResults || this._scanResults.length === 0) {
-            return this._renderResultsPage(`${progress}${this._renderCodeIssues()}${this._renderScanCoverage()}${this._renderImportedReport()}`);
+            const credentialEngineRan = (this._scanCoverage?.engines || []).some(engine => engine.ok && engine.id !== 'foxguard');
+            const noCredentialScan = !this._isScanning && this._scanCoverage && !this._scanCoverage.incomplete && !credentialEngineRan
+                ? this._renderEmptyScanState()
+                : '';
+            return this._renderResultsPage(`${progress}${noCredentialScan}${this._renderCodeIssues()}${noCredentialScan ? '' : this._renderScanCoverage()}${this._renderImportedReport()}`);
         }
 
         // Show actual results (existing logic)

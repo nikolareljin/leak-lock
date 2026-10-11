@@ -369,8 +369,10 @@ it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
 
 ### Foxguard result timing
 
-Foxguard starts together with the credential engines (Gitleaks, TruffleHog, Nosey Parker),
-and either side can finish first. Whichever finishes first is shown first: code issues while
+When engines run in parallel, Foxguard starts together with the credential engines
+(Gitleaks, TruffleHog, Nosey Parker) and takes one of the parallel slots; when they run one
+at a time (`leakLock.scan.executionMode`, or a host with limited memory), it runs after them.
+Either side can finish first. Whichever finishes first is shown first: code issues while
 the credential engines still run, or credential findings while Foxguard shows `scanning...`
 in Scan coverage. Findings can be reviewed and selected meanwhile; preparing or running a
 cleanup, starting another scan, switching repository and importing a report all wait until

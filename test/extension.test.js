@@ -3539,7 +3539,7 @@ suite('Fourth review pass', () => {
 			// toast is what actually pops up. `incomplete` only covers the Nosey Parker
 			// timeout and parse paths, so it does not catch every-engine-failed.
 			const src = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
-			const guard = src.indexOf('!engineReports.some(engine => engine.ok)');
+			const guard = src.indexOf("!engineReports.some(engine => engine.ok && engine.id !== 'foxguard')");
 			const celebration = src.indexOf('🎉 Scan complete! No findings');
 			assert.ok(guard > -1, 'the every-engine-failed case is handled');
 			assert.ok(celebration > guard,

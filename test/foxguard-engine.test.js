@@ -161,7 +161,7 @@ suite('Foxguard code scan', () => {
 
     test('starts Foxguard with credentials but waits for it after rendering credential results', () => {
         const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
-        const startedAt = source.indexOf('const foxguardPromise = foxguardTask');
+        const startedAt = source.indexOf('let foxguardPromise = foxguardTask && parallel ? startFoxguard()');
         const credentialWaitAt = source.indexOf('const outcomes = await hostCapacity.runWithConcurrency');
         const renderedAt = source.indexOf('Credential results are ready. Scanning code issues with Foxguard...');
         const foxguardWaitAt = source.indexOf('foxguardOutcome = await foxguardPromise');
@@ -217,18 +217,25 @@ suite('Three credential engines and Foxguard finish in either order', () => {
     const { execFileSync } = require('child_process');
     const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-    async function runScan({ credentialMs, foxguardMs }) {
+    async function runScan({ credentialMs, foxguardMs, mode = 'parallel', failAfterInterim = false }) {
         const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'order-'));
         execFileSync('git', ['-C', repo, 'init', '-q']);
         LeakLockPanel.createOrShow(vscode.Uri.file(path.join(__dirname, '..')));
         const panel = LeakLockPanel.currentPanel;
+        // The panel is a singleton: drop instance stubs a previous run left behind.
+        for (const key of Object.keys(panel)) {
+            if (typeof panel[key] === 'function') delete panel[key];
+        }
         panel._isScanning = false;
         panel._selectedDirectory = repo;
-        panel._chooseScanStrategy = () => ({ mode: 'parallel', engines: ['noseyparker', 'gitleaks', 'trufflehog', 'foxguard'], dropped: [], concurrency: 4, reason: '', tier: 'capable', host: { cpus: 8, totalMemGb: 16, memorySource: 'os', loadPerCore: null } });
+        panel._chooseScanStrategy = () => ({ mode, engines: ['noseyparker', 'gitleaks', 'trufflehog', 'foxguard'], dropped: [], concurrency: mode === 'parallel' ? 4 : 1, reason: '', tier: 'capable', host: { cpus: 8, totalMemGb: 16, memorySource: 'os', loadPerCore: null } });
         panel._refreshRefsForScan = async () => null;
         panel._checkDockerAvailability = async () => ({ available: true });
+        const timeline = [];
         const credential = engineId => async () => {
+            timeline.push(`start:${engineId}`);
             await delay(credentialMs);
+            timeline.push(`end:${engineId}`);
             return { id: engineId, results: [{ file: 'cfg.js', line: 1, secret: `s-${engineId}`, engine: engineId }], codeIssues: [],
                 report: { id: engineId, displayName: engineId, ok: true, findings: 1 } };
         };
@@ -240,12 +247,23 @@ suite('Three credential engines and Foxguard finish in either order', () => {
         panel._createResultFromEngineFinding = finding => finding;
         panel._runExternalEngine = async engineId => {
             if (engineId === 'foxguard') {
+                timeline.push('start:foxguard');
                 await delay(foxguardMs);
                 return { id: 'foxguard', results: [], codeIssues: [{ file: 'a.py', line: 1, ruleId: 'py/no-eval' }],
                     report: { id: 'foxguard', displayName: 'Foxguard', ok: true, findings: 1 } };
             }
             return credential(engineId)();
         };
+        if (failAfterInterim) {
+            // Fail right after the interim coverage (Foxguard in progress) is built:
+            // the first reset is at scan start, the second in the interim render.
+            const reset = panel._resetScanSelection.bind(panel);
+            let calls = 0;
+            panel._resetScanSelection = () => {
+                if (++calls === 2) throw new Error('interim render failed');
+                return reset();
+            };
+        }
         const snapshots = [];
         const original = panel._updateWebviewContent.bind(panel);
         panel._updateWebviewContent = () => {
@@ -257,17 +275,22 @@ suite('Three credential engines and Foxguard finish in either order', () => {
         const warnings = [];
         vscode.window.showWarningMessage = async message => { warnings.push(message); };
         vscode.window.showInformationMessage = async () => {};
+        const showError = vscode.window.showErrorMessage;
+        vscode.window.showErrorMessage = async () => {};
         try {
             const scan = panel._scanRepository(false);
             await delay(Math.min(credentialMs, foxguardMs) + 100);
             const mid = { scanning: panel._isScanning, cred: panel._scanResults.length, code: panel._codeIssues.length };
-            await panel._scanRepository(false);
-            await panel._prepareScanReplacementCommand('bfg', {});
+            if (!failAfterInterim) {
+                await panel._scanRepository(false);
+                await panel._prepareScanReplacementCommand('bfg', {});
+            }
             await scan;
-            return { panel, snapshots, mid, warnings };
+            return { panel, snapshots, mid, warnings, timeline };
         } finally {
             vscode.window.showWarningMessage = warn;
             vscode.window.showInformationMessage = info;
+            vscode.window.showErrorMessage = showError;
             fs.rmSync(repo, { recursive: true, force: true });
         }
     }
@@ -288,6 +311,26 @@ suite('Three credential engines and Foxguard finish in either order', () => {
         const run = await runScan({ credentialMs: 1500, foxguardMs: 100 });
         assert.deepStrictEqual(run.mid, { scanning: true, cred: 0, code: 1 });
         assertBothComplete(run);
+    });
+
+    test('sequential mode runs Foxguard after the credential engines, never alongside', async function () {
+        this.timeout(30000);
+        const run = await runScan({ credentialMs: 100, foxguardMs: 100, mode: 'sequential' });
+        const foxStart = run.timeline.indexOf('start:foxguard');
+        const lastCredentialEnd = Math.max(...['noseyparker', 'gitleaks', 'trufflehog'].map(id => run.timeline.indexOf(`end:${id}`)));
+        assert.ok(foxStart > lastCredentialEnd, run.timeline.join(' '));
+        assert.strictEqual(run.panel._scanResults.length, 3);
+        assert.strictEqual(run.panel._codeIssues.length, 1);
+    });
+
+    test('a scan that fails after the interim render does not claim Foxguard finished clean', async function () {
+        this.timeout(30000);
+        const run = await runScan({ credentialMs: 50, foxguardMs: 4000, failAfterInterim: true });
+        assert.strictEqual(run.panel._isScanning, false);
+        const foxguard = run.panel._scanCoverage.engines.find(engine => engine.id === 'foxguard');
+        assert.strictEqual(foxguard.ok, false);
+        assert.ok(!foxguard.inProgress);
+        assert.doesNotMatch(run.panel._renderCodeIssues(), /completed with no code issues/);
     });
 
     test('credentials first: they show while Foxguard still scans', async function () {
@@ -381,5 +424,45 @@ suite('Product site SEO', () => {
         }
         assert.strictEqual(listed.length, pages.length);
         assert.match(fs.readFileSync(path.join(site, 'robots.txt'), 'utf8'), new RegExp(`Sitemap: ${base}sitemap.xml`));
+    });
+});
+
+suite('Foxguard is not a credential scan', () => {
+    const scanBaseline = require('../scan-baseline');
+
+    test('only Foxguard running is not rendered as a clean result', () => {
+        const panel = new LeakLockPanel({ fsPath: '/tmp/ext' });
+        panel._isScanning = false;
+        panel._scanResults = [];
+        panel._codeIssues = [];
+        panel._scanCoverage = { incomplete: false, engines: [
+            { id: 'gitleaks', displayName: 'Gitleaks', ok: false, note: 'not installed' },
+            { id: 'foxguard', displayName: 'Foxguard', ok: true, findings: 0 }
+        ] };
+        let html = panel._renderEmptyScanState();
+        assert.match(html, /No credential scan ran/);
+        assert.match(html, /Gitleaks/);
+        assert.doesNotMatch(html, /Foxguard<\/strong> — did not run/);
+
+        panel._codeIssues = [{ file: 'a.py', line: 1, ruleId: 'py/no-eval', severity: 'high' }];
+        html = panel._getScanResultsSection();
+        assert.match(html, /No credential scan ran/);
+        assert.match(html, /py\/no-eval/);
+    });
+
+    test('an import with only code issues does not ask to re-verify them', () => {
+        const parsed = scanBaseline.parseImportedReport(JSON.stringify({
+            generatedAt: '2026-10-01T10:00:00.000Z', scanPath: '/repo', totalFindings: 2, redacted: false,
+            findings: [],
+            codeIssues: [{ file: 'a.py', line: 1, ruleId: 'py/no-eval' }, { file: 'b.py', line: 2, ruleId: 'py/no-eval' }]
+        }), { sourceName: 'report.json' });
+        assert.ok(parsed.ok, parsed.error);
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._importedReport = parsed.report;
+        panel._scanResults = [];
+        panel._scanCleanup = {};
+        const html = panel._renderImportedReport();
+        assert.doesNotMatch(html, /have not been checked/);
+        assert.match(html, /Imported code issues/);
     });
 });
