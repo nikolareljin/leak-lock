@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const scanEngines = require('../scan-engines');
 const LeakLockPanel = require('../leakLockPanel');
 
@@ -46,6 +48,15 @@ suite('Foxguard code scan', () => {
         assert.match(html, /Results/);
         assert.match(html, /Cleanup/);
         assert.match(html, /Issues/);
+    });
+
+    test('anchors glyphs on the right and reveals labels to their left', () => {
+        const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+
+        assert.match(source, /\.scan-side-rail \{[\s\S]*align-items: flex-end/);
+        assert.match(source, /\.scan-side-glyph \{[\s\S]*right: 7px;[\s\S]*filter: grayscale\(1\)/);
+        assert.match(source, /\.scan-side-label \{[\s\S]*right: 30px;[\s\S]*opacity: 0/);
+        assert.match(source, /a:hover \.scan-side-label,[\s\S]*opacity: 1/);
     });
 
     test('keeps a code-issues target while Foxguard is still scanning', () => {

@@ -853,17 +853,18 @@ class LeakLockPanel {
                         z-index: 20;
                         display: flex;
                         flex-direction: column;
+                        align-items: flex-end;
                         gap: 6px;
                     }
                     .scan-side-rail a {
                         display: flex;
                         align-items: center;
                         justify-content: flex-end;
-                        gap: 7px;
+                        position: relative;
                         width: 30px;
                         height: 30px;
                         overflow: hidden;
-                        padding: 0 7px;
+                        padding: 0;
                         border: 1px solid var(--vscode-panel-border);
                         border-radius: 4px;
                         color: var(--vscode-editor-foreground);
@@ -876,7 +877,33 @@ class LeakLockPanel {
                         width: 132px;
                         background: var(--vscode-list-hoverBackground);
                     }
-                    .scan-side-rail .scan-side-label { font-size: 0.82em; }
+                    .scan-side-rail .scan-side-glyph {
+                        position: absolute;
+                        right: 7px;
+                        width: 16px;
+                        text-align: center;
+                        filter: grayscale(1);
+                        opacity: 0.7;
+                        transition: filter 120ms ease, opacity 120ms ease;
+                    }
+                    .scan-side-rail .scan-side-label {
+                        position: absolute;
+                        right: 30px;
+                        opacity: 0;
+                        transform: translateX(6px);
+                        font-size: 0.82em;
+                        transition: opacity 120ms ease, transform 120ms ease;
+                    }
+                    .scan-side-rail a:hover .scan-side-glyph,
+                    .scan-side-rail a:focus-visible .scan-side-glyph {
+                        filter: none;
+                        opacity: 1;
+                    }
+                    .scan-side-rail a:hover .scan-side-label,
+                    .scan-side-rail a:focus-visible .scan-side-label {
+                        opacity: 1;
+                        transform: translateX(0);
+                    }
                     .replacement-input {
                         width: 100%;
                         box-sizing: border-box;
@@ -6537,9 +6564,9 @@ class LeakLockPanel {
             ? 'Jump to code issues'
             : 'No code issues in this scan';
         return `<nav class="scan-side-rail" aria-label="Scan result shortcuts">
-            <a href="#scan-results-section" title="Jump to search findings" aria-label="Jump to search findings"><span aria-hidden="true">🔎</span><span class="scan-side-label">Results</span></a>
-            <a href="#cleanup-section" title="Jump to code cleanup blocks" aria-label="Jump to code cleanup blocks"><span aria-hidden="true">🧹</span><span class="scan-side-label">Cleanup</span></a>
-            <a href="#code-issues-section" title="${escapeHtml(issueTitle)}" aria-label="${escapeHtml(issueTitle)}"><span aria-hidden="true">⚠️</span><span class="scan-side-label">Issues</span></a>
+            <a href="#scan-results-section" title="Jump to search findings" aria-label="Jump to search findings"><span class="scan-side-glyph" aria-hidden="true">🔎</span><span class="scan-side-label">Results</span></a>
+            <a href="#cleanup-section" title="Jump to code cleanup blocks" aria-label="Jump to code cleanup blocks"><span class="scan-side-glyph" aria-hidden="true">🧹</span><span class="scan-side-label">Cleanup</span></a>
+            <a href="#code-issues-section" title="${escapeHtml(issueTitle)}" aria-label="${escapeHtml(issueTitle)}"><span class="scan-side-glyph" aria-hidden="true">⚠️</span><span class="scan-side-label">Issues</span></a>
         </nav>`;
     }
 
