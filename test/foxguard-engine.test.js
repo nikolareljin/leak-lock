@@ -297,3 +297,89 @@ suite('Three credential engines and Foxguard finish in either order', () => {
         assertBothComplete(run);
     });
 });
+
+suite('Foxguard on Linux, macOS and Windows', () => {
+    const engineInstall = require('../engine-install');
+
+    test('every supported platform resolves to a published Foxguard 0.14.0 asset', () => {
+        // Names as published on https://github.com/0sec-labs/foxguard/releases/tag/v0.14.0
+        const expected = {
+            'linux/x64': 'foxguard-linux-x86_64',
+            'linux/arm64': 'foxguard-linux-aarch64',
+            'darwin/x64': 'foxguard-macos-x86_64',
+            'darwin/arm64': 'foxguard-macos-aarch64',
+            'win32/x64': 'foxguard-windows-x86_64.exe',
+            // No arm64 build; Windows 11 on Arm runs the x64 build emulated.
+            'win32/arm64': 'foxguard-windows-x86_64.exe'
+        };
+        for (const [key, asset] of Object.entries(expected)) {
+            const [platform, arch] = key.split('/');
+            assert.strictEqual(engineInstall.buildAssetName('foxguard', '0.14.0', platform, arch), asset, key);
+        }
+        assert.strictEqual(engineInstall.executableName('foxguard', 'win32'), 'foxguard.exe');
+        assert.strictEqual(engineInstall.executableName('foxguard', 'darwin'), 'foxguard');
+        assert.strictEqual(
+            engineInstall.buildChecksumsUrl('foxguard', '0.14.0'),
+            'https://github.com/0sec-labs/foxguard/releases/download/v0.14.0/checksums.txt'
+        );
+    });
+
+    test('Windows output paths become repository-relative, whatever the drive-letter case', () => {
+        // Shape taken from foxguard-windows-x86_64.exe 0.14.0: it echoes the scan root.
+        const root = 'C:\\Users\\dev\\repo';
+        const raw = { file: 'C:\\Users\\dev\\repo\\src\\a.py', line: 2, rule_id: 'py/no-eval', severity: 'critical' };
+        assert.strictEqual(scanEngines.mapFoxguardFinding(raw, root).file, 'src\\a.py');
+        assert.strictEqual(scanEngines.mapFoxguardFinding(raw, 'c:\\users\\dev\\repo').file, 'src\\a.py');
+        assert.strictEqual(scanEngines.mapFoxguardFinding({ ...raw, file: 'C:/Users/dev/repo/src/a.py' }, 'C:/Users/dev/repo').file, 'src/a.py');
+        // POSIX stays case-sensitive: /Repo and /repo are different directories.
+        assert.strictEqual(scanEngines.relativizePath('/Repo/a.py', '/repo'), '/Repo/a.py');
+    });
+
+    test('Foxguard gets no Docker route, since it publishes no image', async () => {
+        const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+        const provider = Object.create(LeakLockSidebarProvider.prototype);
+        const result = await provider._pullEngineImage('foxguard');
+        assert.strictEqual(result.ok, false);
+        assert.match(result.error, /no Docker image/);
+        const ui = fs.readFileSync(path.join(__dirname, '..', 'leakLockSidebarProvider.js'), 'utf8');
+        assert.match(ui, /engine\.image \? method\('docker'/);
+    });
+
+    test('Foxguard alone does not make setup ready: it finds no credentials', () => {
+        const { LeakLockSidebarProvider } = require('../leakLockSidebarProvider');
+        const provider = Object.create(LeakLockSidebarProvider.prototype);
+        provider._dependencyStatus = {};
+        provider._engineStatus = [{ id: 'foxguard', displayName: 'Foxguard', installed: true }];
+        assert.deepStrictEqual(provider._installedScanners(), []);
+        assert.strictEqual(provider._missingRequiredDependencies().length, 1);
+        provider._engineStatus.push({ id: 'gitleaks', displayName: 'Gitleaks', installed: true });
+        assert.deepStrictEqual(provider._installedScanners(), ['Gitleaks']);
+    });
+});
+
+suite('Product site SEO', () => {
+    const site = path.join(__dirname, '..', 'docs', 'website');
+    const base = 'https://nikolareljin.github.io/leak-lock/';
+
+    test('structured data names the released version', () => {
+        const version = fs.readFileSync(path.join(__dirname, '..', 'VERSION'), 'utf8').trim();
+        const html = fs.readFileSync(path.join(site, 'index.html'), 'utf8');
+        const json = JSON.parse(html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/)[1]);
+        assert.strictEqual(json.softwareVersion, version);
+    });
+
+    test('every page is in the sitemap and declares that URL as canonical', () => {
+        const sitemap = fs.readFileSync(path.join(site, 'sitemap.xml'), 'utf8');
+        const listed = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map(m => m[1]);
+        // google*.html is the Search Console ownership token, not a page.
+        const pages = fs.readdirSync(site).filter(f => f.endsWith('.html') && !/^google[0-9a-f]+\.html$/.test(f));
+        for (const page of pages) {
+            const url = page === 'index.html' ? base : base + page;
+            assert.ok(listed.includes(url), `${page} missing from sitemap.xml`);
+            const html = fs.readFileSync(path.join(site, page), 'utf8');
+            assert.ok(html.includes(`<link rel="canonical" href="${url}">`), `${page} canonical`);
+        }
+        assert.strictEqual(listed.length, pages.length);
+        assert.match(fs.readFileSync(path.join(site, 'robots.txt'), 'utf8'), new RegExp(`Sitemap: ${base}sitemap.xml`));
+    });
+});

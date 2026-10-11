@@ -189,7 +189,8 @@ no-limit values. If a cap is ever reintroduced, the results must say so.
 | | |
 |---|---|
 | Project | <https://github.com/0sec-labs/foxguard> |
-| Runtime | A native binary |
+| Runtime | A native binary only; no container image is published |
+| Platforms | Linux x64 and arm64, macOS Intel and Apple silicon, Windows x64 (Windows on Arm runs the x64 build emulated) |
 | Scope | Working tree only, not git history |
 | Output | Read-only source links in the Code issues section |
 
@@ -232,6 +233,8 @@ Gitleaks, TruffleHog and Foxguard are single binaries. Nosey Parker is archived 
 and requires Docker. Foxguard scans code issues separately from credentials: each result is
 a source link and cannot be selected for file edits or git history cleanup.
 
+Without Docker, drop Nosey Parker. Two credential engines and Foxguard still run:
+
 ```jsonc
 "leakLock.scan.engines": ["gitleaks", "trufflehog", "foxguard"]
 ```
@@ -246,22 +249,24 @@ a source link and cannot be selected for file edits or git history cleanup.
 
 ### Installing Gitleaks, TruffleHog and Foxguard from Dependencies Setup
 
-**Dependencies Setup installs them per engine**, with its own row per engine offering two
-routes: the native binary (the default, no Docker involved) or the project's container
-image — see [Or run them from a container](#or-run-them-from-a-container) below. A
-binary install is:
+**Dependencies Setup installs them per engine**, with its own row per engine. Gitleaks and
+TruffleHog offer two routes: the native binary (the default, no Docker involved) or the
+project's container image — see [Or run them from a container](#or-run-them-from-a-container)
+below. Foxguard publishes no image, so its row offers the binary only. A binary install is:
 
 1. Picks the release artifact for your platform and architecture. The naming differs per
-   project (Gitleaks publishes `windows_x64.zip`, TruffleHog `windows_amd64.tar.gz`), so
-   an architecture with no published build is reported as such rather than attempted.
+   project (Gitleaks publishes `windows_x64.zip`, TruffleHog `windows_amd64.tar.gz`,
+   Foxguard a bare `foxguard-windows-x86_64.exe`), so an architecture with no published
+   build is reported as such rather than attempted.
 2. Downloads a **pinned version first**, and falls back to the current upstream release
    if that tag is unavailable. The fallback is stated in the panel, never silent.
 3. Verifies the download against the release's own `checksums.txt`. A mismatch aborts
    that install. If the checksums file itself cannot be fetched, the install proceeds and
    says it was not verified.
 4. Extracts to a temporary directory, copies out only the expected executable, and runs
-   it to confirm it works. A binary that will not execute is a failed install, not a
-   successful one.
+   it to confirm it works. Foxguard ships as a bare executable, so there is nothing to
+   extract; it is copied into place and run the same way. A binary that will not execute
+   is a failed install, not a successful one.
 
 Engines land in the extension's global storage — not the extension directory, which is
 replaced on every update — and that directory is searched ahead of the usual locations.

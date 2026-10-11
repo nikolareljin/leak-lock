@@ -341,9 +341,13 @@ function relativizePath(filePath, repoDir) {
     // Both separators, always. Under the container runtime the scan root is a POSIX
     // path (`/repo`) even when the host is Windows, so keying off path.sep alone would
     // leave every containerised working-tree finding showing as `/repo/src/...`.
-    for (const separator of new Set([path.sep, '/'])) {
+    // Windows paths compare case-insensitively: Foxguard echoes the root it was given,
+    // and `c:\repo` from VS Code against `C:\repo` from an engine is the same folder.
+    const windowsPath = /^[A-Za-z]:[\\/]/.test(repoDir);
+    const comparable = value => (windowsPath ? value.toLowerCase() : value);
+    for (const separator of new Set([path.sep, '/', ...(windowsPath ? ['\\'] : [])])) {
         const prefix = repoDir.endsWith(separator) ? repoDir : repoDir + separator;
-        if (filePath.startsWith(prefix)) {
+        if (comparable(filePath).startsWith(comparable(prefix))) {
             return filePath.slice(prefix.length);
         }
     }

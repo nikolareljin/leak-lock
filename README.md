@@ -461,8 +461,9 @@ Git-only rewrite. Scanning needs neither.
 
 ### **Dependencies**
 
-**Required — one scan engine.** Any single one of Gitleaks, TruffleHog or Nosey Parker is
-enough to scan. Setup is complete the moment one of them works; a second widens coverage
+**Required — one scan engine.** Any single one of the credential engines (Gitleaks, TruffleHog
+or Nosey Parker) is enough to scan. Foxguard finds code issues, not credentials, so it does
+not count. Setup is complete the moment one of them works; a second widens coverage
 but does not decide whether a scan can run. Git itself is required, as is credential-lens —
 which ships inside the extension, so there is nothing to install.
 
@@ -472,8 +473,9 @@ than blocking anything:
 | | What it adds | Without it |
 |---|---|---|
 | **A second or third engine** | Rules the others miss — they disagree more than you would expect | Fewer findings, and the coverage panel says which engines ran |
-| **Docker** | Required only by Nosey Parker | Gitleaks and TruffleHog are native binaries |
-| **Nosey Parker image** | An extra engine; upstream archived | Off by default |
+| **Docker** | Required only by Nosey Parker | Gitleaks, TruffleHog and Foxguard are native binaries |
+| **Nosey Parker image** | A third credential engine; upstream archived | Enabled by default, skipped with a note when Docker or the image is missing |
+| **Foxguard** | Working-tree code issues, in their own read-only section | No Code issues section; credentials are unaffected |
 | **Java + BFG** | An alternative history-rewrite engine | The git route is the default and needs no JVM |
 | **git-filter-repo** | The Git-only cleanup mode | BFG, if Java is present |
 
