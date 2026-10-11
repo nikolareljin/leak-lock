@@ -10,6 +10,7 @@
 ### Changed
 - Start Foxguard with the credential engines and show its progress in Scan coverage while credential results remain available. Foxguard has a separate 120-second default deadline that can be increased with leakLock.foxguard.timeoutSeconds.
 - Update the user documentation and product site with Foxguard behavior, result navigation, and search metadata.
+- Update brace-expansion to 5.0.12 (GHSA-q2hr-2g5m-vwhr). Development-only dependency; packaging excludes it, so the published extension is not affected.
 
 ## 2026-09-04 — v0.9.1
 
