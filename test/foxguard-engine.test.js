@@ -25,6 +25,41 @@ suite('Foxguard code scan', () => {
         assert.ok(scanEngines.ENGINES.foxguard);
     });
 
+    test('a timed-out scan reports the timeout, not a parse error on partial JSON', async () => {
+        const os = require('os');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxguard-slow-'));
+        const slow = path.join(dir, 'foxguard');
+        fs.writeFileSync(slow, '#!/bin/sh\nprintf \'{"findings": [\'\nsleep 5\n', { mode: 0o755 });
+        try {
+            if (process.platform === 'win32') return;
+            await assert.rejects(
+                scanEngines.foxguardEngine.scan({ repoDir: dir, execution: { mode: 'binary', command: slow }, timeoutMs: 300 }),
+                error => error.killed === true && !/parse/i.test(error.message)
+            );
+            const panel = Object.create(LeakLockPanel.prototype);
+            const note = panel._engineFailureNote('foxguard', { killed: true, message: 'Command failed' }, { foxguardTimeoutMs: 120000 });
+            assert.match(note, /Stopped after 120s\. Increase leakLock\.foxguard\.timeoutSeconds/);
+            assert.match(panel._engineFailureNote('gitleaks', new Error('boom'), {}), /^Scan failed: boom$/);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('exit 1 with a JSON report is read as findings, as Foxguard 0.14.0 exits', async () => {
+        const os = require('os');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxguard-exit1-'));
+        const fake = path.join(dir, 'foxguard');
+        fs.writeFileSync(fake, '#!/bin/sh\nprintf \'{"findings":[{"rule_id":"py/no-eval","file":"a.py","line":3,"severity":"critical"}]}\'\nexit 1\n', { mode: 0o755 });
+        try {
+            if (process.platform === 'win32') return;
+            const out = await scanEngines.foxguardEngine.scan({ repoDir: dir, execution: { mode: 'binary', command: fake }, timeoutMs: 5000 });
+            assert.strictEqual(out.findings.length, 1);
+            assert.strictEqual(out.findings[0].ruleId, 'py/no-eval');
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     test('renders code issues as source links without cleanup controls', () => {
         const panel = Object.create(LeakLockPanel.prototype);
         panel._codeIssues = [{

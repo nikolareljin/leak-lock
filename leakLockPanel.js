@@ -3810,13 +3810,10 @@ class LeakLockPanel {
                 engineReports.pop();
                 if (!foxguardOutcome || foxguardOutcome.error) {
                     const error = foxguardOutcome && foxguardOutcome.error;
-                    const timedOut = error && (error.killed || error.signal === 'SIGTERM');
                     engineReports.push({
                         id: 'foxguard', displayName: 'Foxguard', version: null,
                         ok: false, findings: 0,
-                        note: timedOut
-                            ? `Stopped after ${Math.round(engineSettings.foxguardTimeoutMs / 1000)}s. Increase leakLock.foxguard.timeoutSeconds to scan longer.`
-                            : `Scan failed: ${error ? error.message : 'unknown error'}`
+                        note: this._engineFailureNote('foxguard', error || new Error('unknown error'), engineSettings)
                     });
                 } else {
                     if (foxguardOutcome.report) engineReports.push(foxguardOutcome.report);
@@ -7021,10 +7018,21 @@ class LeakLockPanel {
                     version,
                     ok: false,
                     findings: 0,
-                    note: `Scan failed: ${error.message}`
+                    note: this._engineFailureNote(engine.id, error, cfg)
                 }
             };
         }
+    }
+
+    /**
+     * Coverage note for an engine that threw. A Foxguard timeout names the setting
+     * that raises it; "Command failed" would send the user looking for a broken binary.
+     */
+    _engineFailureNote(engineId, error, cfg) {
+        if (engineId === 'foxguard' && error && error.killed) {
+            return `Stopped after ${Math.round(cfg.foxguardTimeoutMs / 1000)}s. Increase leakLock.foxguard.timeoutSeconds to scan longer.`;
+        }
+        return `Scan failed: ${error ? error.message : 'unknown error'}`;
     }
 
     /**

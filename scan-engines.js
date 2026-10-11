@@ -826,8 +826,10 @@ const foxguardEngine = {
         let stdout = ''; const warnings = [];
         try { ({ stdout } = await invoke(execution, [repoDir, '--format', 'json'], { timeoutMs })); }
         catch (error) {
+            // Exit 1 with JSON on stdout is how Foxguard reports findings. A killed
+            // process left only partial JSON, so surface the timeout, not a parse error.
             stdout = error.stdout || '';
-            if (!stdout) throw error;
+            if (!stdout || error.killed) throw error;
         }
         let findings;
         try { findings = parseFoxguardJson(stdout).map(raw => mapFoxguardFinding(raw, repoDir)); }
