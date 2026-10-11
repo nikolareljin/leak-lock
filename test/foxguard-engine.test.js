@@ -59,4 +59,20 @@ suite('Foxguard code scan', () => {
         assert.match(html, /id="code-issues-section"/);
         assert.match(html, /still scanning/);
     });
+
+    test('keeps the side rail and code-issues target when credentials are clean while Foxguard scans', () => {
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._codeIssues = [];
+        panel._scanResults = [];
+        panel._isScanning = true;
+        panel._scanProgress = { message: 'Credential results are ready. Scanning code issues with Foxguard...' };
+        panel._scanCoverage = { engines: [{ id: 'foxguard', inProgress: true }] };
+        panel._renderEmptyScanState = () => '<section id="empty-results">No credential findings</section>';
+        panel._renderImportedReport = () => '';
+
+        const html = panel._getScanResultsSection();
+
+        assert.match(html, /scan-side-rail/);
+        assert.match(html, /id="code-issues-section"/);
+    });
 });

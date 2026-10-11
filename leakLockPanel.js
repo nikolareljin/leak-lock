@@ -6578,7 +6578,7 @@ class LeakLockPanel {
         // rewrite, when a current scan may show nothing at all.
         if ((!this._scanResults || this._scanResults.length === 0) && (!this._codeIssues || this._codeIssues.length === 0)) {
             return this._isScanning && this._scanCoverage
-                ? `${progress}${this._renderEmptyScanState()}${this._renderImportedReport()}`
+                ? this._renderResultsPage(`${progress}${this._renderEmptyScanState()}${this._renderCodeIssues()}${this._renderImportedReport()}`)
                 : `${this._renderEmptyScanState()}${this._renderImportedReport()}`;
         }
 
