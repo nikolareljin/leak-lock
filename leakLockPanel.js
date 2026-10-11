@@ -3676,13 +3676,6 @@ class LeakLockPanel {
             };
             this._updateWebviewContent();
 
-            // A capable host was explicitly planned for parallel work. Start Foxguard
-            // now in that case, but do not hold credential results until it finishes.
-            // Moderate and constrained hosts retain the sequential plan.
-            const foxguardPromise = foxguardTask && strategy.mode === 'parallel'
-                ? foxguardTask().catch(error => ({ error }))
-                : null;
-
             const outcomes = await hostCapacity.runWithConcurrency(
                 engineTasks,
                 strategy.mode === 'parallel' ? strategy.concurrency : 1
@@ -3775,19 +3768,23 @@ class LeakLockPanel {
 
                 let foxguardOutcome;
                 try {
-                    foxguardOutcome = foxguardPromise
-                        ? await foxguardPromise
-                        : await foxguardTask();
+                    // Do not compete with credential scanners for CPU or memory. The
+                    // credential results above are already usable while this separate
+                    // working-tree analysis runs.
+                    foxguardOutcome = await foxguardTask();
                 } catch (error) {
                     foxguardOutcome = { error };
                 }
                 engineReports.pop();
                 if (!foxguardOutcome || foxguardOutcome.error) {
                     const error = foxguardOutcome && foxguardOutcome.error;
+                    const timedOut = error && (error.killed || error.signal === 'SIGTERM');
                     engineReports.push({
                         id: 'foxguard', displayName: 'Foxguard', version: null,
                         ok: false, findings: 0,
-                        note: `Scan failed: ${error ? error.message : 'unknown error'}`
+                        note: timedOut
+                            ? `Stopped after ${Math.round(engineSettings.foxguardTimeoutMs / 1000)}s. Increase leakLock.foxguard.timeoutSeconds to scan longer.`
+                            : `Scan failed: ${error ? error.message : 'unknown error'}`
                     });
                 } else {
                     if (foxguardOutcome.report) engineReports.push(foxguardOutcome.report);
@@ -4379,6 +4376,7 @@ class LeakLockPanel {
             rulesetMode: cfg.rulesetMode,
             maxFileSizeMb: cfg.maxFileSizeMb,
             timeoutSeconds: Math.round(cfg.timeoutMs / 1000),
+            foxguardTimeoutSeconds: Math.round(cfg.foxguardTimeoutMs / 1000),
             dependencyHandling: vscode.workspace.getConfiguration('leakLock').get('dependencyHandling') || 'warning',
             excludedByDependencyRule: excludedByDependencyRule || 0,
             refRefresh: refRefresh || { attempted: false, ok: false, reason: 'unknown' },
@@ -6360,6 +6358,7 @@ class LeakLockPanel {
             `ruleset <code>${escapeHtml(coverage.rulesetMode || 'default')}</code>`,
             `file-size limit ${coverage.maxFileSizeMb ? `${coverage.maxFileSizeMb} MB` : 'none'}`,
             `timeout ${coverage.timeoutSeconds}s`,
+            `Foxguard timeout ${coverage.foxguardTimeoutSeconds || coverage.timeoutSeconds}s`,
             `dependencies <code>${escapeHtml(coverage.dependencyHandling)}</code>`
         ].join(' · ');
 
@@ -6653,7 +6652,8 @@ class LeakLockPanel {
             suppressRedundant: config.get('noseyParker.suppressRedundant'),
             maxFileSizeMb: config.get('noseyParker.maxFileSizeMb'),
             refreshRefsBeforeScan: config.get('scan.refreshRefsBeforeScan'),
-            timeoutSeconds: config.get('scan.timeoutSeconds')
+            timeoutSeconds: config.get('scan.timeoutSeconds'),
+            foxguardTimeoutSeconds: config.get('foxguard.timeoutSeconds')
         });
     }
 
@@ -6911,7 +6911,14 @@ class LeakLockPanel {
             // it. Re-resolving could select a different runtime from the one this method
             // just reported as the engine's version and availability, so every finding
             // would be attributed to a runtime that did not produce it.
-            const scanOptions = { repoDir: scanPath, binary, runtime, image, execution, timeoutMs: cfg.timeoutMs };
+            const scanOptions = {
+                repoDir: scanPath,
+                binary,
+                runtime,
+                image,
+                execution,
+                timeoutMs: engine.id === 'foxguard' ? cfg.foxguardTimeoutMs : cfg.timeoutMs
+            };
             if (engine.id === 'gitleaks') {
                 scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
                 scanOptions.configPath = config.get('gitleaks.configPath') || undefined;

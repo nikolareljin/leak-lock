@@ -1114,6 +1114,8 @@ suite('Scan engine configuration', () => {
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 5 }).timeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 99999 }).timeoutMs, 7200000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 'abc' }).timeoutMs, 600000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({}).foxguardTimeoutMs, 120000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ foxguardTimeoutSeconds: 5 }).foxguardTimeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ maxFileSizeMb: -4 }).maxFileSizeMb, 0);
 	});
 
@@ -5979,7 +5981,7 @@ suite('PR #105 eleventh review pass', () => {
 
 	test('the panel hands its resolved execution to the scan', () => {
 		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
-		assert.match(src, /const scanOptions = \{ repoDir: scanPath, binary, runtime, image, execution, timeoutMs/);
+		assert.match(src, /const scanOptions = \{[\s\S]*repoDir: scanPath,[\s\S]*execution,[\s\S]*timeoutMs:/);
 	});
 
 	test('an absent execution is still resolved, so other callers keep working', async () => {

@@ -199,8 +199,10 @@ the file and line, cannot be selected for replacement, and do not enter a rewrit
 
 On a large repository, static analysis can outlast the credential engines. Leak Lock
 renders completed credential findings first, displays `scanning...` for Foxguard in Scan
-coverage, and adds the Code issues section when the engine completes. A capable host starts
-Foxguard in parallel; a host using sequential execution runs it after the credential scan.
+coverage, and adds the Code issues section when the engine completes. Foxguard always starts
+after credential results are ready, so code analysis cannot contend with credential scanners.
+Its default deadline is two minutes; increase it for repositories where a longer code scan is
+useful.
 
 The right-side result rail provides `Results`, `Cleanup`, and `Issues` shortcuts. It keeps
 the controls compact until hover or keyboard focus, then expands the label and jumps to the
@@ -214,6 +216,7 @@ a source fix.
 | Setting | Purpose |
 |---|---|
 | `leakLock.foxguard.binaryPath` | Path to the Foxguard binary; empty resolves `foxguard` from the managed install or `PATH` |
+| `leakLock.foxguard.timeoutSeconds` | Foxguard working-tree deadline; default 120 seconds |
 
 ---
 
