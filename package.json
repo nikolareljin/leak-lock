@@ -116,6 +116,13 @@
           "maximum": 7200,
           "description": "Maximum time for a single engine's scan. On expiry, findings gathered so far are reported and the results are marked incomplete rather than discarded."
         },
+        "leakLock.foxguard.timeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 30,
+          "maximum": 7200,
+          "description": "Maximum time for Foxguard working-tree code analysis. Credential results appear first; raise this value for larger repositories."
+        },
         "leakLock.scan.refreshRefsBeforeScan": {
           "type": "boolean",
           "default": true,

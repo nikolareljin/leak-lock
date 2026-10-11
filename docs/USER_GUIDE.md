@@ -93,6 +93,10 @@ the credential details are lost.
 
 ### Understanding Scan Results
 
+Leak Lock may publish credential findings before every enabled engine has completed. Scan
+coverage names each engine and shows `scanning...` while Foxguard continues its working-tree
+code analysis. The credential table remains available during that phase.
+
 The results appear in a detailed table with the following columns:
 
 | Column | Description |
@@ -103,6 +107,18 @@ The results appear in a detailed table with the following columns:
 | **Line** | Line number in the file |
 | **Preview** | Partial content showing the detected secret |
 | **Actions** | Options to fix or ignore the secret |
+
+Foxguard findings appear in a separate **Code issues** table. They link to source locations,
+but cannot be selected for replacement or git history cleanup.
+
+For large result sets, use the compact right-side shortcuts:
+
+- **🔎 Results** jumps to search findings.
+- **🧹 Cleanup** jumps to the cleanup controls.
+- **⚠️ Issues** jumps to Foxguard code issues.
+
+The shortcut labels expand on hover or keyboard focus. They overlap only the right edge
+while expanded, then return to their compact gutter.
 
 **Severity Levels:**
 - 🔴 **High**: Critical secrets like production API keys
@@ -128,7 +144,7 @@ All of this analysis happens on your machine. Nothing is uploaded, and the repor
 
 After a scan completes, use the export actions in the results section:
 
-- **📤 Export JSON**: Saves a machine-readable report with scan metadata and findings.
+- **📤 Export JSON**: Saves credentials, Foxguard code issues, scan coverage, and metadata.
 - **🖨️ Print / Save as PDF**: Opens a print-friendly version of the current results so you can save a PDF report.
 
 Use exports to share findings in incidents, tickets, or audit reports.
@@ -185,6 +201,10 @@ become a history rather than unrelated snapshots.
 Imported findings describe a past scan. They are never selectable for cleanup. To remove
 something the import shows as still present, scan again, or add it as a manual redaction
 rule.
+
+Imported Foxguard code issues are shown in their own read-only table. Leak Lock does not
+label them resolved or unresolved during credential verification: a changed scanner result
+is useful evidence, but not proof that the source was remediated.
 
 ---
 

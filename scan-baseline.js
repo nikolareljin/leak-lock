@@ -87,14 +87,19 @@ function parseImportedReport(text, options = {}) {
     const findings = raw.findings
         .filter(finding => finding && typeof finding === 'object' && !Array.isArray(finding))
         .map((finding, index) => normalizeImportedFinding(finding, index));
+    const rawCodeIssues = Array.isArray(raw.codeIssues) ? raw.codeIssues : [];
+    const codeIssues = rawCodeIssues
+        .filter(issue => issue && typeof issue === 'object' && !Array.isArray(issue))
+        .map((issue, index) => normalizeImportedCodeIssue(issue, index));
 
     const dropped = raw.findings.length - findings.length;
     if (dropped > 0) {
         warnings.push(`${dropped} entr${dropped === 1 ? 'y was' : 'ies were'} not an object and could not be read.`);
     }
-    if (Number.isFinite(raw.totalFindings) && raw.totalFindings !== findings.length) {
+    const importedTotal = findings.length + codeIssues.length;
+    if (Number.isFinite(raw.totalFindings) && raw.totalFindings !== importedTotal) {
         warnings.push(
-            `The report says it holds ${raw.totalFindings} finding(s) but ${findings.length} could be read. ` +
+            `The report says it holds ${raw.totalFindings} finding(s) but ${importedTotal} could be read. ` +
             'It may have been edited or truncated.'
         );
     }
@@ -148,12 +153,15 @@ function parseImportedReport(text, options = {}) {
                     path: typeof raw.repository.path === 'string' ? raw.repository.path : null
                 }
                 : null,
-            totalFindings: findings.length,
+            totalFindings: importedTotal,
+            totalCredentialFindings: findings.length,
+            totalCodeIssues: codeIssues.length,
             // No coverage field: it was the one object carried through from the file
             // untouched, against the narrowing every other field here gets, and
             // nothing read it. Rendering it later would put attacker-shaped values
             // in a webview, so re-add it a named primitive at a time, not wholesale.
             findings,
+            codeIssues,
             warnings
         }
     };
@@ -216,6 +224,27 @@ function normalizeImportedFinding(finding, index) {
         decoder,
         verifiable: !unverifiableReason,
         unverifiableReason
+    };
+}
+
+// Code issues have no secret value to search through git history. Preserve them as
+// report evidence, but never label an absent current match as "resolved".
+function normalizeImportedCodeIssue(issue, index) {
+    return {
+        id: `imported-code:${index}`,
+        file: typeof issue.file === 'string' ? issue.file : null,
+        line: Number.isFinite(issue.line) ? issue.line : null,
+        endLine: Number.isFinite(issue.endLine) ? issue.endLine : null,
+        ruleId: typeof issue.ruleId === 'string' ? issue.ruleId : 'foxguard',
+        description: typeof issue.description === 'string' ? issue.description : '',
+        severity: typeof issue.severity === 'string' ? issue.severity : 'info',
+        cwe: Array.isArray(issue.cwe)
+            ? issue.cwe.filter(value => typeof value === 'string')
+            : (typeof issue.cwe === 'string' ? issue.cwe : null),
+        confidence: Number.isFinite(issue.confidence) ? issue.confidence : null,
+        fix: typeof issue.fix === 'string' ? issue.fix : null,
+        engine: typeof issue.engine === 'string' ? issue.engine : 'foxguard',
+        engineVersion: typeof issue.engineVersion === 'string' ? issue.engineVersion : null
     };
 }
 
@@ -637,6 +666,7 @@ module.exports = {
     STATUS,
     parseImportedReport,
     normalizeImportedFinding,
+    normalizeImportedCodeIssue,
     findingIdentityKeys,
     indexCurrentFindings,
     matchInCurrentScan,

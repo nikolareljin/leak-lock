@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://nikolareljin.github.io/leak-lock/sitemap.xml

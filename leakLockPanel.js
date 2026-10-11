@@ -842,6 +842,71 @@ class LeakLockPanel {
                     .results-table th {
                         background-color: var(--vscode-editor-selectionBackground);
                     }
+                    html { scroll-behavior: smooth; }
+                    /* Reserve only the collapsed rail. Its label expands over the
+                       edge on hover, then returns to the gutter when it is not used. */
+                    .scan-results-page { padding-right: 46px; }
+                    .scan-side-rail {
+                        position: fixed;
+                        right: 8px;
+                        top: 72px;
+                        z-index: 20;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: flex-end;
+                        gap: 6px;
+                    }
+                    .scan-side-rail a, .scan-side-rail .scan-side-shortcut-unavailable {
+                        display: flex;
+                        align-items: center;
+                        justify-content: flex-end;
+                        position: relative;
+                        width: 30px;
+                        height: 30px;
+                        overflow: hidden;
+                        padding: 0;
+                        border: 1px solid var(--vscode-panel-border);
+                        border-radius: 4px;
+                        color: var(--vscode-editor-foreground);
+                        background: var(--vscode-editor-background);
+                        text-decoration: none;
+                        white-space: nowrap;
+                        transition: width 120ms ease;
+                    }
+                    .scan-side-rail .scan-side-shortcut-unavailable {
+                        cursor: default;
+                    }
+                    .scan-side-rail a:hover, .scan-side-rail a:focus-visible {
+                        width: 132px;
+                        background: var(--vscode-list-hoverBackground);
+                    }
+                    .scan-side-rail .scan-side-glyph {
+                        position: absolute;
+                        right: 7px;
+                        width: 16px;
+                        text-align: center;
+                        filter: grayscale(1);
+                        opacity: 0.7;
+                        transition: filter 120ms ease, opacity 120ms ease;
+                    }
+                    .scan-side-rail .scan-side-label {
+                        position: absolute;
+                        right: 30px;
+                        opacity: 0;
+                        transform: translateX(6px);
+                        font-size: 0.82em;
+                        transition: opacity 120ms ease, transform 120ms ease;
+                    }
+                    .scan-side-rail a:hover .scan-side-glyph,
+                    .scan-side-rail a:focus-visible .scan-side-glyph {
+                        filter: none;
+                        opacity: 1;
+                    }
+                    .scan-side-rail a:hover .scan-side-label,
+                    .scan-side-rail a:focus-visible .scan-side-label {
+                        opacity: 1;
+                        transform: translateX(0);
+                    }
                     .replacement-input {
                         width: 100%;
                         box-sizing: border-box;
@@ -3147,7 +3212,7 @@ class LeakLockPanel {
             this._renderPendingPush(this._scanCleanup.pendingPush);
 
         return `
-            <div class="scan-section">
+            <div class="scan-section" id="scan-results-section">
                 <h2>🔍 Scan Results</h2>
                 <div style="margin:6px 0 10px 0; font-size:0.9em; color:${fetchColor}; display:flex; align-items:center; gap:8px;">
                     <!-- lastFetchISO, not _removalState.lastFetchAt: the latter belongs to the
@@ -3215,7 +3280,7 @@ class LeakLockPanel {
                 ${blockedBlock}
                 ${refreshBlock}
                 ${verifyBlock}
-                <div class="run-section" style="margin-top: 18px;">
+                <div class="run-section" id="cleanup-section" style="margin-top: 18px;">
                     <h3>⚡ BFG-based cleanup (recommended)</h3>
                     <p class="warning-text">⚠️ WARNING: This will permanently modify your git history!</p>
                     <p style="font-size: 0.9em; margin: 8px 0;">
@@ -3615,11 +3680,18 @@ class LeakLockPanel {
             // Each engine is an independent task. The strategy decides how many run at
             // once; a failing engine still cannot take the others down with it.
             const engineTasks = [];
+            let foxguardTask = null;
             if (useNoseyParker) {
                 engineTasks.push(() => this._runNoseyParkerEngine(scanPath, engineSettings));
             }
             for (const engineId of engineIds) {
                 if (engineId === 'noseyparker') {
+                    continue;
+                }
+                // Code analysis is tracked separately so its completion never delays
+                // the credential results.
+                if (engineId === 'foxguard') {
+                    foxguardTask = () => this._runExternalEngine(engineId, scanPath, engineSettings);
                     continue;
                 }
                 engineTasks.push(() => this._runExternalEngine(engineId, scanPath, engineSettings));
@@ -3628,10 +3700,16 @@ class LeakLockPanel {
             this._scanProgress = {
                 stage: 'scan',
                 message: strategy.mode === 'parallel'
-                    ? `Scanning with ${engineIds.length} engines in parallel...`
+                    ? `Scanning credentials with ${engineIds.length - (foxguardTask ? 1 : 0)} engines in parallel...`
                     : 'Scanning for secrets...'
             };
             this._updateWebviewContent();
+
+            // Start Foxguard with the credential engines, but handle rejection here
+            // so a failure cannot become unhandled while credential results render.
+            const foxguardPromise = foxguardTask
+                ? foxguardTask().catch(error => ({ error }))
+                : null;
 
             const outcomes = await hostCapacity.runWithConcurrency(
                 engineTasks,
@@ -3696,6 +3774,56 @@ class LeakLockPanel {
             this._scanResults = allResults;
             this._codeIssues = codeIssues;
             await this._classifyCredentials();
+
+            if (foxguardTask) {
+                // Render the credential scan before waiting for the already-running
+                // working-tree analysis. The in-progress report keeps coverage honest
+                // while the side rail and cleanup controls remain usable.
+                const pendingFoxguardReport = {
+                    id: 'foxguard', displayName: 'Foxguard', version: null,
+                    ok: true, inProgress: true, findings: 0,
+                    note: 'Scanning working-tree code issues...'
+                };
+                engineReports.push(pendingFoxguardReport);
+                this._scanCoverage = await this._buildScanCoverage({
+                    scanPath,
+                    settings: engineSettings,
+                    engineVersion,
+                    engines: engineReports,
+                    strategy,
+                    pullResult,
+                    refRefresh,
+                    incomplete: scanRun.incomplete,
+                    incompleteReason: scanRun.incompleteReason,
+                    excludedByDependencyRule
+                });
+                this._resetScanSelection();
+                this._scanProgress = { stage: 'scan', message: 'Credential results are ready. Scanning code issues with Foxguard...' };
+                this._updateWebviewContent();
+
+                let foxguardOutcome;
+                try {
+                    foxguardOutcome = await foxguardPromise;
+                } catch (error) {
+                    foxguardOutcome = { error };
+                }
+                engineReports.pop();
+                if (!foxguardOutcome || foxguardOutcome.error) {
+                    const error = foxguardOutcome && foxguardOutcome.error;
+                    const timedOut = error && (error.killed || error.signal === 'SIGTERM');
+                    engineReports.push({
+                        id: 'foxguard', displayName: 'Foxguard', version: null,
+                        ok: false, findings: 0,
+                        note: timedOut
+                            ? `Stopped after ${Math.round(engineSettings.foxguardTimeoutMs / 1000)}s. Increase leakLock.foxguard.timeoutSeconds to scan longer.`
+                            : `Scan failed: ${error ? error.message : 'unknown error'}`
+                    });
+                } else {
+                    if (foxguardOutcome.report) engineReports.push(foxguardOutcome.report);
+                    if (foxguardOutcome.codeIssues) codeIssues.push(...foxguardOutcome.codeIssues);
+                }
+                this._codeIssues = codeIssues;
+            }
             this._scanCoverage = await this._buildScanCoverage({
                 scanPath,
                 settings: engineSettings,
@@ -4280,6 +4408,7 @@ class LeakLockPanel {
             rulesetMode: cfg.rulesetMode,
             maxFileSizeMb: cfg.maxFileSizeMb,
             timeoutSeconds: Math.round(cfg.timeoutMs / 1000),
+            foxguardTimeoutSeconds: Math.round(cfg.foxguardTimeoutMs / 1000),
             dependencyHandling: vscode.workspace.getConfiguration('leakLock').get('dependencyHandling') || 'warning',
             excludedByDependencyRule: excludedByDependencyRule || 0,
             refRefresh: refRefresh || { attempted: false, ok: false, reason: 'unknown' },
@@ -5475,6 +5604,17 @@ class LeakLockPanel {
             </tr>
         `).join('');
 
+        const importedCodeIssueRows = (report.codeIssues || []).map(issue => `
+            <tr>
+                <td style="word-break: break-all;">${escapeHtml(issue.file || 'unknown')}</td>
+                <td>${escapeHtml(String(issue.line ?? ''))}</td>
+                <td><code>${escapeHtml(issue.ruleId || 'foxguard')}</code></td>
+                <td>${escapeHtml(issue.description || '')}</td>
+                <td>${escapeHtml(issue.severity || '')}</td>
+                <td>${escapeHtml(issue.engine || 'foxguard')}</td>
+            </tr>
+        `).join('');
+
         return `
             <div class="scan-section" id="imported-report-section" style="margin-top: 16px;">
                 <h3 style="margin-bottom: 4px;">📥 Imported report${report.sourceName ? `: ${escapeHtml(report.sourceName)}` : ''}</h3>
@@ -5486,6 +5626,13 @@ class LeakLockPanel {
                 ${repoNote}
                 ${pathNote}
                 ${summaryLine}
+                ${importedCodeIssueRows
+                ? `<h4 style="margin: 14px 0 4px 0;">Imported code issues</h4>
+                       <p style="font-size: 0.85em; color: var(--vscode-descriptionForeground); margin-top: 0;">
+                           Foxguard findings are preserved for review. They are not checked through credential-history verification.
+                       </p>
+                       <table class="results-table"><thead><tr><th>File</th><th style="width: 60px;">Line</th><th>Rule</th><th>Issue</th><th>Severity</th><th>Engine</th></tr></thead><tbody>${importedCodeIssueRows}</tbody></table>`
+                : ''}
                 <div class="export-actions" style="margin-bottom: 10px;">
                     <button class="scan-button" onclick="verifyImportedReport()" ${this._verifyingImport ? 'disabled' : ''}>${this._verifyingImport ? '⏳ Verifying…' : '🔁 Re-verify'}</button>
                     <button class="scan-button" onclick="importScanResultsJson()">📥 Import another</button>
@@ -6086,7 +6233,7 @@ class LeakLockPanel {
         `).join('');
 
         const ranEngines = (this._scanCoverage?.engines || [])
-            .filter(engine => engine.ok)
+            .filter(engine => engine.ok && engine.id !== 'foxguard')
             .map(engine => engine.id);
         const missedBy = ranEngines.filter(id => !found.includes(id));
         const missedNote = missedBy.length
@@ -6171,13 +6318,15 @@ class LeakLockPanel {
 
         // --- Detail -----------------------------------------------------------
         const engineRows = engines.map(engine => {
-            const status = engine.ok ? '✅' : '⚠️';
+            const status = engine.inProgress ? '⏳' : (engine.ok ? '✅' : '⚠️');
             // A missing version is stated, not faked: some distribution builds print
             // a placeholder where a version belongs.
             const version = engine.version
                 ? `<code>${escapeHtml(engine.version)}</code>`
                 : '<span class="coverage-muted">version unknown</span>';
-            const findings = engine.ok
+            const findings = engine.inProgress
+                ? 'scanning...'
+                : engine.ok
                 ? `${engine.findings} finding${engine.findings === 1 ? '' : 's'}`
                 : 'did not run';
             const verified = engine.verified
@@ -6241,6 +6390,7 @@ class LeakLockPanel {
             `ruleset <code>${escapeHtml(coverage.rulesetMode || 'default')}</code>`,
             `file-size limit ${coverage.maxFileSizeMb ? `${coverage.maxFileSizeMb} MB` : 'none'}`,
             `timeout ${coverage.timeoutSeconds}s`,
+            `Foxguard timeout ${coverage.foxguardTimeoutSeconds || coverage.timeoutSeconds}s`,
             `dependencies <code>${escapeHtml(coverage.dependencyHandling)}</code>`
         ].join(' · ');
 
@@ -6254,7 +6404,7 @@ class LeakLockPanel {
             : '';
 
         return `
-            <div class="scan-coverage">
+            <div class="scan-coverage" id="scan-coverage-section">
                 ${incompleteBanner}
                 <details class="coverage-toggle">
                     <summary>
@@ -6389,7 +6539,17 @@ class LeakLockPanel {
 
     _renderCodeIssues() {
         const issues = this._codeIssues || [];
-        if (issues.length === 0) return '';
+        if (issues.length === 0) {
+            const foxguardReport = (this._scanCoverage?.engines || [])
+                .find(engine => engine.id === 'foxguard');
+            if (this._isScanning && foxguardReport?.inProgress) {
+                return `<div class="scan-section" id="code-issues-section"><h2>Code issues</h2><p class="hint">Foxguard is still scanning the working tree.</p></div>`;
+            }
+            if (foxguardReport?.ok) {
+                return `<div class="scan-section" id="code-issues-section"><h2>Code issues</h2><p class="hint">Foxguard completed with no code issues.</p></div>`;
+            }
+            return '';
+        }
         const rows = issues.map(issue => {
             const line = Number.isFinite(issue.line) ? issue.line : 1;
             const location = `${issue.file || 'unknown'}:${line}`;
@@ -6408,9 +6568,29 @@ class LeakLockPanel {
         </div>`;
     }
 
+    _renderScanSideRail() {
+        const hasCredentialResults = (this._scanResults || []).length > 0;
+        const foxguardReport = (this._scanCoverage?.engines || [])
+            .find(engine => engine.id === 'foxguard');
+        const hasCodeIssues = (this._codeIssues || []).length > 0
+            || Boolean(foxguardReport?.inProgress || foxguardReport?.ok);
+        const shortcut = (target, label, glyph, available, unavailableTitle) => available
+            ? `<a href="#${target}" title="Jump to ${label.toLowerCase()}" aria-label="Jump to ${label.toLowerCase()}"><span class="scan-side-glyph" aria-hidden="true">${glyph}</span><span class="scan-side-label">${label}</span></a>`
+            : `<span class="scan-side-shortcut-unavailable" title="${escapeHtml(unavailableTitle)}" aria-label="${escapeHtml(unavailableTitle)}"><span class="scan-side-glyph" aria-hidden="true">${glyph}</span><span class="scan-side-label">${label}</span></span>`;
+        return `<nav class="scan-side-rail" aria-label="Scan result shortcuts">
+            ${shortcut('scan-results-section', 'Results', '🔎', hasCredentialResults, 'No search findings in this scan')}
+            ${shortcut('cleanup-section', 'Cleanup', '🧹', hasCredentialResults, 'No cleanup blocks in this scan')}
+            ${shortcut('code-issues-section', 'Issues', '⚠️', hasCodeIssues, 'No code issues in this scan')}
+        </nav>`;
+    }
+
+    _renderResultsPage(content) {
+        return `${this._renderScanSideRail()}<div class="scan-results-page">${content}</div>`;
+    }
+
     _getScanResultsSection() {
         // Show scanning progress
-        if (this._isScanning) {
+        if (this._isScanning && !this._scanCoverage && (!this._scanResults || this._scanResults.length === 0) && (!this._codeIssues || this._codeIssues.length === 0)) {
             return `
                 <div class="scan-section">
                     <h2>🔍 Scanning Repository</h2>
@@ -6429,19 +6609,25 @@ class LeakLockPanel {
             `;
         }
 
+        const progress = this._isScanning
+            ? `<div class="scan-in-progress" role="status"><strong>Scanning continues:</strong> ${escapeHtml(this._scanProgress?.message || 'Scanning in progress...')}</div>`
+            : '';
+
         // Show results or empty state. The imported-report card is appended to both:
         // "did the cleanup remove what the last report listed" is asked after a
         // rewrite, when a current scan may show nothing at all.
         if ((!this._scanResults || this._scanResults.length === 0) && (!this._codeIssues || this._codeIssues.length === 0)) {
-            return `${this._renderEmptyScanState()}${this._renderImportedReport()}`;
+            return this._isScanning && this._scanCoverage
+                ? this._renderResultsPage(`${progress}${this._renderEmptyScanState()}${this._renderCodeIssues()}${this._renderImportedReport()}`)
+                : `${this._renderEmptyScanState()}${this._renderImportedReport()}`;
         }
 
         if (!this._scanResults || this._scanResults.length === 0) {
-            return `${this._renderCodeIssues()}${this._renderScanCoverage()}${this._renderImportedReport()}`;
+            return this._renderResultsPage(`${progress}${this._renderCodeIssues()}${this._renderScanCoverage()}${this._renderImportedReport()}`);
         }
 
         // Show actual results (existing logic)
-        return `${this._getResultsHtml()}${this._renderCodeIssues()}${this._renderImportedReport()}`;
+        return this._renderResultsPage(`${progress}${this._getResultsHtml()}${this._renderCodeIssues()}${this._renderImportedReport()}`);
     }
 
     _generateFixCommand(replacements) {
@@ -6507,7 +6693,8 @@ class LeakLockPanel {
             suppressRedundant: config.get('noseyParker.suppressRedundant'),
             maxFileSizeMb: config.get('noseyParker.maxFileSizeMb'),
             refreshRefsBeforeScan: config.get('scan.refreshRefsBeforeScan'),
-            timeoutSeconds: config.get('scan.timeoutSeconds')
+            timeoutSeconds: config.get('scan.timeoutSeconds'),
+            foxguardTimeoutSeconds: config.get('foxguard.timeoutSeconds')
         });
     }
 
@@ -6765,7 +6952,14 @@ class LeakLockPanel {
             // it. Re-resolving could select a different runtime from the one this method
             // just reported as the engine's version and availability, so every finding
             // would be attributed to a runtime that did not produce it.
-            const scanOptions = { repoDir: scanPath, binary, runtime, image, execution, timeoutMs: cfg.timeoutMs };
+            const scanOptions = {
+                repoDir: scanPath,
+                binary,
+                runtime,
+                image,
+                execution,
+                timeoutMs: engine.id === 'foxguard' ? cfg.foxguardTimeoutMs : cfg.timeoutMs
+            };
             if (engine.id === 'gitleaks') {
                 scanOptions.maxTargetMegabytes = cfg.maxFileSizeMb > 0 ? cfg.maxFileSizeMb : undefined;
                 scanOptions.configPath = config.get('gitleaks.configPath') || undefined;

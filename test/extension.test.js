@@ -1114,6 +1114,8 @@ suite('Scan engine configuration', () => {
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 5 }).timeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 99999 }).timeoutMs, 7200000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 'abc' }).timeoutMs, 600000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({}).foxguardTimeoutMs, 120000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({ foxguardTimeoutSeconds: 5 }).foxguardTimeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ maxFileSizeMb: -4 }).maxFileSizeMb, 0);
 	});
 
@@ -5979,7 +5981,7 @@ suite('PR #105 eleventh review pass', () => {
 
 	test('the panel hands its resolved execution to the scan', () => {
 		const src = nodeFs.readFileSync(nodePath.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
-		assert.match(src, /const scanOptions = \{ repoDir: scanPath, binary, runtime, image, execution, timeoutMs/);
+		assert.match(src, /const scanOptions = \{[\s\S]*repoDir: scanPath,[\s\S]*execution,[\s\S]*timeoutMs:/);
 	});
 
 	test('an absent execution is still resolved, so other callers keep working', async () => {
@@ -7313,6 +7315,21 @@ suite('Importing a previous report and checking what was resolved', () => {
 		const noFindings = scanBaseline.parseImportedReport('{"generatedAt":"x"}');
 		assert.strictEqual(noFindings.ok, false);
 		assert.match(noFindings.error, /findings/);
+	});
+
+	test('imports Foxguard code issues alongside credential findings', () => {
+		const parsed = scanBaseline.parseImportedReport(reportJson([finding()], {
+			totalFindings: 2,
+			codeIssues: [{
+				file: 'src/app.js', line: 12, ruleId: 'js/no-eval',
+				description: 'Avoid eval', severity: 'high', engine: 'foxguard'
+			}]
+		}));
+		assert.strictEqual(parsed.ok, true);
+		assert.strictEqual(parsed.report.totalFindings, 2);
+		assert.strictEqual(parsed.report.totalCodeIssues, 1);
+		assert.strictEqual(parsed.report.codeIssues[0].ruleId, 'js/no-eval');
+		assert.strictEqual(parsed.report.warnings.some(warning => /but 1 could be read/.test(warning)), false);
 	});
 
 	// `typeof [] === 'object'`, so array entries used to pass the findings filter

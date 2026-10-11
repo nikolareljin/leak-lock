@@ -28,6 +28,9 @@ const REPORT_NO_LIMIT = '-1';
 const REPORT_NO_MIN_SCORE = '0';
 
 const DEFAULT_SCAN_TIMEOUT_MS = 600000; // 10 minutes
+// Code analysis walks the working tree and can be expensive in a monorepo. It has a
+// shorter independent deadline so it cannot make a credential scan appear stalled.
+const DEFAULT_FOXGUARD_TIMEOUT_MS = 120000; // 2 minutes
 const DEFAULT_MAX_FILE_SIZE_MB = 100; // matches Nosey Parker's own default
 
 /**
@@ -54,6 +57,9 @@ function resolveRulesetIds(mode) {
  */
 function normalizeScanSettings(raw = {}) {
     const timeoutSeconds = clampNumber(raw.timeoutSeconds, 30, 7200, DEFAULT_SCAN_TIMEOUT_MS / 1000);
+    const foxguardTimeoutSeconds = clampNumber(
+        raw.foxguardTimeoutSeconds, 30, 7200, DEFAULT_FOXGUARD_TIMEOUT_MS / 1000
+    );
     const maxFileSizeMb = clampNumber(raw.maxFileSizeMb, 0, 100000, DEFAULT_MAX_FILE_SIZE_MB);
     return {
         image: typeof raw.image === 'string' && raw.image.trim() ? raw.image.trim() : NOSEYPARKER_IMAGE,
@@ -63,7 +69,8 @@ function normalizeScanSettings(raw = {}) {
         suppressRedundant: raw.suppressRedundant !== false,
         maxFileSizeMb,
         refreshRefsBeforeScan: raw.refreshRefsBeforeScan !== false,
-        timeoutMs: timeoutSeconds * 1000
+        timeoutMs: timeoutSeconds * 1000,
+        foxguardTimeoutMs: foxguardTimeoutSeconds * 1000
     };
 }
 
@@ -238,6 +245,7 @@ module.exports = {
     NOSEYPARKER_EXPECTED_DIGEST,
     NOSEYPARKER_ARCHIVED_NOTICE,
     DEFAULT_SCAN_TIMEOUT_MS,
+    DEFAULT_FOXGUARD_TIMEOUT_MS,
     DEFAULT_MAX_FILE_SIZE_MB,
     RULESET_MODES,
     EXCLUDABLE_DEPENDENCY_DIRS,
