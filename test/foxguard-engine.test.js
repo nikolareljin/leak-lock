@@ -59,6 +59,17 @@ suite('Foxguard code scan', () => {
         assert.match(source, /a:hover \.scan-side-label,[\s\S]*opacity: 1/);
     });
 
+    test('starts Foxguard with credentials but waits for it after rendering credential results', () => {
+        const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+        const startedAt = source.indexOf('const foxguardPromise = foxguardTask');
+        const credentialWaitAt = source.indexOf('const outcomes = await hostCapacity.runWithConcurrency');
+        const renderedAt = source.indexOf('Credential results are ready. Scanning code issues with Foxguard...');
+        const foxguardWaitAt = source.indexOf('foxguardOutcome = await foxguardPromise');
+
+        assert.ok(startedAt >= 0 && startedAt < credentialWaitAt, 'Foxguard starts with credential scans');
+        assert.ok(renderedAt >= 0 && renderedAt < foxguardWaitAt, 'credentials render before waiting for Foxguard');
+    });
+
     test('keeps a code-issues target while Foxguard is still scanning', () => {
         const panel = Object.create(LeakLockPanel.prototype);
         panel._codeIssues = [];

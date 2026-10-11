@@ -3685,9 +3685,8 @@ class LeakLockPanel {
                 if (engineId === 'noseyparker') {
                     continue;
                 }
-                // Code analysis is deliberately a second phase. Credential findings
-                // are useful immediately; waiting for a large working-tree analysis
-                // made a completed secret scan look stalled.
+                // Code analysis is tracked separately so its completion never delays
+                // the credential results.
                 if (engineId === 'foxguard') {
                     foxguardTask = () => this._runExternalEngine(engineId, scanPath, engineSettings);
                     continue;
@@ -3702,6 +3701,12 @@ class LeakLockPanel {
                     : 'Scanning for secrets...'
             };
             this._updateWebviewContent();
+
+            // Start Foxguard with the credential engines, but handle rejection here
+            // so a failure cannot become unhandled while credential results render.
+            const foxguardPromise = foxguardTask
+                ? foxguardTask().catch(error => ({ error }))
+                : null;
 
             const outcomes = await hostCapacity.runWithConcurrency(
                 engineTasks,
@@ -3768,7 +3773,7 @@ class LeakLockPanel {
             await this._classifyCredentials();
 
             if (foxguardTask) {
-                // Render the finished credential scan before starting the heavier
+                // Render the credential scan before waiting for the already-running
                 // working-tree analysis. The in-progress report keeps coverage honest
                 // while the side rail and cleanup controls remain usable.
                 const pendingFoxguardReport = {
@@ -3795,10 +3800,7 @@ class LeakLockPanel {
 
                 let foxguardOutcome;
                 try {
-                    // Do not compete with credential scanners for CPU or memory. The
-                    // credential results above are already usable while this separate
-                    // working-tree analysis runs.
-                    foxguardOutcome = await foxguardTask();
+                    foxguardOutcome = await foxguardPromise;
                 } catch (error) {
                     foxguardOutcome = { error };
                 }

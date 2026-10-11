@@ -372,7 +372,7 @@ it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
 Foxguard analyses working-tree code, which can take longer than credential scans on a
 large repository. Leak Lock publishes completed credential findings first and keeps the
 Foxguard row in Scan coverage at `scanning...` until its code issues arrive. Foxguard starts
-after credential results are ready so it cannot compete with credential scanning. Its default
+with credential scanners, but its results never hold back the credential table. Its default
 working-tree deadline is two minutes; increase `leakLock.foxguard.timeoutSeconds` for a larger
 repository when a longer code analysis is useful.
 

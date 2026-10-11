@@ -199,8 +199,8 @@ the file and line, cannot be selected for replacement, and do not enter a rewrit
 
 On a large repository, static analysis can outlast the credential engines. Leak Lock
 renders completed credential findings first, displays `scanning...` for Foxguard in Scan
-coverage, and adds the Code issues section when the engine completes. Foxguard always starts
-after credential results are ready, so code analysis cannot contend with credential scanners.
+coverage, and adds the Code issues section when the engine completes. Foxguard starts with the
+credential scanners, while its results stay independent so the credential table renders first.
 Its default deadline is two minutes; increase it for repositories where a longer code scan is
 useful.
 
