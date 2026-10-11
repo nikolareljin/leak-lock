@@ -3721,7 +3721,7 @@ class LeakLockPanel {
                     if (this._scanToken === scanToken && this._isScanning && !credentialsDone
                         && outcome && !outcome.error && outcome.codeIssues?.length) {
                         this._codeIssues = outcome.codeIssues.slice();
-                        this._scanProgress = { stage: 'scan', message: 'Foxguard finished. Scanning credentials...' };
+                        this._scanProgress = { stage: 'scan', message: 'Foxguard finished. Waiting for the credential scan...' };
                         this._updateWebviewContent();
                     }
                     return outcome;
