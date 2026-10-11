@@ -819,7 +819,8 @@ class LeakLockSidebarProvider {
             // and there is no way for Leak Lock to know that in advance.
             //
             // Nosey Parker has no buttons here: Leak Lock only ever runs it as an image,
-            // so it belongs to the Docker section below.
+            // so it belongs to the Docker section below. Foxguard has no image, so it
+            // gets the binary button only.
             const method = (id, label, title) =>
                 `<button class="install-button" data-install-engine="${escapeHtml(engine.id)}" data-install-method="${id}"
                          title="${escapeHtml(title)}"
@@ -830,7 +831,7 @@ class LeakLockSidebarProvider {
                 ? `<div style="margin-left: 20px; margin-bottom: 8px;">
                         ${installing ? `<span style="font-size: 11px;">Installing ${name}…</span>` : `
                             ${method('binary', 'Install binary', `Download the ${engine.displayName} release binary. No Docker required.`)}
-                            ${method('docker', 'Use Docker image', `Pull ${engine.image || 'the official image'} and run ${engine.displayName} in a container.`)}
+                            ${engine.image ? method('docker', 'Use Docker image', `Pull ${engine.image} and run ${engine.displayName} in a container.`) : ''}
                         `}
                    </div>`
                 : '';
@@ -1596,8 +1597,10 @@ class LeakLockSidebarProvider {
 
     /** Every scan engine that would actually run right now, whatever is enabled. */
     _installedScanners() {
+        // Foxguard finds code issues, not credentials. With only Foxguard installed a
+        // scan would report no secrets because nothing looked for them.
         const installed = (this._engineStatus || [])
-            .filter(engine => engine.installed)
+            .filter(engine => engine.installed && engine.id !== 'foxguard')
             .map(engine => engine.displayName);
         if (this._noseyParkerAvailable()) {
             installed.push('Nosey Parker');
@@ -2021,6 +2024,11 @@ class LeakLockSidebarProvider {
             engineId, displayName, ok: false, version: null, path: null,
             source: 'docker', checksumVerified: false, warnings: [], error: null
         };
+        // Foxguard publishes no container image; there is nothing to pull.
+        if (!image) {
+            result.error = `${displayName} has no Docker image. Install the native binary instead.`;
+            return result;
+        }
 
         try {
             progress?.report({ message: `Pulling ${image}…` });

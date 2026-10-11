@@ -369,12 +369,15 @@ it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
 
 ### Foxguard result timing
 
-Foxguard analyses working-tree code, which can take longer than credential scans on a
-large repository. Leak Lock publishes completed credential findings first and keeps the
-Foxguard row in Scan coverage at `scanning...` until its code issues arrive. Foxguard starts
-with credential scanners, but its results never hold back the credential table. Its default
-working-tree deadline is two minutes; increase `leakLock.foxguard.timeoutSeconds` for a larger
-repository when a longer code analysis is useful.
+When engines run in parallel, Foxguard starts together with the credential engines
+(Gitleaks, TruffleHog, Nosey Parker) and takes one of the parallel slots; when they run one
+at a time (`leakLock.scan.executionMode`, or a host with limited memory), it runs after them.
+Either side can finish first. Whichever finishes first is shown first: code issues while
+the credential engines still run, or credential findings while Foxguard shows `scanning...`
+in Scan coverage. Findings can be reviewed and selected meanwhile; preparing or running a
+cleanup, starting another scan, switching repository and importing a report all wait until
+every engine has finished. Foxguard's default deadline is two minutes; increase
+`leakLock.foxguard.timeoutSeconds` for a larger repository.
 
 ### Choosing engines
 `leakLock.scan.engines` sets which run, and in what order. **Gitleaks, TruffleHog, Nosey
@@ -460,8 +463,9 @@ Git-only rewrite. Scanning needs neither.
 
 ### **Dependencies**
 
-**Required — one scan engine.** Any single one of Gitleaks, TruffleHog or Nosey Parker is
-enough to scan. Setup is complete the moment one of them works; a second widens coverage
+**Required — one scan engine.** Any single one of the credential engines (Gitleaks, TruffleHog
+or Nosey Parker) is enough to scan. Foxguard finds code issues, not credentials, so it does
+not count. Setup is complete the moment one of them works; a second widens coverage
 but does not decide whether a scan can run. Git itself is required, as is credential-lens —
 which ships inside the extension, so there is nothing to install.
 
@@ -471,8 +475,9 @@ than blocking anything:
 | | What it adds | Without it |
 |---|---|---|
 | **A second or third engine** | Rules the others miss — they disagree more than you would expect | Fewer findings, and the coverage panel says which engines ran |
-| **Docker** | Required only by Nosey Parker | Gitleaks and TruffleHog are native binaries |
-| **Nosey Parker image** | An extra engine; upstream archived | Off by default |
+| **Docker** | Required only by Nosey Parker | Gitleaks, TruffleHog and Foxguard are native binaries |
+| **Nosey Parker image** | A third credential engine; upstream archived | Enabled by default; the image is pulled on first scan, and the engine is skipped with a note when Docker is missing |
+| **Foxguard** | Working-tree code issues, in their own read-only section | No Code issues section; credentials are unaffected |
 | **Java + BFG** | An alternative history-rewrite engine | The git route is the default and needs no JVM |
 | **git-filter-repo** | The Git-only cleanup mode | BFG, if Java is present |
 

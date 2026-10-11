@@ -19,7 +19,7 @@
 <meta name="twitter:description" content="Scan credentials and code-security issues, then safely remove selected secrets from git history.">
 <meta name="twitter:image" content="https://nikolareljin.github.io/leak-lock/img/full-interface.png">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Leak Lock","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","description":"A VS Code extension that scans git repositories for credentials and code-security issues, then helps remove selected secrets from git history.","url":"https://nikolareljin.github.io/leak-lock/","downloadUrl":"https://github.com/nikolareljin/leak-lock","softwareVersion":"0.9.1","license":"https://github.com/nikolareljin/leak-lock/blob/main/LICENSE"}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Leak Lock","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","description":"A VS Code extension that scans git repositories for credentials and code-security issues, then helps remove selected secrets from git history.","url":"https://nikolareljin.github.io/leak-lock/","downloadUrl":"https://github.com/nikolareljin/leak-lock","softwareVersion":"0.10.0","license":"https://github.com/nikolareljin/leak-lock/blob/main/LICENSE"}
 </script>
 <!-- NR-shield app mark, base64-encoded so the SVG's special characters need no URL-escaping in the data URI. -->
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzNCc+PHBhdGggZD0nTTE2IDEuNSAzLjUgNS44djkuM0MzLjUgMjMgOC42IDI4LjIgMTYgMzAuNWM3LjQtMi4zIDEyLjUtNy41IDEyLjUtMTUuNFY1LjhMMTYgMS41WicgZmlsbD0nI0I0NjIwQScgc3Ryb2tlPScjMjExQzNCJyBzdHJva2Utd2lkdGg9JzEuMicgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjx0ZXh0IHg9JzE2JyB5PScyMScgdGV4dC1hbmNob3I9J21pZGRsZScgZmlsbD0nI2ZmZicgZm9udC1mYW1pbHk9J0FyaWFsLEhlbHZldGljYSxzYW5zLXNlcmlmJyBmb250LXdlaWdodD0nYm9sZCcgZm9udC1zaXplPScxMycgbGV0dGVyLXNwYWNpbmc9Jy0xJz5OUjwvdGV4dD48L3N2Zz4=">
@@ -276,7 +276,7 @@ footer .credit{margin-left:auto}
       </div>
       <div class="step">
         <h3>Review every finding — and what was actually scanned</h3>
-        <p>Credential findings land in a table in the main panel — each one with its file and line, each history hit with the branch, commit, and date, and a live credential flagged <code>VERIFIED LIVE</code>. Foxguard code issues appear separately and never enter history cleanup. Credential results appear as soon as they are ready while a longer Foxguard scan continues, with its status shown in <strong>Scan coverage</strong>. The compact right-side rail jumps to Results, Cleanup, or Issues in a long scan. Export credentials, code issues, and coverage to JSON or PDF.</p>
+        <p>Credential findings land in a table in the main panel — each one with its file and line, each history hit with the branch, commit, and date, and a live credential flagged <code>VERIFIED LIVE</code>. Foxguard code issues appear separately and never enter history cleanup. Credential findings and code issues each appear as soon as their engines finish, in either order, and cleanup waits until every engine is done. The compact right-side rail jumps to Results, Cleanup, or Issues in a long scan. Export credentials, code issues, and coverage to JSON or PDF.</p>
       </div>
       <div class="step">
         <h3>See what a secret actually is</h3>
@@ -542,7 +542,7 @@ codium  --install-extension nikolareljin.leak-lock</code></pre>
     <div class="steps">
       <div class="step">
         <h3>Install dependencies</h3>
-        <p>First run only, and the requirement is <strong>one scan engine</strong> — any single one of them is enough to scan. <strong>Gitleaks</strong> and <strong>TruffleHog</strong> are enabled by default and install as single binaries: no Docker, no JVM. Everything else is optional and says so rather than blocking you — Docker and the Nosey Parker image add a third engine whose upstream is archived, and Java adds BFG as an alternative to the git rewrite route that is now the default. An engine you have not installed is <em>reported in the coverage panel and skipped</em>; it never fails the scan.</p>
+        <p>First run only, and the requirement is <strong>one scan engine</strong> — any single one of them is enough to scan. Four engines are enabled by default. <strong>Gitleaks</strong>, <strong>TruffleHog</strong> and <strong>Foxguard</strong> install as single binaries on Linux, macOS and Windows: no Docker, no JVM. <strong>Nosey Parker</strong>, the third credential engine, runs from its Docker image and its upstream is archived. Foxguard reports code issues, not credentials, so it does not count as the one engine you need. Everything else is optional and says so rather than blocking you — Java adds BFG as an alternative to the git rewrite route that is now the default. An engine you have not installed is <em>reported in the coverage panel and skipped</em>; it never fails the scan.</p>
       </div>
       <div class="step">
         <h3>Scan for issues</h3>

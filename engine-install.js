@@ -93,7 +93,8 @@ const ENGINE_RELEASES = Object.freeze({
         id: 'foxguard', displayName: 'Foxguard', repo: '0sec-labs/foxguard',
         pinnedVersion: '0.14.0', executable: 'foxguard', versionArgs: ['--version'],
         archNames: Object.freeze({
-            win32: Object.freeze({ x64: 'x86_64' }),
+            // No arm64 build is published; Windows 11 on Arm runs the x64 one emulated.
+            win32: Object.freeze({ x64: 'x86_64', arm64: 'x86_64' }),
             linux: Object.freeze({ x64: 'x86_64', arm64: 'aarch64' }),
             darwin: Object.freeze({ x64: 'x86_64', arm64: 'aarch64' })
         }),
@@ -133,7 +134,7 @@ function buildAssetName(engineId, version, platform = process.platform, arch = p
         return null;
     }
     if (info.directAsset) {
-        return `foxguard-${platform === 'darwin' ? 'macos' : osName}-${archName}${platform === 'win32' ? '.exe' : ''}`;
+        return `${info.id}-${platform === 'darwin' ? 'macos' : osName}-${archName}${platform === 'win32' ? '.exe' : ''}`;
     }
     return `${info.id}_${normaliseVersion(version)}_${osName}_${archName}.${info.extensions[platform]}`;
 }

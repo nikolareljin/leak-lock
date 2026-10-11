@@ -1,27 +1,16 @@
-# Release notes, v0.9.1
-
-## Fixed
-- Find Java and git-filter-repo on macOS without a shell profile edit. A VS Code launched from Finder inherits no shell PATH, so both tools were reported missing on machines that had them; they now use the same absolute-path search the scan engines already used.
-- Search Homebrew's keg-only openjdk prefixes, JAVA_HOME and /usr/libexec/java_home for a JVM, so brew install openjdk works without linking java onto PATH. The Java-specific locations are searched before the common ones, because macOS ships an always-executable /usr/bin/java stub that would otherwise be resolved first and prevent java_home from ever being consulted.
-- Match the installer that actually ran when reporting that git-filter-repo still cannot be found. A Homebrew install was told to add a Python user-scripts directory to PATH, which had nothing to do with what it did.
-- Record the released version in package-lock.json, which still named the previous one.
-- Ask Python where pip install --user actually writes instead of assuming ~/.local/bin, so a git-filter-repo installed by macOS's framework Python into a versioned directory under ~/Library/Python is found. Every interpreter is asked rather than only the first that answers, and sibling version directories are searched too, because the scripts directory is per Python version: an install made by 3.12 is not where 3.9 reports.
-- Prefer Homebrew for installing git-filter-repo on macOS when it is present, since Homebrew's Python refuses a --user pip install under PEP 668.
-- Run BFG through the resolved Java rather than a bare java in both flows, path removal and secret cleanup, so a rewrite cannot fail on a machine whose dependency panel reported Java as present.
-- Resolve Java and Docker on the activation path too. checkDependencies and installDependencies still probed with a shell and a bare name, so activation reported Java and Docker missing on the machines this release is about, while the sidebar reported them present.
-- Use one resolved Docker client everywhere. The dependency panel, the scan gate, the engine runner, the image pull and the file scan each invoked a bare docker, so they could disagree about whether Docker exists and an engine could be skipped on a machine able to run it. A test asserts no call site reintroduces a bare name.
-- Resolve the interpreter for the pip install fallback as well, so the install button does not fail before pip starts on a Mac without Homebrew.
-- Search the shared directories on Windows too when locating git-filter-repo. The Windows path returned early, so a launcher in an already-searched common directory such as Chocolatey's bin was findable on every platform except that one.
-- Stop running Docker and the BFG download through a shell. The image pull, image removal and volume cleanup interpolated values into a command line, and the download depended on curl being present; the BFG download now uses the same downloader the engine installs use.
-- Discover every openjdk keg Homebrew has installed by reading its opt directory, rather than matching a fixed list of versions, and include openjdk@8 since BFG is documented as needing Java 8+.
-- Resolve the Python interpreter before spawning it to ask where pip installed things, so the probe is not defeated by the same missing PATH it exists to work around.
-- Name the installer the git-filter-repo button will actually run. Label and command now come from one call, so the button cannot offer pip and then invoke Homebrew.
-- Correct the macOS Java install guidance, which recommended the keg-only formula that produced the failure it was shown next to.
+# Release notes, v0.10.0
 
 ## Added
-- A leakLock.java.path setting, to point at a specific JVM.
-- A commit-msg hook that refuses AI attribution trailers, reading git's own trailer block so body prose that quotes one is not mistaken for one. GitHub's contributors graph counts Co-authored-by lines, so one trailer adds a bot to the contributors page and removing it later costs a rewrite of every commit that follows. The match is on the address, not on words in the line, so a co-author who happens to be named Claude or Cursor is unaffected.
+- Add Foxguard working-tree code analysis in a separate, read-only Code issues section. Credential findings remain separate from cleanup candidates and each side is shown as soon as it finishes, in either order.
+- Add compact Results, Cleanup, and Issues shortcuts for long result pages. Each shortcut expands on hover or keyboard focus and only links to a rendered section.
+- Include Foxguard code issues in JSON export and import. Imported code issues remain read-only evidence and are not treated as credential-history verification results.
 
 ## Changed
-- Update @humanfs/node to 0.16.8 (GHSA-p498-v437-472g) and bump eslint and @types/node. Development-only dependencies; packaging excludes them, so no published extension was affected.
-- Exclude @types/vscode from grouped Dependabot bumps. It is pinned to engines.vscode on purpose, and raising it to satisfy a types update would drop support for every user below that VS Code build.
+- Start Foxguard with the credential engines when engines run in parallel (after them when they run one at a time) and show its progress in Scan coverage while credential results remain available. Foxguard has a separate 120-second default deadline that can be increased with leakLock.foxguard.timeoutSeconds.
+- Keep cleanup selections made while Foxguard is still running, and refuse to prepare or run a history rewrite until every engine finishes, so a rewrite cannot change the working tree under an active scan.
+- Refuse a second scan, a repository switch or a report import while a scan runs. Overlapping scans cleared each other's state, so a scan could end showing Foxguard issues and no credential findings.
+- Update the user documentation and product site with Foxguard behavior, result navigation, and search metadata.
+- Install Foxguard on Linux (x64, arm64), macOS (Intel, Apple silicon) and Windows (x64, and Windows on Arm through x64 emulation), and make its Windows paths repository-relative regardless of drive-letter case. The Foxguard row offers no Docker route, since no image is published.
+- Count only credential engines toward Dependencies ready and toward a clean scan result. With only Foxguard running, setup read as ready and a scan with no credential engine read as clean.
+- Document all four default engines in the README, User Guide and product site, set the site's structured-data version to 0.10.0, and add a canonical URL for the About page and list it in the sitemap.
+- Update brace-expansion to 5.0.12 (GHSA-q2hr-2g5m-vwhr). Development-only dependency; packaging excludes it, so the published extension is not affected.

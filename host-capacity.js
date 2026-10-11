@@ -136,7 +136,10 @@ function classifyHost(host) {
 const ENGINE_WEIGHT = Object.freeze({
     gitleaks: 1,     // static binary, no runtime
     trufflehog: 2,   // single binary, but verification adds network round-trips
-    noseyparker: 3   // pulls and runs a container
+    noseyparker: 3,  // pulls and runs a container
+    // Not a credential engine: on a constrained host any credential engine is kept
+    // ahead of it, since a scan with only Foxguard would look for no secrets at all.
+    foxguard: 10
 });
 
 const FALLBACK_ENGINE = 'gitleaks';

@@ -39,17 +39,20 @@ On first launch, you'll see the welcome view:
 
 **What you actually need**
 
-One scan engine. That is the whole requirement — any single one of Gitleaks, TruffleHog or
-Nosey Parker, and Leak Lock can scan. Click "🔧 Install Dependencies" and it fetches the
-native binaries for Gitleaks and TruffleHog; neither needs Docker or Java.
+One scan engine. That is the whole requirement — any single one of the credential engines
+Gitleaks, TruffleHog or Nosey Parker, and Leak Lock can scan. Click "🔧 Install Dependencies"
+and it fetches the native binaries for Gitleaks, TruffleHog and Foxguard on Linux, macOS and
+Windows; none of them needs Docker or Java. Foxguard adds code issues and does not count as
+the one credential engine.
 
 Everything else is optional and never blocks a scan:
 
 | | What it adds | If it is missing |
 |---|---|---|
 | A second or third engine | Rules the others miss | Fewer findings; the coverage panel names which engines ran |
-| Docker | Needed only by Nosey Parker | Gitleaks and TruffleHog are native binaries |
-| Nosey Parker image | An extra engine, upstream archived | Off by default |
+| Docker | Needed only by Nosey Parker | Gitleaks, TruffleHog and Foxguard are native binaries |
+| Nosey Parker image | A third credential engine, upstream archived | Enabled by default; the image is pulled on first scan, and the engine is skipped with a note when Docker is missing |
+| Foxguard | Working-tree code issues, in their own read-only section | No Code issues section; credentials are unaffected |
 | Java + BFG | An alternative history-rewrite engine | The git route is the default and needs no Java |
 
 When at least one engine is installed the sidebar reads **✅ Dependencies ready**, with any

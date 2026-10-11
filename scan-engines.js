@@ -341,9 +341,13 @@ function relativizePath(filePath, repoDir) {
     // Both separators, always. Under the container runtime the scan root is a POSIX
     // path (`/repo`) even when the host is Windows, so keying off path.sep alone would
     // leave every containerised working-tree finding showing as `/repo/src/...`.
-    for (const separator of new Set([path.sep, '/'])) {
+    // Windows paths compare case-insensitively: Foxguard echoes the root it was given,
+    // and `c:\repo` from VS Code against `C:\repo` from an engine is the same folder.
+    const windowsPath = /^[A-Za-z]:[\\/]/.test(repoDir);
+    const comparable = value => (windowsPath ? value.toLowerCase() : value);
+    for (const separator of new Set([path.sep, '/', ...(windowsPath ? ['\\'] : [])])) {
         const prefix = repoDir.endsWith(separator) ? repoDir : repoDir + separator;
-        if (filePath.startsWith(prefix)) {
+        if (comparable(filePath).startsWith(comparable(prefix))) {
             return filePath.slice(prefix.length);
         }
     }
@@ -826,8 +830,10 @@ const foxguardEngine = {
         let stdout = ''; const warnings = [];
         try { ({ stdout } = await invoke(execution, [repoDir, '--format', 'json'], { timeoutMs })); }
         catch (error) {
+            // Exit 1 with JSON on stdout is how Foxguard reports findings. A killed
+            // process left only partial JSON, so surface the timeout, not a parse error.
             stdout = error.stdout || '';
-            if (!stdout) throw error;
+            if (!stdout || error.killed) throw error;
         }
         let findings;
         try { findings = parseFoxguardJson(stdout).map(raw => mapFoxguardFinding(raw, repoDir)); }
