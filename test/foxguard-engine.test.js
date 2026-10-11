@@ -39,7 +39,8 @@ suite('Foxguard code scan', () => {
 
     test('renders the side rail with results, cleanup and code-issue targets', () => {
         const panel = Object.create(LeakLockPanel.prototype);
-        panel._codeIssues = [];
+        panel._scanResults = [{}];
+        panel._codeIssues = [{}];
         const html = panel._renderScanSideRail();
 
         assert.match(html, /scan-results-section/);
@@ -48,6 +49,33 @@ suite('Foxguard code scan', () => {
         assert.match(html, /Results/);
         assert.match(html, /Cleanup/);
         assert.match(html, /Issues/);
+    });
+
+    test('does not render broken side-rail links for sections that are absent', () => {
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._scanResults = [];
+        panel._codeIssues = [{ file: 'src/app.js' }];
+        panel._scanCoverage = { engines: [{ id: 'foxguard', ok: true }] };
+
+        const html = panel._renderScanSideRail();
+
+        assert.doesNotMatch(html, /href="#scan-results-section"/);
+        assert.doesNotMatch(html, /href="#cleanup-section"/);
+        assert.match(html, /href="#code-issues-section"/);
+    });
+
+    test('does not attribute credential findings to Foxguard', () => {
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._scanCoverage = {
+            engines: [
+                { id: 'gitleaks', displayName: 'Gitleaks', ok: true },
+                { id: 'foxguard', displayName: 'Foxguard', ok: true }
+            ]
+        };
+
+        const html = panel._renderEngineAttribution({ engine: 'gitleaks' });
+
+        assert.doesNotMatch(html, /missed by/);
     });
 
     test('anchors glyphs on the right and reveals labels to their left', () => {
@@ -80,6 +108,18 @@ suite('Foxguard code scan', () => {
 
         assert.match(html, /id="code-issues-section"/);
         assert.match(html, /still scanning/);
+    });
+
+    test('keeps a code-issues target after Foxguard completes cleanly', () => {
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._codeIssues = [];
+        panel._isScanning = false;
+        panel._scanCoverage = { engines: [{ id: 'foxguard', ok: true, findings: 0 }] };
+
+        const html = panel._renderCodeIssues();
+
+        assert.match(html, /id="code-issues-section"/);
+        assert.match(html, /completed with no code issues/);
     });
 
     test('keeps the side rail and code-issues target when credentials are clean while Foxguard scans', () => {

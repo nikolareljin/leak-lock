@@ -856,7 +856,7 @@ class LeakLockPanel {
                         align-items: flex-end;
                         gap: 6px;
                     }
-                    .scan-side-rail a {
+                    .scan-side-rail a, .scan-side-rail .scan-side-shortcut-unavailable {
                         display: flex;
                         align-items: center;
                         justify-content: flex-end;
@@ -872,6 +872,9 @@ class LeakLockPanel {
                         text-decoration: none;
                         white-space: nowrap;
                         transition: width 120ms ease;
+                    }
+                    .scan-side-rail .scan-side-shortcut-unavailable {
+                        cursor: default;
                     }
                     .scan-side-rail a:hover, .scan-side-rail a:focus-visible {
                         width: 132px;
@@ -6230,7 +6233,7 @@ class LeakLockPanel {
         `).join('');
 
         const ranEngines = (this._scanCoverage?.engines || [])
-            .filter(engine => engine.ok)
+            .filter(engine => engine.ok && engine.id !== 'foxguard')
             .map(engine => engine.id);
         const missedBy = ranEngines.filter(id => !found.includes(id));
         const missedNote = missedBy.length
@@ -6537,11 +6540,15 @@ class LeakLockPanel {
     _renderCodeIssues() {
         const issues = this._codeIssues || [];
         if (issues.length === 0) {
-            const foxguardRunning = this._isScanning && (this._scanCoverage?.engines || [])
-                .some(engine => engine.id === 'foxguard' && engine.inProgress);
-            return foxguardRunning
-                ? `<div class="scan-section" id="code-issues-section"><h2>Code issues</h2><p class="hint">Foxguard is still scanning the working tree.</p></div>`
-                : '';
+            const foxguardReport = (this._scanCoverage?.engines || [])
+                .find(engine => engine.id === 'foxguard');
+            if (this._isScanning && foxguardReport?.inProgress) {
+                return `<div class="scan-section" id="code-issues-section"><h2>Code issues</h2><p class="hint">Foxguard is still scanning the working tree.</p></div>`;
+            }
+            if (foxguardReport?.ok) {
+                return `<div class="scan-section" id="code-issues-section"><h2>Code issues</h2><p class="hint">Foxguard completed with no code issues.</p></div>`;
+            }
+            return '';
         }
         const rows = issues.map(issue => {
             const line = Number.isFinite(issue.line) ? issue.line : 1;
@@ -6562,13 +6569,18 @@ class LeakLockPanel {
     }
 
     _renderScanSideRail() {
-        const issueTitle = (this._codeIssues || []).length
-            ? 'Jump to code issues'
-            : 'No code issues in this scan';
+        const hasCredentialResults = (this._scanResults || []).length > 0;
+        const foxguardReport = (this._scanCoverage?.engines || [])
+            .find(engine => engine.id === 'foxguard');
+        const hasCodeIssues = (this._codeIssues || []).length > 0
+            || Boolean(foxguardReport?.inProgress || foxguardReport?.ok);
+        const shortcut = (target, label, glyph, available, unavailableTitle) => available
+            ? `<a href="#${target}" title="Jump to ${label.toLowerCase()}" aria-label="Jump to ${label.toLowerCase()}"><span class="scan-side-glyph" aria-hidden="true">${glyph}</span><span class="scan-side-label">${label}</span></a>`
+            : `<span class="scan-side-shortcut-unavailable" title="${escapeHtml(unavailableTitle)}" aria-label="${escapeHtml(unavailableTitle)}"><span class="scan-side-glyph" aria-hidden="true">${glyph}</span><span class="scan-side-label">${label}</span></span>`;
         return `<nav class="scan-side-rail" aria-label="Scan result shortcuts">
-            <a href="#scan-results-section" title="Jump to search findings" aria-label="Jump to search findings"><span class="scan-side-glyph" aria-hidden="true">🔎</span><span class="scan-side-label">Results</span></a>
-            <a href="#cleanup-section" title="Jump to code cleanup blocks" aria-label="Jump to code cleanup blocks"><span class="scan-side-glyph" aria-hidden="true">🧹</span><span class="scan-side-label">Cleanup</span></a>
-            <a href="#code-issues-section" title="${escapeHtml(issueTitle)}" aria-label="${escapeHtml(issueTitle)}"><span class="scan-side-glyph" aria-hidden="true">⚠️</span><span class="scan-side-label">Issues</span></a>
+            ${shortcut('scan-results-section', 'Results', '🔎', hasCredentialResults, 'No search findings in this scan')}
+            ${shortcut('cleanup-section', 'Cleanup', '🧹', hasCredentialResults, 'No cleanup blocks in this scan')}
+            ${shortcut('code-issues-section', 'Issues', '⚠️', hasCodeIssues, 'No code issues in this scan')}
         </nav>`;
     }
 
