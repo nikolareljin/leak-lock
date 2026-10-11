@@ -210,3 +210,90 @@ suite('Foxguard code scan', () => {
         assert.match(html, /id="code-issues-section"/);
     });
 });
+
+suite('Three credential engines and Foxguard finish in either order', () => {
+    const vscode = require('vscode');
+    const os = require('os');
+    const { execFileSync } = require('child_process');
+    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    async function runScan({ credentialMs, foxguardMs }) {
+        const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'order-'));
+        execFileSync('git', ['-C', repo, 'init', '-q']);
+        LeakLockPanel.createOrShow(vscode.Uri.file(path.join(__dirname, '..')));
+        const panel = LeakLockPanel.currentPanel;
+        panel._isScanning = false;
+        panel._selectedDirectory = repo;
+        panel._chooseScanStrategy = () => ({ mode: 'parallel', engines: ['noseyparker', 'gitleaks', 'trufflehog', 'foxguard'], dropped: [], concurrency: 4, reason: '', tier: 'capable', host: { cpus: 8, totalMemGb: 16, memorySource: 'os', loadPerCore: null } });
+        panel._refreshRefsForScan = async () => null;
+        panel._checkDockerAvailability = async () => ({ available: true });
+        const credential = engineId => async () => {
+            await delay(credentialMs);
+            return { id: engineId, results: [{ file: 'cfg.js', line: 1, secret: `s-${engineId}`, engine: engineId }], codeIssues: [],
+                report: { id: engineId, displayName: engineId, ok: true, findings: 1 } };
+        };
+        panel._runNoseyParkerEngine = credential('noseyparker');
+        panel._deduplicateScanResults = results => results;
+        panel._scanGitHistoryForKeywords = async () => [];
+        panel._enrichResultsWithGitInfo = async () => {};
+        panel._classifyCredentials = async () => {};
+        panel._createResultFromEngineFinding = finding => finding;
+        panel._runExternalEngine = async engineId => {
+            if (engineId === 'foxguard') {
+                await delay(foxguardMs);
+                return { id: 'foxguard', results: [], codeIssues: [{ file: 'a.py', line: 1, ruleId: 'py/no-eval' }],
+                    report: { id: 'foxguard', displayName: 'Foxguard', ok: true, findings: 1 } };
+            }
+            return credential(engineId)();
+        };
+        const snapshots = [];
+        const original = panel._updateWebviewContent.bind(panel);
+        panel._updateWebviewContent = () => {
+            snapshots.push({ scanning: panel._isScanning, cred: panel._scanResults.length, code: panel._codeIssues.length });
+            return original();
+        };
+        const warn = vscode.window.showWarningMessage;
+        const info = vscode.window.showInformationMessage;
+        const warnings = [];
+        vscode.window.showWarningMessage = async message => { warnings.push(message); };
+        vscode.window.showInformationMessage = async () => {};
+        try {
+            const scan = panel._scanRepository(false);
+            await delay(Math.min(credentialMs, foxguardMs) + 100);
+            const mid = { scanning: panel._isScanning, cred: panel._scanResults.length, code: panel._codeIssues.length };
+            await panel._scanRepository(false);
+            await panel._prepareScanReplacementCommand('bfg', {});
+            await scan;
+            return { panel, snapshots, mid, warnings };
+        } finally {
+            vscode.window.showWarningMessage = warn;
+            vscode.window.showInformationMessage = info;
+            fs.rmSync(repo, { recursive: true, force: true });
+        }
+    }
+
+    function assertBothComplete({ panel, snapshots, warnings }) {
+        const ended = snapshots.findIndex(s => !s.scanning);
+        assert.ok(ended >= 0, 'the scan ends');
+        assert.ok(snapshots.slice(ended).every(s => s.cred === 3 && s.code === 1), 'never ends with one side missing');
+        assert.deepStrictEqual(panel._scanResults.map(r => r.engine).sort(), ['gitleaks', 'noseyparker', 'trufflehog']);
+        assert.deepStrictEqual(panel._scanCoverage.engines.map(e => e.id).sort(), ['foxguard', 'gitleaks', 'noseyparker', 'trufflehog']);
+        assert.strictEqual(panel._codeIssues.length, 1);
+        assert.ok(warnings.some(m => /A scan is already running/.test(m)), 'second scan refused');
+        assert.ok(warnings.some(m => /before preparing or running a cleanup/.test(m)), 'cleanup refused mid-scan');
+    }
+
+    test('Foxguard first: its issues show while credentials still scan', async function () {
+        this.timeout(30000);
+        const run = await runScan({ credentialMs: 1500, foxguardMs: 100 });
+        assert.deepStrictEqual(run.mid, { scanning: true, cred: 0, code: 1 });
+        assertBothComplete(run);
+    });
+
+    test('credentials first: they show while Foxguard still scans', async function () {
+        this.timeout(30000);
+        const run = await runScan({ credentialMs: 100, foxguardMs: 1500 });
+        assert.deepStrictEqual(run.mid, { scanning: true, cred: 3, code: 0 });
+        assertBothComplete(run);
+    });
+});

@@ -3557,6 +3557,7 @@ class LeakLockPanel {
     }
 
     async _scanRepository(useWorkspace = false) {
+        if (this._refuseWhileScanning('A scan is already running. Wait for it to finish before starting another.')) return;
         try {
             // Show scanning in progress
             this._isScanning = true;
@@ -3707,8 +3708,25 @@ class LeakLockPanel {
 
             // Start Foxguard with the credential engines, but handle rejection here
             // so a failure cannot become unhandled while credential results render.
+            // Either side can finish first. Foxguard's issues are shown as soon as they
+            // arrive; cleanup stays locked (_isScanning) until both sides are done.
+            let credentialsDone = false;
+            let foxguardSettled = false;
+            // A failed scan returns without awaiting Foxguard, and a later scan may
+            // start before it settles; only the scan that started it may render it.
+            const scanToken = {};
+            this._scanToken = scanToken;
             const foxguardPromise = foxguardTask
-                ? foxguardTask().catch(error => ({ error }))
+                ? foxguardTask().catch(error => ({ error })).then(outcome => {
+                    foxguardSettled = true;
+                    if (this._scanToken === scanToken && this._isScanning && !credentialsDone
+                        && outcome && !outcome.error && outcome.codeIssues?.length) {
+                        this._codeIssues = outcome.codeIssues.slice();
+                        this._scanProgress = { stage: 'scan', message: 'Foxguard finished. Scanning credentials...' };
+                        this._updateWebviewContent();
+                    }
+                    return outcome;
+                })
                 : null;
 
             const outcomes = await hostCapacity.runWithConcurrency(
@@ -3771,14 +3789,14 @@ class LeakLockPanel {
             await this._enrichResultsWithGitInfo(allResults, scanPath);
 
             // Update results
+            credentialsDone = true;
             this._scanResults = allResults;
             this._codeIssues = codeIssues;
             await this._classifyCredentials();
 
-            if (foxguardTask) {
-                // Render the credential scan before waiting for the already-running
-                // working-tree analysis. The in-progress report keeps coverage honest
-                // while the side rail and cleanup controls remain usable.
+            if (foxguardTask && !foxguardSettled) {
+                // Foxguard is still running: render the credential results now. The
+                // in-progress report keeps coverage honest; cleanup stays locked.
                 const pendingFoxguardReport = {
                     id: 'foxguard', displayName: 'Foxguard', version: null,
                     ok: true, inProgress: true, findings: 0,
@@ -3800,14 +3818,15 @@ class LeakLockPanel {
                 this._resetScanSelection();
                 this._scanProgress = { stage: 'scan', message: 'Credential results are ready. Scanning code issues with Foxguard...' };
                 this._updateWebviewContent();
-
+                engineReports.pop();
+            }
+            if (foxguardTask) {
                 let foxguardOutcome;
                 try {
                     foxguardOutcome = await foxguardPromise;
                 } catch (error) {
                     foxguardOutcome = { error };
                 }
-                engineReports.pop();
                 if (!foxguardOutcome || foxguardOutcome.error) {
                     const error = foxguardOutcome && foxguardOutcome.error;
                     engineReports.push({
@@ -3833,8 +3852,8 @@ class LeakLockPanel {
                 incompleteReason: scanRun.incompleteReason,
                 excludedByDependencyRule
             });
-            // With Foxguard, the selection was reset when credential results rendered,
-            // and the user may have made one while Foxguard ran. Keep it.
+            // With Foxguard, the selection was reset at scan start or when credential
+            // results rendered, and the user may have made one while Foxguard ran.
             if (!foxguardTask) this._resetScanSelection();
             this._isScanning = false;
             this._scanProgress = null;
@@ -5739,6 +5758,7 @@ class LeakLockPanel {
      * failures are reported and nothing is rendered half-read.
      */
     async _importScanResultsJson() {
+        if (this._refuseWhileScanning('Wait for the scan to finish before importing a report.')) return;
         try {
             const picked = await vscode.window.showOpenDialog({
                 canSelectMany: false,
@@ -5903,6 +5923,7 @@ class LeakLockPanel {
      * to a scan, and re-typing them is exactly what the user would not expect to do.
      */
     async _switchToRepository(repoDir) {
+        if (this._refuseWhileScanning('Wait for the scan to finish before switching repository.')) return false;
         try {
             const validated = validatePath(repoDir);
             if (this._scanResults.length > 0) {
@@ -6471,9 +6492,9 @@ class LeakLockPanel {
                             Install at least one engine, or check <code>leakLock.scan.engines</code>,
                             then scan again.
                         </p>
-                        <div class="action-buttons">
+                        ${this._isScanning ? '' : `<div class="action-buttons">
                             <button class="scan-button" onclick="requestNewScan()">🔄 Scan Again</button>
-                        </div>
+                        </div>`}
                     </div>
                 </div>
                 ${this._renderScanCoverage()}
@@ -6522,9 +6543,9 @@ class LeakLockPanel {
                         </div>
 
                         <div class="action-buttons">
-                            <button class="scan-button" onclick="requestNewScan()">
+                            ${this._isScanning ? '' : `<button class="scan-button" onclick="requestNewScan()">
                                 🔄 Scan Again
-                            </button>
+                            </button>`}
                             <button class="secondary-button" onclick="openSecurityGuide()">
                                 📚 Security Best Practices
                             </button>
@@ -8387,8 +8408,16 @@ class LeakLockPanel {
     // A history rewrite in that window changes the tree under it, and the scan's
     // completion then overwrites state the rewrite just cleared.
     _refuseCleanupWhileScanning() {
+        return this._refuseWhileScanning('Wait for the scan to finish before preparing or running a cleanup.');
+    }
+
+    // One scan owns the panel state from start to finish. A second scan, a repository
+    // switch or an import mid-scan clears that state while the first scan is still
+    // writing to it, so its late Foxguard result lands beside no credential findings
+    // and is shown as a finished scan.
+    _refuseWhileScanning(message) {
         if (!this._isScanning) return false;
-        vscode.window.showWarningMessage('Wait for the scan to finish before preparing or running a cleanup.');
+        vscode.window.showWarningMessage(message);
         return true;
     }
 

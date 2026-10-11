@@ -197,12 +197,11 @@ Foxguard looks for code-security issues rather than supplying credentials for hi
 cleanup. Its findings are deliberately separate from the credential table: they link to
 the file and line, cannot be selected for replacement, and do not enter a rewrite plan.
 
-On a large repository, static analysis can outlast the credential engines. Leak Lock
-renders completed credential findings first, displays `scanning...` for Foxguard in Scan
-coverage, and adds the Code issues section when the engine completes. Foxguard starts with the
-credential scanners, while its results stay independent so the credential table renders first.
-Its default deadline is two minutes; increase it for repositories where a longer code scan is
-useful.
+Foxguard starts with the credential engines and either side can finish first. Whichever
+finishes first is rendered first: the Code issues section while credential engines still run,
+or the credential table while Scan coverage shows `scanning...` for Foxguard. Cleanup stays
+unavailable until every engine has finished. Foxguard's default deadline is two minutes;
+increase it for repositories where a longer code scan is useful.
 
 The right-side result rail provides `Results`, `Cleanup`, and `Issues` shortcuts. It keeps
 the controls compact until hover or keyboard focus, then expands the label and jumps to the

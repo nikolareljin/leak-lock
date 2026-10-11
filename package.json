@@ -121,7 +121,7 @@
           "default": 120,
           "minimum": 30,
           "maximum": 7200,
-          "description": "Maximum time for Foxguard working-tree code analysis. Credential results appear first; raise this value for larger repositories."
+          "description": "Maximum time for Foxguard working-tree code analysis. Credential and code results each appear when ready; raise this value for larger repositories."
         },
         "leakLock.scan.refreshRefsBeforeScan": {
           "type": "boolean",

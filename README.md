@@ -369,13 +369,13 @@ it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
 
 ### Foxguard result timing
 
-Foxguard analyses working-tree code, which can take longer than credential scans on a
-large repository. Leak Lock publishes completed credential findings first and keeps the
-Foxguard row in Scan coverage at `scanning...` until its code issues arrive. Foxguard starts
-with credential scanners, but its results never hold back the credential table. Its default
-working-tree deadline is two minutes; increase `leakLock.foxguard.timeoutSeconds` for a larger
-repository when a longer code analysis is useful. Findings can be reviewed and selected
-while Foxguard runs; preparing or running a cleanup waits until the scan finishes.
+Foxguard starts together with the credential engines (Gitleaks, TruffleHog, Nosey Parker),
+and either side can finish first. Whichever finishes first is shown first: code issues while
+the credential engines still run, or credential findings while Foxguard shows `scanning...`
+in Scan coverage. Findings can be reviewed and selected meanwhile; preparing or running a
+cleanup, starting another scan, switching repository and importing a report all wait until
+every engine has finished. Foxguard's default deadline is two minutes; increase
+`leakLock.foxguard.timeoutSeconds` for a larger repository.
 
 ### Choosing engines
 `leakLock.scan.engines` sets which run, and in what order. **Gitleaks, TruffleHog, Nosey
