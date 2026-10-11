@@ -374,7 +374,8 @@ large repository. Leak Lock publishes completed credential findings first and ke
 Foxguard row in Scan coverage at `scanning...` until its code issues arrive. Foxguard starts
 with credential scanners, but its results never hold back the credential table. Its default
 working-tree deadline is two minutes; increase `leakLock.foxguard.timeoutSeconds` for a larger
-repository when a longer code analysis is useful.
+repository when a longer code analysis is useful. Findings can be reviewed and selected
+while Foxguard runs; preparing or running a cleanup waits until the scan finishes.
 
 ### Choosing engines
 `leakLock.scan.engines` sets which run, and in what order. **Gitleaks, TruffleHog, Nosey

@@ -86,6 +86,43 @@ suite('Foxguard code scan', () => {
         assert.match(html, /Issues/);
     });
 
+    test('cleanup is refused while Foxguard is still scanning', async () => {
+        const vscode = require('vscode');
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._isScanning = true;
+        panel._scanCleanup = { preparedCommand: 'x', preparedMode: 'bfg', blockedBranches: [] };
+        const warnings = [];
+        const originalWarn = vscode.window.showWarningMessage;
+        vscode.window.showWarningMessage = async message => { warnings.push(message); };
+        try {
+            await panel._prepareScanReplacementCommand('bfg', {});
+            await panel._runPreparedScanCleanup('bfg');
+            panel._runBFGCommand({});
+            panel._generateFixCommand({});
+        } finally {
+            vscode.window.showWarningMessage = originalWarn;
+        }
+        assert.strictEqual(warnings.length, 4);
+        assert.ok(warnings.every(message => /Wait for the scan to finish/.test(message)));
+        assert.strictEqual(panel._scanCleanup.preparedCommand, 'x');
+    });
+
+    test('a selection made while Foxguard runs survives its completion', () => {
+        const source = fs.readFileSync(path.join(__dirname, '..', 'leakLockPanel.js'), 'utf8');
+        const waitAt = source.indexOf('foxguardOutcome = await foxguardPromise');
+        const doneAt = source.indexOf('this._isScanning = false;', waitAt);
+        const tail = source.slice(waitAt, doneAt);
+        assert.doesNotMatch(tail.replace(/if \(!foxguardTask\) this\._resetScanSelection\(\);/, ''), /_resetScanSelection\(\)/);
+    });
+
+    test('a code issue without a file renders no source link', () => {
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._codeIssues = [{ file: null, line: 3, ruleId: 'x', description: 'd', severity: 'low' }];
+        const html = panel._renderCodeIssues();
+        assert.doesNotMatch(html, /openFile\(/);
+        assert.match(html, /unknown:3/);
+    });
+
     test('does not render broken side-rail links for sections that are absent', () => {
         const panel = Object.create(LeakLockPanel.prototype);
         panel._scanResults = [];

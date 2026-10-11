@@ -3833,7 +3833,9 @@ class LeakLockPanel {
                 incompleteReason: scanRun.incompleteReason,
                 excludedByDependencyRule
             });
-            this._resetScanSelection();
+            // With Foxguard, the selection was reset when credential results rendered,
+            // and the user may have made one while Foxguard ran. Keep it.
+            if (!foxguardTask) this._resetScanSelection();
             this._isScanning = false;
             this._scanProgress = null;
 
@@ -6555,7 +6557,9 @@ class LeakLockPanel {
                 <td><span style="font-weight:600; text-transform:uppercase;">${escapeHtml(issue.severity || 'medium')}</span></td>
                 <td><code>${escapeHtml(issue.ruleId || 'foxguard')}</code>${cwe ? `<div class="hint">${escapeHtml(cwe)}</div>` : ''}</td>
                 <td>${escapeHtml(issue.description || 'Code security issue')}${issue.fix ? `<div class="hint">Fix: ${escapeHtml(issue.fix)}</div>` : ''}</td>
-                <td><a href="#" onclick="openFile(${escapeHtml(JSON.stringify(issue.file || ''))}, ${line}); return false;">${escapeHtml(location)}</a></td>
+                <td>${issue.file
+                    ? `<a href="#" onclick="openFile(${escapeHtml(JSON.stringify(issue.file))}, ${line}); return false;">${escapeHtml(location)}</a>`
+                    : escapeHtml(location)}</td>
             </tr>`;
         }).join('');
         return `<div class="scan-section" id="code-issues-section">
@@ -6628,11 +6632,13 @@ class LeakLockPanel {
     }
 
     _generateFixCommand(replacements) {
+        if (this._refuseCleanupWhileScanning()) return;
         // This will handle the 'fix' command from webview
         this._fixSecrets(replacements);
     }
 
     _runBFGCommand(replacements) {
+        if (this._refuseCleanupWhileScanning()) return;
         // This will handle the 'runBFG' command from webview
         return this._executeBFGCleanup(replacements);
     }
@@ -8377,7 +8383,17 @@ class LeakLockPanel {
         return { repo: this._scanRepoRoot || scanned, repos: [], reason: null };
     }
 
+    // Credential results render while Foxguard is still reading the working tree.
+    // A history rewrite in that window changes the tree under it, and the scan's
+    // completion then overwrites state the rewrite just cleared.
+    _refuseCleanupWhileScanning() {
+        if (!this._isScanning) return false;
+        vscode.window.showWarningMessage('Wait for the scan to finish before preparing or running a cleanup.');
+        return true;
+    }
+
     async _prepareScanReplacementCommand(mode, replacements) {
+        if (this._refuseCleanupWhileScanning()) return;
         // Manual rules count toward the cleanup: a user with three rules and no
         // selected findings is the exact case the feature exists for, and used to be
         // refused here.
@@ -8650,6 +8666,7 @@ class LeakLockPanel {
     }
 
     async _runPreparedScanCleanup(mode) {
+        if (this._refuseCleanupWhileScanning()) return;
         if (!this._scanCleanup.preparedCommand || this._scanCleanup.preparedMode !== mode) {
             vscode.window.showWarningMessage('Prepare the cleanup command first.');
             return;

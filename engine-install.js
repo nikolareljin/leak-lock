@@ -133,7 +133,7 @@ function buildAssetName(engineId, version, platform = process.platform, arch = p
         return null;
     }
     if (info.directAsset) {
-        return `foxguard-${platform === 'darwin' ? 'macos' : osName}-${archName}${platform === 'win32' ? '.exe' : ''}`;
+        return `${info.id}-${platform === 'darwin' ? 'macos' : osName}-${archName}${platform === 'win32' ? '.exe' : ''}`;
     }
     return `${info.id}_${normaliseVersion(version)}_${osName}_${archName}.${info.extensions[platform]}`;
 }
