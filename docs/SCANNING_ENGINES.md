@@ -184,6 +184,39 @@ no-limit values. If a cap is ever reintroduced, the results must say so.
 
 ---
 
+## Foxguard - working-tree code issues
+
+| | |
+|---|---|
+| Project | <https://github.com/0sec-labs/foxguard> |
+| Runtime | A native binary |
+| Scope | Working tree only, not git history |
+| Output | Read-only source links in the Code issues section |
+
+Foxguard looks for code-security issues rather than supplying credentials for history
+cleanup. Its findings are deliberately separate from the credential table: they link to
+the file and line, cannot be selected for replacement, and do not enter a rewrite plan.
+
+On a large repository, static analysis can outlast the credential engines. Leak Lock
+renders completed credential findings first, displays `scanning...` for Foxguard in Scan
+coverage, and adds the Code issues section when the engine completes. A capable host starts
+Foxguard in parallel; a host using sequential execution runs it after the credential scan.
+
+The right-side result rail provides `Results`, `Cleanup`, and `Issues` shortcuts. It keeps
+the controls compact until hover or keyboard focus, then expands the label and jumps to the
+corresponding section.
+
+Exports include Foxguard code issues with file, line, rule, severity, description, and
+engine metadata. Imports display them as prior-scan evidence. They are not marked resolved
+by credential-history verification because an absent static-analysis match is not proof of
+a source fix.
+
+| Setting | Purpose |
+|---|---|
+| `leakLock.foxguard.binaryPath` | Path to the Foxguard binary; empty resolves `foxguard` from the managed install or `PATH` |
+
+---
+
 ## Choosing engines
 
 `leakLock.scan.engines` is an ordered list. **Gitleaks, TruffleHog, Nosey Parker and
@@ -204,7 +237,7 @@ a source link and cannot be selected for file edits or git history cleanup.
 - A missing engine binary **disables that engine, never the scan**. The coverage panel
   states which engines ran, at which versions, and which did not and why — so an engine
   you have not installed is visible rather than silently absent.
-- Running all three is the point. Their rulesets genuinely differ, and the attribution
+- Running multiple engines is the point. Their rulesets genuinely differ, and the attribution
   line tells you when one is falling behind.
 - Enabling TruffleHog does **not** on its own make any network call. Verification is a
   separate setting (`leakLock.trufflehog.verify`, off by default).

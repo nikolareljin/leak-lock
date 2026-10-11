@@ -20,6 +20,7 @@ Welcome to the Leak Lock documentation! This comprehensive resource will help yo
 
 Leak Lock is a powerful VS Code extension that:
 - 🔍 **Scans** repositories for secrets and sensitive data
+- ⚠️ **Reviews** Foxguard code-security issues separately from cleanup candidates
 - 🛡️ **Detects** 100+ types of credentials using advanced patterns
 - 🔧 **Removes** secrets from git history automatically  
 - ⚡ **Automates** the complete security remediation workflow
@@ -61,6 +62,7 @@ code --install-extension leak-lock
 Complete guide for using Leak Lock effectively
 - 🚀 Getting started and installation
 - 🔍 Scanning repositories and understanding results  
+- ⚠️ Foxguard code issues, Scan coverage, and large-result navigation
 - 🔧 Removing secrets and cleaning git history
 - 🛡️ Security best practices and troubleshooting
 

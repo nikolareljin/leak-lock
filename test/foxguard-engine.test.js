@@ -34,4 +34,29 @@ suite('Foxguard code scan', () => {
         assert.match(html, /openFile\(/);
         assert.doesNotMatch(html, /secret-checkbox|<input/i);
     });
+
+    test('renders the side rail with results, cleanup and code-issue targets', () => {
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._codeIssues = [];
+        const html = panel._renderScanSideRail();
+
+        assert.match(html, /scan-results-section/);
+        assert.match(html, /cleanup-section/);
+        assert.match(html, /code-issues-section/);
+        assert.match(html, /Results/);
+        assert.match(html, /Cleanup/);
+        assert.match(html, /Issues/);
+    });
+
+    test('keeps a code-issues target while Foxguard is still scanning', () => {
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._codeIssues = [];
+        panel._isScanning = true;
+        panel._scanCoverage = { engines: [{ id: 'foxguard', inProgress: true }] };
+
+        const html = panel._renderCodeIssues();
+
+        assert.match(html, /id="code-issues-section"/);
+        assert.match(html, /still scanning/);
+    });
 });

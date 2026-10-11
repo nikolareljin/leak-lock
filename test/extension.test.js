@@ -7315,6 +7315,21 @@ suite('Importing a previous report and checking what was resolved', () => {
 		assert.match(noFindings.error, /findings/);
 	});
 
+	test('imports Foxguard code issues alongside credential findings', () => {
+		const parsed = scanBaseline.parseImportedReport(reportJson([finding()], {
+			totalFindings: 2,
+			codeIssues: [{
+				file: 'src/app.js', line: 12, ruleId: 'js/no-eval',
+				description: 'Avoid eval', severity: 'high', engine: 'foxguard'
+			}]
+		}));
+		assert.strictEqual(parsed.ok, true);
+		assert.strictEqual(parsed.report.totalFindings, 2);
+		assert.strictEqual(parsed.report.totalCodeIssues, 1);
+		assert.strictEqual(parsed.report.codeIssues[0].ruleId, 'js/no-eval');
+		assert.strictEqual(parsed.report.warnings.some(warning => /but 1 could be read/.test(warning)), false);
+	});
+
 	// `typeof [] === 'object'`, so array entries used to pass the findings filter
 	// and normalise into findings with every field null, while the warning
 	// counted them as readable and said the opposite of what happened.

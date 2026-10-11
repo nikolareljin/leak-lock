@@ -18,10 +18,10 @@ VS Code extension that finds secrets in git history, verifies live credentials, 
 
 ## Why Leak Lock
 
-- **Multi-engine scanning**: Runs Gitleaks, TruffleHog, and optional Nosey Parker, then merges findings into one attributed result set.
+- **Multi-engine scanning**: Runs Gitleaks, TruffleHog, optional Nosey Parker, and Foxguard. Credential findings and read-only code issues stay separate.
 - **Live credential checks**: Uses TruffleHog verification when enabled, so live credentials stand out from static pattern matches.
 - **Safer cleanup flow**: Previews history rewrites, separates local cleanup from force-push, and verifies refs after push.
-- **Report comparison**: Exports scan results, imports them later, and marks previous findings as resolved, still present, or unverifiable.
+- **Report comparison**: Exports credentials and Foxguard code issues, then imports them later for review. Credential findings are marked resolved, still present, or unverifiable.
 
 
 ## 🚀 Quick Start
@@ -56,10 +56,10 @@ code --install-extension leak-lock-*.vsix
 - **Execute Cleanup**: One-click git history rewriting
 
 ### 6. Export Scan Results (New)
-- **Export JSON**: Save all current findings and metadata to a `.json` file
+- **Export JSON**: Save credentials, Foxguard code issues, coverage, and metadata to a `.json` file
 - **Print / Save as PDF**: Use the print-friendly view from scan results for PDF reports
 - **Share Findings**: Attach exports to tickets, audits, or remediation docs
-- **Import JSON**: Read a report back in and check each of its findings against the repository now, marked **Resolved**, **Still present** or **Unverifiable**, plus what is new since the report and the commit that introduced it
+- **Import JSON**: Read a report back in and check credential findings against the repository now, marked **Resolved**, **Still present** or **Unverifiable**. Imported Foxguard issues remain read-only review evidence, plus what is new since the report and the commit that introduced it
 
 <img width="942" height="1307" alt="image" src="https://github.com/user-attachments/assets/1c0ca6c4-1254-4337-b893-ee26c94f95e3" />
 
@@ -153,6 +153,9 @@ checkboxes, `Export JSON` and `Print / Save as PDF`, a search box over the resul
 refs-status line — `Last fetched never (stale)`, with `Refetch now` beside it, because a
 scan is only as complete as the refs it covered — and the banner that marks a finding as
 living in a third-party dependency and therefore not selectable for cleanup.
+
+Long result sets have a right-side shortcut rail: `🔎 Results`, `🧹 Cleanup`, and `⚠️ Issues`.
+It stays compact until hovered, then expands its label and jumps to that section.
 
 ### Scan results — multi-engine, with attribution
 
@@ -363,6 +366,15 @@ the *host's* memory inside a container), and current load:
 If host capacity causes an engine to be skipped, **the coverage panel says so and names
 it**. Fewer engines means fewer findings, so a downgrade is never silent. Set
 `executionMode` to `parallel`, `sequential` or `single` to decide for yourself.
+
+### Foxguard result timing
+
+Foxguard analyses working-tree code, which can take longer than credential scans on a
+large repository. Leak Lock publishes completed credential findings first and keeps the
+Foxguard row in Scan coverage at `scanning...` until its code issues arrive. On capable
+hosts Foxguard starts in parallel with the other engines. On moderate and constrained hosts
+it follows the selected sequential plan, so the credential table becomes available before
+the additional code analysis begins.
 
 ### Choosing engines
 `leakLock.scan.engines` sets which run, and in what order. **Gitleaks, TruffleHog, Nosey

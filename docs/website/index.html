@@ -4,7 +4,23 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leak Lock — find secrets in git history and remove them from every ref</title>
-<meta name="description" content="A VS Code / OpenVSX extension that scans a repository for credentials, files, and keywords, then rewrites them out of every branch and tag — with a script you can read, run, and verify.">
+<meta name="description" content="Leak Lock is a VS Code extension for scanning git repositories for credentials and code-security issues, then safely removing selected secrets from history.">
+<link rel="canonical" href="https://nikolareljin.github.io/leak-lock/">
+<meta name="robots" content="index,follow">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Leak Lock">
+<meta property="og:title" content="Leak Lock - scan git history, review issues, remove leaked secrets">
+<meta property="og:description" content="Scan credentials and code-security issues, review coverage, and safely remove selected secrets from git history.">
+<meta property="og:url" content="https://nikolareljin.github.io/leak-lock/">
+<meta property="og:image" content="https://nikolareljin.github.io/leak-lock/img/full-interface.png">
+<meta property="og:image:alt" content="Leak Lock scan results in VS Code">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Leak Lock - scan git history and remove leaked secrets">
+<meta name="twitter:description" content="Scan credentials and code-security issues, then safely remove selected secrets from git history.">
+<meta name="twitter:image" content="https://nikolareljin.github.io/leak-lock/img/full-interface.png">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Leak Lock","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, macOS, Linux","description":"A VS Code extension that scans git repositories for credentials and code-security issues, then helps remove selected secrets from git history.","url":"https://nikolareljin.github.io/leak-lock/","downloadUrl":"https://github.com/nikolareljin/leak-lock","softwareVersion":"0.9.1","license":"https://github.com/nikolareljin/leak-lock/blob/main/LICENSE"}
+</script>
 <!-- NR-shield app mark, base64-encoded so the SVG's special characters need no URL-escaping in the data URI. -->
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzNCc+PHBhdGggZD0nTTE2IDEuNSAzLjUgNS44djkuM0MzLjUgMjMgOC42IDI4LjIgMTYgMzAuNWM3LjQtMi4zIDEyLjUtNy41IDEyLjUtMTUuNFY1LjhMMTYgMS41WicgZmlsbD0nI0I0NjIwQScgc3Ryb2tlPScjMjExQzNCJyBzdHJva2Utd2lkdGg9JzEuMicgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjx0ZXh0IHg9JzE2JyB5PScyMScgdGV4dC1hbmNob3I9J21pZGRsZScgZmlsbD0nI2ZmZicgZm9udC1mYW1pbHk9J0FyaWFsLEhlbHZldGljYSxzYW5zLXNlcmlmJyBmb250LXdlaWdodD0nYm9sZCcgZm9udC1zaXplPScxMycgbGV0dGVyLXNwYWNpbmc9Jy0xJz5OUjwvdGV4dD48L3N2Zz4=">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -223,10 +239,10 @@ footer .credit{margin-left:auto}
 
   <section class="band">
    <div class="hero wrap">
-    <span class="eyebrow">VS Code &amp; OpenVSX extension · scans with Gitleaks, TruffleHog &amp; Nosey Parker · rewrites with BFG or git</span>
+    <span class="eyebrow">VS Code &amp; OpenVSX extension · scans credentials and code issues · rewrites selected secrets with BFG or git</span>
     <h1>Find the secrets in your git history — then <span class="turn">actually remove them.</span></h1>
     <p class="lede">
-      Leak Lock scans a repository for <strong>credentials, files, and keywords</strong> using
+      Leak Lock scans a repository for <strong>credentials, code issues, files, and keywords</strong> using
       <strong>several detection engines at once</strong>, shows every finding — and which engine found
       it — and rewrites them out of <strong>every branch and tag</strong>, including the refs that only
       exist on the remote. It also removes <strong>any text you specify</strong>, not just what a
@@ -252,15 +268,15 @@ footer .credit{margin-left:auto}
     <div class="steps">
       <div class="step">
         <h3>Find secrets with more than one engine</h3>
-        <p><strong>Gitleaks</strong>, <strong>TruffleHog</strong> and <strong>Nosey Parker</strong> can run together over your working tree and full git history, and their results are merged into one list. They disagree more than you would expect — on a test repository one engine found seven secrets where another found two — so every finding names the engines that found it <em>and</em> the ones that missed it. TruffleHog can go further and check whether a key <strong>still works</strong>. On top of that: a path scan for files that shouldn't be there, and an opt-in keyword pass over commit messages, historical contents, and filenames for terms you choose — like <code>id_rsa</code> or an internal project name.</p>
+        <p><strong>Gitleaks</strong>, <strong>TruffleHog</strong> and <strong>Nosey Parker</strong> can scan credentials across your working tree and full git history. <strong>Foxguard</strong> adds working-tree code-security issues in a separate, read-only table. The credential engines disagree more than you would expect — on a test repository one engine found seven secrets where another found two — so every credential finding names the engines that found it <em>and</em> the ones that missed it. TruffleHog can go further and check whether a key <strong>still works</strong>. On top of that: a path scan for files that shouldn't be there, and an opt-in keyword pass over commit messages, historical contents, and filenames for terms you choose — like <code>id_rsa</code> or an internal project name.</p>
       </div>
       <div class="step">
         <h3>Sized to your machine</h3>
-        <p>Leak Lock checks how much machine it has before it commits to a plan — cores, memory (including the real limit inside a container, not the host's), and current load. A capable machine runs the engines <strong>in parallel</strong>, leaving cores for the editor. A modest one runs them <strong>one at a time</strong>. A genuinely constrained one runs <strong>Gitleaks alone</strong> — a single binary with no container runtime. If an engine gets skipped for capacity, the coverage panel <em>says so and names it</em>: fewer engines means fewer findings, and that is not something to hide. One setting overrides the lot.</p>
+        <p>Leak Lock checks how much machine it has before it commits to a plan — cores, memory, and current load. A capable machine runs the engines <strong>in parallel</strong>, leaving cores for the editor. A modest one runs them <strong>one at a time</strong>. A genuinely constrained one runs <strong>Gitleaks alone</strong>. If an engine gets skipped for capacity, the coverage panel <em>says so and names it</em>: fewer engines means fewer findings, and that is not something to hide. One setting overrides the lot.</p>
       </div>
       <div class="step">
         <h3>Review every finding — and what was actually scanned</h3>
-        <p>Findings land in a table in the main panel — each credential with its file and line, each history hit with the branch, commit, and date, and a live credential flagged <code>VERIFIED LIVE</code>. Alongside them sits a <strong>coverage panel</strong>: which engines ran, how many refs were scanned, which branches exist only on the remote, and whether the scan finished. A clean result is only worth as much as the scope behind it. Export the list — and the coverage — to JSON or PDF.</p>
+        <p>Credential findings land in a table in the main panel — each one with its file and line, each history hit with the branch, commit, and date, and a live credential flagged <code>VERIFIED LIVE</code>. Foxguard code issues appear separately and never enter history cleanup. Credential results appear as soon as they are ready while a longer Foxguard scan continues, with its status shown in <strong>Scan coverage</strong>. The compact right-side rail jumps to Results, Cleanup, or Issues in a long scan. Export credentials, code issues, and coverage to JSON or PDF.</p>
       </div>
       <div class="step">
         <h3>See what a secret actually is</h3>
