@@ -51,7 +51,7 @@ Everything else is optional and never blocks a scan:
 |---|---|---|
 | A second or third engine | Rules the others miss | Fewer findings; the coverage panel names which engines ran |
 | Docker | Needed only by Nosey Parker | Gitleaks, TruffleHog and Foxguard are native binaries |
-| Nosey Parker image | A third credential engine, upstream archived | Enabled by default, skipped with a note when Docker or the image is missing |
+| Nosey Parker image | A third credential engine, upstream archived | Enabled by default; the image is pulled on first scan, and the engine is skipped with a note when Docker is missing |
 | Foxguard | Working-tree code issues, in their own read-only section | No Code issues section; credentials are unaffected |
 | Java + BFG | An alternative history-rewrite engine | The git route is the default and needs no Java |
 
