@@ -139,7 +139,7 @@ the flag exists.
 | `npmrc`, `pypirc` | Added then dropped — gone from the tree, still in history |
 | `node_modules/@vendor/` | → *"Dependency · not your code"*, not selectable for cleanup |
 | `env`, `secrets/` | **Untracked** → flagged *"(not committed)"*; the fix is deleting the file, not rewriting history |
-| `big-blob.txt` | Over the default size limit → reported as skipped |
+| `big-blob.txt` | About 3 MB, under the 100 MB default. Set `leakLock.scan.maxFileSizeMb` to `1` to see it reported as skipped |
 | `ops-remote-only` | Found **only** because refs are refreshed before scanning |
 | `docs/runbook.md` | Content no scanner flags → what manual redaction rules are for |
 

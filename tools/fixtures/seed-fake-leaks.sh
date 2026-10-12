@@ -275,7 +275,8 @@ commit "fixture: add runbook"
 printf 'BACKUP_HOST = "build-02.internal-corp-7.example"\n' >> "$D/config/settings.py"
 commit "fixture: document the failover host"
 
-# Over the default size limit -> reported as skipped.
+# A ~3 MB file, under the 100 MB default limit (GitHub refuses files over 100 MB).
+# Set leakLock.scan.maxFileSizeMb to 1 to see it reported as skipped.
 head -c 2200000 /dev/urandom | base64 > "$D/big-blob.txt"
 g add -f -- "$DREL/big-blob.txt" >/dev/null
 g commit -q -m "fixture: add a large generated artefact"
@@ -466,7 +467,7 @@ What to look for in Leak Lock:
   ci/deploy.sh           one token matching two rules -> "also matched: ..."
   node_modules/@vendor   -> "Dependency - not your code", not selectable
   leaklock-fixture/env   untracked -> flagged "not committed", delete rather than rewrite
-  big-blob.txt           over the size limit -> reported as skipped
+  big-blob.txt           ~3 MB; set leakLock.scan.maxFileSizeMb to 1 to see it skipped
 
 Manual redaction rules worth trying:
   literal  build-01.internal-corp-7.example  ->  redacted.invalid   (several commits)
