@@ -332,8 +332,8 @@ footer .credit{margin-left:auto}
     <div class="shots">
       <figure class="shot lead">
         <a class="frame" href="img/code-issues.png">
-          <img src="img/code-issues.png" width="1280" height="1113" loading="lazy" decoding="async"
-               alt="The Code issues table from a real Foxguard scan of the public test fixture. Each row lists a severity, a rule identifier with its CWE, a description with a suggested fix, and a link to the file and line: a hardcoded database password, SQL and command injection, eval, pickle deserialization and MD5 in Python, and path traversal, command and SQL injection, disabled TLS verification and MD5 in Go.">
+          <img src="img/code-issues.png" width="1280" height="1131" loading="lazy" decoding="async"
+               alt="The Code issues table from a real Foxguard scan of the public test fixture. Each row lists a severity, a rule identifier with its CWE, a description with a suggested fix, and a link to the file and line: hardcoded database and AWS secrets, SQL and command injection, eval, pickle deserialization and MD5 in Python, and path traversal, command and SQL injection, disabled TLS verification and MD5 in Go.">
         </a>
         <figcaption>
           <b>Code issues, kept apart from secrets</b>
@@ -348,8 +348,8 @@ footer .credit{margin-left:auto}
     <div class="shots shots-3">
       <figure class="shot">
         <a class="frame" href="img/scan-coverage.png">
-          <img src="img/scan-coverage.png" width="1172" height="406" loading="lazy" decoding="async"
-               alt="The Scan coverage panel expanded, listing each engine with its version and finding count, the execution mode and the host it was chosen for, the number of local branches, remote branches, tags and stash entries scanned, whether refs were refreshed, a collapsed list of branches that exist only on the remote, and the ruleset, file-size limit, timeout and dependency handling in effect.">
+          <img src="img/scan-coverage.png" width="1166" height="420" loading="lazy" decoding="async"
+               alt="The Scan coverage panel expanded, listing each of the four engines (Nosey Parker, Gitleaks, TruffleHog and Foxguard) with its version and finding count, the execution mode and the host it was chosen for, the number of local branches, remote branches, tags and stash entries scanned, whether refs were refreshed, a collapsed list of branches that exist only on the remote, and the ruleset, file-size limit, timeouts and dependency handling in effect.">
         </a>
         <figcaption>
           <b>What was actually scanned</b>
@@ -388,14 +388,14 @@ footer .credit{margin-left:auto}
     <div class="shots shots-3">
       <figure class="shot">
         <a class="frame" href="img/control-panel.png">
-          <img src="img/control-panel.png" width="435" height="1010" loading="lazy" decoding="async"
-               alt="The Control Panel sidebar, with a Dependencies Setup section showing Docker Engine, Nosey Parker image, Java runtime and BFG all installed, a Target Directory section with a detected git repository, and a Start Scan button.">
+          <img src="img/control-panel.png" width="435" height="1350" loading="lazy" decoding="async"
+               alt="The Control Panel sidebar, with a Dependencies Setup section listing the Gitleaks, TruffleHog and Foxguard native binaries with their versions, then Docker Engine and the Nosey Parker image, git-filter-repo, Java runtime and BFG, all installed, a Target Directory section with a detected git repository, and a Start Scan button.">
         </a>
         <figcaption>
           <b>Control Panel</b>
           Dependency status, the auto-detected target repository, and the scan trigger. One scan
-          engine is the whole requirement — one click installs Gitleaks and TruffleHog as native
-          binaries, no Docker and no JVM. Docker, the Nosey Parker image and BFG are optional, and
+          engine is the whole requirement — one click installs Gitleaks, TruffleHog and Foxguard as
+          native binaries, no Docker and no JVM. Docker, the Nosey Parker image and BFG are optional, and
           their absence is noted beside "Dependencies ready" rather than blocking a scan.
         </figcaption>
       </figure>

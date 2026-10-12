@@ -289,8 +289,18 @@ function renderCurrentView() {
             docker: { installed: true, version: 'Docker version 28.2.2, build 28.2.2-0ubuntu1~22.04.1' },
             noseyparker: { installed: true },
             java: { installed: true },
-            bfg: { installed: true }
+            bfg: { installed: true },
+            filterRepo: { installed: true }
         };
+        // The native engines' rows, from the engines that actually ran in the scan.
+        const { ENGINES } = require(path.join(REPO, 'scan-engines.js'));
+        sidebar._engineStatus = (scan.coverage.engines || [])
+            .filter(engine => ENGINES[engine.id])
+            .map(engine => ({
+                id: engine.id, displayName: engine.displayName, installHint: ENGINES[engine.id].installHint,
+                enabled: true, installed: Boolean(engine.ok), runtime: engine.runtime || 'binary',
+                preference: 'auto', image: null, version: engine.version
+            }));
         if (VIEW === 'keywords') {
             // The commit-message / file-history keyword search, expanded. Off by default
             // in the product, so it has to be opened explicitly to be documented at all.
