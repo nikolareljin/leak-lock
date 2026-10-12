@@ -19,7 +19,7 @@ const REPO = path.resolve(__dirname, '..');
 const TARGET = process.argv[2];
 const OUT = process.argv[3] || '/tmp/scan.json';
 
-if (!TARGET) {
+if (!TARGET || String(OUT).startsWith('--')) {
     console.error('usage: node tools/real-scan.js <repo-to-scan> <out.json>');
     process.exit(1);
 }
