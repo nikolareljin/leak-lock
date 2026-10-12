@@ -114,6 +114,8 @@ The results appear in a detailed table with the following columns:
 Foxguard findings appear in a separate **Code issues** table. They link to source locations,
 but cannot be selected for replacement or git history cleanup.
 
+![Code issues](website/img/code-issues.png)
+
 For large result sets, use the compact right-side shortcuts:
 
 - **🔎 Results** jumps to search findings.

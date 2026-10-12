@@ -3991,7 +3991,7 @@ suite('Second review round', () => {
 	test('the fixture generator uses no GNU-only shell', () => {
 		// It is documented as cross-platform. `sed -i` reads the next argument as a
 		// backup suffix on BSD/macOS, and BSD sed rejects labels separated by ';'.
-		const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'seed-fake-leaks.sh'), 'utf8');
+		const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'fixtures', 'seed-fake-leaks.sh'), 'utf8');
 		const code = src.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
 		assert.ok(!/sed -i /.test(code), 'sed -i is GNU-only');
 		assert.ok(!/sed ':a/.test(code), "sed ':a;N;...' is GNU-only");

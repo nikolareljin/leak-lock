@@ -9,7 +9,7 @@
  * Its purpose is to feed tools/render-screenshots.js with real data, so documentation
  * screenshots show a real run rather than something hand-written to look like one.
  *
- *   node tools/real-scan.js <repo-to-scan> <out.json>
+ *   node tools/real-scan.js <repo-to-scan> <out.json> [--bin <engine>=<path> ...]
  */
 const Module = require('module');
 const fs = require('fs');
@@ -19,7 +19,7 @@ const REPO = path.resolve(__dirname, '..');
 const TARGET = process.argv[2];
 const OUT = process.argv[3] || '/tmp/scan.json';
 
-if (!TARGET) {
+if (!TARGET || String(OUT).startsWith('--')) {
     console.error('usage: node tools/real-scan.js <repo-to-scan> <out.json>');
     process.exit(1);
 }
@@ -43,8 +43,27 @@ const settings = {
     //   LEAKLOCK_VERIFY=1 node tools/real-scan.js <repo> out.json
     'trufflehog.verify': process.env.LEAKLOCK_VERIFY === '1',
     'gitHistoryKeywordSearch.enabled': false,
-    'gitHistoryKeywordSearch.keywords': []
+    'gitHistoryKeywordSearch.keywords': [],
+    // The extension's managed engine installs do not exist outside VS Code, and a
+    // distribution package may report no version. Point at binaries explicitly:
+    //   node tools/real-scan.js <repo> out.json --bin foxguard=/path/to/foxguard
+    ...engineBinaries(process.argv.slice(4))
 };
+
+function engineBinaries(args) {
+    const known = new Set(['gitleaks', 'trufflehog', 'foxguard']);
+    const out = {};
+    for (let i = 0; i < args.length; i++) {
+        const [engine, ...rest] = String(args[i + 1] || '').split('=');
+        if (args[i] !== '--bin' || !known.has(engine) || !rest.length) {
+            console.error(`unrecognised argument ${args[i]} ${args[i + 1] || ''}; expected --bin <${[...known].join('|')}>=<path>`);
+            process.exit(1);
+        }
+        out[`${engine}.binaryPath`] = rest.join('=');
+        i++;
+    }
+    return out;
+}
 
 const vscodeStub = {
     workspace: {
@@ -93,11 +112,12 @@ const LeakLockPanel = require(path.join(REPO, 'leakLockPanel.js'));
         scannedAt: new Date().toISOString(),
         durationMs: Date.now() - started,
         results: panel._scanResults,
+        codeIssues: panel._codeIssues,
         coverage: panel._scanCoverage
     };
     fs.writeFileSync(OUT, JSON.stringify(payload, null, 1));
 
-    console.log(`\n${payload.results.length} finding(s) in ${Math.round(payload.durationMs / 1000)}s -> ${OUT}`);
+    console.log(`\n${payload.results.length} finding(s), ${payload.codeIssues.length} code issue(s) in ${Math.round(payload.durationMs / 1000)}s -> ${OUT}`);
     for (const engine of (payload.coverage?.engines || [])) {
         console.log(`  ${engine.ok ? 'ok  ' : 'FAIL'} ${engine.displayName} ${engine.version || '(version unknown)'} — ${engine.findings} finding(s)${engine.verified ? `, ${engine.verified} verified` : ''}${engine.note ? ` [${engine.note.slice(0, 60)}]` : ''}`);
     }
