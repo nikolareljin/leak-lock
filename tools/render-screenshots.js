@@ -13,8 +13,9 @@
  * paths, content no scanner flags) that a screenshot needs to show, and every credential
  * in it is fake by construction. See docs/TEST_FIXTURE.md.
  *
- *   node tools/render-screenshots.js results /tmp/results.html
- *   node tools/render-screenshots.js empty   /tmp/empty.html
+ *   node tools/render-screenshots.js results    /tmp/results.html
+ *   node tools/render-screenshots.js empty      /tmp/empty.html
+ *   node tools/render-screenshots.js codeIssues /tmp/code-issues.html
  *
  * Then capture with any headless browser, e.g.:
  *   chromium --headless --disable-gpu --hide-scrollbars \
@@ -152,6 +153,17 @@ panel._scanResults = VIEW === 'empty'
     ? []
     : (LIMIT > 0 ? sampleAcrossEngines(scan.results, LIMIT) : scan.results);
 panel._scanCoverage = scan.coverage;
+// Foxguard's issues, as the scan recorded them. The codeIssues view shows them with a
+// short credential table above, so the separation between the two is visible.
+panel._codeIssues = VIEW === 'empty' ? [] : (scan.codeIssues || []);
+if (VIEW === 'codeIssues' && panel._codeIssues.length === 0) {
+    console.error('The scan recorded no code issues. Scan the code-issues fixture (docs/TEST_FIXTURE.md)\n' +
+        'and pass --bin foxguard=<path> to tools/real-scan.js.');
+    process.exit(1);
+}
+if (VIEW === 'codeIssues') {
+    panel._scanResults = panel._scanResults.slice(0, 2);
+}
 // In the extension the same panel instance scans and then renders, so it already knows
 // when it fetched. Here the scan happened in a separate process, so replay the recorded
 // time — otherwise the header reports "never (stale)" for a scan that did refresh refs.
@@ -328,6 +340,7 @@ const theme = `
  --vscode-font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Ubuntu,sans-serif;
 }
 body{background:#1f1f1f;color:#cccccc;font-family:var(--vscode-font-family);}
+a{color:var(--vscode-textLink-foreground);} /* VS Code's own webview stylesheet sets this */
 </style>
 <script>window.acquireVsCodeApi=function(){return{postMessage:function(){},getState:function(){},setState:function(){}};};</script>
 `;

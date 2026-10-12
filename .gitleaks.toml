@@ -1,0 +1,15 @@
+# Gitleaks configuration for scans of this repository: the default rules, plus one
+# allowlisted folder.
+#
+# tools/fixtures/ holds the test-fixture generators, which build fake credentials on
+# purpose (tools/fixtures/README.md). The same patterns anywhere else are reported.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test-fixture generators: fake credentials by design"
+paths = [
+  '''^tools/fixtures/''',
+  # Where seed-fake-leaks.sh lived before it moved into tools/fixtures/ (history only).
+  '''^tools/seed-fake-leaks\.sh$''',
+]

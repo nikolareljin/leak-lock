@@ -1,0 +1,16 @@
+# Foxguard configuration for scans of this repository.
+#
+# tools/fixtures/ holds the test-fixture generators, which carry fake secrets and
+# insecure-code patterns on purpose (tools/fixtures/README.md). They are skipped
+# here and nowhere else. Foxguard has no folder-wide exclusion for code rules, so
+# each rule that fires in a fixture script is listed per file.
+scan:
+  ignore_rules:
+    - path: tools/fixtures/seed-fake-leaks.sh
+      rules:
+        # Writes into the target directory the caller names; that is its purpose.
+        - bash/taint-path-traversal
+
+secrets:
+  exclude_paths:
+    - tools/fixtures

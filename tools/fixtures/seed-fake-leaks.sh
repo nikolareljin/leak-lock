@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 #
+# TEST-FIXTURE TOOLING ONLY. Run by hand to build test and screenshot fixtures; not
+# sourced or executed by the extension, its tests, CI or any other tool. See
+# tools/fixtures/README.md. Excluded from the repository's own scans by
+# .gitleaks.toml and .foxguard.yml.
+#
 # Seed FAKE credential leaks into the history of an existing repository, so Leak
 # Lock can be exercised end to end: scan, review, prepare, rewrite, force-push,
 # verify — then re-seed and do it again.
 #
-#   bash tools/seed-fake-leaks.sh <target-repo> [options]
+#   bash tools/fixtures/seed-fake-leaks.sh <target-repo> [options]
 #
 # Options
-#   --push            push the seeded branches and tag to origin (OFF by default)
+#   --push            push the seeded branches and tag to origin (OFF by default).
+#                     Only to a remote on this disk: a hosted origin is refused and
+#                     the push commands are printed for a person to run instead.
 #   --local-remote    create a bare remote beside the repo and point origin at it,
 #                     so the full push/verify flow works without a real server
 #   --reset           delete previously seeded branches and the tag first
@@ -363,7 +370,23 @@ if [ "$LOCAL_REMOTE" = 1 ]; then
   echo "local remote created: $BARE  (origin now points at it)"
 fi
 
+# Only a remote on this disk is pushed to. A hosted origin (GitHub, any URL with a
+# host) is refused: one mistyped target would force-push fake secrets into a real
+# repository's history, and undoing that costs a rewrite. Publishing to a hosted
+# fixture is a manual step.
 if [ "$DO_PUSH" = 1 ]; then
+  ORIGIN_URL="$(g remote get-url origin 2>/dev/null || echo '')"
+  case "$ORIGIN_URL" in
+    /*|file://*|./*|../*) ;;
+    *)
+      echo "refusing to push: origin is not a local path (${ORIGIN_URL:-none})." >&2
+      echo "The branches are seeded locally. To publish them, review and push by hand:" >&2
+      echo "  git -C \"$TARGET\" log --oneline --branches='$PREFIX/*'" >&2
+      echo "  git -C \"$TARGET\" push -f origin $(for b in $BRANCHES; do printf '%s ' "$b:$b"; done)" >&2
+      echo "  git -C \"$TARGET\" push -f origin $TAG" >&2
+      echo "(The remote-only branch needs --local-remote; it is not created by hand.)" >&2
+      exit 2 ;;
+  esac
   for b in $BRANCHES; do g push -q -f origin "$b:$b"; done
   g push -q -f origin "$TAG"
   # A branch that exists ONLY on the remote: the headline case, invisible without a
@@ -404,7 +427,7 @@ Everything planted is fake. Files live under leaklock-fixture/ so they are easy 
 To undo entirely:
   git checkout ${ORIGINAL_BRANCH:-$BASE}
   git config --unset leaklock.fixtureBase
-  bash tools/seed-fake-leaks.sh "$TARGET" --reset --list
+  bash tools/fixtures/seed-fake-leaks.sh "$TARGET" --reset --list
 
 Branches created (all prefixed $PREFIX/):
   main-leaks         the bulk of the history

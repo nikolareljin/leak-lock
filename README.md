@@ -172,6 +172,13 @@ The first row also shows aggregation working: one secret, **in 3 commits and sti
 working tree**, as a single row rather than four. The `node_modules` row is marked
 *Dependency · not your code* and cannot be selected for a history rewrite.
 
+### Code issues — Foxguard
+
+![Code issues](docs/website/img/code-issues.png)
+
+Foxguard's findings are a separate, read-only table: severity, rule and CWE, a suggested
+fix, and a link to the line. They never enter a cleanup.
+
 ### Scan coverage — what was actually examined
 
 ![Scan coverage](docs/website/img/scan-coverage.png)
@@ -398,7 +405,8 @@ attribution line tells you when one of them is falling behind.
 If an engine you have installed is reported as missing, it is almost always `PATH` — a
 GUI-launched VS Code does not inherit your shell's. Leak Lock searches the usual install
 locations (`~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, …); for anything else,
-set `leakLock.trufflehog.binaryPath` or `leakLock.gitleaks.binaryPath`.
+set `leakLock.trufflehog.binaryPath`, `leakLock.gitleaks.binaryPath` or
+`leakLock.foxguard.binaryPath`.
 
 ### **macOS: installing Java and git-filter-repo**
 

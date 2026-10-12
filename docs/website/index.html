@@ -329,6 +329,22 @@ footer .credit{margin-left:auto}
       </figure>
     </div>
 
+    <div class="shots">
+      <figure class="shot lead">
+        <a class="frame" href="img/code-issues.png">
+          <img src="img/code-issues.png" width="1280" height="1113" loading="lazy" decoding="async"
+               alt="The Code issues table from a real Foxguard scan of the public test fixture. Each row lists a severity, a rule identifier with its CWE, a description with a suggested fix, and a link to the file and line: a hardcoded database password, SQL and command injection, eval, pickle deserialization and MD5 in Python, and path traversal, command and SQL injection, disabled TLS verification and MD5 in Go.">
+        </a>
+        <figcaption>
+          <b>Code issues, kept apart from secrets</b>
+          Foxguard reports insecure code in the working tree: injection, unsafe deserialization,
+          weak hashing, disabled TLS checks. Each row names the rule and CWE and links to the line.
+          These rows are read-only: they never enter a cleanup, and Foxguard alone never makes a
+          scan count as clean.
+        </figcaption>
+      </figure>
+    </div>
+
     <div class="shots shots-3">
       <figure class="shot">
         <a class="frame" href="img/scan-coverage.png">

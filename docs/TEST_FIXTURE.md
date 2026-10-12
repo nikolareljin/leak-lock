@@ -1,8 +1,17 @@
-# 🧪 Test Fixture — seeding fake leaks
+# 🧪 Test Fixture — seeding fake leaks and insecure code
 
-`tools/seed-fake-leaks.sh` plants **fake** credential leaks into the history of any
-repository, so Leak Lock can be exercised the whole way through — scan, review, prepare,
-rewrite, force-push, verify — and then re-seeded and run again.
+Two generators in `tools/fixtures/` build test and documentation fixtures. They are
+**fixture tooling only**: run by hand, used by nothing else in this repository, excluded
+from its own Gitleaks and Foxguard scans, and never shipped
+([tools/fixtures/README.md](../tools/fixtures/README.md)).
+
+- `tools/fixtures/seed-fake-leaks.sh` plants **fake** credential leaks into a repository's
+  history, so Leak Lock can be exercised the whole way through — scan, review, prepare,
+  rewrite, force-push, verify — and then re-seeded and run again.
+- `tools/fixtures/seed-code-issues.js` writes deliberately **insecure code** for Foxguard
+  to report in the Code issues section.
+
+**Neither pushes to a hosted remote.** Publishing the fixture is a manual step.
 
 There is a public fixture repository ready to use:
 **<https://github.com/nikolareljin/damn-vulnerable-repo>**
@@ -16,7 +25,7 @@ git clone https://github.com/nikolareljin/damn-vulnerable-repo.git
 cd /path/to/leak-lock
 
 # Seed, and create a throwaway bare remote so force-push and verification work
-bash tools/seed-fake-leaks.sh ../damn-vulnerable-repo --local-remote
+bash tools/fixtures/seed-fake-leaks.sh ../damn-vulnerable-repo --local-remote
 ```
 
 Then point Leak Lock's Control Panel at `../damn-vulnerable-repo` and scan.
@@ -24,7 +33,16 @@ Then point Leak Lock's Control Panel at `../damn-vulnerable-repo` and scan.
 After you have cleaned it, seed a fresh set and go again:
 
 ```bash
-bash tools/seed-fake-leaks.sh ../damn-vulnerable-repo --reset --push
+bash tools/fixtures/seed-fake-leaks.sh ../damn-vulnerable-repo --reset --local-remote
+```
+
+To update the public fixture on GitHub, seed locally, review, and push by hand:
+
+```bash
+bash tools/fixtures/seed-fake-leaks.sh ../damn-vulnerable-repo --reset --github-safe
+git -C ../damn-vulnerable-repo log --oneline --branches='leaklock-fixture/*'
+git -C ../damn-vulnerable-repo push -f origin 'refs/heads/leaklock-fixture/*:refs/heads/leaklock-fixture/*'
+git -C ../damn-vulnerable-repo push -f origin leaklock-fixture-v0.1.0
 ```
 
 ## Options
@@ -32,7 +50,7 @@ bash tools/seed-fake-leaks.sh ../damn-vulnerable-repo --reset --push
 | Option | Effect |
 |---|---|
 | *(none)* | Seed the branches locally. **Nothing is pushed.** |
-| `--push` | Push the seeded branches and tag to `origin`, and create a branch that exists *only* on the remote |
+| `--push` | Push the seeded branches and tag to `origin`, and create a branch that exists *only* on the remote. **Only when `origin` is a path on this disk**; a hosted origin is refused and the push commands are printed instead |
 | `--local-remote` | Create a throwaway bare remote beside the repository, point `origin` at it, and push. Implies `--push` |
 | `--reset` | Delete the previously seeded branches and tag first |
 | `--list` | Show what a previous run created, then exit |
@@ -178,7 +196,7 @@ manual rules exist.
 
 ```bash
 git checkout <your-branch>
-bash tools/seed-fake-leaks.sh <repo> --reset --list
+bash tools/fixtures/seed-fake-leaks.sh <repo> --reset --list
 git config --unset leaklock.fixtureBase
 ```
 
@@ -188,25 +206,57 @@ produce no diff, and abort.
 
 ---
 
-## Not yet covered: insecure code
+## Insecure code for Foxguard
 
-The fixture plants **credentials** only. Scanning for unsafe *code* — injection, unsafe
-deserialization, weak or quantum-vulnerable cryptography, memory and resource leaks,
-vulnerable dependencies — is tracked in
-[leak-lock#94](https://github.com/nikolareljin/leak-lock/issues/94) and depends on the
-FoxGuard adapter ([#47](https://github.com/nikolareljin/leak-lock/issues/47)) landing
-first. When it does, this generator should gain a `leaklock-fixture/bad-code` branch.
+`tools/fixtures/seed-code-issues.js` writes short Python and JavaScript files under
+`leaklock-fixture/code/` that Foxguard reports: SQL and command injection, `eval`,
+`pickle.loads`, MD5, and `innerHTML`. Every file says "intentionally insecure; never
+deploy". It never pushes, fetches, clones or touches a remote: every git call goes
+through a guard that refuses those subcommands, and transports are disabled.
 
-Unlike the credential side, that content has no push-protection problem: unsafe code is
-not a secret, so nothing blocks publishing it.
+```bash
+# A new throwaway repository under $TMPDIR, with no remote at all
+node tools/fixtures/seed-code-issues.js
+
+# Or a local commit on branch leaklock-fixture/code-issues of the fixture clone,
+# on top of the seeded credential history
+node tools/fixtures/seed-code-issues.js --into ../damn-vulnerable-repo \
+  --base origin/leaklock-fixture/main-leaks
+```
+
+The second form prints the push command; publishing is yours to run after review:
+
+```bash
+git -C ../damn-vulnerable-repo show --stat leaklock-fixture/code-issues
+git -C ../damn-vulnerable-repo push origin leaklock-fixture/code-issues
+```
+
+The fixture's own `leaklock-fixture/code-issues` branch is hand-written instead: Python,
+JavaScript and Go (path traversal, TLS verification off, injection, weak hashing) in
+three commits, on top of the seeded credential history.
 
 ## Regenerating documentation screenshots
 
-The same real-scan machinery backs the screenshots in `docs/website/img/`:
+The same real-scan machinery backs the screenshots in `docs/website/img/`. Scan a
+**clone under `/tmp/repos`**, never a working checkout: the path is rendered into the
+image, and a neutral path names nobody's machine or project.
 
 ```bash
-node tools/real-scan.js <repo> /tmp/leaklock-scan.json
-node tools/render-screenshots.js results /tmp/results.html /tmp/leaklock-scan.json
+git clone --no-local ../damn-vulnerable-repo /tmp/repos/damn-vulnerable-repo
+git -C /tmp/repos/damn-vulnerable-repo checkout leaklock-fixture/code-issues
+node tools/real-scan.js /tmp/repos/damn-vulnerable-repo /tmp/leaklock-scan.json \
+  --bin foxguard=/path/to/foxguard --bin gitleaks=/path/to/gitleaks
+node tools/render-screenshots.js results    /tmp/results.html     /tmp/leaklock-scan.json
+node tools/render-screenshots.js codeIssues /tmp/code-issues.html /tmp/leaklock-scan.json
+```
+
+`--bin` points at engine binaries, since the extension's managed installs exist only
+inside VS Code. Nosey Parker has no `--bin`: it runs only from its Docker image.
+
+Before committing an image, check the rendered HTML names nothing private:
+
+```bash
+grep -n -i -E "/home/|/Users/|@gmail|github.com/[^n]" /tmp/code-issues.html
 ```
 
 `real-scan.js` runs the extension's own `_scanRepository()` path, so the output is what
