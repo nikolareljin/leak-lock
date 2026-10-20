@@ -395,6 +395,29 @@ suite('Foxguard on Linux, macOS and Windows', () => {
         }
     });
 
+    test('a failed Windows Foxguard validation leaves no executable behind', async () => {
+        const os = require('os');
+        const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxguard-windows-failed-install-'));
+        try {
+            const result = await engineInstall.installEngine({
+                engineId: 'foxguard',
+                installDir,
+                platform: 'win32',
+                arch: 'x64',
+                version: '0.14.1',
+                allowLatestFallback: false,
+                download: async (_url, destination) => fs.writeFileSync(destination, 'foxguard'),
+                fetchText: async () => { throw new Error('checksums unavailable'); },
+                verifyVersion: async () => null
+            });
+            assert.strictEqual(result.ok, false);
+            assert.ok(!fs.existsSync(path.join(installDir, 'foxguard.exe')));
+            assert.ok(!fs.existsSync(path.join(installDir, 'foxguard.installing.exe')));
+        } finally {
+            fs.rmSync(installDir, { recursive: true, force: true });
+        }
+    });
+
     test('Windows output paths become repository-relative, whatever the drive-letter case', () => {
         // Shape taken from foxguard-windows-x86_64.exe 0.14.0: it echoes the scan root.
         const root = 'C:\\Users\\dev\\repo';
