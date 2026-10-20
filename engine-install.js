@@ -91,7 +91,7 @@ const ENGINE_RELEASES = Object.freeze({
     }),
     foxguard: Object.freeze({
         id: 'foxguard', displayName: 'Foxguard', repo: '0sec-labs/foxguard',
-        pinnedVersion: '0.14.0', executable: 'foxguard', versionArgs: ['--version'],
+        pinnedVersion: '0.14.1', executable: 'foxguard', versionArgs: ['--version'],
         archNames: Object.freeze({
             // No arm64 build is published; Windows 11 on Arm runs the x64 one emulated.
             win32: Object.freeze({ x64: 'x86_64', arm64: 'x86_64' }),
@@ -200,6 +200,21 @@ function executableName(engineId, platform = process.platform) {
         return null;
     }
     return platform === 'win32' ? `${info.executable}.exe` : info.executable;
+}
+
+/**
+ * An executable being verified on Windows must keep its .exe suffix.  The old
+ * `foxguard.exe.installing` name is not a reliable CreateProcess target, so a
+ * download could succeed and then fail validation before it was promoted.
+ */
+function stagingExecutablePath(target, platform = process.platform) {
+    if (platform !== 'win32') {
+        return `${target}.installing`;
+    }
+    const extension = path.extname(target);
+    return extension
+        ? `${target.slice(0, -extension.length)}.installing${extension}`
+        : `${target}.installing`;
 }
 
 /**
@@ -572,7 +587,7 @@ async function installEngine({
             if (info.directAsset) {
                 await fs.promises.mkdir(installDir, { recursive: true });
                 const target = path.join(installDir, executableName(engineId, platform));
-                const staging = `${target}.installing`;
+                const staging = stagingExecutablePath(target, platform);
                 await fs.promises.rm(staging, { force: true });
                 await fs.promises.copyFile(archivePath, staging);
                 if (platform !== 'win32') await fs.promises.chmod(staging, 0o755);
@@ -738,6 +753,7 @@ module.exports = {
     buildLatestReleaseUrl,
     parseChecksums,
     executableName,
+    stagingExecutablePath,
     buildExtractCommand,
     buildListCommand,
     parseArchiveEntries,

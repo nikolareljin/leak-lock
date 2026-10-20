@@ -344,8 +344,8 @@ suite('Three credential engines and Foxguard finish in either order', () => {
 suite('Foxguard on Linux, macOS and Windows', () => {
     const engineInstall = require('../engine-install');
 
-    test('every supported platform resolves to a published Foxguard 0.14.0 asset', () => {
-        // Names as published on https://github.com/0sec-labs/foxguard/releases/tag/v0.14.0
+    test('every supported platform resolves to a published Foxguard 0.14.1 asset', () => {
+        // Names as published on https://github.com/0sec-labs/foxguard/releases/tag/v0.14.1
         const expected = {
             'linux/x64': 'foxguard-linux-x86_64',
             'linux/arm64': 'foxguard-linux-aarch64',
@@ -357,14 +357,90 @@ suite('Foxguard on Linux, macOS and Windows', () => {
         };
         for (const [key, asset] of Object.entries(expected)) {
             const [platform, arch] = key.split('/');
-            assert.strictEqual(engineInstall.buildAssetName('foxguard', '0.14.0', platform, arch), asset, key);
+            assert.strictEqual(engineInstall.buildAssetName('foxguard', '0.14.1', platform, arch), asset, key);
         }
         assert.strictEqual(engineInstall.executableName('foxguard', 'win32'), 'foxguard.exe');
         assert.strictEqual(engineInstall.executableName('foxguard', 'darwin'), 'foxguard');
         assert.strictEqual(
-            engineInstall.buildChecksumsUrl('foxguard', '0.14.0'),
-            'https://github.com/0sec-labs/foxguard/releases/download/v0.14.0/checksums.txt'
+            engineInstall.buildChecksumsUrl('foxguard', '0.14.1'),
+            'https://github.com/0sec-labs/foxguard/releases/download/v0.14.1/checksums.txt'
         );
+    });
+
+    test('Windows keeps the executable suffix while Foxguard is validated', async () => {
+        const os = require('os');
+        const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxguard-windows-install-'));
+        let verifiedPath = null;
+        try {
+            const result = await engineInstall.installEngine({
+                engineId: 'foxguard',
+                installDir,
+                platform: 'win32',
+                arch: 'x64',
+                version: '0.14.1',
+                allowLatestFallback: false,
+                download: async (_url, destination) => fs.writeFileSync(destination, 'foxguard'),
+                fetchText: async () => { throw new Error('checksums unavailable'); },
+                verifyVersion: async (_engineId, executablePath) => {
+                    verifiedPath = executablePath;
+                    return '0.14.1';
+                }
+            });
+            assert.strictEqual(result.ok, true);
+            assert.match(verifiedPath, /foxguard\.installing\.exe$/i);
+            assert.ok(fs.existsSync(path.join(installDir, 'foxguard.exe')));
+            assert.ok(!fs.existsSync(verifiedPath));
+        } finally {
+            fs.rmSync(installDir, { recursive: true, force: true });
+        }
+    });
+
+    test('a failed Windows Foxguard validation leaves no executable behind', async () => {
+        const os = require('os');
+        const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxguard-windows-failed-install-'));
+        try {
+            const result = await engineInstall.installEngine({
+                engineId: 'foxguard',
+                installDir,
+                platform: 'win32',
+                arch: 'x64',
+                version: '0.14.1',
+                allowLatestFallback: false,
+                download: async (_url, destination) => fs.writeFileSync(destination, 'foxguard'),
+                fetchText: async () => { throw new Error('checksums unavailable'); },
+                verifyVersion: async () => null
+            });
+            assert.strictEqual(result.ok, false);
+            assert.ok(!fs.existsSync(path.join(installDir, 'foxguard.exe')));
+            assert.ok(!fs.existsSync(path.join(installDir, 'foxguard.installing.exe')));
+        } finally {
+            fs.rmSync(installDir, { recursive: true, force: true });
+        }
+    });
+
+    test('a failed Windows Foxguard update keeps the working binary', async () => {
+        const os = require('os');
+        const installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxguard-windows-existing-install-'));
+        const target = path.join(installDir, 'foxguard.exe');
+        try {
+            fs.writeFileSync(target, 'working Foxguard');
+            const result = await engineInstall.installEngine({
+                engineId: 'foxguard',
+                installDir,
+                platform: 'win32',
+                arch: 'x64',
+                version: '0.14.1',
+                allowLatestFallback: false,
+                download: async (_url, destination) => fs.writeFileSync(destination, 'failed update'),
+                fetchText: async () => { throw new Error('checksums unavailable'); },
+                verifyVersion: async () => null
+            });
+            assert.strictEqual(result.ok, false);
+            assert.strictEqual(fs.readFileSync(target, 'utf8'), 'working Foxguard');
+            assert.ok(!fs.existsSync(path.join(installDir, 'foxguard.installing.exe')));
+        } finally {
+            fs.rmSync(installDir, { recursive: true, force: true });
+        }
     });
 
     test('Windows output paths become repository-relative, whatever the drive-letter case', () => {

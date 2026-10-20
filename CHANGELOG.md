@@ -1,5 +1,13 @@
 # Change Log
 
+## Unreleased
+
+### Fixed
+- Update the managed Foxguard download to 0.14.1 and keep the `.exe` suffix while Windows validates it. A failed update retains the existing Foxguard binary instead of leaving the scanner unavailable.
+
+### Changed
+- Update publish-workflow action pins and development-only Node types, ESLint, and globals dependencies.
+
 ## 2026-10-11 — v0.10.0
 
 ### Added
