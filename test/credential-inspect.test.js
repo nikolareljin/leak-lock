@@ -6,6 +6,7 @@ const { execFileSync } = require('child_process');
 const {
     createSession,
     loadLibraryInfo,
+    resolvePackagePath,
     inspectFinding,
     MAX_ARTIFACT_BYTES
 } = require('../credential-inspect');
@@ -36,6 +37,12 @@ suite('loadLibraryInfo', () => {
         const info = await loadLibraryInfo();
         assert.strictEqual(info.ok, true, info.ok ? '' : `import failed: ${info.error}`);
         assert.match(info.version, /^\d+\.\d+\.\d+$/);
+    });
+
+    test('resolves the bundled package from the extension directory', () => {
+        const entry = resolvePackagePath();
+        assert.match(entry.replace(/\\\\/g, '/'), /node_modules\/@nikolareljin\/credential-lens\//);
+        assert.ok(fs.existsSync(entry));
     });
 
     test('a failing import is reported, not thrown', async () => {

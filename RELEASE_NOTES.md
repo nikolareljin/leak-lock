@@ -1,7 +1,9 @@
-# Release notes, v0.10.1
+# Release notes, v0.11.0
+
+## Added
+- Export either the complete credential and code-issue report or Foxguard code issues only. Code-only reports remain importable and never become history-cleanup candidates.
+- Show an inline spinner in credential and Code issues result blocks while another scan stage is still running.
 
 ## Fixed
-- Update the managed Foxguard download to 0.14.1 and retain the .exe suffix during Windows validation. Failed updates retain the working scanner.
-
-## Changed
-- Update publish workflow action pins and development-only Node types, ESLint, and globals dependencies.
+- Resolve bundled credential-lens from the installed extension directory so Windows workspaces cannot redirect its module lookup.
+- Raise the default Foxguard timeout from 120 seconds to 10 minutes for longer code scans.

@@ -1024,6 +1024,19 @@ class LeakLockPanel {
                         border-radius: 3px;
                         margin-bottom: 15px;
                     }
+                    .result-pending {
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                        margin: 8px 0 12px;
+                        padding: 8px 10px;
+                        background: var(--vscode-inputValidation-infoBackground);
+                        border-left: 3px solid var(--vscode-inputValidation-infoBorder);
+                        border-radius: 3px;
+                    }
+                    @media (prefers-reduced-motion: reduce) {
+                        .spinner { animation: none; }
+                    }
                     
                     /* Scanning Progress Styles */
                     .scanning-progress {
@@ -3224,6 +3237,7 @@ class LeakLockPanel {
                 </div>
                 <div style="margin-bottom: 15px;">
                     <strong>Found ${this._scanResults.length} findings:</strong>
+                    ${this._renderPendingResultStatus('credentials')}
                     <div class="export-actions">
                         <button class="scan-button" id="ll-select-all" type="button">☑️ Select all</button>
                         <button class="scan-button" id="ll-clear-all" type="button">☐ Clear all</button>
@@ -6591,7 +6605,7 @@ class LeakLockPanel {
             const foxguardReport = (this._scanCoverage?.engines || [])
                 .find(engine => engine.id === 'foxguard');
             if (this._isScanning && foxguardReport?.inProgress) {
-                return `<div class="scan-section" id="code-issues-section"><h2>Code issues</h2><p class="hint">Foxguard is still scanning the working tree.</p></div>`;
+                return `<div class="scan-section" id="code-issues-section"><h2>Code issues</h2>${this._renderPendingResultStatus('code')}</div>`;
             }
             if (foxguardReport?.ok) {
                 return `<div class="scan-section" id="code-issues-section"><h2>Code issues</h2><p class="hint">Foxguard completed with no code issues.</p></div>`;
@@ -6613,7 +6627,12 @@ class LeakLockPanel {
         }).join('');
         return `<div class="scan-section" id="code-issues-section">
             <h2>Code issues</h2>
+            ${this._renderPendingResultStatus('code')}
             <p class="hint">Foxguard findings link to source only. They cannot modify files or rewrite git history.</p>
+            ${(this._scanResults || []).length === 0 ? `<div class="export-actions">
+                <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
+                <button class="scan-button" onclick="importScanResultsJson()" title="Import a report exported earlier and check whether each of its findings was resolved.">📥 Import JSON</button>
+            </div>` : ''}
             <table class="results-table"><thead><tr><th>Severity</th><th>Rule</th><th>Issue</th><th>Location</th></tr></thead><tbody>${rows}</tbody></table>
         </div>`;
     }
@@ -6636,6 +6655,19 @@ class LeakLockPanel {
 
     _renderResultsPage(content) {
         return `${this._renderScanSideRail()}<div class="scan-results-page">${content}</div>`;
+    }
+
+    _renderPendingResultStatus(kind) {
+        if (!this._isScanning) return '';
+        const foxguardPending = (this._scanCoverage?.engines || [])
+            .some(engine => engine.id === 'foxguard' && engine.inProgress);
+        if (kind === 'credentials' && foxguardPending) {
+            return `<div class="result-pending" role="status"><div class="spinner" aria-hidden="true"></div><span>Credential results are ready. Foxguard is still scanning code issues.</span></div>`;
+        }
+        if (kind === 'code' && foxguardPending) {
+            return `<div class="result-pending" role="status"><div class="spinner" aria-hidden="true"></div><span>${escapeHtml(this._scanProgress?.message || 'Foxguard is still scanning the working tree.')}</span></div>`;
+        }
+        return `<div class="result-pending" role="status"><div class="spinner" aria-hidden="true"></div><span>${escapeHtml(this._scanProgress?.message || 'Scanning results...')}</span></div>`;
     }
 
     _getScanResultsSection() {
@@ -9636,7 +9668,10 @@ class LeakLockPanel {
 
     _buildScanExportPayload(options = {}) {
         const redactSensitive = Boolean(options.redactSensitive);
-        const severityCounts = this._scanResults.reduce((counts, result) => {
+        const includeCredentials = options.scope !== 'code';
+        const credentials = includeCredentials ? this._scanResults : [];
+        const codeIssues = this._codeIssues || [];
+        const severityCounts = credentials.reduce((counts, result) => {
             counts[result.severity] = (counts[result.severity] || 0) + 1;
             return counts;
         }, {});
@@ -9650,15 +9685,15 @@ class LeakLockPanel {
             repository: options.repository || null,
             scanPath: redactSensitive ? '[REDACTED_PATH]' : (this._scanPath || null),
             selectedDirectory: redactSensitive ? '[REDACTED_PATH]' : (this._selectedDirectory || null),
-            totalFindings: this._scanResults.length + (this._codeIssues || []).length,
-            totalCredentialFindings: this._scanResults.length,
-            totalCodeIssues: (this._codeIssues || []).length,
+            totalFindings: credentials.length + codeIssues.length,
+            totalCredentialFindings: credentials.length,
+            totalCodeIssues: codeIssues.length,
             redacted: redactSensitive,
             summary: {
                 severities: severityCounts,
-                dependencyFindings: this._scanResults.filter(result => result.isDependency).length,
-                gitHistoryFindings: this._scanResults.filter(result => result.isGitHistory).length,
-                verifiedLiveCredentials: this._scanResults.filter(result => result.verified === true).length
+                dependencyFindings: credentials.filter(result => result.isDependency).length,
+                gitHistoryFindings: credentials.filter(result => result.isGitHistory).length,
+                verifiedLiveCredentials: credentials.filter(result => result.verified === true).length
             },
             // What the scan examined. An exported report that omits this cannot be
             // audited later: "no findings" means nothing without its scope, and an
@@ -9684,7 +9719,7 @@ class LeakLockPanel {
                     dependencyHandling: this._scanCoverage.dependencyHandling
                 }
                 : null,
-            findings: this._scanResults.map(result => ({
+            findings: credentials.map(result => ({
                 file: result.file,
                 line: result.line,
                 secret: redactSensitive ? '[REDACTED_SECRET]' : (result.fullSecret || result.secret),
@@ -9737,7 +9772,7 @@ class LeakLockPanel {
                 })),
             // Code issues deliberately carry no secret or replacement value. They are
             // exportable evidence, but never candidates for history cleanup.
-            codeIssues: (this._codeIssues || []).map(issue => ({
+            codeIssues: codeIssues.map(issue => ({
                 file: issue.file || null,
                 line: Number.isFinite(issue.line) ? issue.line : null,
                 endLine: Number.isFinite(issue.endLine) ? issue.endLine : null,
@@ -9759,6 +9794,16 @@ class LeakLockPanel {
         try {
             if ((!this._scanResults || this._scanResults.length === 0) && (!this._codeIssues || this._codeIssues.length === 0)) {
                 vscode.window.showInformationMessage('No scan results available to export.');
+                return;
+            }
+
+            const scopeChoice = await vscode.window.showQuickPick([
+                { label: 'Credentials and code issues', scope: 'all' },
+                { label: 'Foxguard code issues only', scope: 'code' }
+            ].filter(item => item.scope !== 'code' || (this._codeIssues || []).length > 0), {
+                placeHolder: 'Choose which scan results to export'
+            });
+            if (!scopeChoice) {
                 return;
             }
 
@@ -9796,6 +9841,7 @@ class LeakLockPanel {
             const scanRepo = this._scanRepoRoot || this._scanPath || this._selectedDirectory || null;
             const exportPayload = this._buildScanExportPayload({
                 redactSensitive,
+                scope: scopeChoice.scope,
                 repository: await this._readRepositoryIdentity(scanRepo, { redactPath: redactSensitive })
             });
             await vscode.workspace.fs.writeFile(
