@@ -1,9 +1,14 @@
 # Change Log
 
-## 2026-10-11 — v0.10.0
+## Unreleased
 
 ### Fixed
 - Update the managed Foxguard download to 0.14.1 and keep the `.exe` suffix while Windows validates it. A failed update retains the existing Foxguard binary instead of leaving the scanner unavailable.
+
+### Changed
+- Update publish-workflow action pins and development-only Node types, ESLint, and globals dependencies.
+
+## 2026-10-11 — v0.10.0
 
 ### Added
 - Add Foxguard working-tree code analysis in a separate, read-only Code issues section. Credential findings remain separate from cleanup candidates and each side is shown as soon as it finishes, in either order.
@@ -11,7 +16,6 @@
 - Include Foxguard code issues in JSON export and import. Imported code issues remain read-only evidence and are not treated as credential-history verification results.
 
 ### Changed
-- Update publish-workflow action pins and development-only Node types, ESLint, and globals dependencies.
 - Start Foxguard with the credential engines when engines run in parallel (after them when they run one at a time) and show its progress in Scan coverage while credential results remain available. Foxguard has a separate 120-second default deadline that can be increased with leakLock.foxguard.timeoutSeconds.
 - Keep cleanup selections made while Foxguard is still running, and refuse to prepare or run a history rewrite until every engine finishes, so a rewrite cannot change the working tree under an active scan.
 - Refuse a second scan, a repository switch or a report import while a scan runs. Overlapping scans cleared each other's state, so a scan could end showing Foxguard issues and no credential findings.
