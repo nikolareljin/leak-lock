@@ -1,6 +1,6 @@
 # Change Log
 
-## Unreleased
+## 2026-10-20 - v0.10.1
 
 ### Fixed
 - Update the managed Foxguard download to 0.14.1 and keep the `.exe` suffix while Windows validates it. A failed update retains the existing Foxguard binary instead of leaving the scanner unavailable.
