@@ -2,6 +2,9 @@
 
 ## 2026-10-11 — v0.10.0
 
+### Fixed
+- Update the managed Foxguard download to 0.14.1 and keep the `.exe` suffix while Windows validates it. A failed update retains the existing Foxguard binary instead of leaving the scanner unavailable.
+
 ### Added
 - Add Foxguard working-tree code analysis in a separate, read-only Code issues section. Credential findings remain separate from cleanup candidates and each side is shown as soon as it finishes, in either order.
 - Add compact Results, Cleanup, and Issues shortcuts for long result pages. Each shortcut expands on hover or keyboard focus and only links to a rendered section.
