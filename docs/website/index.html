@@ -84,6 +84,8 @@ code{font-family:var(--mono);font-size:.875em}
 /* ---------- hero (dark brand band) ---------- */
 .band{background:var(--terminal);color:#EDEBF7}
 .hero{padding-block:clamp(3rem,9vw,5.5rem) clamp(2.5rem,6vw,4rem)}
+.hero-layout{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(17rem,.8fr);gap:clamp(2rem,6vw,5rem);align-items:center;margin-top:1.5rem}
+.hero-copy{min-width:0}
 .eyebrow{
   font-family:var(--mono);font-size:.75rem;font-weight:400;
   letter-spacing:.04em;color:var(--dim);
@@ -92,10 +94,32 @@ code{font-family:var(--mono);font-size:.875em}
 .hero h1{font-size:clamp(2.35rem,1.4rem + 4.6vw,4.5rem);max-width:18ch}
 .hero h1 .turn{color:var(--amber-bright)}
 .hero .lede{
-  margin-top:1.5rem;max-width:54ch;font-size:clamp(1.0625rem,1rem + 0.35vw,1.25rem);
+  max-width:54ch;font-size:clamp(1.0625rem,1rem + 0.35vw,1.25rem);
   color:var(--dim);
 }
 .hero .lede strong{color:#fff;font-weight:600}
+.extension-visual{
+  position:relative;overflow:hidden;padding:1rem;
+  background:linear-gradient(145deg,#322b58,#211c3b);border:1px solid rgba(240,160,48,.62);
+  box-shadow:12px 12px 0 rgba(180,98,10,.25);
+}
+.extension-visual::before{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent 55%,rgba(240,160,48,.12));pointer-events:none}
+.editor-window{position:relative;border:1px solid rgba(237,235,247,.34);background:#191534}
+.editor-topbar{height:1.9rem;display:flex;align-items:center;gap:.35rem;padding-inline:.65rem;border-bottom:1px solid rgba(237,235,247,.2);color:var(--dim);font:700 .65rem var(--mono)}
+.editor-dot{width:.42rem;height:.42rem;border-radius:50%;background:var(--amber-bright)}
+.editor-body{display:grid;grid-template-columns:3.5rem 1fr;min-height:11.5rem}
+.editor-rail{display:flex;flex-direction:column;align-items:center;gap:.75rem;padding-top:.9rem;background:#211c3b;border-right:1px solid rgba(237,235,247,.16)}
+.rail-mark{width:1.2rem;height:1.2rem;border:1px solid var(--dim);border-radius:2px}
+.rail-mark.active{background:var(--amber);border-color:var(--amber-bright)}
+.extension-panel{padding:1rem;color:#EDEBF7}
+.extension-panel small{display:block;color:var(--dim);font:700 .62rem var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.extension-panel h2{margin-top:.45rem;font-size:1.65rem;letter-spacing:-.04em}
+.extension-panel p{margin-top:.35rem;color:var(--dim);font-size:.78rem;line-height:1.45}
+.market-badges{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:1rem}
+.market-badge{padding:.28rem .45rem;border:1px solid rgba(237,235,247,.36);color:#fff;font:700 .62rem var(--mono);letter-spacing:.02em;text-decoration:none}
+.market-badge:hover{background:rgba(237,235,247,.12)}
+.market-badge.openvsx{border-color:var(--amber-bright);color:var(--amber-bright)}
+@media (max-width:48rem){.hero-layout{grid-template-columns:1fr}.extension-visual{max-width:28rem}.hero h1{max-width:15ch}}
 .cta-row{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:2rem;align-items:center}
 /* Buttons re-tuned for the dark band. */
 .band .btn{border-color:#EDEBF7}
@@ -241,17 +265,35 @@ footer .credit{margin-left:auto}
    <div class="hero wrap">
     <span class="eyebrow">VS Code &amp; OpenVSX extension · scans credentials and code issues · rewrites selected secrets with BFG or git</span>
     <h1>Find the secrets in your git history — then <span class="turn">actually remove them.</span></h1>
-    <p class="lede">
-      Leak Lock scans a repository for <strong>credentials, code issues, files, and keywords</strong> using
-      <strong>several detection engines at once</strong>, shows every finding — and which engine found
-      it — and rewrites them out of <strong>every branch and tag</strong>, including the refs that only
-      exist on the remote. It also removes <strong>any text you specify</strong>, not just what a
-      scanner flagged. The cleanup is a script you can read, run from the panel, and verify — bash on
-      macOS and Linux, PowerShell on Windows.
-    </p>
-    <div class="cta-row">
-      <a class="btn btn-primary" href="#install">Install the extension</a>
-      <a class="btn btn-ghost" href="#what">See what it does</a>
+    <div class="hero-layout">
+      <div class="hero-copy">
+        <p class="lede">
+          Leak Lock scans a repository for <strong>credentials, code issues, files, and keywords</strong> using
+          <strong>several detection engines at once</strong>, shows every finding — and which engine found
+          it — and rewrites them out of <strong>every branch and tag</strong>, including the refs that only
+          exist on the remote. It also removes <strong>any text you specify</strong>, not just what a
+          scanner flagged. The cleanup is a script you can read, run from the panel, and verify — bash on
+          macOS and Linux, PowerShell on Windows.
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#install">Install the extension</a>
+          <a class="btn btn-ghost" href="#what">See what it does</a>
+        </div>
+      </div>
+      <aside class="extension-visual" aria-label="Leak Lock is available as a VS Code and OpenVSX extension">
+        <div class="editor-window">
+          <div class="editor-topbar"><span class="editor-dot"></span> EXTENSIONS: LEAK LOCK</div>
+          <div class="editor-body">
+            <div class="editor-rail" aria-hidden="true"><span class="rail-mark"></span><span class="rail-mark active"></span><span class="rail-mark"></span></div>
+            <div class="extension-panel">
+              <small>Editor extension</small>
+              <h2>Leak Lock</h2>
+              <p>Install from your editor, scan from its sidebar.</p>
+              <div class="market-badges"><a class="market-badge" href="https://marketplace.visualstudio.com/items?itemName=nikolareljin.leak-lock">VS Code Marketplace</a><a class="market-badge openvsx" href="https://open-vsx.org/extension/nikolareljin/leak-lock">Open VSX</a></div>
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>
    </div>
   </section>
