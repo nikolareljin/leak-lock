@@ -37,12 +37,33 @@ suite('Foxguard code scan', () => {
                 error => error.killed === true && !/parse/i.test(error.message)
             );
             const panel = Object.create(LeakLockPanel.prototype);
-            const note = panel._engineFailureNote('foxguard', { killed: true, message: 'Command failed' }, { foxguardTimeoutMs: 600000 });
-            assert.match(note, /Stopped after 600s\. Increase leakLock\.foxguard\.timeoutSeconds/);
+            const note = panel._engineFailureNote('foxguard', { killed: true, message: 'Command failed' }, { foxguardTimeoutMs: 1800000 });
+            assert.match(note, /Stopped after 1800s\. Increase leakLock\.foxguard\.timeoutSeconds/);
             assert.match(panel._engineFailureNote('gitleaks', new Error('boom'), {}), /^Scan failed: boom$/);
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }
+    });
+
+    test('offers the Foxguard timeout setting after a timed-out code scan', () => {
+        const panel = Object.create(LeakLockPanel.prototype);
+        panel._scanResults = [];
+        panel._codeIssues = [];
+        panel._scanCoverage = {
+            engines: [{
+                id: 'foxguard', displayName: 'Foxguard', ok: false, findings: 0,
+                note: 'Stopped after 500s. Increase leakLock.foxguard.timeoutSeconds to scan longer.'
+            }],
+            refs: {},
+            refRefresh: {},
+            timeoutSeconds: 600,
+            foxguardTimeoutSeconds: 500,
+            dependencyHandling: 'warning'
+        };
+
+        const html = panel._renderScanCoverage();
+        assert.match(html, /Increase Foxguard timeout/);
+        assert.match(html, /openFoxguardTimeoutSettings\(\)/);
     });
 
     test('exit 1 with a JSON report is read as findings, as Foxguard 0.14.0 exits', async () => {

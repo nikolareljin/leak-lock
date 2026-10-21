@@ -6,4 +6,4 @@
 
 ## Fixed
 - Resolve bundled credential-lens from the installed extension directory so Windows workspaces cannot redirect its module lookup.
-- Raise the default Foxguard timeout from 120 seconds to 10 minutes for longer code scans.
+- Raise the default Foxguard timeout from 120 seconds to 30 minutes for longer code scans, and link a timed-out scan directly to that setting.

@@ -28,9 +28,9 @@ const REPORT_NO_LIMIT = '-1';
 const REPORT_NO_MIN_SCORE = '0';
 
 const DEFAULT_SCAN_TIMEOUT_MS = 600000; // 10 minutes
-// Code analysis walks the working tree and can be expensive in a monorepo. Give it
-// the same 10-minute deadline as credential scanning so larger repositories can finish.
-const DEFAULT_FOXGUARD_TIMEOUT_MS = 600000; // 10 minutes
+// Code analysis walks the working tree and can be expensive in a monorepo. Keep a
+// longer deadline than credential scanning so a complete code report is the default.
+const DEFAULT_FOXGUARD_TIMEOUT_MS = 1800000; // 30 minutes
 const DEFAULT_MAX_FILE_SIZE_MB = 100; // matches Nosey Parker's own default
 
 /**

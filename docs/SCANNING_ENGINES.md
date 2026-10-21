@@ -205,7 +205,7 @@ When engines run in parallel, Foxguard starts with the credential engines and ta
 the parallel slots; when they run one at a time it runs after them. Either side can finish first. Whichever
 finishes first is rendered first: the Code issues section while credential engines still run,
 or the credential table while Scan coverage shows `scanning...` for Foxguard. Cleanup stays
-unavailable until every engine has finished. Foxguard's default deadline is 10 minutes;
+unavailable until every engine has finished. Foxguard's default deadline is 30 minutes;
 increase it for repositories where a longer code scan is useful.
 
 The right-side result rail provides `Results`, `Cleanup`, and `Issues` shortcuts. It keeps
@@ -220,7 +220,7 @@ a source fix.
 | Setting | Purpose |
 |---|---|
 | `leakLock.foxguard.binaryPath` | Path to the Foxguard binary; empty resolves `foxguard` from the managed install or `PATH` |
-| `leakLock.foxguard.timeoutSeconds` | Foxguard working-tree deadline; default 600 seconds (10 minutes) |
+| `leakLock.foxguard.timeoutSeconds` | Foxguard working-tree deadline; default 1800 seconds (30 minutes) |
 
 ---
 

@@ -385,7 +385,7 @@ Either side can finish first. Whichever finishes first is shown first: code issu
 the credential engines still run, or credential findings while Foxguard shows `scanning...`
 in Scan coverage. Findings can be reviewed and selected meanwhile; preparing or running a
 cleanup, starting another scan, switching repository and importing a report all wait until
-every engine has finished. Foxguard's default deadline is 10 minutes; increase
+every engine has finished. Foxguard's default deadline is 30 minutes; increase
 `leakLock.foxguard.timeoutSeconds` for a larger repository.
 
 ### Choosing engines

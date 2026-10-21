@@ -118,10 +118,10 @@
         },
         "leakLock.foxguard.timeoutSeconds": {
           "type": "number",
-          "default": 600,
+          "default": 1800,
           "minimum": 30,
           "maximum": 7200,
-          "description": "Maximum time for Foxguard working-tree code analysis. Credential and code results each appear when ready; raise this value for larger repositories."
+          "description": "Maximum time for Foxguard working-tree code analysis. Defaults to 30 minutes. Credential and code results each appear when ready; raise this value for larger repositories."
         },
         "leakLock.scan.refreshRefsBeforeScan": {
           "type": "boolean",

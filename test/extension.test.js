@@ -1114,7 +1114,7 @@ suite('Scan engine configuration', () => {
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 5 }).timeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 99999 }).timeoutMs, 7200000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 'abc' }).timeoutMs, 600000);
-		assert.strictEqual(engineConfig.normalizeScanSettings({}).foxguardTimeoutMs, 600000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({}).foxguardTimeoutMs, 1800000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ foxguardTimeoutSeconds: 5 }).foxguardTimeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ maxFileSizeMb: -4 }).maxFileSizeMb, 0);
 	});
