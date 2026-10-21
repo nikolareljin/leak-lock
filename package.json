@@ -357,7 +357,7 @@
     "bfg": "java -jar bfg.jar",
     "lint": "eslint . --max-warnings 0",
     "test": "vscode-test",
-    "build": "babel src --out-dir dist",
+    "build": "node tools/check-sources.js",
     "prepare": "node tools/install-git-hooks.js",
     "check:release": "node tools/release-notes.js --check"
   },

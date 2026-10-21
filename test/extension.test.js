@@ -1542,6 +1542,18 @@ suite('Scan coverage and export parity', () => {
 		assert.strictEqual(imported.report.totalCodeIssues, 1);
 	});
 
+	test('a Foxguard-only printable report excludes credentials and retains code issues', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		panel._codeIssues = [{
+			file: 'src/app.js', line: 8, ruleId: 'js/no-eval', description: 'Avoid eval', severity: 'high'
+		}];
+		const html = panel._buildPrintableScanReportHtml({ scope: 'code', redactSecrets: true });
+		assert.match(html, /Credentials: 0 \| Code issues: 1/);
+		assert.match(html, /Foxguard code issues/);
+		assert.match(html, /js\/no-eval/);
+		assert.doesNotMatch(html, /Secret \(display\)|app\.py|AKIAIOSFODNN7EXAMPLE/);
+	});
+
 	test('the export records what the scan covered', () => {
 		const panel = panelWithResults([gitleaksFinding], coverage);
 		const payload = panel._buildScanExportPayload();
@@ -1684,6 +1696,13 @@ suite('Scan coverage and export parity', () => {
 		const html = panel._getResultsHtml();
 		assert.match(html, /<th[^>]*>Engine<\/th>/);
 		assert.match(html, /Scan coverage/);
+	});
+});
+
+suite('Build validation', () => {
+	test('checks the source files that the extension executes directly', () => {
+		const pkg = require('../package.json');
+		assert.strictEqual(pkg.scripts.build, 'node tools/check-sources.js');
 	});
 });
 

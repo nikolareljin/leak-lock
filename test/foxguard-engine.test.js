@@ -71,6 +71,7 @@ suite('Foxguard code scan', () => {
         assert.match(html, /openFile\(/);
         assert.doesNotMatch(html, /secret-checkbox|<input/i);
         assert.match(html, /Export JSON/, 'code-only results remain exportable');
+        assert.match(html, /Print \/ Save as PDF/, 'code-only results remain printable');
     });
 
     test('renders the side rail with results, cleanup and code-issue targets', () => {

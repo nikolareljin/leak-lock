@@ -6632,6 +6632,7 @@ class LeakLockPanel {
             ${(this._scanResults || []).length === 0 ? `<div class="export-actions">
                 <button class="scan-button" onclick="exportScanResultsJson()">📤 Export JSON</button>
                 <button class="scan-button" onclick="importScanResultsJson()" title="Import a report exported earlier and check whether each of its findings was resolved.">📥 Import JSON</button>
+                <button class="scan-button" onclick="printScanResults()">🖨️ Print / Save as PDF</button>
             </div>` : ''}
             <table class="results-table"><thead><tr><th>Severity</th><th>Rule</th><th>Issue</th><th>Location</th></tr></thead><tbody>${rows}</tbody></table>
         </div>`;
@@ -9859,8 +9860,11 @@ class LeakLockPanel {
         const redactSecrets = (typeof options.redactSecrets === 'boolean')
             ? options.redactSecrets
             : Boolean(options.redactSensitive);
+        const includeCredentials = options.scope !== 'code';
+        const credentials = includeCredentials ? (this._scanResults || []) : [];
+        const codeIssues = this._codeIssues || [];
         const generatedAt = new Date().toLocaleString();
-        const rows = this._scanResults.map((result) => `
+        const credentialRows = credentials.map((result) => `
             <tr>
                 <td>${escapeHtml(result.file || '')}</td>
                 <td>${escapeHtml(String(result.line ?? ''))}</td>
@@ -9869,6 +9873,47 @@ class LeakLockPanel {
                 <td>${escapeHtml(result.description || '')}</td>
             </tr>
         `).join('');
+        const credentialsSection = credentials.length > 0 ? `
+  <h2>Credentials</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Line</th>
+        <th>Secret (display)</th>
+        <th>Severity</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${credentialRows}
+    </tbody>
+  </table>` : '';
+        const codeRows = codeIssues.map((issue) => `
+            <tr>
+                <td>${escapeHtml(issue.file || '')}</td>
+                <td>${escapeHtml(String(issue.line ?? ''))}</td>
+                <td>${escapeHtml(issue.severity || '')}</td>
+                <td>${escapeHtml(issue.ruleId || '')}</td>
+                <td>${escapeHtml(issue.description || '')}</td>
+            </tr>
+        `).join('');
+        const codeIssuesSection = codeIssues.length > 0 ? `
+  <h2>Foxguard code issues</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>File</th>
+        <th>Line</th>
+        <th>Severity</th>
+        <th>Rule</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${codeRows}
+    </tbody>
+  </table>` : '';
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -9887,29 +9932,26 @@ class LeakLockPanel {
 </head>
 <body>
   <h1>Leak Lock Scan Report</h1>
-  <div class="meta">Generated: ${escapeHtml(generatedAt)} | Findings: ${this._scanResults.length} | Secrets redacted: ${redactSecrets ? 'yes' : 'no'}</div>
-  <table>
-    <thead>
-      <tr>
-        <th>File</th>
-        <th>Line</th>
-        <th>Secret (display)</th>
-        <th>Severity</th>
-        <th>Description</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${rows}
-    </tbody>
-  </table>
+  <div class="meta">Generated: ${escapeHtml(generatedAt)} | Credentials: ${credentials.length} | Code issues: ${codeIssues.length} | Secrets redacted: ${redactSecrets ? 'yes' : 'no'}</div>
+  ${credentialsSection}
+  ${codeIssuesSection}
 </body>
 </html>`;
     }
 
     async _printScanResultsPdf() {
         try {
-            if (!this._scanResults || this._scanResults.length === 0) {
+            if ((!this._scanResults || this._scanResults.length === 0) && (!this._codeIssues || this._codeIssues.length === 0)) {
                 vscode.window.showInformationMessage('No scan results available to print.');
+                return;
+            }
+            const scopeChoice = await vscode.window.showQuickPick([
+                { label: 'Credentials and code issues', scope: 'all' },
+                { label: 'Foxguard code issues only', scope: 'code' }
+            ].filter(item => item.scope !== 'code' || (this._codeIssues || []).length > 0), {
+                placeHolder: 'Choose which scan results to print'
+            });
+            if (!scopeChoice) {
                 return;
             }
             const printMode = await vscode.window.showWarningMessage(
@@ -9938,7 +9980,7 @@ class LeakLockPanel {
                 return;
             }
 
-            const reportHtml = this._buildPrintableScanReportHtml({ redactSecrets });
+            const reportHtml = this._buildPrintableScanReportHtml({ redactSecrets, scope: scopeChoice.scope });
             await vscode.workspace.fs.writeFile(targetUri, Buffer.from(reportHtml, 'utf8'));
             const opened = await vscode.env.openExternal(targetUri);
             if (!opened) {
