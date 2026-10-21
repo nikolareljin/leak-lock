@@ -176,8 +176,10 @@ working tree**, as a single row rather than four. The `node_modules` row is mark
 
 ![Code issues](docs/website/img/code-issues.png)
 
-Foxguard's findings are a separate, read-only table: severity, rule and CWE, a suggested
-fix, and a link to the line. They never enter a cleanup.
+Foxguard scans the working tree, not git history, for code-security issues such as SQL and
+command injection, unsafe deserialization, weak hashing, and disabled TLS verification.
+Its findings are a separate, read-only table: severity, rule and CWE, a suggested fix, and
+a link to the line. They never enter a cleanup or count as credential findings.
 
 ### Scan coverage — what was actually examined
 
@@ -383,7 +385,7 @@ Either side can finish first. Whichever finishes first is shown first: code issu
 the credential engines still run, or credential findings while Foxguard shows `scanning...`
 in Scan coverage. Findings can be reviewed and selected meanwhile; preparing or running a
 cleanup, starting another scan, switching repository and importing a report all wait until
-every engine has finished. Foxguard's default deadline is two minutes; increase
+every engine has finished. Foxguard's default deadline is 10 minutes; increase
 `leakLock.foxguard.timeoutSeconds` for a larger repository.
 
 ### Choosing engines
