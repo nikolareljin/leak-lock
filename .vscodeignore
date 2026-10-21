@@ -18,7 +18,6 @@ src/**
 .eslintrc.json
 tsconfig.json
 **/*.ts
-!dist/**
 .env
 .env.example
 bfg.jar

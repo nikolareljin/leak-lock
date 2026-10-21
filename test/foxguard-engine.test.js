@@ -37,8 +37,8 @@ suite('Foxguard code scan', () => {
                 error => error.killed === true && !/parse/i.test(error.message)
             );
             const panel = Object.create(LeakLockPanel.prototype);
-            const note = panel._engineFailureNote('foxguard', { killed: true, message: 'Command failed' }, { foxguardTimeoutMs: 120000 });
-            assert.match(note, /Stopped after 120s\. Increase leakLock\.foxguard\.timeoutSeconds/);
+            const note = panel._engineFailureNote('foxguard', { killed: true, message: 'Command failed' }, { foxguardTimeoutMs: 1800000 });
+            assert.match(note, /Stopped after 1800s\. Increase leakLock\.foxguard\.timeoutSeconds/);
             assert.match(panel._engineFailureNote('gitleaks', new Error('boom'), {}), /^Scan failed: boom$/);
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
@@ -70,6 +70,8 @@ suite('Foxguard code scan', () => {
 
         assert.match(html, /openFile\(/);
         assert.doesNotMatch(html, /secret-checkbox|<input/i);
+        assert.match(html, /Export JSON/, 'code-only results remain exportable');
+        assert.match(html, /Print \/ Save as PDF/, 'code-only results remain printable');
     });
 
     test('renders the side rail with results, cleanup and code-issue targets', () => {
@@ -179,7 +181,9 @@ suite('Foxguard code scan', () => {
         const html = panel._renderCodeIssues();
 
         assert.match(html, /id="code-issues-section"/);
-        assert.match(html, /still scanning/);
+        assert.match(html, /result-pending/);
+        assert.match(html, /role="status"/);
+        assert.match(html, /spinner/);
     });
 
     test('keeps a code-issues target after Foxguard completes cleanly', () => {

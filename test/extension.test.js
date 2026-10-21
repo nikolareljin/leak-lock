@@ -1114,7 +1114,7 @@ suite('Scan engine configuration', () => {
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 5 }).timeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 99999 }).timeoutMs, 7200000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ timeoutSeconds: 'abc' }).timeoutMs, 600000);
-		assert.strictEqual(engineConfig.normalizeScanSettings({}).foxguardTimeoutMs, 120000);
+		assert.strictEqual(engineConfig.normalizeScanSettings({}).foxguardTimeoutMs, 1800000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ foxguardTimeoutSeconds: 5 }).foxguardTimeoutMs, 30000);
 		assert.strictEqual(engineConfig.normalizeScanSettings({ maxFileSizeMb: -4 }).maxFileSizeMb, 0);
 	});
@@ -1525,6 +1525,35 @@ suite('Scan coverage and export parity', () => {
 		assert.strictEqual(payload.findings[0].file, 'app.py');
 	});
 
+	test('a Foxguard-only export carries no credentials but remains importable', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		panel._codeIssues = [{
+			file: 'src/app.js', line: 8, ruleId: 'js/no-eval', description: 'Avoid eval',
+			severity: 'high', engine: 'foxguard', engineVersion: 'v0.14.1'
+		}];
+		const payload = panel._buildScanExportPayload({ scope: 'code' });
+		assert.deepStrictEqual(payload.findings, []);
+		assert.strictEqual(payload.totalCredentialFindings, 0);
+		assert.strictEqual(payload.totalCodeIssues, 1);
+		assert.strictEqual(payload.totalFindings, 1);
+		assert.strictEqual(payload.codeIssues[0].ruleId, 'js/no-eval');
+		const imported = require('../scan-baseline').parseImportedReport(JSON.stringify(payload));
+		assert.ok(imported.ok, imported.error);
+		assert.strictEqual(imported.report.totalCodeIssues, 1);
+	});
+
+	test('a Foxguard-only printable report excludes credentials and retains code issues', () => {
+		const panel = panelWithResults([gitleaksFinding], coverage);
+		panel._codeIssues = [{
+			file: 'src/app.js', line: 8, ruleId: 'js/no-eval', description: 'Avoid eval', severity: 'high'
+		}];
+		const html = panel._buildPrintableScanReportHtml({ scope: 'code', redactSecrets: true });
+		assert.match(html, /Credentials: 0 \| Code issues: 1/);
+		assert.match(html, /Foxguard code issues/);
+		assert.match(html, /js\/no-eval/);
+		assert.doesNotMatch(html, /Secret \(display\)|app\.py|AKIAIOSFODNN7EXAMPLE/);
+	});
+
 	test('the export records what the scan covered', () => {
 		const panel = panelWithResults([gitleaksFinding], coverage);
 		const payload = panel._buildScanExportPayload();
@@ -1667,6 +1696,13 @@ suite('Scan coverage and export parity', () => {
 		const html = panel._getResultsHtml();
 		assert.match(html, /<th[^>]*>Engine<\/th>/);
 		assert.match(html, /Scan coverage/);
+	});
+});
+
+suite('Build validation', () => {
+	test('checks the source files that the extension executes directly', () => {
+		const pkg = require('../package.json');
+		assert.strictEqual(pkg.scripts.build, 'node tools/check-sources.js');
 	});
 });
 

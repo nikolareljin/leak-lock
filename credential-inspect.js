@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
+const { pathToFileURL } = require('url');
 const { sniffCandidate } = require('./credential-sniff');
 const { repoRelativeCandidates } = require('./finding-paths');
 
@@ -25,10 +26,17 @@ const PACKAGE_ID = '@nikolareljin/credential-lens';
 
 let modulePromise = null;
 
+function resolvePackagePath(request = PACKAGE_ID) {
+    // VS Code runs an installed extension from its own directory. Resolve from that
+    // directory explicitly instead of relying on the process working directory,
+    // which can be a workspace on Windows and has no reason to contain this package.
+    return require.resolve(request, { paths: [__dirname] });
+}
+
 function defaultImporter() {
     // Kept as a call rather than a top-level import so a packaging failure
     // surfaces as a reported error, not as a module that will not load.
-    return import(PACKAGE_ID);
+    return import(pathToFileURL(resolvePackagePath()).href);
 }
 
 function loadModule(importer = defaultImporter) {
@@ -50,7 +58,7 @@ async function loadLibraryInfo({ importer } = {}) {
         } else {
             await loadModule();
         }
-        const pkg = require(`${PACKAGE_ID}/package.json`);
+        const pkg = require(resolvePackagePath(`${PACKAGE_ID}/package.json`));
         return { ok: true, version: pkg.version };
     } catch (error) {
         return { ok: false, error: error && error.message ? error.message : String(error) };
@@ -220,5 +228,6 @@ module.exports = {
     loadLibraryInfo,
     describeCredentialLensStatus,
     inspectFinding,
+    resolvePackagePath,
     _resetModuleCache
 };

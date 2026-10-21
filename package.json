@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -118,10 +118,10 @@
         },
         "leakLock.foxguard.timeoutSeconds": {
           "type": "number",
-          "default": 120,
+          "default": 1800,
           "minimum": 30,
           "maximum": 7200,
-          "description": "Maximum time for Foxguard working-tree code analysis. Credential and code results each appear when ready; raise this value for larger repositories."
+          "description": "Maximum time for Foxguard working-tree code analysis. Defaults to 30 minutes. Credential and code results each appear when ready; raise this value for larger repositories."
         },
         "leakLock.scan.refreshRefsBeforeScan": {
           "type": "boolean",
@@ -357,7 +357,7 @@
     "bfg": "java -jar bfg.jar",
     "lint": "eslint . --max-warnings 0",
     "test": "vscode-test",
-    "build": "babel src --out-dir dist",
+    "build": "node tools/check-sources.js",
     "prepare": "node tools/install-git-hooks.js",
     "check:release": "node tools/release-notes.js --check"
   },

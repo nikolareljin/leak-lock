@@ -6,6 +6,7 @@ const { execFileSync } = require('child_process');
 const {
     createSession,
     loadLibraryInfo,
+    resolvePackagePath,
     inspectFinding,
     MAX_ARTIFACT_BYTES
 } = require('../credential-inspect');
@@ -36,6 +37,34 @@ suite('loadLibraryInfo', () => {
         const info = await loadLibraryInfo();
         assert.strictEqual(info.ok, true, info.ok ? '' : `import failed: ${info.error}`);
         assert.match(info.version, /^\d+\.\d+\.\d+$/);
+    });
+
+    test('resolves the bundled package from the extension directory', () => {
+        const entry = resolvePackagePath();
+        assert.match(entry.replace(/\\\\/g, '/'), /node_modules\/@nikolareljin\/credential-lens\//);
+        assert.ok(fs.existsSync(entry));
+    });
+
+    test('loads from the extension directory when the working directory has no package', () => {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-empty-workspace-'));
+        const loaderPath = path.join(__dirname, '..', 'credential-inspect.js');
+        const script = `
+            const [loaderPath, workspace] = process.argv.slice(1);
+            process.chdir(workspace);
+            const loader = require(loaderPath);
+            loader.loadLibraryInfo().then(info => {
+                if (!info.ok) throw new Error(info.error);
+                process.stdout.write(info.version);
+            });
+        `;
+        try {
+            const version = execFileSync(process.execPath, ['-e', script, loaderPath, workspace], {
+                encoding: 'utf8'
+            });
+            assert.match(version, /^\d+\.\d+\.\d+$/);
+        } finally {
+            fs.rmSync(workspace, { recursive: true, force: true });
+        }
     });
 
     test('a failing import is reported, not thrown', async () => {
