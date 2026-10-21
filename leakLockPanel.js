@@ -623,12 +623,6 @@ class LeakLockPanel {
                         // Trigger new scan via command
                         vscode.commands.executeCommand('leak-lock.startScan');
                         break;
-                    case 'scan.openFoxguardTimeoutSettings':
-                        vscode.commands.executeCommand(
-                            'workbench.action.openSettings',
-                            'leakLock.foxguard.timeoutSeconds'
-                        );
-                        break;
                     case 'openSecurityGuide':
                         LeakLockPanel.currentPanel._openSecurityGuide();
                         break;
@@ -1806,10 +1800,6 @@ class LeakLockPanel {
                         });
                     }
 
-                    function openFoxguardTimeoutSettings() {
-                        vscode.postMessage({ command: 'scan.openFoxguardTimeoutSettings' });
-                    }
-                    
                     function openSecurityGuide() {
                         vscode.postMessage({
                             command: 'openSecurityGuide'
@@ -6466,16 +6456,9 @@ class LeakLockPanel {
                </div>`
             : '';
 
-        const foxguardTimeoutAction = engines.some(engine =>
-            engine.id === 'foxguard' && /Stopped after \d+s\./.test(engine.note || '')
-        )
-            ? '<button class="scan-button coverage-timeout-action" onclick="openFoxguardTimeoutSettings()">Increase Foxguard timeout</button>'
-            : '';
-
         return `
             <div class="scan-coverage" id="scan-coverage-section">
                 ${incompleteBanner}
-                ${foxguardTimeoutAction}
                 <details class="coverage-toggle">
                     <summary>
                         <span class="coverage-title">📋 Scan coverage</span>

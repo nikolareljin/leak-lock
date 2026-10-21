@@ -45,27 +45,6 @@ suite('Foxguard code scan', () => {
         }
     });
 
-    test('offers the Foxguard timeout setting after a timed-out code scan', () => {
-        const panel = Object.create(LeakLockPanel.prototype);
-        panel._scanResults = [];
-        panel._codeIssues = [];
-        panel._scanCoverage = {
-            engines: [{
-                id: 'foxguard', displayName: 'Foxguard', ok: false, findings: 0,
-                note: 'Stopped after 500s. Increase leakLock.foxguard.timeoutSeconds to scan longer.'
-            }],
-            refs: {},
-            refRefresh: {},
-            timeoutSeconds: 600,
-            foxguardTimeoutSeconds: 500,
-            dependencyHandling: 'warning'
-        };
-
-        const html = panel._renderScanCoverage();
-        assert.match(html, /Increase Foxguard timeout/);
-        assert.match(html, /openFoxguardTimeoutSettings\(\)/);
-    });
-
     test('exit 1 with a JSON report is read as findings, as Foxguard 0.14.0 exits', async () => {
         const os = require('os');
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'foxguard-exit1-'));
