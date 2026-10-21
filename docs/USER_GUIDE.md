@@ -111,8 +111,10 @@ The results appear in a detailed table with the following columns:
 | **Preview** | Partial content showing the detected secret |
 | **Actions** | Options to fix or ignore the secret |
 
-Foxguard findings appear in a separate **Code issues** table. They link to source locations,
-but cannot be selected for replacement or git history cleanup.
+Foxguard findings appear in a separate **Code issues** table. Foxguard scans the working
+tree only, not git history, for injection, unsafe deserialization, weak hashing, disabled
+TLS verification, unsafe dynamic evaluation, and path traversal. Its findings link to
+source locations but cannot be selected for replacement or git history cleanup.
 
 ![Code issues](website/img/code-issues.png)
 
