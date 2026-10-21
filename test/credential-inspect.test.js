@@ -45,6 +45,28 @@ suite('loadLibraryInfo', () => {
         assert.ok(fs.existsSync(entry));
     });
 
+    test('loads from the extension directory when the working directory has no package', () => {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-empty-workspace-'));
+        const loaderPath = path.join(__dirname, '..', 'credential-inspect.js');
+        const script = `
+            const [loaderPath, workspace] = process.argv.slice(1);
+            process.chdir(workspace);
+            const loader = require(loaderPath);
+            loader.loadLibraryInfo().then(info => {
+                if (!info.ok) throw new Error(info.error);
+                process.stdout.write(info.version);
+            });
+        `;
+        try {
+            const version = execFileSync(process.execPath, ['-e', script, loaderPath, workspace], {
+                encoding: 'utf8'
+            });
+            assert.match(version, /^\d+\.\d+\.\d+$/);
+        } finally {
+            fs.rmSync(workspace, { recursive: true, force: true });
+        }
+    });
+
     test('a failing import is reported, not thrown', async () => {
         const info = await loadLibraryInfo({
             importer: () => Promise.reject(new Error('ERR_MODULE_NOT_FOUND'))
