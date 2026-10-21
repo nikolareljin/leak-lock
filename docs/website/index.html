@@ -116,7 +116,8 @@ code{font-family:var(--mono);font-size:.875em}
 .extension-panel h2{margin-top:.45rem;font-size:1.65rem;letter-spacing:-.04em}
 .extension-panel p{margin-top:.35rem;color:var(--dim);font-size:.78rem;line-height:1.45}
 .market-badges{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:1rem}
-.market-badge{padding:.28rem .45rem;border:1px solid rgba(237,235,247,.36);color:#fff;font:700 .62rem var(--mono);letter-spacing:.02em}
+.market-badge{padding:.28rem .45rem;border:1px solid rgba(237,235,247,.36);color:#fff;font:700 .62rem var(--mono);letter-spacing:.02em;text-decoration:none}
+.market-badge:hover{background:rgba(237,235,247,.12)}
 .market-badge.openvsx{border-color:var(--amber-bright);color:var(--amber-bright)}
 @media (max-width:48rem){.hero-layout{grid-template-columns:1fr}.extension-visual{max-width:28rem}.hero h1{max-width:15ch}}
 .cta-row{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:2rem;align-items:center}
@@ -288,7 +289,7 @@ footer .credit{margin-left:auto}
               <small>Editor extension</small>
               <h2>Leak Lock</h2>
               <p>Install from your editor, scan from its sidebar.</p>
-              <div class="market-badges"><span class="market-badge">VS Code Marketplace</span><span class="market-badge openvsx">Open VSX</span></div>
+              <div class="market-badges"><a class="market-badge" href="https://marketplace.visualstudio.com/items?itemName=nikolareljin.leak-lock">VS Code Marketplace</a><a class="market-badge openvsx" href="https://open-vsx.org/extension/nikolareljin/leak-lock">Open VSX</a></div>
             </div>
           </div>
         </div>
