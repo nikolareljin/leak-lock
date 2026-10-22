@@ -911,6 +911,7 @@ class LeakLockSidebarProvider {
         const dockerStatus = this._dependencyStatus?.docker?.installed ? '✅' : '❌';
         const noseyparkerStatus = this._dependencyStatus?.noseyparker?.installed ? '✅' : '❌';
         const filterRepo = this._dependencyStatus?.filterRepo || {};
+        const python = this._dependencyStatus?.python || {};
         // Installed but confined is not ready: a snap build cannot read a repository
         // outside $HOME, so the rewrite fails before it touches a commit.
         const filterRepoStatus = filterRepo.installed ? (filterRepo.confined ? '⚠️' : '✅') : '⚠️';
@@ -918,7 +919,12 @@ class LeakLockSidebarProvider {
         // button cannot promise pip and then invoke Homebrew. Naming the installer
         // matters here: it is what the user has to uninstall or re-run by hand.
         const filterRepoInstall = gitRewrite.buildFilterRepoInstallCommand();
-        const filterRepoInstaller = /(^|[\\/])brew$/.test(filterRepoInstall.command) ? 'Homebrew' : 'pip';
+        const filterRepoInstaller = /(^|[\\/])brew$/.test(filterRepoInstall.command)
+            ? 'Homebrew'
+            : process.platform === 'linux' && python.pipx ? 'pipx'
+                : process.platform === 'linux' ? 'private Python environment' : 'pip';
+        const filterRepoNeedsPython = filterRepoInstaller !== 'Homebrew'
+            && !(process.platform === 'linux' && python.pipx);
         const filterRepoInstallCommand = filterRepoInstaller === 'Homebrew'
             ? 'brew install git-filter-repo'
             : `${filterRepoInstall.command} ${filterRepoInstall.args.join(' ')}`;
@@ -1045,7 +1051,13 @@ class LeakLockSidebarProvider {
                             Without it the Git-only cleanup cannot rewrite history. The prepared script and the
                             manual commands are still shown, and BFG remains available if you have Java.
                         </div>
-                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (${filterRepoInstaller})</button>
+                        ${filterRepoNeedsPython && !python.installed ? `
+                            <div class="error-message">Python 3 is not available.</div>
+                            <div style="font-size: 11px; margin-top: 4px;">
+                                Install <a href="https://www.python.org/downloads/" target="_blank">Python 3</a> for your platform.
+                                On Linux, install <a href="https://pipx.pypa.io/stable/installation/" target="_blank">pipx</a> with your distribution's supported package manager; Leak Lock prefers it when available.
+                            </div>
+                        ` : `<button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (${filterRepoInstaller})</button>`}
                     </div>
                 ` : ''}
 
@@ -1082,11 +1094,11 @@ class LeakLockSidebarProvider {
                                     </ol>
                                 </div>
                                 <div class="install-platform">
-                                    <strong>🐧 Linux (Ubuntu/Debian):</strong>
+                                    <strong>🐧 Linux:</strong>
                                     <ol>
-                                        <li><code>sudo apt update</code></li>
-                                        <li><code>sudo apt install openjdk-21-jdk</code></li>
-                                        <li>Verify: <code>java -version</code></li>
+                                        <li>Install an LTS JDK using your distribution's supported package manager.</li>
+                                        <li>See the <a href="https://adoptium.net/installation/linux/" target="_blank">Adoptium Linux installation guide</a> for supported distributions.</li>
+                                        <li>Verify: <code>java -version</code>.</li>
                                     </ol>
                                 </div>
                             </div>
@@ -1474,6 +1486,7 @@ class LeakLockSidebarProvider {
             docker: { installed: false, version: null, error: null },
             noseyparker: { installed: false, error: null },
             java: { installed: false, version: null, error: null },
+            python: { installed: false, pipx: false, version: null, error: null },
             bfg: { installed: false, path: null, error: null },
             // The Git-only cleanup route. Reported here because "can this machine
             // remove a secret from history" is a setup question, and it used to be
@@ -1533,6 +1546,21 @@ class LeakLockSidebarProvider {
         } catch {
             this._dependencyStatus.java.error = 'Java not installed or not in PATH';
         }
+
+        // pipx is preferred on Linux. Python remains a supported fallback because
+        // minimal environments often ship Python without pipx but with venv.
+        const pythonName = process.platform === 'win32' ? 'python' : 'python3';
+        const pythonCommand = binaryLookup.resolveBinary(pythonName);
+        try {
+            const { stdout } = await execFileAsync(pythonCommand, ['--version'], { timeout: 15000 });
+            this._dependencyStatus.python.installed = true;
+            this._dependencyStatus.python.version = String(stdout).trim() || 'installed';
+        } catch {
+            this._dependencyStatus.python.error = 'Python 3 not installed or not in PATH';
+        }
+        this._dependencyStatus.python.pipx = Boolean(
+            binaryLookup.findInDirs('pipx', binaryLookup.COMMON_BIN_DIRS)
+        );
 
         // Check git-filter-repo: either installation form is fine, and a confined
         // snap build is reported as installed-but-limited rather than as ready.
