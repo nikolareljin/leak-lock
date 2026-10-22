@@ -147,10 +147,10 @@ function findInDirs(name, dirs) {
         if (!dir) {
             continue;
         }
-    const candidates = process.platform === 'win32'
-        ? [path.join(dir, name), path.join(dir, `${name}.exe`), path.join(dir, `${name}.cmd`)]
-        : [path.join(dir, name), path.join(dir, `${name}.exe`)];
-    for (const candidate of candidates) {
+        const candidates = process.platform === 'win32'
+            ? [path.join(dir, name), path.join(dir, `${name}.exe`), path.join(dir, `${name}.cmd`)]
+            : [path.join(dir, name), path.join(dir, `${name}.exe`)];
+        for (const candidate of candidates) {
             try {
                 fs.accessSync(candidate, fs.constants.X_OK);
                 return candidate;

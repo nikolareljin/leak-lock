@@ -25,6 +25,7 @@ const { bfgPath } = require('./bfg-storage');
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const PACKAGE_ID = '@nikolareljin/credential-lens';
 const PACKAGE_VERSION = require('./package.json').dependencies[PACKAGE_ID];
+const LOCKED_PACKAGE = require('./package-lock.json').packages[`node_modules/${PACKAGE_ID}`];
 
 let modulePromise = null;
 
@@ -33,7 +34,10 @@ function runtimeInstallRoot() {
 }
 
 function packageSpec() {
-    return `${PACKAGE_ID}@${PACKAGE_VERSION}`;
+    if (!LOCKED_PACKAGE || LOCKED_PACKAGE.version !== PACKAGE_VERSION) {
+        throw new Error(`package.json and package-lock.json disagree about ${PACKAGE_ID}`);
+    }
+    return `${PACKAGE_ID}@${LOCKED_PACKAGE.version}`;
 }
 
 function resolvePackagePath(request = PACKAGE_ID) {

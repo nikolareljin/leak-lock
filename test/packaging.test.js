@@ -32,6 +32,9 @@ suite('packaging', () => {
         const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
         assert.strictEqual(pkg.dependencies['@nikolareljin/credential-lens'], '0.3.0');
         assert.strictEqual(pkg.devDependencies['@nikolareljin/credential-lens'], undefined);
+        const lock = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package-lock.json'), 'utf8'));
+        assert.strictEqual(lock.packages['node_modules/@nikolareljin/credential-lens'].version,
+            pkg.dependencies['@nikolareljin/credential-lens']);
     });
 
     test('the lockfile records the reviewed bytes, not just a reviewed version number', () => {

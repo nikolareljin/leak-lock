@@ -6,14 +6,19 @@ const util = require('util');
 
 const run = util.promisify(execFile);
 
+function pathFor(platform = process.platform) {
+    return platform === 'win32' ? path.win32 : path;
+}
+
 function appStateDir(env = process.env, home = os.homedir(), platform = process.platform) {
+    const platformPath = pathFor(platform);
     if (platform === 'win32') {
-        return path.join(env.LOCALAPPDATA || env.APPDATA || path.join(home, 'AppData', 'Local'), 'Leak Lock');
+        return platformPath.join(env.LOCALAPPDATA || env.APPDATA || platformPath.join(home, 'AppData', 'Local'), 'Leak Lock');
     }
     if (platform === 'darwin') {
-        return path.join(home, 'Library', 'Application Support', 'Leak Lock');
+        return platformPath.join(home, 'Library', 'Application Support', 'Leak Lock');
     }
-    return path.join(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'leak-lock');
+    return platformPath.join(env.XDG_STATE_HOME || platformPath.join(home, '.local', 'state'), 'leak-lock');
 }
 
 function ownershipFile(options = {}) {
@@ -50,27 +55,33 @@ function removeOwned(ids, options = {}) {
     writeOwned(entries.filter(entry => !selected.has(entry.id)), options);
 }
 
-function isInside(candidate, directory) {
-    const relative = path.relative(path.resolve(directory), path.resolve(candidate));
-    return relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+function isInside(candidate, directory, platformPath = path) {
+    const relative = platformPath.relative(platformPath.resolve(directory), platformPath.resolve(candidate));
+    return relative && !relative.startsWith(`..${platformPath.sep}`) && relative !== '..' && !platformPath.isAbsolute(relative);
 }
 
 function managedRoots(env = process.env, home = os.homedir(), platform = process.platform) {
+    const platformPath = pathFor(platform);
     if (platform === 'win32') {
-        return [path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Leak Lock')];
+        return [
+            platformPath.join(env.LOCALAPPDATA || platformPath.join(home, 'AppData', 'Local'), 'Leak Lock'),
+            platformPath.join(env.APPDATA || platformPath.join(home, 'AppData', 'Roaming'), 'Leak Lock')
+        ];
     }
     if (platform === 'darwin') {
-        return [path.join(home, 'Library', 'Application Support', 'Leak Lock')];
+        return [platformPath.join(home, 'Library', 'Application Support', 'Leak Lock')];
     }
     return [
-        path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'leak-lock'),
-        path.join(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'leak-lock')
+        platformPath.join(env.XDG_DATA_HOME || platformPath.join(home, '.local', 'share'), 'leak-lock'),
+        platformPath.join(env.XDG_STATE_HOME || platformPath.join(home, '.local', 'state'), 'leak-lock')
     ];
 }
 
 function isManagedPath(filePath, options = {}) {
-    return typeof filePath === 'string' && managedRoots(options.env, options.home, options.platform)
-        .some(root => isInside(filePath, root));
+    const platform = options.platform || process.platform;
+    const platformPath = pathFor(platform);
+    return typeof filePath === 'string' && managedRoots(options.env, options.home, platform)
+        .some(root => isInside(filePath, root, platformPath));
 }
 
 async function removeEntry(entry, exec = run, options = {}) {
