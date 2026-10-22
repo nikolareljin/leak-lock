@@ -2329,7 +2329,8 @@ class LeakLockSidebarProvider {
                 id: `engine:${engineId}`,
                 label: `${displayName} native engine`,
                 kind: 'engine-file',
-                path: result.path
+                path: result.path,
+                engineDirectory: this._engineInstallDir
             });
         }
         // A newly installed binary must be findable immediately, not next session.

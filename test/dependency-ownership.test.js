@@ -24,4 +24,16 @@ suite('dependency ownership', () => {
             false
         );
     });
+
+    test('accepts only the exact recorded native engine path', () => {
+        // The ownership record must name the same engines directory used at install
+        // time. A matching filename elsewhere must never be treated as removable.
+        const engineDirectory = '/var/lib/code/User/globalStorage/nikolareljin.leak-lock/engines';
+        assert.strictEqual(ownership.isRecordedEnginePath({
+            path: `${engineDirectory}/gitleaks`, engineDirectory
+        }), true);
+        assert.strictEqual(ownership.isRecordedEnginePath({
+            path: '/tmp/engines/gitleaks', engineDirectory
+        }), false);
+    });
 });

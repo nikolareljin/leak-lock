@@ -134,9 +134,10 @@ Activity Bar    Sidebar View
 [`@nikolareljin/credential-lens`](https://github.com/nikolareljin/credential-lens). Leak
 Lock is CommonJS and the library is ESM, so the boundary is crossed exactly once, through
 `await import()`, and nothing else in the codebase has to become async to accommodate it.
-The library is bundled into the `.vsix`: it is 41 KB with zero dependencies and runs
-in-process, so runtime installation would trade one packaging test for a network
-requirement and version drift.
+The VSIX excludes `node_modules`. Dependencies Setup installs the version pinned in
+`package.json` and `package-lock.json` into Leak Lock-owned user storage before scanning.
+`credential-inspect.js` resolves that storage before the extension directory and rejects a
+manifest-lock mismatch. npm lifecycle scripts, audit requests, and funding requests are disabled.
 
 Around it:
 
