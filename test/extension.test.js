@@ -746,7 +746,7 @@ suite("Prepared cleanup scripts", () => {
 		].join("\n");
 		const hint = gitRewrite.describeSandboxedFilterRepo(traceback, "/x/replacements.txt");
 		assert.match(hint, /installed as a snap/);
-		assert.match(hint, /pip install --user git-filter-repo/);
+		assert.match(hint, /pipx install git-filter-repo/);
 		assert.strictEqual(gitRewrite.describeSandboxedFilterRepo("some other failure", "/x"), null);
 	});
 
