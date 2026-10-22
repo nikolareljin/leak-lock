@@ -208,7 +208,7 @@ function describeSandboxedFilterRepo(output, rulesPath) {
         'git-filter-repo is installed as a snap, and snaps are confined: this one cannot read',
         rulesPath ? `the replacement rule file (${rulesPath})` : 'the replacement rule file',
         'or any repository outside your home directory.',
-        'Install the unconfined tool with pipx, or use Leak Lock Dependencies Setup.',
+        'Install the unconfined tool with "pipx install git-filter-repo", or use Leak Lock Dependencies Setup.',
         '(optionally "sudo snap remove git-filter-repo" first), then restart VS Code so its',
         'PATH picks up the new binary.'
     ].join(' ');
