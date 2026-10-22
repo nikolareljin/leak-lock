@@ -96,6 +96,28 @@ function isRecordedEnginePath(entry, options = {}) {
         && platformPath.resolve(entry.path) === platformPath.resolve(platformPath.join(entry.engineDirectory, name));
 }
 
+function migrateOwnedEngineDirectories(engineDirectory, options = {}) {
+    if (typeof engineDirectory !== 'string' || !engineDirectory) {
+        return 0;
+    }
+    let migrated = 0;
+    const entries = readOwned(options).map(entry => {
+        if (entry.kind !== 'engine-file' || typeof entry.engineDirectory === 'string') {
+            return entry;
+        }
+        const updated = { ...entry, engineDirectory };
+        if (!isRecordedEnginePath(updated, options)) {
+            return entry;
+        }
+        migrated += 1;
+        return updated;
+    });
+    if (migrated) {
+        writeOwned(entries, options);
+    }
+    return migrated;
+}
+
 async function removeEntry(entry, exec = run, options = {}) {
     if (entry.kind === 'file' || entry.kind === 'directory') {
         if (!isManagedPath(entry.path, options)) {
@@ -161,5 +183,6 @@ module.exports = {
     removeOwned,
     isManagedPath,
     isRecordedEnginePath,
+    migrateOwnedEngineDirectories,
     removeSelected
 };
