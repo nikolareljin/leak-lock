@@ -925,6 +925,8 @@ class LeakLockSidebarProvider {
                 : process.platform === 'linux' ? 'private Python environment' : 'pip';
         const filterRepoNeedsPython = filterRepoInstaller !== 'Homebrew'
             && !(process.platform === 'linux' && python.pipx);
+        const pythonStatus = python.installed ? '✅' : '⚠️';
+        const pipxStatus = python.pipx ? '✅' : '⚪';
         const filterRepoInstallCommand = filterRepoInstaller === 'Homebrew'
             ? 'brew install git-filter-repo'
             : `${filterRepoInstall.command} ${filterRepoInstall.args.join(' ')}`;
@@ -1027,6 +1029,20 @@ class LeakLockSidebarProvider {
                 <div class="status-item">
                     <span><span class="status-icon">${filterRepoStatus}</span>git-filter-repo</span>
                 </div>
+                <div class="status-item">
+                    <span><span class="status-icon">${pythonStatus}</span>Python 3 (Git-only cleanup)</span>
+                </div>
+                <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                    ${python.installed ? escapeHtml(python.version || 'installed') : escapeHtml(python.error || 'not found')}
+                </div>
+                ${process.platform === 'linux' ? `
+                    <div class="status-item">
+                        <span><span class="status-icon">${pipxStatus}</span>pipx (preferred)</span>
+                    </div>
+                    <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                        ${python.pipx ? 'Leak Lock will use pipx for git-filter-repo.' : 'Not found. Leak Lock will use its private Python environment.'}
+                    </div>
+                ` : ''}
                 ${filterRepo.installed && !filterRepo.confined ? `
                     <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
                         ${escapeHtml(filterRepo.form || 'installed')}${filterRepo.version ? ` — ${escapeHtml(filterRepo.version)}` : ''}
