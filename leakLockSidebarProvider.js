@@ -2131,6 +2131,8 @@ class LeakLockSidebarProvider {
         this._updateView();
 
         const displayName = engineInstall.ENGINE_RELEASES[engineId].displayName;
+        const targetPath = path.join(this._engineInstallDir, engineInstall.executableName(engineId));
+        const existedBeforeInstall = fs.existsSync(targetPath);
         let result;
         try {
             result = await vscode.window.withProgress({
@@ -2194,7 +2196,7 @@ class LeakLockSidebarProvider {
         }
 
         this._engineInstallResults[engineId] = result;
-        if (result?.ok && result.source !== 'docker' && result.path) {
+        if (result?.ok && result.source !== 'docker' && result.path && !existedBeforeInstall) {
             ownership.recordOwned({
                 id: `engine:${engineId}`,
                 label: `${displayName} native engine`,
