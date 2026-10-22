@@ -41,16 +41,12 @@ suite('npm launcher', () => {
         const command = 'C:\\Users\\test\\scoop\\shims\\npm.cmd';
         const realNode = 'C:\\Users\\test\\scoop\\apps\\nodejs\\current\\node.exe';
         const invocation = await npmInvocation(command, ['--version'], async (executable, args) => {
-            if (executable === 'where.exe') {
-                assert.deepStrictEqual(args, ['node']);
-                return { stdout: 'C:\\Users\\test\\scoop\\shims\\node.exe\r\n' };
-            }
             assert.strictEqual(executable, 'C:\\Users\\test\\scoop\\shims\\node.exe');
             assert.deepStrictEqual(args, ['-p', 'process.execPath']);
             return { stdout: `${realNode}\r\n` };
         }, {
             platform: 'win32',
-            existsSync: file => file === realNode
+            existsSync: file => file === 'C:\\Users\\test\\scoop\\shims\\node.exe' || file === realNode
                 || file === 'C:\\Users\\test\\scoop\\apps\\nodejs\\current\\node_modules\\npm\\bin\\npm-cli.js'
         });
         assert.deepStrictEqual(invocation, {

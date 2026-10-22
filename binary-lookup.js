@@ -40,9 +40,16 @@ const COMMON_BIN_DIRS = [
     '/home/linuxbrew/.linuxbrew/bin',
     'C:\\Program Files\\nodejs',
     'C:\\Program Files (x86)\\nodejs',
+    process.env.NVM_SYMLINK,
+    process.env.VOLTA_HOME ? path.join(process.env.VOLTA_HOME, 'bin') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Volta', 'bin') : '',
+    path.join(os.homedir(), 'scoop', 'shims'),
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'nodejs') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links') : '',
     'C:\\Program Files\\gitleaks',
     'C:\\ProgramData\\chocolatey\\bin'
-];
+].filter(Boolean);
 
 /**
  * Homebrew's `openjdk` is keg-only: `brew install openjdk` puts the JVM under

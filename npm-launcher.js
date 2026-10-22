@@ -26,7 +26,8 @@ async function npmInvocation(command, args, run, options = {}) {
         return existsSync(node) && existsSync(cli) ? { command: node, args: [cli, ...args] } : null;
     };
 
-    const adjacent = fromNode(platformPath.join(platformPath.dirname(command), 'node.exe'));
+    const adjacentNode = platformPath.join(platformPath.dirname(command), 'node.exe');
+    const adjacent = fromNode(adjacentNode);
     if (adjacent) {
         return adjacent;
     }
@@ -34,6 +35,13 @@ async function npmInvocation(command, args, run, options = {}) {
     // Scoop and similar managers put npm.cmd in a shim directory. node.exe can
     // run directly, and process.execPath names the real installation behind it.
     try {
+        if (existsSync(adjacentNode)) {
+            const { stdout: nodePath } = await run(adjacentNode, ['-p', 'process.execPath'], { windowsHide: true });
+            const invocation = fromNode(String(nodePath).trim());
+            if (invocation) {
+                return invocation;
+            }
+        }
         const { stdout: nodeLaunchers } = await run('where.exe', ['node'], { windowsHide: true });
         const nodeLauncher = String(nodeLaunchers).split(/\r?\n/).map(line => line.trim()).find(Boolean);
         if (nodeLauncher) {

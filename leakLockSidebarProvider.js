@@ -1173,7 +1173,7 @@ class LeakLockSidebarProvider {
                     <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
                         npm: ${this._dependencyStatus.npm?.installed
                             ? `v${escapeHtml(this._dependencyStatus.npm.version)}`
-                            : `not found. Install <a href="https://nodejs.org/en/download">Node.js</a>, which includes npm.`}
+                            : `unavailable. ${escapeHtml(this._dependencyStatus.npm?.error || 'Install Node.js, which includes npm.')}`}
                     </div>
                 ` : ''}
 
@@ -1599,8 +1599,14 @@ class LeakLockSidebarProvider {
                 version: String(stdout).trim() || 'installed',
                 error: null
             };
-        } catch {
-            this._dependencyStatus.npm.error = 'npm was not found. Install Node.js, which includes npm.';
+        } catch (error) {
+            const detail = error && error.message ? error.message : String(error);
+            this._dependencyStatus.npm = {
+                installed: false,
+                command: npmCommand,
+                version: null,
+                error: `npm could not run: ${detail}`
+            };
         }
 
         // Check git-filter-repo: either installation form is fine, and a confined
@@ -2009,8 +2015,9 @@ class LeakLockSidebarProvider {
 
         try {
             await this._runNpm(['--version'], { timeout: 15000 });
-        } catch {
-            return { ok: false, error: 'npm was not found. Install Node.js from https://nodejs.org/en/download and run Dependencies Setup again.' };
+        } catch (error) {
+            const detail = error && error.message ? error.message : String(error);
+            return { ok: false, error: `npm could not run: ${detail}. Restart VS Code after installing or changing Node.js, then run Dependencies Setup again.` };
         }
 
         const installRoot = credentialInspect.runtimeInstallRoot();
