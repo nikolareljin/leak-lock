@@ -84,6 +84,40 @@ function isManagedPath(filePath, options = {}) {
         .some(root => isInside(filePath, root, platformPath));
 }
 
+function isRecordedEnginePath(entry, options = {}) {
+    const platformPath = pathFor(options.platform || process.platform);
+    const names = new Set(['gitleaks', 'gitleaks.exe', 'trufflehog', 'trufflehog.exe', 'foxguard', 'foxguard.exe']);
+    if (!entry || typeof entry.path !== 'string' || typeof entry.engineDirectory !== 'string') {
+        return false;
+    }
+    const name = platformPath.basename(entry.path);
+    return names.has(name)
+        && platformPath.basename(entry.engineDirectory) === 'engines'
+        && platformPath.resolve(entry.path) === platformPath.resolve(platformPath.join(entry.engineDirectory, name));
+}
+
+function migrateOwnedEngineDirectories(engineDirectory, options = {}) {
+    if (typeof engineDirectory !== 'string' || !engineDirectory) {
+        return 0;
+    }
+    let migrated = 0;
+    const entries = readOwned(options).map(entry => {
+        if (entry.kind !== 'engine-file' || typeof entry.engineDirectory === 'string') {
+            return entry;
+        }
+        const updated = { ...entry, engineDirectory };
+        if (!isRecordedEnginePath(updated, options)) {
+            return entry;
+        }
+        migrated += 1;
+        return updated;
+    });
+    if (migrated) {
+        writeOwned(entries, options);
+    }
+    return migrated;
+}
+
 async function removeEntry(entry, exec = run, options = {}) {
     if (entry.kind === 'file' || entry.kind === 'directory') {
         if (!isManagedPath(entry.path, options)) {
@@ -93,9 +127,7 @@ async function removeEntry(entry, exec = run, options = {}) {
         return;
     }
     if (entry.kind === 'engine-file') {
-        const name = path.basename(entry.path || '');
-        const engines = new Set(['gitleaks', 'gitleaks.exe', 'trufflehog', 'trufflehog.exe', 'foxguard', 'foxguard.exe']);
-        if (path.basename(path.dirname(entry.path || '')) !== 'engines' || !engines.has(name)) {
+        if (!isRecordedEnginePath(entry, options)) {
             throw new Error(`Refusing to remove an unexpected engine path: ${entry.path}`);
         }
         fs.rmSync(entry.path, { force: true });
@@ -150,5 +182,7 @@ module.exports = {
     recordOwned,
     removeOwned,
     isManagedPath,
+    isRecordedEnginePath,
+    migrateOwnedEngineDirectories,
     removeSelected
 };

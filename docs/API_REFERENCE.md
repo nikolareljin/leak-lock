@@ -71,7 +71,7 @@ Installs required dependencies with progress tracking.
 Removes only user-selected dependencies that Leak Lock recorded as installing.
 
 **Responsibilities:**
-- Remove selected BFG, native engines, Docker images, and git-filter-repo installations
+- Remove selected BFG, native engines, Docker images, git-filter-repo, and credential-lens installations
 - Keep Java, Docker, Git, pipx, Homebrew, and unrecorded tools
 
 ---

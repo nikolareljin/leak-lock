@@ -63,9 +63,10 @@ reopen it.
 If no engine is installed at all, Dependencies Setup opens by itself and says which ones
 would fix it.
 
-**credential-lens** ships inside the extension. There is nothing to install, it needs no
-network, and if it ever fails to load the sidebar says so — scanning is unaffected, only
-the credential details are lost.
+**credential-lens** is installed by Dependencies Setup before the first scan. It is kept
+outside the VSIX in Leak Lock-owned user storage. Node.js, including npm, is required;
+use https://nodejs.org/en/download when the panel reports that npm is unavailable.
+Uninstall offers to remove it only when Leak Lock recorded installing it.
 
 ---
 
@@ -369,8 +370,9 @@ The generated cleanup script applies the same rule: it exits non-zero and prints
 3. Select the recorded dependencies to remove and confirm
 
 Only artifacts installed and recorded by Leak Lock are offered: BFG, native scan engines,
-Docker images, and git-filter-repo. Java, Docker, Git, pipx, Homebrew, manual installs,
-and dependencies from earlier versions that were not recorded stay on the computer.
+Docker images, git-filter-repo, and credential-lens. Java, Node.js, npm, Docker, Git,
+pipx, Homebrew, manual installs, and dependencies from earlier versions that were not
+recorded stay on the computer.
 Disabling or reloading the extension never removes dependencies.
 
 On Linux, Dependencies Setup installs git-filter-repo through pipx when available, then a

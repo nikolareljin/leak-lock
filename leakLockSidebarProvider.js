@@ -79,6 +79,10 @@ class LeakLockSidebarProvider {
         this._engineInstallDir = engineInstall.engineInstallDir(
             (storageUri && storageUri.fsPath) || extensionUri.fsPath
         );
+        // Engine ownership records written before 0.11.1 did not persist their
+        // install directory. Upgrade only records that match this active storage
+        // path, so cleanup remains available without broadening its delete scope.
+        ownership.migrateOwnedEngineDirectories(this._engineInstallDir);
         // Register before any probe: a binary Leak Lock installed lives on no PATH, so
         // without this the extension could download an engine and still call it missing.
         scanEngines.addBinarySearchDir(this._engineInstallDir);
@@ -2329,7 +2333,8 @@ class LeakLockSidebarProvider {
                 id: `engine:${engineId}`,
                 label: `${displayName} native engine`,
                 kind: 'engine-file',
-                path: result.path
+                path: result.path,
+                engineDirectory: this._engineInstallDir
             });
         }
         // A newly installed binary must be findable immediately, not next session.
