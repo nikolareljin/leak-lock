@@ -14,6 +14,7 @@ tests
 test*.js
 .git/**
 node_modules/**
+!node_modules/
 src/**
 .eslintrc.json
 tsconfig.json

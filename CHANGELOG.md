@@ -1,5 +1,12 @@
 # Change Log
 
+## 2026-10-21 - v0.11.1
+
+### Fixed
+- Install git-filter-repo on Linux without writing to the externally managed system Python.
+- Keep dependencies across extension reloads and offer a custom uninstall command with cleanup choices.
+- Verify credential-lens is present in the VSIX and explain source-checkout recovery.
+
 ## 2026-10-20 - v0.11.0
 
 ### Added

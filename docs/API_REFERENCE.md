@@ -28,21 +28,9 @@ function activate(context) {
 }
 ```
 
-### **deactivate(): Promise<void>**
-Extension deactivation and cleanup.
-
-**Returns:** Promise that resolves when cleanup is complete
-
-**Responsibilities:**
-- Remove Docker images
-- Delete temporary files
-- Clean up BFG tool
-
-```javascript
-async function deactivate() {
-    await cleanupDependencies();
-}
-```
+### **deactivate(): void**
+Extension deactivation does not remove dependencies. Window reloads and disabling the
+extension retain installed tools and images.
 
 ### **checkDependencies(): Promise<Object>**
 Validates installed dependencies.
@@ -80,13 +68,11 @@ Installs required dependencies with progress tracking.
 - Show progress notifications
 
 ### **cleanupDependencies(): Promise<void>**
-Complete cleanup of all extension dependencies.
+Removes only user-selected dependencies that Leak Lock recorded as installing.
 
 **Responsibilities:**
-- Remove Docker images: `ghcr.io/praetorian-inc/noseyparker:v0.24.0`
-- Delete BFG jar file
-- Remove temporary directories
-- Clean up Docker volumes
+- Remove selected BFG, native engines, Docker images, and git-filter-repo installations
+- Keep Java, Docker, Git, pipx, Homebrew, and unrecorded tools
 
 ---
 

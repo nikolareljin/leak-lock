@@ -5666,10 +5666,12 @@ suite('PR #105 seventh review pass', () => {
 		// Re-fetching on every setup run overwrites a known-good copy with an identical
 		// one, and turns a working offline setup into a failing one.
 		const extDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'));
-		nodeFs.writeFileSync(nodePath.join(extDir, 'bfg.jar'), 'pretend jar bytes');
+		const bfgPath = nodePath.join(extDir, 'bfg.jar');
+		nodeFs.writeFileSync(bfgPath, 'pretend jar bytes');
 		const p = new LeakLockSidebarProvider(
 			vscode.Uri.file(extDir),
-			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-'))),
+			{ bfgPath }
 		);
 		p._hasJavaRuntime = async () => true;
 
@@ -5679,7 +5681,7 @@ suite('PR #105 seventh review pass', () => {
 			const result = await p._installBfg();
 			assert.strictEqual(result.ok, true);
 			assert.strictEqual(result.alreadyPresent, true);
-			assert.strictEqual(nodeFs.readFileSync(nodePath.join(extDir, 'bfg.jar'), 'utf8'), 'pretend jar bytes');
+			assert.strictEqual(nodeFs.readFileSync(bfgPath, 'utf8'), 'pretend jar bytes');
 		} finally {
 			globalThis.fetch = realFetch;
 			nodeFs.rmSync(extDir, { recursive: true, force: true });
@@ -5688,10 +5690,12 @@ suite('PR #105 seventh review pass', () => {
 
 	test('a truncated BFG jar is retried rather than trusted', async () => {
 		const extDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'));
-		nodeFs.writeFileSync(nodePath.join(extDir, 'bfg.jar'), '');
+		const bfgPath = nodePath.join(extDir, 'bfg.jar');
+		nodeFs.writeFileSync(bfgPath, '');
 		const p = new LeakLockSidebarProvider(
 			vscode.Uri.file(extDir),
-			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-'))),
+			{ bfgPath }
 		);
 		p._hasJavaRuntime = async () => true;
 
@@ -5705,7 +5709,7 @@ suite('PR #105 seventh review pass', () => {
 			const result = await p._installBfg();
 			assert.strictEqual(result.ok, true);
 			assert.strictEqual(fetched, true, 'a zero-length file is a dead download, not an install');
-			assert.strictEqual(nodeFs.readFileSync(nodePath.join(extDir, 'bfg.jar'), 'utf8'), 'real jar');
+			assert.strictEqual(nodeFs.readFileSync(bfgPath, 'utf8'), 'real jar');
 		} finally {
 			globalThis.fetch = realFetch;
 			nodeFs.rmSync(extDir, { recursive: true, force: true });

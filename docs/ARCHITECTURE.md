@@ -18,9 +18,9 @@ Leak Lock follows a modular architecture with clear separation of concerns betwe
 
 **Key Functions:**
 - `activate(context)` - Extension initialization
-- `deactivate()` - Cleanup on uninstall
+- `deactivate()` - No cleanup; reloads retain dependencies
 - `installDependencies()` - Automated dependency setup
-- `cleanupDependencies()` - Complete cleanup process
+- `cleanupDependencies()` - Removes selected recorded dependencies
 - `checkDependencies()` - Validation of installed tools
 
 ### 2. **LeakLockPanel.js** - Main Interface
@@ -330,19 +330,10 @@ function activate(context) {
 ```
 
 ### Extension Deactivation
-> ⚠️ Known defect (issue #59): cleanup currently runs from `deactivate()`, which VS Code
-> invokes on every window reload, not only on uninstall. Tools are therefore removed and
-> re-downloaded far more often than intended.
 
-```javascript
-async function deactivate() {
-    try {
-        await cleanupDependencies();
-        // - Remove Docker images
-        // - Delete BFG tool
-        // - Clean temporary files
-        // - Remove Docker volumes
-    } catch (error) {
+`deactivate()` is intentionally non-destructive. The custom `Leak Lock: Uninstall Leak Lock`
+command records selected owned dependencies before it invokes the VS Code uninstall hook.
+This prevents a reload, disable, or normal extension update from deleting tools.
         console.error('Cleanup error:', error);
     }
 }

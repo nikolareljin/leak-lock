@@ -4,7 +4,7 @@
   "displayName": "leak-lock",
   "description": "Developer tools to help engineers stay cybersecure without interrupting their workflows",
   "icon": "media/icon.png",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/nikolareljin/leak-lock.git"
@@ -58,6 +58,10 @@
       {
         "command": "leak-lock.cleanup",
         "title": "Clean Up Leak Lock Dependencies"
+      },
+      {
+        "command": "leak-lock.uninstall",
+        "title": "Uninstall Leak Lock"
       },
       {
         "command": "leak-lock.openWebsite",
@@ -359,6 +363,7 @@
     "test": "vscode-test",
     "build": "node tools/check-sources.js",
     "prepare": "node tools/install-git-hooks.js",
+    "vscode:uninstall": "node ./scripts/uninstall.js",
     "check:release": "node tools/release-notes.js --check"
   },
   "devDependencies": {

@@ -25,6 +25,8 @@ const binaryLookup = require('./binary-lookup');
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 const credentialInspect = require('./credential-inspect');
+const bfgStorage = require('./bfg-storage');
+const ownership = require('./dependency-ownership');
 
 /**
  * The `java` to run: the configured path, or whatever the lookup can find.
@@ -71,8 +73,9 @@ class LeakLockSidebarProvider {
      * @param {vscode.Uri} [storageUri] global storage; engines are installed here
      *   rather than in the extension directory, which an update replaces wholesale.
      */
-    constructor(extensionUri, storageUri) {
+    constructor(extensionUri, storageUri, options = {}) {
         this._extensionUri = extensionUri;
+        this._bfgPath = options.bfgPath || bfgStorage.bfgPath();
         this._engineInstallDir = engineInstall.engineInstallDir(
             (storageUri && storageUri.fsPath) || extensionUri.fsPath
         );
@@ -1349,9 +1352,8 @@ class LeakLockSidebarProvider {
 
     /**
      * Install git-filter-repo, using whichever installer suits the platform:
-     * Homebrew on macOS when it is present, otherwise pip into the user site
-     * rather than a system prefix, so no elevation is needed and PEP 668's
-     * "externally managed environment" refusal does not apply.
+     * Homebrew on macOS when it is present. Linux uses pipx or a private virtual
+     * environment, so PEP 668 never requires changing the system Python.
      *
      * The install is verified by re-probing rather than by trusting the exit
      * code: a successful install into a directory that is not on this VS Code
@@ -1362,7 +1364,14 @@ class LeakLockSidebarProvider {
      */
     async _installFilterRepo() {
         const execFileAsync = require('util').promisify(require('child_process').execFile);
-        const { command, args } = gitRewrite.buildFilterRepoInstallCommand();
+        const run = async (command, args) => execFileAsync(command, args, { maxBuffer: 16 * 1024 * 1024 });
+        let installDescription;
+        const before = await gitRewrite.detectFilterRepo();
+        if (before.installed && !before.confined) {
+            vscode.window.showInformationMessage(`git-filter-repo is already available (${before.form}).`);
+            return;
+        }
+        let ownedEntry = null;
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -1370,13 +1379,47 @@ class LeakLockSidebarProvider {
             cancellable: false
         }, async () => {
             try {
-                await execFileAsync(command, args, { maxBuffer: 16 * 1024 * 1024 });
+                if (process.platform === 'linux') {
+                    const pipx = binaryLookup.findInDirs('pipx', binaryLookup.COMMON_BIN_DIRS);
+                    if (pipx) {
+                        installDescription = `${pipx} install --force git-filter-repo`;
+                        await run(pipx, ['install', '--force', 'git-filter-repo']);
+                        ownedEntry = { id: 'git-filter-repo-pipx', label: 'git-filter-repo (pipx)', kind: 'pipx-package', command: pipx, package: 'git-filter-repo' };
+                    } else {
+                        const python = binaryLookup.resolveBinary('python3');
+                        const environment = gitRewrite.managedFilterRepoDir();
+                        const environmentPython = path.join(environment, 'bin', 'python');
+                        installDescription = `${python} -m venv ${environment}`;
+                        try {
+                            await run(python, ['-m', 'venv', environment]);
+                            await run(environmentPython, ['-m', 'pip', 'install', '--upgrade', 'git-filter-repo']);
+                            ownedEntry = { id: 'git-filter-repo-managed', label: 'git-filter-repo managed environment', kind: 'directory', path: environment };
+                        } catch {
+                            // Some minimal Python installations omit venv. The package is
+                            // still user-scoped; this explicit flag is required only by
+                            // PEP 668 distributions and never writes the system prefix.
+                            // Do not leave a half-created private environment behind when
+                            // its pip bootstrap failed and the fallback is selected.
+                            fs.rmSync(environment, { recursive: true, force: true });
+                            installDescription = `${python} -m pip install --user --break-system-packages --upgrade git-filter-repo`;
+                            await run(python, ['-m', 'pip', 'install', '--user', '--break-system-packages', '--upgrade', 'git-filter-repo']);
+                            ownedEntry = { id: 'git-filter-repo-pip-user', label: 'git-filter-repo Python user package', kind: 'pip-user-package', python, package: 'git-filter-repo' };
+                        }
+                    }
+                } else {
+                    const { command, args } = gitRewrite.buildFilterRepoInstallCommand();
+                    installDescription = `${command} ${args.join(' ')}`;
+                    await run(command, args);
+                    ownedEntry = /(^|[\\/])brew$/.test(command)
+                        ? { id: 'git-filter-repo-homebrew', label: 'git-filter-repo (Homebrew)', kind: 'homebrew-package', command, package: 'git-filter-repo' }
+                        : { id: 'git-filter-repo-pip-user', label: 'git-filter-repo Python user package', kind: 'pip-user-package', python: command, package: 'git-filter-repo' };
+                }
             } catch (error) {
                 const detail = [error.stderr, error.stdout, error.message]
                     .map(part => (typeof part === 'string' ? part : String(part || '')))
                     .find(part => part.trim());
                 throw new Error(
-                    `${command} ${args.join(' ')} failed. ${String(detail || '').split('\n')[0]}`
+                    `${installDescription || 'git-filter-repo installation'} failed. ${String(detail || '').split('\n')[0]}`
                 );
             }
         });
@@ -1387,6 +1430,7 @@ class LeakLockSidebarProvider {
         this._updateView();
 
         if (status.installed && !status.confined) {
+            if (ownedEntry) ownership.recordOwned(ownedEntry);
             vscode.window.showInformationMessage(
                 `git-filter-repo is ready (${status.form}${status.version ? `, ${status.version}` : ''}).`
             );
@@ -1402,7 +1446,7 @@ class LeakLockSidebarProvider {
         // names a directory with nothing to do with what they did -- and the same
         // applies to naming ~/.local/bin on the macOS system Python, which writes to
         // ~/Library/Python/<version>/bin instead.
-        const usedBrew = /(^|[\\/])brew$/.test(command);
+        const usedBrew = /(^|[\\/])brew$/.test(installDescription || '');
         const remedy = usedBrew
             ? 'Homebrew installed it, but Leak Lock cannot see it. Check `brew --prefix` is one of '
                 + 'the searched locations, or reinstall with `brew reinstall git-filter-repo`'
@@ -1415,7 +1459,7 @@ class LeakLockSidebarProvider {
                     : 'Add your user scripts directory (usually ~/.local/bin) to PATH — '
                         + '`python3 -m site --user-base` prints its parent';
         vscode.window.showWarningMessage(
-            `${command} reported success, but git-filter-repo still cannot be located. ${remedy}, `
+            `${installDescription} reported success, but git-filter-repo still cannot be located. ${remedy}, `
             + 'then reload the window.'
         );
     }
@@ -1495,7 +1539,7 @@ class LeakLockSidebarProvider {
         this._dependencyStatus.filterRepo = await gitRewrite.detectFilterRepo();
 
         // Check BFG tool
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const bfgPath = this._bfgPath;
         if (fs.existsSync(bfgPath)) {
             this._dependencyStatus.bfg.installed = true;
             this._dependencyStatus.bfg.path = bfgPath;
@@ -1938,13 +1982,13 @@ class LeakLockSidebarProvider {
         if (!await this._hasJavaRuntime()) {
             return { ok: false, skipped: true, error: 'No Java runtime; BFG cannot run.' };
         }
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const installedBfgPath = this._bfgPath;
         // Already there: re-downloading on every setup run costs a fetch to overwrite a
         // known-good copy with an identical one, and turns a working offline setup into
         // a failing one. A zero-length file is a previous download that died mid-flight,
         // so that is retried rather than trusted.
         try {
-            if (fs.statSync(bfgPath).size > 0) {
+            if (fs.statSync(installedBfgPath).size > 0) {
                 return { ok: true, skipped: false, error: null, alreadyPresent: true };
             }
         } catch {
@@ -1957,7 +2001,9 @@ class LeakLockSidebarProvider {
             // that can contain spaces or quotes, and interpolating it into a command
             // line makes the download depend both on a shell and on a tool that is not
             // guaranteed to exist. Same downloader the engine installs use.
-            await engineInstall.downloadFile(bfgUrl, bfgPath);
+            fs.mkdirSync(path.dirname(installedBfgPath), { recursive: true, mode: 0o700 });
+            await engineInstall.downloadFile(bfgUrl, installedBfgPath);
+            ownership.recordOwned({ id: 'bfg', label: 'BFG', kind: 'file', path: installedBfgPath });
             return { ok: true, skipped: false, error: null };
         } catch (error) {
             console.warn('Failed to download BFG tool:', error.message);
@@ -2034,7 +2080,13 @@ class LeakLockSidebarProvider {
             progress?.report({ message: `Pulling ${image}…` });
             const { execFile } = require('child_process');
             const execFileAsync = require('util').promisify(execFile);
-            await execFileAsync(binaryLookup.resolveDockerCommand(), engineDocker.buildImagePullArgs(image), { timeout: 600000 });
+            const docker = binaryLookup.resolveDockerCommand();
+            let existed = false;
+            try {
+                await execFileAsync(docker, engineDocker.buildImageInspectArgs(image), { timeout: 15000 });
+                existed = true;
+            } catch { /* A missing image is expected before an explicit install. */ }
+            await execFileAsync(docker, engineDocker.buildImagePullArgs(image), { timeout: 600000 });
 
             // Verified the same way a binary install is: by running it. A pulled image
             // that cannot execute here is not an installed engine.
@@ -2050,6 +2102,9 @@ class LeakLockSidebarProvider {
             result.ok = true;
             result.version = version;
             result.path = image;
+            if (!existed) {
+                ownership.recordOwned({ id: `docker-image:${image}`, label: `${displayName} Docker image`, kind: 'docker-image', image, command: docker });
+            }
         } catch (error) {
             result.error = `Could not set up ${displayName} from Docker: ${engineDocker.describeDockerFailure(error.message)}`;
         }
@@ -2139,6 +2194,14 @@ class LeakLockSidebarProvider {
         }
 
         this._engineInstallResults[engineId] = result;
+        if (result?.ok && result.source !== 'docker' && result.path) {
+            ownership.recordOwned({
+                id: `engine:${engineId}`,
+                label: `${displayName} native engine`,
+                kind: 'engine-file',
+                path: result.path
+            });
+        }
         // A newly installed binary must be findable immediately, not next session.
         scanEngines.resetBinaryCache();
 

@@ -365,8 +365,23 @@ The generated cleanup script applies the same rule: it exits non-zero and prints
 
 **Clean Up Dependencies**
 1. Open Command Palette (`Ctrl+Shift+P`)
-2. Type "Leak Lock: Clean Up Dependencies"
-3. Confirms before removing all installed tools
+2. Type "Leak Lock: Uninstall Leak Lock" to remove the extension, or "Leak Lock: Clean Up Dependencies" to keep it
+3. Select the recorded dependencies to remove and confirm
+
+Only artifacts installed and recorded by Leak Lock are offered: BFG, native scan engines,
+Docker images, and git-filter-repo. Java, Docker, Git, pipx, Homebrew, manual installs,
+and dependencies from earlier versions that were not recorded stay on the computer.
+Disabling or reloading the extension never removes dependencies.
+
+On Linux, Dependencies Setup installs git-filter-repo through pipx when available, then a
+Leak Lock private virtual environment. It uses the Python user site with
+`--break-system-packages` only as a last fallback for a Python that cannot create a venv.
+This works on PEP 668 distributions without modifying the system Python.
+
+Nosey Parker scan datastores and generated ignore files are deleted after each scan. They
+can contain findings and paths, so do not keep the OS temp directory on unencrypted shared
+storage. A failed history rewrite intentionally retains its rule file in `.git` for retry;
+the error names the file, and it must be deleted after the retry or manual remediation.
 
 ### Multiple Access Methods
 
@@ -529,7 +544,7 @@ unconfined tool instead:
 
 ```bash
 sudo snap remove git-filter-repo      # optional, but it stays first on PATH otherwise
-python3 -m pip install --user git-filter-repo
+pipx install git-filter-repo
 ```
 
 Then reload the VS Code window so its `PATH` picks up the new binary. Leak Lock

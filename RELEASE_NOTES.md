@@ -1,10 +1,13 @@
-# Release notes, v0.11.0
+# Release notes, v0.11.1
 
 ## Added
 - Export JSON and printable reports with either the complete credential and code-issue report or Foxguard code issues only. Code-only reports remain importable and never become history-cleanup candidates.
 - Show an inline spinner in credential and Code issues result blocks while another scan stage is still running.
 
 ## Fixed
+- Install git-filter-repo on Linux without writing to the externally managed system Python.
+- Keep dependencies across extension reloads and offer a custom uninstall command with cleanup choices.
+- Verify credential-lens is present in the VSIX and explain source-checkout recovery.
 - Resolve bundled credential-lens from the installed extension directory so Windows workspaces cannot redirect its module lookup.
 - Raise the default Foxguard timeout from 120 seconds to 30 minutes for longer code scans.
 - Make npm run build validate the CommonJS sources directly; it no longer invokes an unbundled Babel command.

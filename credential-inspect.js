@@ -61,7 +61,11 @@ async function loadLibraryInfo({ importer } = {}) {
         const pkg = require(resolvePackagePath(`${PACKAGE_ID}/package.json`));
         return { ok: true, version: pkg.version };
     } catch (error) {
-        return { ok: false, error: error && error.message ? error.message : String(error) };
+        const detail = error && error.message ? error.message : String(error);
+        return {
+            ok: false,
+            error: `${detail}. If this is a source checkout, run npm ci. If this is an installed extension, reinstall Leak Lock.`
+        };
     }
 }
 

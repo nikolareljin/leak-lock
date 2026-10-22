@@ -469,7 +469,8 @@ Git-only rewrite. Scanning needs neither.
 - `leak-lock.scanRepository` - Start repository scanning
 - `leak-lock.fixSecrets` - Open remediation interface
 - `leak-lock.openRemoveFiles` - Open Remove Files flow
-- `leak-lock.cleanup` - Clean up all dependencies
+- `leak-lock.cleanup` - Choose recorded Leak Lock dependencies to remove
+- `leak-lock.uninstall` - Choose recorded Leak Lock dependencies, then uninstall the extension
 
 ### **Dependencies**
 
@@ -500,11 +501,19 @@ choice. A missing engine disables that engine, not the scan.
 
 The extension provides comprehensive cleanup functionality:
 
-### **Automatic Cleanup (on uninstall)**
-- Removes Nosey Parker Docker image
-- Deletes BFG tool jar file
-- Cleans up temporary files and directories
-- Removes Docker volumes created by extension
+### **Dependency cleanup and uninstall**
+
+`Leak Lock: Uninstall Leak Lock` lists only dependencies that the extension recorded as
+installing. Select the items to remove, then confirm the VS Code uninstall. The native
+VS Code Uninstall action does not remove dependencies because it cannot show this choice.
+
+Leak Lock can remove its recorded BFG jar, native scan engines, Docker images, and
+git-filter-repo installation. It never removes Java, Docker itself, Git, pipx, Homebrew,
+or tools installed outside Leak Lock. Deactivation and window reload do not remove anything.
+
+Temporary Nosey Parker datastores and generated ignore files are deleted after every scan.
+Replacement rule files remain in the repository `.git` directory after a failed rewrite so
+the rewrite can be retried; delete the named file after resolving the failure.
 
 ### **Manual Cleanup**
 Use command palette: `Leak Lock: Clean Up Dependencies`
