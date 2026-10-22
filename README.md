@@ -477,8 +477,11 @@ Git-only rewrite. Scanning needs neither.
 **Required — one scan engine.** Any single one of the credential engines (Gitleaks, TruffleHog
 or Nosey Parker) is enough to scan. Foxguard finds code issues, not credentials, so it does
 not count. Setup is complete the moment one of them works; a second widens coverage
-but does not decide whether a scan can run. Git itself is required, as is credential-lens —
-which ships inside the extension, so there is nothing to install.
+but does not decide whether a scan can run. Git itself is required, as is credential-lens.
+Dependencies Setup installs the pinned credential-lens package into Leak Lock-owned user
+storage before scanning. Install Node.js, which includes npm, from
+https://nodejs.org/en/download if the dependency panel reports npm unavailable. The VSIX does
+not contain `node_modules`.
 
 **Optional — everything else.** Their absence is named next to "Dependencies ready" rather
 than blocking anything:

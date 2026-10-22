@@ -7,7 +7,7 @@
 ## Fixed
 - Install git-filter-repo on Linux without writing to the externally managed system Python.
 - Keep dependencies across extension reloads and offer a custom uninstall command with cleanup choices.
-- Verify credential-lens is present in the VSIX and explain source-checkout recovery.
-- Resolve bundled credential-lens from the installed extension directory so Windows workspaces cannot redirect its module lookup.
+- Keep credential-lens out of the VSIX. Dependencies Setup installs the pinned package into Leak Lock user storage before scanning.
+- Resolve credential-lens from Leak Lock user storage so workspaces cannot redirect module lookup.
 - Raise the default Foxguard timeout from 120 seconds to 30 minutes for longer code scans.
 - Make npm run build validate the CommonJS sources directly; it no longer invokes an unbundled Babel command.

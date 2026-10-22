@@ -1156,19 +1156,19 @@ class LeakLockSidebarProvider {
                 ` : '')}
 
                 ${this._dependencyStatus?.credentialLens ? `
-                    <!-- Bundled with the extension, so there is nothing to install.
-                         The tick reflects a successful dynamic import, not the mere
-                         presence of a dependency entry: a .vsix built without the
-                         package must show as broken here, rather than at the user's
-                         first click on a Secret cell. -->
                     <div class="status-item">
                         <span><span class="status-icon">${this._dependencyStatus.credentialLens.installed ? '✅' : '❌'}</span>credential-lens${this._dependencyStatus.credentialLens.version ? ` v${escapeHtml(this._dependencyStatus.credentialLens.version)}` : ''}</span>
                     </div>
                     <div style="font-size: 10px; color: ${this._dependencyStatus.credentialLens.installed ? 'var(--vscode-descriptionForeground)' : 'var(--vscode-inputValidation-warningForeground)'}; margin-left: 20px; margin-bottom: 5px;">
                         ${this._dependencyStatus.credentialLens.installed
-                            ? 'Bundled with Leak Lock — nothing to install. Identifies keys, certificates and tokens in scan results.'
-                            : 'Bundled but could not be loaded, so credential details are unavailable. Scanning is unaffected.'}
+                            ? 'Installed by Leak Lock. Identifies keys, certificates and tokens in scan results.'
+                            : 'Not installed. Dependencies Setup installs it before scanning.'}
                         ${this._dependencyStatus.credentialLens.error ? `<br>${escapeHtml(this._dependencyStatus.credentialLens.error)}` : ''}
+                    </div>
+                    <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                        npm: ${this._dependencyStatus.npm?.installed
+                            ? `v${escapeHtml(this._dependencyStatus.npm.version)}`
+                            : `not found. Install <a href="https://nodejs.org/en/download">Node.js</a>, which includes npm.`}
                     </div>
                 ` : ''}
 
@@ -1190,9 +1190,9 @@ class LeakLockSidebarProvider {
                              wrong in both directions: neither is required when Gitleaks
                              and TruffleHog are the enabled engines, and neither being
                              present makes a scan possible when those two are absent. -->
-                        ⚠️ Not ready to scan — no scan engine is installed.<br>
-                        Install <strong>at least one</strong> of Gitleaks, TruffleHog or Nosey Parker below.${(this._dependencyStatus?.missing || []).includes('credential-lens')
-                            ? '<br>credential-lens could not be loaded either — it ships with the extension, so this indicates a broken install.'
+                        ⚠️ Not ready to scan.<br>
+                        Install the missing dependencies below.${(this._dependencyStatus?.missing || []).includes('credential-lens')
+                            ? '<br>credential-lens requires Node.js and npm. Dependencies Setup installs the pinned package after npm is available.'
                             : ''}
                     </div>
                 ` : ''}
@@ -1200,6 +1200,7 @@ class LeakLockSidebarProvider {
                 <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 10px; line-height: 1.3;">
                     <strong>Prerequisites:</strong><br>
                     • Internet connection to download the engine binaries<br>
+                    • Node.js and npm for credential-lens<br>
                     • Docker Engine running — only for the optional Nosey Parker engine<br>
                     • Java 8+ recommended for automated BFG execution
                 </div>
@@ -1507,6 +1508,7 @@ class LeakLockSidebarProvider {
             noseyparker: { installed: false, error: null },
             java: { installed: false, version: null, error: null },
             python: { installed: false, pipx: false, version: null, error: null },
+            npm: { installed: false, command: null, version: null, error: null },
             bfg: { installed: false, path: null, error: null },
             // The Git-only cleanup route. Reported here because "can this machine
             // remove a secret from history" is a setup question, and it used to be
@@ -1582,6 +1584,20 @@ class LeakLockSidebarProvider {
             binaryLookup.findInDirs('pipx', binaryLookup.COMMON_BIN_DIRS)
         );
 
+        const npmCommand = binaryLookup.resolveBinary('npm');
+        try {
+            this._dependencyStatus.npm.command = npmCommand;
+            const { stdout } = await this._runNpm(['--version'], { timeout: 15000 });
+            this._dependencyStatus.npm = {
+                installed: true,
+                command: npmCommand,
+                version: String(stdout).trim() || 'installed',
+                error: null
+            };
+        } catch {
+            this._dependencyStatus.npm.error = 'npm was not found. Install Node.js, which includes npm.';
+        }
+
         // Check git-filter-repo: either installation form is fine, and a confined
         // snap build is reported as installed-but-limited rather than as ready.
         this._dependencyStatus.filterRepo = await gitRewrite.detectFilterRepo();
@@ -1595,10 +1611,9 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.bfg.error = 'BFG tool not downloaded';
         }
 
-        // credential-lens is bundled, so this is a load check, not an install
-        // check — and it is deliberately resolved before `missing` is computed
-        // but never added to it. The engines perform the scan; an enrichment
-        // library must not be able to report setup as incomplete.
+        // credential-lens is installed into Leak Lock's per-user storage by
+        // Dependencies Setup. It is required before scanning so the package is
+        // never fetched while handling sensitive scan output.
         this._dependencyStatus.credentialLens = await credentialInspect.describeCredentialLensStatus();
 
         // The engines that actually scan decide whether setup is complete.
@@ -1657,19 +1672,17 @@ class LeakLockSidebarProvider {
     _missingRequiredDependencies() {
         const missing = [];
 
+        if (this._dependencyStatus?.credentialLens
+            && !this._dependencyStatus.credentialLens.installed) {
+            missing.push('credential-lens');
+        }
+
         // One working scanner is the whole requirement. Demanding every enabled
         // engine blocked setup over an engine the user did not need — "missing:
         // Nosey Parker image" while Gitleaks sat installed and ready. A second
         // engine widens coverage; it does not decide whether a scan can run.
         if (this._installedScanners().length === 0) {
             missing.push('at least one scan engine (Gitleaks, TruffleHog or Nosey Parker)');
-            // Named alongside, because the fix for both is the same trip through
-            // Dependencies Setup. It is bundled, so its absence means a broken
-            // build rather than something the user forgot to install.
-            if (this._dependencyStatus?.credentialLens
-                && !this._dependencyStatus.credentialLens.installed) {
-                missing.push('credential-lens');
-            }
         }
 
         return missing;
@@ -1743,13 +1756,6 @@ class LeakLockSidebarProvider {
         if (!this._dependencyStatus?.docker?.installed) {
             optional.push('Docker');
         }
-        if (this._dependencyStatus?.credentialLens
-            && !this._dependencyStatus.credentialLens.installed
-            && this._installedScanners().length > 0) {
-            // Scanning is unaffected; only the credential details are lost.
-            optional.push('credential-lens');
-        }
-
         // De-duplicate: Nosey Parker can arrive both as an uninstalled engine
         // and as a missing image.
         return [...new Set(optional)];
@@ -1903,6 +1909,7 @@ class LeakLockSidebarProvider {
 
         let dockerError = null;
         const engineResults = [];
+        let credentialLensResult = null;
 
         // Only when something needs it. Nosey Parker is the sole component that does,
         // and pulling a several-hundred-megabyte image — or reporting a Docker error —
@@ -1961,6 +1968,8 @@ class LeakLockSidebarProvider {
         // a window reload recovers it. The failure is unlikely; the state it leaves is
         // unrecoverable, which is the combination worth guarding.
         try {
+            credentialLensResult = await this._installCredentialLens();
+
             // BFG depends on Java and on nothing else. Downloading it inside the Docker
             // block meant a missing Docker skipped it, which is the same "one component
             // failing cancels an unrelated one" defect this release exists to remove.
@@ -1982,8 +1991,76 @@ class LeakLockSidebarProvider {
         }
 
         await this._checkDependencies();
-        this._reportSetupOutcome(dockerError, engineResults);
+        this._reportSetupOutcome(dockerError, engineResults, credentialLensResult);
         this._updateView();
+    }
+
+    /** Install the pinned enrichment package outside the VSIX. */
+    async _installCredentialLens() {
+        const current = await credentialInspect.describeCredentialLensStatus();
+        if (current.installed) {
+            return { ok: true, alreadyPresent: true };
+        }
+
+        try {
+            await this._runNpm(['--version'], { timeout: 15000 });
+        } catch {
+            return { ok: false, error: 'npm was not found. Install Node.js from https://nodejs.org/en/download and run Dependencies Setup again.' };
+        }
+
+        const installRoot = credentialInspect.runtimeInstallRoot();
+        const owned = ownership.readOwned().some(entry => entry.id === 'credential-lens'
+            && entry.kind === 'directory' && entry.path === installRoot);
+        if (fs.existsSync(installRoot) && !owned) {
+            return {
+                ok: false,
+                error: `Refusing to modify unowned credential-lens storage: ${installRoot}`
+            };
+        }
+        const createdRoot = !fs.existsSync(installRoot);
+        try {
+            fs.mkdirSync(installRoot, { recursive: true, mode: 0o700 });
+            await this._runNpm([
+                'install', '--ignore-scripts', '--no-save', '--package-lock=false', '--no-audit',
+                '--fund=false', '--registry=https://registry.npmjs.org/', '--prefix', installRoot,
+                credentialInspect.packageSpec()
+            ], { timeout: 300000, maxBuffer: 1024 * 1024 });
+            credentialInspect._resetModuleCache();
+            const installed = await credentialInspect.describeCredentialLensStatus();
+            if (!installed.installed) {
+                throw new Error(installed.error || 'npm completed but credential-lens could not be loaded');
+            }
+            ownership.recordOwned({
+                id: 'credential-lens',
+                label: 'credential-lens enrichment package',
+                kind: 'directory',
+                path: installRoot
+            });
+            return { ok: true, alreadyPresent: false };
+        } catch (error) {
+            if (createdRoot) {
+                fs.rmSync(installRoot, { recursive: true, force: true });
+            }
+            return { ok: false, error: error.message || String(error) };
+        }
+    }
+
+    /** Run npm without a shell, including npm.cmd on Windows. */
+    async _runNpm(args, options) {
+        const npm = this._dependencyStatus?.npm?.command || binaryLookup.resolveBinary('npm');
+        const execFileAsync = require('util').promisify(require('child_process').execFile);
+        if (process.platform !== 'win32' || !npm.toLowerCase().endsWith('.cmd')) {
+            return execFileAsync(npm, args, options);
+        }
+
+        // npm.cmd cannot be launched by execFile. Node's adjacent npm-cli.js is
+        // the same supported npm entry point without a command shell.
+        const node = path.join(path.dirname(npm), 'node.exe');
+        const cli = path.join(path.dirname(npm), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+        if (!fs.existsSync(node) || !fs.existsSync(cli)) {
+            throw new Error(`npm was found at ${npm}, but its Node.js runtime is incomplete`);
+        }
+        return execFileAsync(node, [cli, ...args], options);
     }
 
     /**
@@ -2067,7 +2144,7 @@ class LeakLockSidebarProvider {
      * steps completed, which is what let a setup with no scanning engine at all read as
      * done. Anything still missing is named here, and named again in the panel.
      */
-    _reportSetupOutcome(dockerError, engineResults) {
+    _reportSetupOutcome(dockerError, engineResults, credentialLensResult) {
         const installed = engineResults.filter(r => r?.ok).map(r => r.displayName);
         const failed = engineResults.filter(r => r && !r.ok).map(r => r.displayName);
         const missing = this._dependencyStatus?.missing || [];
@@ -2085,6 +2162,9 @@ class LeakLockSidebarProvider {
             // not being enabled — never sets it, and says nothing at all.
             parts.push(`The Docker step for Nosey Parker failed: ${dockerError}`);
         }
+        if (credentialLensResult && !credentialLensResult.ok) {
+            parts.push(`Could not install credential-lens: ${credentialLensResult.error}`);
+        }
 
         if (!missing.length) {
             // Named, not silently omitted: a user who wanted BFG or Nosey Parker
@@ -2099,7 +2179,7 @@ class LeakLockSidebarProvider {
             return;
         }
         vscode.window.showWarningMessage(
-            `Cannot scan yet — install at least one scan engine (Gitleaks, TruffleHog or Nosey Parker). ${parts.join(' ')}`.trim()
+            `Cannot scan yet. Missing: ${missing.join(', ')}. ${parts.join(' ')}`.trim()
         );
     }
 

@@ -33,13 +33,13 @@ suite('loadLibraryInfo', () => {
 
     suiteSetup(() => { PEM_KEY_BYTES = makeThrowawayKey(); });
 
-    test('reports the bundled version, because the panel must not claim ready without checking', async () => {
+    test('reports the installed version, because the panel must not claim ready without checking', async () => {
         const info = await loadLibraryInfo();
         assert.strictEqual(info.ok, true, info.ok ? '' : `import failed: ${info.error}`);
         assert.match(info.version, /^\d+\.\d+\.\d+$/);
     });
 
-    test('resolves the bundled package from the extension directory', () => {
+    test('resolves the package from the runtime directory before the extension directory', () => {
         const entry = resolvePackagePath();
         assert.match(entry.replace(/\\\\/g, '/'), /node_modules\/@nikolareljin\/credential-lens\//);
         assert.ok(fs.existsSync(entry));

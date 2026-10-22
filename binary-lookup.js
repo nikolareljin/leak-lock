@@ -38,6 +38,8 @@ const COMMON_BIN_DIRS = [
     '/usr/bin',
     '/opt/homebrew/bin',      // Apple silicon Homebrew
     '/home/linuxbrew/.linuxbrew/bin',
+    'C:\\Program Files\\nodejs',
+    'C:\\Program Files (x86)\\nodejs',
     'C:\\Program Files\\gitleaks',
     'C:\\ProgramData\\chocolatey\\bin'
 ];
@@ -145,7 +147,10 @@ function findInDirs(name, dirs) {
         if (!dir) {
             continue;
         }
-        for (const candidate of [path.join(dir, name), path.join(dir, `${name}.exe`)]) {
+    const candidates = process.platform === 'win32'
+        ? [path.join(dir, name), path.join(dir, `${name}.exe`), path.join(dir, `${name}.cmd`)]
+        : [path.join(dir, name), path.join(dir, `${name}.exe`)];
+    for (const candidate of candidates) {
             try {
                 fs.accessSync(candidate, fs.constants.X_OK);
                 return candidate;
