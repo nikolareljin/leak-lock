@@ -929,7 +929,11 @@ class LeakLockSidebarProvider {
         const pipxStatus = python.pipx ? '✅' : '⚪';
         const filterRepoInstallCommand = filterRepoInstaller === 'Homebrew'
             ? 'brew install git-filter-repo'
-            : `${filterRepoInstall.command} ${filterRepoInstall.args.join(' ')}`;
+            : filterRepoInstaller === 'pipx'
+                ? 'pipx install --force git-filter-repo'
+                : filterRepoInstaller === 'private Python environment'
+                    ? 'Use the Install git-filter-repo button to create a private environment'
+                    : `${filterRepoInstall.command} ${filterRepoInstall.args.join(' ')}`;
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
         // BFG without a JVM is not a tool, it is a file. Marked unavailable rather than
         // merely "not downloaded", which would suggest downloading it would help.
