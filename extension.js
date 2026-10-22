@@ -296,14 +296,17 @@ function activate(context) {
 	const cleanupCommand = vscode.commands.registerCommand('leak-lock.cleanup', async function () {
 		const selected = await selectOwnedDependencies('Remove Leak Lock dependencies');
 		if (selected) {
+			let failed = [];
 			await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
 				title: "Cleaning up Leak Lock dependencies...",
 				cancellable: false
 			}, async () => {
-				await cleanupDependencies(selected);
+				failed = await cleanupDependencies(selected);
 			});
-			vscode.window.showInformationMessage('Leak Lock cleanup completed!');
+			if (!failed.length) {
+				vscode.window.showInformationMessage('Leak Lock cleanup completed.');
+			}
 		}
 	});
 
@@ -374,6 +377,7 @@ async function cleanupDependencies(ids) {
 	if (failed.length) {
 		vscode.window.showWarningMessage(`Could not remove: ${failed.map(result => result.id).join(', ')}. See the user guide for manual commands.`);
 	}
+	return failed;
 }
 
 async function selectOwnedDependencies(title) {
