@@ -6,7 +6,6 @@ const { execFileSync } = require('child_process');
 const {
     createSession,
     loadLibraryInfo,
-    resolvePackagePath,
     inspectFinding,
     MAX_ARTIFACT_BYTES
 } = require('../credential-inspect');
@@ -40,9 +39,28 @@ suite('loadLibraryInfo', () => {
     });
 
     test('resolves the package from the runtime directory before the extension directory', () => {
-        const entry = resolvePackagePath();
-        assert.match(entry.replace(/\\\\/g, '/'), /node_modules\/@nikolareljin\/credential-lens\//);
-        assert.ok(fs.existsSync(entry));
+        const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-runtime-data-'));
+        const runtimePackage = path.join(
+            dataHome, 'leak-lock', 'credential-lens', 'node_modules', '@nikolareljin', 'credential-lens'
+        );
+        const loaderPath = path.join(__dirname, '..', 'credential-inspect.js');
+        const script = `
+            const loader = require(process.argv[1]);
+            const entry = loader.resolvePackagePath();
+            if (!entry.startsWith(process.env.XDG_DATA_HOME)) {
+                throw new Error('runtime package was not selected: ' + entry);
+            }
+        `;
+        try {
+            fs.mkdirSync(runtimePackage, { recursive: true });
+            fs.writeFileSync(path.join(runtimePackage, 'index.js'), 'module.exports = {};\n');
+            fs.writeFileSync(path.join(runtimePackage, 'package.json'), '{"name":"@nikolareljin/credential-lens","version":"0.0.0"}\n');
+            execFileSync(process.execPath, ['-e', script, loaderPath], {
+                env: { ...process.env, XDG_DATA_HOME: dataHome }
+            });
+        } finally {
+            fs.rmSync(dataHome, { recursive: true, force: true });
+        }
     });
 
     test('loads from the extension directory when the working directory has no package', () => {
