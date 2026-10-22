@@ -25,6 +25,7 @@ const binaryLookup = require('./binary-lookup');
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 const credentialInspect = require('./credential-inspect');
+const npmLauncher = require('./npm-launcher');
 const bfgStorage = require('./bfg-storage');
 const ownership = require('./dependency-ownership');
 
@@ -2051,20 +2052,14 @@ class LeakLockSidebarProvider {
 
     /** Run npm without a shell, including npm.cmd on Windows. */
     async _runNpm(args, options) {
-        const npm = this._dependencyStatus?.npm?.command || binaryLookup.resolveBinary('npm');
         const execFileAsync = require('util').promisify(require('child_process').execFile);
-        if (process.platform !== 'win32' || !npm.toLowerCase().endsWith('.cmd')) {
-            return execFileAsync(npm, args, options);
-        }
-
-        // npm.cmd cannot be launched by execFile. Node's adjacent npm-cli.js is
-        // the same supported npm entry point without a command shell.
-        const node = path.join(path.dirname(npm), 'node.exe');
-        const cli = path.join(path.dirname(npm), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-        if (!fs.existsSync(node) || !fs.existsSync(cli)) {
-            throw new Error(`npm was found at ${npm}, but its Node.js runtime is incomplete`);
-        }
-        return execFileAsync(node, [cli, ...args], options);
+        const configured = this._dependencyStatus?.npm?.command || binaryLookup.resolveBinary('npm');
+        // `execFile` cannot launch npm.cmd. Resolve the actual launcher before
+        // building the adjacent node/npm-cli invocation, including npm installed
+        // through a user-scoped manager such as Scoop or Volta.
+        const npm = await npmLauncher.resolveNpmCommand(configured, execFileAsync);
+        const invocation = npmLauncher.npmInvocation(npm, args);
+        return execFileAsync(invocation.command, invocation.args, options);
     }
 
     /**
