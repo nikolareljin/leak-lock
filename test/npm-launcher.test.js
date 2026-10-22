@@ -1,7 +1,22 @@
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { resolveNpmCommand, npmInvocation } = require('../npm-launcher');
+const { findInDirs } = require('../binary-lookup');
 
 suite('npm launcher', () => {
+
+    test('prefers npm.cmd over Node.js extensionless wrapper on Windows', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-npm-launcher-'));
+        try {
+            fs.writeFileSync(path.join(dir, 'npm'), '#!/bin/sh\n', { mode: 0o755 });
+            fs.writeFileSync(path.join(dir, 'npm.cmd'), '@echo off\r\n', { mode: 0o755 });
+            assert.strictEqual(findInDirs('npm', [dir], 'win32'), path.join(dir, 'npm.cmd'));
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
 
     test('resolves a PATH npm.cmd before launching it on Windows', async () => {
         const command = await resolveNpmCommand(

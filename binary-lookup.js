@@ -149,13 +149,16 @@ function addBinarySearchDir(dir) {
  * without either polluting `COMMON_BIN_DIRS` for every other tool or duplicating
  * the accessSync/.exe handling.
  */
-function findInDirs(name, dirs) {
+function findInDirs(name, dirs, platform = process.platform) {
     for (const dir of dirs) {
         if (!dir) {
             continue;
         }
-        const candidates = process.platform === 'win32'
-            ? [path.join(dir, name), path.join(dir, `${name}.exe`), path.join(dir, `${name}.cmd`)]
+        const candidates = platform === 'win32'
+            // Node.js ships an extensionless npm wrapper beside npm.cmd. It is a
+            // POSIX script, not a Windows executable, so execFile reports ENOENT
+            // when it wins this lookup. Prefer executable Windows launchers.
+            ? [path.join(dir, `${name}.exe`), path.join(dir, `${name}.cmd`), path.join(dir, name)]
             : [path.join(dir, name), path.join(dir, `${name}.exe`)];
         for (const candidate of candidates) {
             try {
