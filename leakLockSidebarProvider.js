@@ -2058,7 +2058,7 @@ class LeakLockSidebarProvider {
         // building the adjacent node/npm-cli invocation, including npm installed
         // through a user-scoped manager such as Scoop or Volta.
         const npm = await npmLauncher.resolveNpmCommand(configured, execFileAsync);
-        const invocation = npmLauncher.npmInvocation(npm, args);
+        const invocation = await npmLauncher.npmInvocation(npm, args, execFileAsync);
         return execFileAsync(invocation.command, invocation.args, options);
     }
 
