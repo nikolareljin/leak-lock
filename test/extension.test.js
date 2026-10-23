@@ -5284,6 +5284,59 @@ suite('An engine that cannot be installed as a binary can still run from Docker'
 			assert.match(html, /npm --version/);
 		});
 
+		test('an older credential-lens runtime is upgraded to the pinned version', async () => {
+			const credentialInspect = require('../credential-inspect');
+			const ownership = require('../dependency-ownership');
+			const nodeFs = require('fs');
+			const nodeOs = require('os');
+			const nodePath = require('path');
+			const tempRoot = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-lens-update-'));
+			const installRoot = nodePath.join(tempRoot, 'credential-lens');
+			const original = {
+				packageVersion: credentialInspect.packageVersion,
+				describe: credentialInspect.describeCredentialLensStatus,
+				runtimeBase: credentialInspect.runtimeInstallBase,
+				runtimeRoot: credentialInspect.runtimeInstallRoot,
+				packageSpec: credentialInspect.packageSpec,
+				reset: credentialInspect._resetModuleCache,
+				readOwned: ownership.readOwned,
+				recordOwned: ownership.recordOwned
+			};
+			const statuses = [
+				{ installed: true, version: '0.2.0' },
+				{ installed: true, version: '0.3.0' }
+			];
+			const calls = [];
+			try {
+				credentialInspect.packageVersion = () => '0.3.0';
+				credentialInspect.describeCredentialLensStatus = async () => statuses.shift();
+				credentialInspect.runtimeInstallBase = () => tempRoot;
+				credentialInspect.runtimeInstallRoot = () => installRoot;
+				credentialInspect.packageSpec = () => '@nikolareljin/credential-lens@0.3.0';
+				credentialInspect._resetModuleCache = () => {};
+				ownership.readOwned = () => [{ id: 'credential-lens', kind: 'directory', path: tempRoot }];
+				ownership.recordOwned = entry => calls.push({ type: 'owned', entry });
+				const p = Object.create(LeakLockSidebarProvider.prototype);
+				p._runNpm = async args => { calls.push({ type: 'npm', args }); };
+
+				const result = await p._installCredentialLens();
+				assert.deepStrictEqual(result, { ok: true, alreadyPresent: false });
+				assert.ok(calls.some(call => call.type === 'npm' && call.args.includes('@nikolareljin/credential-lens@0.3.0')));
+				assert.ok(calls.some(call => call.type === 'owned' && call.entry.path === tempRoot),
+					'the stable parent owns every installed version for safe cleanup');
+			} finally {
+				credentialInspect.packageVersion = original.packageVersion;
+				credentialInspect.describeCredentialLensStatus = original.describe;
+				credentialInspect.runtimeInstallBase = original.runtimeBase;
+				credentialInspect.runtimeInstallRoot = original.runtimeRoot;
+				credentialInspect.packageSpec = original.packageSpec;
+				credentialInspect._resetModuleCache = original.reset;
+				ownership.readOwned = original.readOwned;
+				ownership.recordOwned = original.recordOwned;
+				nodeFs.rmSync(tempRoot, { recursive: true, force: true });
+			}
+		});
+
 		test('Nosey Parker is offered with its archived status attached', () => {
 			const p = provider();
 			p._engineStatus = [];

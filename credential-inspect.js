@@ -29,15 +29,26 @@ const LOCKED_PACKAGE = require('./package-lock.json').packages[`node_modules/${P
 
 let modulePromise = null;
 
-function runtimeInstallRoot() {
+function runtimeInstallBase() {
     return path.join(path.dirname(bfgPath()), 'credential-lens');
 }
 
-function packageSpec() {
+function packageVersion() {
     if (!LOCKED_PACKAGE || LOCKED_PACKAGE.version !== PACKAGE_VERSION) {
         throw new Error(`package.json and package-lock.json disagree about ${PACKAGE_ID}`);
     }
-    return `${PACKAGE_ID}@${LOCKED_PACKAGE.version}`;
+    return LOCKED_PACKAGE.version;
+}
+
+function runtimeInstallRoot() {
+    // The ESM loader caches modules by their complete URL. Put each locked
+    // version below its own owned directory so an extension update cannot keep
+    // executing the previous runtime from the same on-disk path.
+    return path.join(runtimeInstallBase(), packageVersion());
+}
+
+function packageSpec() {
+    return `${PACKAGE_ID}@${packageVersion()}`;
 }
 
 function resolvePackagePath(request = PACKAGE_ID) {
@@ -246,7 +257,9 @@ module.exports = {
     describeCredentialLensStatus,
     inspectFinding,
     resolvePackagePath,
+    runtimeInstallBase,
     runtimeInstallRoot,
+    packageVersion,
     packageSpec,
     _resetModuleCache
 };

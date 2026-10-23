@@ -6,6 +6,9 @@ const { execFileSync } = require('child_process');
 const {
     createSession,
     loadLibraryInfo,
+    packageVersion,
+    runtimeInstallBase,
+    runtimeInstallRoot,
     inspectFinding,
     MAX_ARTIFACT_BYTES
 } = require('../credential-inspect');
@@ -32,6 +35,14 @@ suite('loadLibraryInfo', () => {
 
     suiteSetup(() => { PEM_KEY_BYTES = makeThrowawayKey(); });
 
+    test('returns the exact version pinned in package.json and package-lock.json', () => {
+        assert.strictEqual(packageVersion(), '0.3.0');
+    });
+
+    test('uses a versioned runtime path so an updated ESM package has a new module URL', () => {
+        assert.strictEqual(runtimeInstallRoot(), path.join(runtimeInstallBase(), packageVersion()));
+    });
+
     test('reports the installed version, because the panel must not claim ready without checking', async () => {
         const info = await loadLibraryInfo();
         assert.strictEqual(info.ok, true, info.ok ? '' : `import failed: ${info.error}`);
@@ -41,7 +52,7 @@ suite('loadLibraryInfo', () => {
     test('resolves the package from the runtime directory before the extension directory', () => {
         const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-runtime-data-'));
         const runtimePackage = path.join(
-            dataHome, 'leak-lock', 'credential-lens', 'node_modules', '@nikolareljin', 'credential-lens'
+            dataHome, 'leak-lock', 'credential-lens', '0.3.0', 'node_modules', '@nikolareljin', 'credential-lens'
         );
         const loaderPath = path.join(__dirname, '..', 'credential-inspect.js');
         const script = `

@@ -2043,8 +2043,9 @@ class LeakLockSidebarProvider {
 
     /** Install the pinned enrichment package outside the VSIX. */
     async _installCredentialLens() {
+        const expectedVersion = credentialInspect.packageVersion();
         const current = await credentialInspect.describeCredentialLensStatus();
-        if (current.installed) {
+        if (current.installed && current.version === expectedVersion) {
             return { ok: true, alreadyPresent: true };
         }
 
@@ -2056,15 +2057,16 @@ class LeakLockSidebarProvider {
         }
 
         const installRoot = credentialInspect.runtimeInstallRoot();
+        const installBase = credentialInspect.runtimeInstallBase();
         const owned = ownership.readOwned().some(entry => entry.id === 'credential-lens'
-            && entry.kind === 'directory' && entry.path === installRoot);
-        if (fs.existsSync(installRoot) && !owned) {
+            && entry.kind === 'directory' && entry.path === installBase);
+        if (fs.existsSync(installBase) && !owned) {
             return {
                 ok: false,
-                error: `Refusing to modify unowned credential-lens storage: ${installRoot}`
+                error: `Refusing to modify unowned credential-lens storage: ${installBase}`
             };
         }
-        const createdRoot = !fs.existsSync(installRoot);
+        const createdBase = !fs.existsSync(installBase);
         try {
             fs.mkdirSync(installRoot, { recursive: true, mode: 0o700 });
             await this._runNpm([
@@ -2074,19 +2076,20 @@ class LeakLockSidebarProvider {
             ], { timeout: 300000, maxBuffer: 1024 * 1024 });
             credentialInspect._resetModuleCache();
             const installed = await credentialInspect.describeCredentialLensStatus();
-            if (!installed.installed) {
-                throw new Error(installed.error || 'npm completed but credential-lens could not be loaded');
+            if (!installed.installed || installed.version !== expectedVersion) {
+                throw new Error(installed.error
+                    || `npm completed but credential-lens ${expectedVersion} could not be loaded`);
             }
             ownership.recordOwned({
                 id: 'credential-lens',
                 label: 'credential-lens enrichment package',
                 kind: 'directory',
-                path: installRoot
+                path: installBase
             });
             return { ok: true, alreadyPresent: false };
         } catch (error) {
-            if (createdRoot) {
-                fs.rmSync(installRoot, { recursive: true, force: true });
+            if (createdBase) {
+                fs.rmSync(installBase, { recursive: true, force: true });
             }
             return { ok: false, error: error.message || String(error) };
         }
