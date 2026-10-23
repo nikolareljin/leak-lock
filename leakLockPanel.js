@@ -7142,7 +7142,13 @@ class LeakLockPanel {
         if (engineId === 'foxguard' && error && error.killed) {
             return `Stopped after ${Math.round(cfg.foxguardTimeoutMs / 1000)}s. Increase leakLock.foxguard.timeoutSeconds to scan longer.`;
         }
-        return `Scan failed: ${error ? error.message : 'unknown error'}`;
+        const message = error ? error.message : 'unknown error';
+        const stderr = error && error.stderr ? String(error.stderr).trim() : '';
+        // execFile's generic "Command failed" error omits the diagnostic that
+        // identifies a missing Git executable or a rejected repository URL.
+        return stderr && !message.includes(stderr)
+            ? `Scan failed: ${message}\n${stderr.slice(0, 2000)}`
+            : `Scan failed: ${message}`;
     }
 
     /**

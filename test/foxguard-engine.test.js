@@ -40,6 +40,10 @@ suite('Foxguard code scan', () => {
             const note = panel._engineFailureNote('foxguard', { killed: true, message: 'Command failed' }, { foxguardTimeoutMs: 1800000 });
             assert.match(note, /Stopped after 1800s\. Increase leakLock\.foxguard\.timeoutSeconds/);
             assert.match(panel._engineFailureNote('gitleaks', new Error('boom'), {}), /^Scan failed: boom$/);
+            assert.match(
+                panel._engineFailureNote('trufflehog', { message: 'Command failed', stderr: 'exec: "git": executable file not found in %PATH%' }, {}),
+                /exec: "git": executable file not found/
+            );
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }

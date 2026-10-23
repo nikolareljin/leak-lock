@@ -1276,6 +1276,18 @@ suite('TruffleHog engine adapter', () => {
 		assert.strictEqual(args[1], 'file://D:/repos/thing');
 	});
 
+	test('a resolved Windows Git executable is available to TruffleHog', () => {
+		const env = engines.withCommandDirOnPath('C:\\Program Files\\Git\\cmd\\git.exe', {
+			env: { Path: 'C:\\Windows\\System32' }, platform: 'win32'
+		});
+		assert.strictEqual(env.Path, 'C:\\Program Files\\Git\\cmd;C:\\Windows\\System32');
+	});
+
+	test('a bare Git command leaves the inherited environment unchanged', () => {
+		const inherited = { PATH: '/usr/bin' };
+		assert.strictEqual(engines.withCommandDirOnPath('git', { env: inherited, platform: 'linux' }), inherited);
+	});
+
 	test('the Windows branch still honours verification flags', () => {
 		const off = engines.buildTruffleHogArgs({
 			repoDir: 'C:\\r', verify: false, platform: 'win32'

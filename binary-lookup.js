@@ -47,6 +47,10 @@ const COMMON_BIN_DIRS = [
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs') : '',
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'nodejs') : '',
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links') : '',
+    'C:\\Program Files\\Git\\cmd',
+    'C:\\Program Files\\Git\\bin',
+    'C:\\Program Files (x86)\\Git\\cmd',
+    'C:\\Program Files (x86)\\Git\\bin',
     'C:\\Program Files\\gitleaks',
     'C:\\ProgramData\\chocolatey\\bin'
 ].filter(Boolean);
