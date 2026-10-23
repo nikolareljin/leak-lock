@@ -9,5 +9,7 @@
 - Keep dependencies across extension reloads and offer a custom uninstall command with cleanup choices.
 - Keep credential-lens out of the VSIX. Dependencies Setup installs the pinned package into Leak Lock user storage before scanning.
 - Resolve credential-lens from Leak Lock user storage so workspaces cannot redirect module lookup.
+- Launch Windows npm.cmd launchers through Node.js, including Scoop shims.
+- Make Windows TruffleHog history scans find Git when VS Code does not inherit the Git for Windows PATH entry.
 - Raise the default Foxguard timeout from 120 seconds to 30 minutes for longer code scans.
 - Make npm run build validate the CommonJS sources directly; it no longer invokes an unbundled Babel command.
