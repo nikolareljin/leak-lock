@@ -37,6 +37,11 @@ suite('packaging', () => {
             pkg.dependencies['@nikolareljin/credential-lens']);
     });
 
+    test('does not declare an uninstall script that VS Code will not run', () => {
+        const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+        assert.strictEqual(pkg.scripts['vscode:uninstall'], undefined);
+    });
+
     test('the lockfile records the reviewed bytes, not just a reviewed version number', () => {
         // A version pin says which release; only the integrity hash says which
         // bytes. package-lock.json is committed precisely so this hash lives in

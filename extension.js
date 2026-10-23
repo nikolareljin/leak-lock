@@ -19,7 +19,6 @@ const binaryLookup = require('./binary-lookup');
 // The downloader the engine installs already use: no shell, no curl dependency,
 // and a destination path containing spaces stays one value.
 const engineInstall = require('./engine-install');
-const uninstall = require('./scripts/uninstall');
 const bfgStorage = require('./bfg-storage');
 const ownership = require('./dependency-ownership');
 
@@ -313,8 +312,15 @@ function activate(context) {
 	const uninstallCommand = vscode.commands.registerCommand('leak-lock.uninstall', async function () {
 		const selected = await selectOwnedDependencies('Remove dependencies after uninstall');
 		if (!selected) return;
-		uninstall.writeSelection({ ids: selected });
-		await vscode.commands.executeCommand('workbench.extensions.uninstallExtension', 'nikolareljin.leak-lock');
+		let result;
+		await vscode.window.withProgress({
+			location: vscode.ProgressLocation.Notification,
+			title: 'Removing selected Leak Lock dependencies...',
+			cancellable: false
+		}, async () => {
+			result = await uninstallAfterCleanup(selected);
+		});
+		if (!result.uninstalled) return;
 	});
 
 	// Make a call of project-scan.js for backward compatibility
@@ -380,6 +386,14 @@ async function cleanupDependencies(ids) {
 	return failed;
 }
 
+async function uninstallAfterCleanup(ids, remove = cleanupDependencies, uninstallExtension = () =>
+	vscode.commands.executeCommand('workbench.extensions.uninstallExtension', 'nikolareljin.leak-lock')) {
+	const failed = await remove(ids);
+	if (failed.length) return { uninstalled: false, failed };
+	await uninstallExtension();
+	return { uninstalled: true, failed: [] };
+}
+
 async function selectOwnedDependencies(title) {
 	const owned = ownership.readOwned();
 	if (!owned.length) {
@@ -399,5 +413,6 @@ async function selectOwnedDependencies(title) {
 
 module.exports = {
 	activate,
-	deactivate
+	deactivate,
+	uninstallAfterCleanup
 }

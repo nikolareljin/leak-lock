@@ -49,6 +49,28 @@ suite('Leak Lock Extension Test Suite', () => {
 	});
 });
 
+suite('Uninstall cleanup', () => {
+	test('removes selected dependencies before requesting extension uninstall', async () => {
+		const { uninstallAfterCleanup } = require('../extension');
+		const calls = [];
+		const result = await uninstallAfterCleanup(['bfg'], async ids => {
+			calls.push(`remove:${ids.join(',')}`);
+			return [];
+		}, async () => calls.push('uninstall'));
+		assert.deepStrictEqual(result, { uninstalled: true, failed: [] });
+		assert.deepStrictEqual(calls, ['remove:bfg', 'uninstall']);
+	});
+
+	test('does not uninstall when selected dependency removal fails', async () => {
+		const { uninstallAfterCleanup } = require('../extension');
+		let uninstalled = false;
+		const failed = [{ id: 'bfg', removed: false }];
+		const result = await uninstallAfterCleanup(['bfg'], async () => failed, async () => { uninstalled = true; });
+		assert.deepStrictEqual(result, { uninstalled: false, failed });
+		assert.strictEqual(uninstalled, false);
+	});
+});
+
 suite('Project website link', () => {
 	const WEBSITE_URL = 'https://nikolareljin.github.io/leak-lock/';
 

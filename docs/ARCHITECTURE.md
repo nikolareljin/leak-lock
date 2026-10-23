@@ -333,7 +333,7 @@ function activate(context) {
 ### Extension Deactivation
 
 `deactivate()` is intentionally non-destructive. The custom `Leak Lock: Uninstall Leak Lock`
-command records selected owned dependencies before it invokes the VS Code uninstall hook.
+command removes selected owned dependencies before it invokes VS Code's uninstall flow.
 This prevents a reload, disable, or normal extension update from deleting tools.
 
 ## 🎯 Design Patterns

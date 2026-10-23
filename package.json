@@ -363,7 +363,6 @@
     "test": "vscode-test",
     "build": "node tools/check-sources.js",
     "prepare": "node tools/install-git-hooks.js",
-    "vscode:uninstall": "node ./scripts/uninstall.js",
     "check:release": "node tools/release-notes.js --check"
   },
   "devDependencies": {
