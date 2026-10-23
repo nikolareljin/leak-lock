@@ -1175,6 +1175,41 @@ class LeakLockSidebarProvider {
                             ? `v${escapeHtml(this._dependencyStatus.npm.version)}`
                             : `unavailable. ${escapeHtml(this._dependencyStatus.npm?.error || 'Install Node.js, which includes npm.')}`}
                     </div>
+                    ${this._dependencyStatus.npm && !this._dependencyStatus.npm.installed ? `
+                        <div class="install-instructions">
+                            <div class="install-guide">
+                                <strong>How to install Node.js and npm:</strong>
+                                <div class="install-steps">
+                                    <div class="install-platform">
+                                        <strong>Windows:</strong>
+                                        <ol>
+                                            <li>Download the <a href="https://nodejs.org/en/download" target="_blank">Node.js LTS installer</a>, or run <code>winget install OpenJS.NodeJS.LTS</code> in PowerShell.</li>
+                                            <li>Complete the installer with the default PATH option enabled.</li>
+                                            <li>Restart VS Code, then verify: <code>node --version</code> and <code>npm --version</code>.</li>
+                                        </ol>
+                                    </div>
+                                    <div class="install-platform">
+                                        <strong>macOS:</strong>
+                                        <ol>
+                                            <li>Download the <a href="https://nodejs.org/en/download" target="_blank">Node.js LTS installer</a>, or run <code>brew install node</code>.</li>
+                                            <li>Restart VS Code, then verify: <code>node --version</code> and <code>npm --version</code>.</li>
+                                        </ol>
+                                    </div>
+                                    <div class="install-platform">
+                                        <strong>Linux:</strong>
+                                        <ol>
+                                            <li>Install Node.js LTS and npm using your distribution's supported package manager.</li>
+                                            <li>See the <a href="https://nodejs.org/en/download/package-manager" target="_blank">Node.js package-manager guide</a> for supported distributions.</li>
+                                            <li>Restart VS Code, then verify: <code>node --version</code> and <code>npm --version</code>.</li>
+                                        </ol>
+                                    </div>
+                                </div>
+                                <div class="help-note">
+                                    Node.js includes npm. Reinstall the current LTS release if <code>node --version</code> works but <code>npm --version</code> does not.
+                                </div>
+                            </div>
+                        </div>
+                    ` : ''}
                 ` : ''}
 
                 <button class="install-button" onclick="installDependencies()" ${this._isInstalling ? 'disabled' : ''}>

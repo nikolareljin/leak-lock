@@ -481,7 +481,8 @@ but does not decide whether a scan can run. Git itself is required, as is creden
 Dependencies Setup installs the pinned credential-lens package into Leak Lock-owned user
 storage before scanning. Install Node.js, which includes npm, from
 https://nodejs.org/en/download if the dependency panel reports npm unavailable. The VSIX does
-not contain `node_modules`.
+not contain `node_modules`. Dependencies Setup provides Windows, macOS, and Linux installation
+steps, then asks you to restart VS Code and verify `node --version` and `npm --version`.
 
 **Optional — everything else.** Their absence is named next to "Dependencies ready" rather
 than blocking anything:

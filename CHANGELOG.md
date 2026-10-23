@@ -8,6 +8,7 @@
 - Keep credential-lens out of the VSIX. Dependencies Setup installs the pinned package into Leak Lock user storage before scanning.
 - Launch Windows npm.cmd launchers through Node.js, including Scoop shims.
 - Make Windows TruffleHog history scans find Git when VS Code does not inherit the Git for Windows PATH entry.
+- Show Windows, macOS, and Linux Node.js/npm installation instructions when credential-lens cannot run npm.
 
 ## 2026-10-20 - v0.11.0
 

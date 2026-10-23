@@ -68,6 +68,11 @@ outside the VSIX in Leak Lock-owned user storage. Node.js, including npm, is req
 use https://nodejs.org/en/download when the panel reports that npm is unavailable.
 Uninstall offers to remove it only when Leak Lock recorded installing it.
 
+Dependencies Setup shows platform-specific Node.js/npm steps when npm is unavailable:
+Windows supports the LTS installer or `winget install OpenJS.NodeJS.LTS`, macOS supports the
+LTS installer or `brew install node`, and Linux links to the Node.js package-manager guide.
+After installation, restart VS Code and verify `node --version` and `npm --version`.
+
 ---
 
 ## 🔍 Scanning Your Repository

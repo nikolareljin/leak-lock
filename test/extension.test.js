@@ -5265,6 +5265,25 @@ suite('An engine that cannot be installed as a binary can still run from Docker'
 			assert.ok(!/BFG tool not downloaded/.test(html), 'downloading it would not help');
 		});
 
+		test('missing npm shows Node.js setup instructions for every supported platform', () => {
+			const p = provider();
+			p._engineStatus = [];
+			p._dependencyStatus = {
+				docker: { installed: true }, noseyparker: { installed: true },
+				java: { installed: true }, bfg: { installed: true },
+				credentialLens: { installed: false, error: 'npm unavailable' },
+				npm: { installed: false, error: 'npm could not run: spawn npm ENOENT' }, missing: []
+			};
+			const html = p._getDependenciesSection();
+
+			assert.match(html, /How to install Node\.js and npm/);
+			assert.match(html, /winget install OpenJS\.NodeJS\.LTS/);
+			assert.match(html, /brew install node/);
+			assert.match(html, /nodejs\.org\/en\/download\/package-manager/);
+			assert.match(html, /node --version/);
+			assert.match(html, /npm --version/);
+		});
+
 		test('Nosey Parker is offered with its archived status attached', () => {
 			const p = provider();
 			p._engineStatus = [];
