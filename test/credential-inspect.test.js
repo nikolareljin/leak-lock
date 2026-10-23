@@ -6,7 +6,9 @@ const { execFileSync } = require('child_process');
 const {
     createSession,
     loadLibraryInfo,
-    resolvePackagePath,
+    packageVersion,
+    runtimeInstallBase,
+    runtimeInstallRoot,
     inspectFinding,
     MAX_ARTIFACT_BYTES
 } = require('../credential-inspect');
@@ -33,16 +35,43 @@ suite('loadLibraryInfo', () => {
 
     suiteSetup(() => { PEM_KEY_BYTES = makeThrowawayKey(); });
 
-    test('reports the bundled version, because the panel must not claim ready without checking', async () => {
+    test('returns the exact version pinned in package.json and package-lock.json', () => {
+        assert.strictEqual(packageVersion(), '0.3.0');
+    });
+
+    test('uses a versioned runtime path so an updated ESM package has a new module URL', () => {
+        assert.strictEqual(runtimeInstallRoot(), path.join(runtimeInstallBase(), packageVersion()));
+    });
+
+    test('reports the installed version, because the panel must not claim ready without checking', async () => {
         const info = await loadLibraryInfo();
         assert.strictEqual(info.ok, true, info.ok ? '' : `import failed: ${info.error}`);
         assert.match(info.version, /^\d+\.\d+\.\d+$/);
     });
 
-    test('resolves the bundled package from the extension directory', () => {
-        const entry = resolvePackagePath();
-        assert.match(entry.replace(/\\\\/g, '/'), /node_modules\/@nikolareljin\/credential-lens\//);
-        assert.ok(fs.existsSync(entry));
+    test('resolves the package from the runtime directory before the extension directory', () => {
+        const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), 'leaklock-runtime-data-'));
+        const runtimePackage = path.join(
+            dataHome, 'leak-lock', 'credential-lens', '0.3.0', 'node_modules', '@nikolareljin', 'credential-lens'
+        );
+        const loaderPath = path.join(__dirname, '..', 'credential-inspect.js');
+        const script = `
+            const loader = require(process.argv[1]);
+            const entry = loader.resolvePackagePath();
+            if (!entry.startsWith(process.env.XDG_DATA_HOME)) {
+                throw new Error('runtime package was not selected: ' + entry);
+            }
+        `;
+        try {
+            fs.mkdirSync(runtimePackage, { recursive: true });
+            fs.writeFileSync(path.join(runtimePackage, 'index.js'), 'module.exports = {};\n');
+            fs.writeFileSync(path.join(runtimePackage, 'package.json'), '{"name":"@nikolareljin/credential-lens","version":"0.0.0"}\n');
+            execFileSync(process.execPath, ['-e', script, loaderPath], {
+                env: { ...process.env, XDG_DATA_HOME: dataHome }
+            });
+        } finally {
+            fs.rmSync(dataHome, { recursive: true, force: true });
+        }
     });
 
     test('loads from the extension directory when the working directory has no package', () => {

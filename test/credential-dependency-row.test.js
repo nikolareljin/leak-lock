@@ -8,27 +8,26 @@ suite('describeCredentialLensStatus', () => {
             load: async () => ({ ok: true, version: '0.3.0' })
         });
         assert.deepStrictEqual(status, {
-            installed: true, bundled: true, version: '0.3.0', error: null
+            installed: true, version: '0.3.0', error: null
         });
     });
 
-    test('a bundled-but-unloadable package reports the error, not readiness', async () => {
+    test('an unavailable runtime package reports the error, not readiness', async () => {
         const status = await describeCredentialLensStatus({
             load: async () => ({ ok: false, error: 'ERR_MODULE_NOT_FOUND' })
         });
         assert.strictEqual(status.installed, false);
-        assert.strictEqual(status.bundled, true);
         assert.match(status.error, /ERR_MODULE_NOT_FOUND/);
     });
 
-    test('never blocks: the status carries no gating flag', async () => {
+    test('leaves scan gating to the dependency verdict', async () => {
         const status = await describeCredentialLensStatus({
             load: async () => ({ ok: false, error: 'x' })
         });
         assert.strictEqual(status.blocking, undefined);
     });
 
-    test('against the really bundled package, it resolves', async () => {
+    test('against the development package, it resolves', async () => {
         // The whole point of the row: it must reflect a load that happened, so
         // a .vsix built without the dependency shows as broken here rather than
         // at the user's first click.

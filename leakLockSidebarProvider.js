@@ -25,6 +25,9 @@ const binaryLookup = require('./binary-lookup');
 // leakLockPanel.js so both webviews escape identically.
 const { escapeHtml } = require('./html-escape');
 const credentialInspect = require('./credential-inspect');
+const npmLauncher = require('./npm-launcher');
+const bfgStorage = require('./bfg-storage');
+const ownership = require('./dependency-ownership');
 
 /**
  * The `java` to run: the configured path, or whatever the lookup can find.
@@ -71,11 +74,16 @@ class LeakLockSidebarProvider {
      * @param {vscode.Uri} [storageUri] global storage; engines are installed here
      *   rather than in the extension directory, which an update replaces wholesale.
      */
-    constructor(extensionUri, storageUri) {
+    constructor(extensionUri, storageUri, options = {}) {
         this._extensionUri = extensionUri;
+        this._bfgPath = options.bfgPath || bfgStorage.bfgPath();
         this._engineInstallDir = engineInstall.engineInstallDir(
             (storageUri && storageUri.fsPath) || extensionUri.fsPath
         );
+        // Engine ownership records written before 0.11.1 did not persist their
+        // install directory. Upgrade only records that match this active storage
+        // path, so cleanup remains available without broadening its delete scope.
+        ownership.migrateOwnedEngineDirectories(this._engineInstallDir);
         // Register before any probe: a binary Leak Lock installed lives on no PATH, so
         // without this the extension could download an engine and still call it missing.
         scanEngines.addBinarySearchDir(this._engineInstallDir);
@@ -908,6 +916,7 @@ class LeakLockSidebarProvider {
         const dockerStatus = this._dependencyStatus?.docker?.installed ? '✅' : '❌';
         const noseyparkerStatus = this._dependencyStatus?.noseyparker?.installed ? '✅' : '❌';
         const filterRepo = this._dependencyStatus?.filterRepo || {};
+        const python = this._dependencyStatus?.python || {};
         // Installed but confined is not ready: a snap build cannot read a repository
         // outside $HOME, so the rewrite fails before it touches a commit.
         const filterRepoStatus = filterRepo.installed ? (filterRepo.confined ? '⚠️' : '✅') : '⚠️';
@@ -915,10 +924,21 @@ class LeakLockSidebarProvider {
         // button cannot promise pip and then invoke Homebrew. Naming the installer
         // matters here: it is what the user has to uninstall or re-run by hand.
         const filterRepoInstall = gitRewrite.buildFilterRepoInstallCommand();
-        const filterRepoInstaller = /(^|[\\/])brew$/.test(filterRepoInstall.command) ? 'Homebrew' : 'pip';
+        const filterRepoInstaller = /(^|[\\/])brew$/.test(filterRepoInstall.command)
+            ? 'Homebrew'
+            : process.platform === 'linux' && python.pipx ? 'pipx'
+                : process.platform === 'linux' ? 'private Python environment' : 'pip';
+        const filterRepoNeedsPython = filterRepoInstaller !== 'Homebrew'
+            && !(process.platform === 'linux' && python.pipx);
+        const pythonStatus = python.installed ? '✅' : '⚠️';
+        const pipxStatus = python.pipx ? '✅' : '⚪';
         const filterRepoInstallCommand = filterRepoInstaller === 'Homebrew'
             ? 'brew install git-filter-repo'
-            : `${filterRepoInstall.command} ${filterRepoInstall.args.join(' ')}`;
+            : filterRepoInstaller === 'pipx'
+                ? 'pipx install --force git-filter-repo'
+                : filterRepoInstaller === 'private Python environment'
+                    ? 'Use the Install git-filter-repo button to create a private environment'
+                    : `${filterRepoInstall.command} ${filterRepoInstall.args.join(' ')}`;
         const javaStatus = this._dependencyStatus?.java?.installed ? '✅' : '⚠️';
         // BFG without a JVM is not a tool, it is a file. Marked unavailable rather than
         // merely "not downloaded", which would suggest downloading it would help.
@@ -1018,6 +1038,20 @@ class LeakLockSidebarProvider {
                 <div class="status-item">
                     <span><span class="status-icon">${filterRepoStatus}</span>git-filter-repo</span>
                 </div>
+                <div class="status-item">
+                    <span><span class="status-icon">${pythonStatus}</span>Python 3 (Git-only cleanup)</span>
+                </div>
+                <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                    ${python.installed ? escapeHtml(python.version || 'installed') : escapeHtml(python.error || 'not found')}
+                </div>
+                ${process.platform === 'linux' ? `
+                    <div class="status-item">
+                        <span><span class="status-icon">${pipxStatus}</span>pipx (preferred)</span>
+                    </div>
+                    <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                        ${python.pipx ? 'Leak Lock will use pipx for git-filter-repo.' : 'Not found. Leak Lock will use its private Python environment.'}
+                    </div>
+                ` : ''}
                 ${filterRepo.installed && !filterRepo.confined ? `
                     <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
                         ${escapeHtml(filterRepo.form || 'installed')}${filterRepo.version ? ` — ${escapeHtml(filterRepo.version)}` : ''}
@@ -1042,7 +1076,13 @@ class LeakLockSidebarProvider {
                             Without it the Git-only cleanup cannot rewrite history. The prepared script and the
                             manual commands are still shown, and BFG remains available if you have Java.
                         </div>
-                        <button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (${filterRepoInstaller})</button>
+                        ${filterRepoNeedsPython && !python.installed ? `
+                            <div class="error-message">Python 3 is not available.</div>
+                            <div style="font-size: 11px; margin-top: 4px;">
+                                Install <a href="https://www.python.org/downloads/" target="_blank">Python 3</a> for your platform.
+                                On Linux, install <a href="https://pipx.pypa.io/stable/installation/" target="_blank">pipx</a> with your distribution's supported package manager; Leak Lock prefers it when available.
+                            </div>
+                        ` : `<button class="install-button" onclick="installFilterRepo()">📦 Install git-filter-repo (${filterRepoInstaller})</button>`}
                     </div>
                 ` : ''}
 
@@ -1079,11 +1119,11 @@ class LeakLockSidebarProvider {
                                     </ol>
                                 </div>
                                 <div class="install-platform">
-                                    <strong>🐧 Linux (Ubuntu/Debian):</strong>
+                                    <strong>🐧 Linux:</strong>
                                     <ol>
-                                        <li><code>sudo apt update</code></li>
-                                        <li><code>sudo apt install openjdk-21-jdk</code></li>
-                                        <li>Verify: <code>java -version</code></li>
+                                        <li>Install an LTS JDK using your distribution's supported package manager.</li>
+                                        <li>See the <a href="https://adoptium.net/installation/linux/" target="_blank">Adoptium Linux installation guide</a> for supported distributions.</li>
+                                        <li>Verify: <code>java -version</code>.</li>
                                     </ol>
                                 </div>
                             </div>
@@ -1121,20 +1161,55 @@ class LeakLockSidebarProvider {
                 ` : '')}
 
                 ${this._dependencyStatus?.credentialLens ? `
-                    <!-- Bundled with the extension, so there is nothing to install.
-                         The tick reflects a successful dynamic import, not the mere
-                         presence of a dependency entry: a .vsix built without the
-                         package must show as broken here, rather than at the user's
-                         first click on a Secret cell. -->
                     <div class="status-item">
                         <span><span class="status-icon">${this._dependencyStatus.credentialLens.installed ? '✅' : '❌'}</span>credential-lens${this._dependencyStatus.credentialLens.version ? ` v${escapeHtml(this._dependencyStatus.credentialLens.version)}` : ''}</span>
                     </div>
                     <div style="font-size: 10px; color: ${this._dependencyStatus.credentialLens.installed ? 'var(--vscode-descriptionForeground)' : 'var(--vscode-inputValidation-warningForeground)'}; margin-left: 20px; margin-bottom: 5px;">
                         ${this._dependencyStatus.credentialLens.installed
-                            ? 'Bundled with Leak Lock — nothing to install. Identifies keys, certificates and tokens in scan results.'
-                            : 'Bundled but could not be loaded, so credential details are unavailable. Scanning is unaffected.'}
+                            ? 'Installed by Leak Lock. Identifies keys, certificates and tokens in scan results.'
+                            : 'Not installed. Dependencies Setup installs it before scanning.'}
                         ${this._dependencyStatus.credentialLens.error ? `<br>${escapeHtml(this._dependencyStatus.credentialLens.error)}` : ''}
                     </div>
+                    <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 20px; margin-bottom: 5px;">
+                        npm: ${this._dependencyStatus.npm?.installed
+                            ? `v${escapeHtml(this._dependencyStatus.npm.version)}`
+                            : `unavailable. ${escapeHtml(this._dependencyStatus.npm?.error || 'Install Node.js, which includes npm.')}`}
+                    </div>
+                    ${this._dependencyStatus.npm && !this._dependencyStatus.npm.installed ? `
+                        <div class="install-instructions">
+                            <div class="install-guide">
+                                <strong>How to install Node.js and npm:</strong>
+                                <div class="install-steps">
+                                    <div class="install-platform">
+                                        <strong>Windows:</strong>
+                                        <ol>
+                                            <li>Download the <a href="https://nodejs.org/en/download" target="_blank">Node.js LTS installer</a>, or run <code>winget install OpenJS.NodeJS.LTS</code> in PowerShell.</li>
+                                            <li>Complete the installer with the default PATH option enabled.</li>
+                                            <li>Restart VS Code, then verify: <code>node --version</code> and <code>npm --version</code>.</li>
+                                        </ol>
+                                    </div>
+                                    <div class="install-platform">
+                                        <strong>macOS:</strong>
+                                        <ol>
+                                            <li>Download the <a href="https://nodejs.org/en/download" target="_blank">Node.js LTS installer</a>, or run <code>brew install node</code>.</li>
+                                            <li>Restart VS Code, then verify: <code>node --version</code> and <code>npm --version</code>.</li>
+                                        </ol>
+                                    </div>
+                                    <div class="install-platform">
+                                        <strong>Linux:</strong>
+                                        <ol>
+                                            <li>Install Node.js LTS and npm using your distribution's supported package manager.</li>
+                                            <li>See the <a href="https://nodejs.org/en/download/package-manager" target="_blank">Node.js package-manager guide</a> for supported distributions.</li>
+                                            <li>Restart VS Code, then verify: <code>node --version</code> and <code>npm --version</code>.</li>
+                                        </ol>
+                                    </div>
+                                </div>
+                                <div class="help-note">
+                                    Node.js includes npm. Reinstall the current LTS release if <code>node --version</code> works but <code>npm --version</code> does not.
+                                </div>
+                            </div>
+                        </div>
+                    ` : ''}
                 ` : ''}
 
                 <button class="install-button" onclick="installDependencies()" ${this._isInstalling ? 'disabled' : ''}>
@@ -1155,9 +1230,9 @@ class LeakLockSidebarProvider {
                              wrong in both directions: neither is required when Gitleaks
                              and TruffleHog are the enabled engines, and neither being
                              present makes a scan possible when those two are absent. -->
-                        ⚠️ Not ready to scan — no scan engine is installed.<br>
-                        Install <strong>at least one</strong> of Gitleaks, TruffleHog or Nosey Parker below.${(this._dependencyStatus?.missing || []).includes('credential-lens')
-                            ? '<br>credential-lens could not be loaded either — it ships with the extension, so this indicates a broken install.'
+                        ⚠️ Not ready to scan.<br>
+                        Install the missing dependencies below.${(this._dependencyStatus?.missing || []).includes('credential-lens')
+                            ? '<br>credential-lens requires Node.js and npm. Dependencies Setup installs the pinned package after npm is available.'
                             : ''}
                     </div>
                 ` : ''}
@@ -1165,6 +1240,7 @@ class LeakLockSidebarProvider {
                 <div style="font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 10px; line-height: 1.3;">
                     <strong>Prerequisites:</strong><br>
                     • Internet connection to download the engine binaries<br>
+                    • Node.js and npm for credential-lens<br>
                     • Docker Engine running — only for the optional Nosey Parker engine<br>
                     • Java 8+ recommended for automated BFG execution
                 </div>
@@ -1349,9 +1425,8 @@ class LeakLockSidebarProvider {
 
     /**
      * Install git-filter-repo, using whichever installer suits the platform:
-     * Homebrew on macOS when it is present, otherwise pip into the user site
-     * rather than a system prefix, so no elevation is needed and PEP 668's
-     * "externally managed environment" refusal does not apply.
+     * Homebrew on macOS when it is present. Linux uses pipx or a private virtual
+     * environment, so PEP 668 never requires changing the system Python.
      *
      * The install is verified by re-probing rather than by trusting the exit
      * code: a successful install into a directory that is not on this VS Code
@@ -1362,7 +1437,14 @@ class LeakLockSidebarProvider {
      */
     async _installFilterRepo() {
         const execFileAsync = require('util').promisify(require('child_process').execFile);
-        const { command, args } = gitRewrite.buildFilterRepoInstallCommand();
+        const run = async (command, args) => execFileAsync(command, args, { maxBuffer: 16 * 1024 * 1024 });
+        let installDescription;
+        const before = await gitRewrite.detectFilterRepo();
+        if (before.installed && !before.confined) {
+            vscode.window.showInformationMessage(`git-filter-repo is already available (${before.form}).`);
+            return;
+        }
+        let ownedEntry = null;
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -1370,13 +1452,47 @@ class LeakLockSidebarProvider {
             cancellable: false
         }, async () => {
             try {
-                await execFileAsync(command, args, { maxBuffer: 16 * 1024 * 1024 });
+                if (process.platform === 'linux') {
+                    const pipx = binaryLookup.findInDirs('pipx', binaryLookup.COMMON_BIN_DIRS);
+                    if (pipx) {
+                        installDescription = `${pipx} install --force git-filter-repo`;
+                        await run(pipx, ['install', '--force', 'git-filter-repo']);
+                        ownedEntry = { id: 'git-filter-repo-pipx', label: 'git-filter-repo (pipx)', kind: 'pipx-package', command: pipx, package: 'git-filter-repo' };
+                    } else {
+                        const python = binaryLookup.resolveBinary('python3');
+                        const environment = gitRewrite.managedFilterRepoDir();
+                        const environmentPython = path.join(environment, 'bin', 'python');
+                        installDescription = `${python} -m venv ${environment}`;
+                        try {
+                            await run(python, ['-m', 'venv', environment]);
+                            await run(environmentPython, ['-m', 'pip', 'install', '--upgrade', 'git-filter-repo']);
+                            ownedEntry = { id: 'git-filter-repo-managed', label: 'git-filter-repo managed environment', kind: 'directory', path: environment };
+                        } catch {
+                            // Some minimal Python installations omit venv. The package is
+                            // still user-scoped; this explicit flag is required only by
+                            // PEP 668 distributions and never writes the system prefix.
+                            // Do not leave a half-created private environment behind when
+                            // its pip bootstrap failed and the fallback is selected.
+                            fs.rmSync(environment, { recursive: true, force: true });
+                            installDescription = `${python} -m pip install --user --break-system-packages --upgrade git-filter-repo`;
+                            await run(python, ['-m', 'pip', 'install', '--user', '--break-system-packages', '--upgrade', 'git-filter-repo']);
+                            ownedEntry = { id: 'git-filter-repo-pip-user', label: 'git-filter-repo Python user package', kind: 'pip-user-package', python, package: 'git-filter-repo' };
+                        }
+                    }
+                } else {
+                    const { command, args } = gitRewrite.buildFilterRepoInstallCommand();
+                    installDescription = `${command} ${args.join(' ')}`;
+                    await run(command, args);
+                    ownedEntry = /(^|[\\/])brew$/.test(command)
+                        ? { id: 'git-filter-repo-homebrew', label: 'git-filter-repo (Homebrew)', kind: 'homebrew-package', command, package: 'git-filter-repo' }
+                        : { id: 'git-filter-repo-pip-user', label: 'git-filter-repo Python user package', kind: 'pip-user-package', python: command, package: 'git-filter-repo' };
+                }
             } catch (error) {
                 const detail = [error.stderr, error.stdout, error.message]
                     .map(part => (typeof part === 'string' ? part : String(part || '')))
                     .find(part => part.trim());
                 throw new Error(
-                    `${command} ${args.join(' ')} failed. ${String(detail || '').split('\n')[0]}`
+                    `${installDescription || 'git-filter-repo installation'} failed. ${String(detail || '').split('\n')[0]}`
                 );
             }
         });
@@ -1387,6 +1503,7 @@ class LeakLockSidebarProvider {
         this._updateView();
 
         if (status.installed && !status.confined) {
+            if (ownedEntry) ownership.recordOwned(ownedEntry);
             vscode.window.showInformationMessage(
                 `git-filter-repo is ready (${status.form}${status.version ? `, ${status.version}` : ''}).`
             );
@@ -1402,7 +1519,7 @@ class LeakLockSidebarProvider {
         // names a directory with nothing to do with what they did -- and the same
         // applies to naming ~/.local/bin on the macOS system Python, which writes to
         // ~/Library/Python/<version>/bin instead.
-        const usedBrew = /(^|[\\/])brew$/.test(command);
+        const usedBrew = /(^|[\\/])brew$/.test(installDescription || '');
         const remedy = usedBrew
             ? 'Homebrew installed it, but Leak Lock cannot see it. Check `brew --prefix` is one of '
                 + 'the searched locations, or reinstall with `brew reinstall git-filter-repo`'
@@ -1415,7 +1532,7 @@ class LeakLockSidebarProvider {
                     : 'Add your user scripts directory (usually ~/.local/bin) to PATH — '
                         + '`python3 -m site --user-base` prints its parent';
         vscode.window.showWarningMessage(
-            `${command} reported success, but git-filter-repo still cannot be located. ${remedy}, `
+            `${installDescription} reported success, but git-filter-repo still cannot be located. ${remedy}, `
             + 'then reload the window.'
         );
     }
@@ -1430,6 +1547,8 @@ class LeakLockSidebarProvider {
             docker: { installed: false, version: null, error: null },
             noseyparker: { installed: false, error: null },
             java: { installed: false, version: null, error: null },
+            python: { installed: false, pipx: false, version: null, error: null },
+            npm: { installed: false, command: null, version: null, error: null },
             bfg: { installed: false, path: null, error: null },
             // The Git-only cleanup route. Reported here because "can this machine
             // remove a secret from history" is a setup question, and it used to be
@@ -1490,12 +1609,47 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.java.error = 'Java not installed or not in PATH';
         }
 
+        // pipx is preferred on Linux. Python remains a supported fallback because
+        // minimal environments often ship Python without pipx but with venv.
+        const pythonName = process.platform === 'win32' ? 'python' : 'python3';
+        const pythonCommand = binaryLookup.resolveBinary(pythonName);
+        try {
+            const { stdout } = await execFileAsync(pythonCommand, ['--version'], { timeout: 15000 });
+            this._dependencyStatus.python.installed = true;
+            this._dependencyStatus.python.version = String(stdout).trim() || 'installed';
+        } catch {
+            this._dependencyStatus.python.error = 'Python 3 not installed or not in PATH';
+        }
+        this._dependencyStatus.python.pipx = Boolean(
+            binaryLookup.findInDirs('pipx', binaryLookup.COMMON_BIN_DIRS)
+        );
+
+        const npmCommand = binaryLookup.resolveBinary('npm');
+        try {
+            this._dependencyStatus.npm.command = npmCommand;
+            const { stdout } = await this._runNpm(['--version'], { timeout: 15000 });
+            this._dependencyStatus.npm = {
+                installed: true,
+                command: npmCommand,
+                version: String(stdout).trim() || 'installed',
+                error: null
+            };
+        } catch (error) {
+            const detail = error && error.message ? error.message : String(error);
+            this._dependencyStatus.npm = {
+                installed: false,
+                command: npmCommand,
+                version: null,
+                error: `npm could not run: ${detail}`
+            };
+        }
+
         // Check git-filter-repo: either installation form is fine, and a confined
         // snap build is reported as installed-but-limited rather than as ready.
         this._dependencyStatus.filterRepo = await gitRewrite.detectFilterRepo();
 
         // Check BFG tool
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const bfgPath = this._bfgPath;
         if (fs.existsSync(bfgPath)) {
             this._dependencyStatus.bfg.installed = true;
             this._dependencyStatus.bfg.path = bfgPath;
@@ -1503,10 +1657,9 @@ class LeakLockSidebarProvider {
             this._dependencyStatus.bfg.error = 'BFG tool not downloaded';
         }
 
-        // credential-lens is bundled, so this is a load check, not an install
-        // check — and it is deliberately resolved before `missing` is computed
-        // but never added to it. The engines perform the scan; an enrichment
-        // library must not be able to report setup as incomplete.
+        // credential-lens is installed into Leak Lock's per-user storage by
+        // Dependencies Setup. It is required before scanning so the package is
+        // never fetched while handling sensitive scan output.
         this._dependencyStatus.credentialLens = await credentialInspect.describeCredentialLensStatus();
 
         // The engines that actually scan decide whether setup is complete.
@@ -1565,19 +1718,17 @@ class LeakLockSidebarProvider {
     _missingRequiredDependencies() {
         const missing = [];
 
+        if (this._dependencyStatus?.credentialLens
+            && !this._dependencyStatus.credentialLens.installed) {
+            missing.push('credential-lens');
+        }
+
         // One working scanner is the whole requirement. Demanding every enabled
         // engine blocked setup over an engine the user did not need — "missing:
         // Nosey Parker image" while Gitleaks sat installed and ready. A second
         // engine widens coverage; it does not decide whether a scan can run.
         if (this._installedScanners().length === 0) {
             missing.push('at least one scan engine (Gitleaks, TruffleHog or Nosey Parker)');
-            // Named alongside, because the fix for both is the same trip through
-            // Dependencies Setup. It is bundled, so its absence means a broken
-            // build rather than something the user forgot to install.
-            if (this._dependencyStatus?.credentialLens
-                && !this._dependencyStatus.credentialLens.installed) {
-                missing.push('credential-lens');
-            }
         }
 
         return missing;
@@ -1651,13 +1802,6 @@ class LeakLockSidebarProvider {
         if (!this._dependencyStatus?.docker?.installed) {
             optional.push('Docker');
         }
-        if (this._dependencyStatus?.credentialLens
-            && !this._dependencyStatus.credentialLens.installed
-            && this._installedScanners().length > 0) {
-            // Scanning is unaffected; only the credential details are lost.
-            optional.push('credential-lens');
-        }
-
         // De-duplicate: Nosey Parker can arrive both as an uninstalled engine
         // and as a missing image.
         return [...new Set(optional)];
@@ -1811,6 +1955,7 @@ class LeakLockSidebarProvider {
 
         let dockerError = null;
         const engineResults = [];
+        let credentialLensResult = null;
 
         // Only when something needs it. Nosey Parker is the sole component that does,
         // and pulling a several-hundred-megabyte image — or reporting a Docker error —
@@ -1869,6 +2014,8 @@ class LeakLockSidebarProvider {
         // a window reload recovers it. The failure is unlikely; the state it leaves is
         // unrecoverable, which is the combination worth guarding.
         try {
+            credentialLensResult = await this._installCredentialLens();
+
             // BFG depends on Java and on nothing else. Downloading it inside the Docker
             // block meant a missing Docker skipped it, which is the same "one component
             // failing cancels an unrelated one" defect this release exists to remove.
@@ -1890,8 +2037,74 @@ class LeakLockSidebarProvider {
         }
 
         await this._checkDependencies();
-        this._reportSetupOutcome(dockerError, engineResults);
+        this._reportSetupOutcome(dockerError, engineResults, credentialLensResult);
         this._updateView();
+    }
+
+    /** Install the pinned enrichment package outside the VSIX. */
+    async _installCredentialLens() {
+        const expectedVersion = credentialInspect.packageVersion();
+        const current = await credentialInspect.describeCredentialLensStatus();
+        if (current.installed && current.version === expectedVersion) {
+            return { ok: true, alreadyPresent: true };
+        }
+
+        try {
+            await this._runNpm(['--version'], { timeout: 15000 });
+        } catch (error) {
+            const detail = error && error.message ? error.message : String(error);
+            return { ok: false, error: `npm could not run: ${detail}. Restart VS Code after installing or changing Node.js, then run Dependencies Setup again.` };
+        }
+
+        const installRoot = credentialInspect.runtimeInstallRoot();
+        const installBase = credentialInspect.runtimeInstallBase();
+        const owned = ownership.readOwned().some(entry => entry.id === 'credential-lens'
+            && entry.kind === 'directory' && entry.path === installBase);
+        if (fs.existsSync(installBase) && !owned) {
+            return {
+                ok: false,
+                error: `Refusing to modify unowned credential-lens storage: ${installBase}`
+            };
+        }
+        const createdBase = !fs.existsSync(installBase);
+        try {
+            fs.mkdirSync(installRoot, { recursive: true, mode: 0o700 });
+            await this._runNpm([
+                'install', '--ignore-scripts', '--no-save', '--package-lock=false', '--no-audit',
+                '--fund=false', '--registry=https://registry.npmjs.org/', '--prefix', installRoot,
+                credentialInspect.packageSpec()
+            ], { timeout: 300000, maxBuffer: 1024 * 1024 });
+            credentialInspect._resetModuleCache();
+            const installed = await credentialInspect.describeCredentialLensStatus();
+            if (!installed.installed || installed.version !== expectedVersion) {
+                throw new Error(installed.error
+                    || `npm completed but credential-lens ${expectedVersion} could not be loaded`);
+            }
+            ownership.recordOwned({
+                id: 'credential-lens',
+                label: 'credential-lens enrichment package',
+                kind: 'directory',
+                path: installBase
+            });
+            return { ok: true, alreadyPresent: false };
+        } catch (error) {
+            if (createdBase) {
+                fs.rmSync(installBase, { recursive: true, force: true });
+            }
+            return { ok: false, error: error.message || String(error) };
+        }
+    }
+
+    /** Run npm without a shell, including npm.cmd on Windows. */
+    async _runNpm(args, options) {
+        const execFileAsync = require('util').promisify(require('child_process').execFile);
+        const configured = this._dependencyStatus?.npm?.command || binaryLookup.resolveBinary('npm');
+        // `execFile` cannot launch npm.cmd. Resolve the actual launcher before
+        // building the adjacent node/npm-cli invocation, including npm installed
+        // through a user-scoped manager such as Scoop or Volta.
+        const npm = await npmLauncher.resolveNpmCommand(configured, execFileAsync);
+        const invocation = await npmLauncher.npmInvocation(npm, args, execFileAsync);
+        return execFileAsync(invocation.command, invocation.args, options);
     }
 
     /**
@@ -1938,13 +2151,13 @@ class LeakLockSidebarProvider {
         if (!await this._hasJavaRuntime()) {
             return { ok: false, skipped: true, error: 'No Java runtime; BFG cannot run.' };
         }
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const installedBfgPath = this._bfgPath;
         // Already there: re-downloading on every setup run costs a fetch to overwrite a
         // known-good copy with an identical one, and turns a working offline setup into
         // a failing one. A zero-length file is a previous download that died mid-flight,
         // so that is retried rather than trusted.
         try {
-            if (fs.statSync(bfgPath).size > 0) {
+            if (fs.statSync(installedBfgPath).size > 0) {
                 return { ok: true, skipped: false, error: null, alreadyPresent: true };
             }
         } catch {
@@ -1957,7 +2170,9 @@ class LeakLockSidebarProvider {
             // that can contain spaces or quotes, and interpolating it into a command
             // line makes the download depend both on a shell and on a tool that is not
             // guaranteed to exist. Same downloader the engine installs use.
-            await engineInstall.downloadFile(bfgUrl, bfgPath);
+            fs.mkdirSync(path.dirname(installedBfgPath), { recursive: true, mode: 0o700 });
+            await engineInstall.downloadFile(bfgUrl, installedBfgPath);
+            ownership.recordOwned({ id: 'bfg', label: 'BFG', kind: 'file', path: installedBfgPath });
             return { ok: true, skipped: false, error: null };
         } catch (error) {
             console.warn('Failed to download BFG tool:', error.message);
@@ -1973,7 +2188,7 @@ class LeakLockSidebarProvider {
      * steps completed, which is what let a setup with no scanning engine at all read as
      * done. Anything still missing is named here, and named again in the panel.
      */
-    _reportSetupOutcome(dockerError, engineResults) {
+    _reportSetupOutcome(dockerError, engineResults, credentialLensResult) {
         const installed = engineResults.filter(r => r?.ok).map(r => r.displayName);
         const failed = engineResults.filter(r => r && !r.ok).map(r => r.displayName);
         const missing = this._dependencyStatus?.missing || [];
@@ -1991,6 +2206,9 @@ class LeakLockSidebarProvider {
             // not being enabled — never sets it, and says nothing at all.
             parts.push(`The Docker step for Nosey Parker failed: ${dockerError}`);
         }
+        if (credentialLensResult && !credentialLensResult.ok) {
+            parts.push(`Could not install credential-lens: ${credentialLensResult.error}`);
+        }
 
         if (!missing.length) {
             // Named, not silently omitted: a user who wanted BFG or Nosey Parker
@@ -2005,7 +2223,7 @@ class LeakLockSidebarProvider {
             return;
         }
         vscode.window.showWarningMessage(
-            `Cannot scan yet — install at least one scan engine (Gitleaks, TruffleHog or Nosey Parker). ${parts.join(' ')}`.trim()
+            `Cannot scan yet. Missing: ${missing.join(', ')}. ${parts.join(' ')}`.trim()
         );
     }
 
@@ -2034,7 +2252,13 @@ class LeakLockSidebarProvider {
             progress?.report({ message: `Pulling ${image}…` });
             const { execFile } = require('child_process');
             const execFileAsync = require('util').promisify(execFile);
-            await execFileAsync(binaryLookup.resolveDockerCommand(), engineDocker.buildImagePullArgs(image), { timeout: 600000 });
+            const docker = binaryLookup.resolveDockerCommand();
+            let existed = false;
+            try {
+                await execFileAsync(docker, engineDocker.buildImageInspectArgs(image), { timeout: 15000 });
+                existed = true;
+            } catch { /* A missing image is expected before an explicit install. */ }
+            await execFileAsync(docker, engineDocker.buildImagePullArgs(image), { timeout: 600000 });
 
             // Verified the same way a binary install is: by running it. A pulled image
             // that cannot execute here is not an installed engine.
@@ -2050,6 +2274,9 @@ class LeakLockSidebarProvider {
             result.ok = true;
             result.version = version;
             result.path = image;
+            if (!existed) {
+                ownership.recordOwned({ id: `docker-image:${image}`, label: `${displayName} Docker image`, kind: 'docker-image', image, command: docker });
+            }
         } catch (error) {
             result.error = `Could not set up ${displayName} from Docker: ${engineDocker.describeDockerFailure(error.message)}`;
         }
@@ -2076,6 +2303,8 @@ class LeakLockSidebarProvider {
         this._updateView();
 
         const displayName = engineInstall.ENGINE_RELEASES[engineId].displayName;
+        const targetPath = path.join(this._engineInstallDir, engineInstall.executableName(engineId));
+        const existedBeforeInstall = fs.existsSync(targetPath);
         let result;
         try {
             result = await vscode.window.withProgress({
@@ -2139,6 +2368,15 @@ class LeakLockSidebarProvider {
         }
 
         this._engineInstallResults[engineId] = result;
+        if (result?.ok && result.source !== 'docker' && result.path && !existedBeforeInstall) {
+            ownership.recordOwned({
+                id: `engine:${engineId}`,
+                label: `${displayName} native engine`,
+                kind: 'engine-file',
+                path: result.path,
+                engineDirectory: this._engineInstallDir
+            });
+        }
         // A newly installed binary must be findable immediately, not next session.
         scanEngines.resetBinaryCache();
 

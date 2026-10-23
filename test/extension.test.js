@@ -49,6 +49,28 @@ suite('Leak Lock Extension Test Suite', () => {
 	});
 });
 
+suite('Uninstall cleanup', () => {
+	test('removes selected dependencies before requesting extension uninstall', async () => {
+		const { uninstallAfterCleanup } = require('../extension');
+		const calls = [];
+		const result = await uninstallAfterCleanup(['bfg'], async ids => {
+			calls.push(`remove:${ids.join(',')}`);
+			return [];
+		}, async () => calls.push('uninstall'));
+		assert.deepStrictEqual(result, { uninstalled: true, failed: [] });
+		assert.deepStrictEqual(calls, ['remove:bfg', 'uninstall']);
+	});
+
+	test('does not uninstall when selected dependency removal fails', async () => {
+		const { uninstallAfterCleanup } = require('../extension');
+		let uninstalled = false;
+		const failed = [{ id: 'bfg', removed: false }];
+		const result = await uninstallAfterCleanup(['bfg'], async () => failed, async () => { uninstalled = true; });
+		assert.deepStrictEqual(result, { uninstalled: false, failed });
+		assert.strictEqual(uninstalled, false);
+	});
+});
+
 suite('Project website link', () => {
 	const WEBSITE_URL = 'https://nikolareljin.github.io/leak-lock/';
 
@@ -746,7 +768,7 @@ suite("Prepared cleanup scripts", () => {
 		].join("\n");
 		const hint = gitRewrite.describeSandboxedFilterRepo(traceback, "/x/replacements.txt");
 		assert.match(hint, /installed as a snap/);
-		assert.match(hint, /pip install --user git-filter-repo/);
+		assert.match(hint, /pipx install git-filter-repo/);
 		assert.strictEqual(gitRewrite.describeSandboxedFilterRepo("some other failure", "/x"), null);
 	});
 
@@ -1274,6 +1296,18 @@ suite('TruffleHog engine adapter', () => {
 			repoDir: 'D:\\repos\\thing', verify: false, platform: 'win32'
 		});
 		assert.strictEqual(args[1], 'file://D:/repos/thing');
+	});
+
+	test('a resolved Windows Git executable is available to TruffleHog', () => {
+		const env = engines.withCommandDirOnPath('C:\\Program Files\\Git\\cmd\\git.exe', {
+			env: { Path: 'C:\\Windows\\System32' }, platform: 'win32'
+		});
+		assert.strictEqual(env.Path, 'C:\\Program Files\\Git\\cmd;C:\\Windows\\System32');
+	});
+
+	test('a bare Git command leaves the inherited environment unchanged', () => {
+		const inherited = { PATH: '/usr/bin' };
+		assert.strictEqual(engines.withCommandDirOnPath('git', { env: inherited, platform: 'linux' }), inherited);
 	});
 
 	test('the Windows branch still honours verification flags', () => {
@@ -5253,6 +5287,78 @@ suite('An engine that cannot be installed as a binary can still run from Docker'
 			assert.ok(!/BFG tool not downloaded/.test(html), 'downloading it would not help');
 		});
 
+		test('missing npm shows Node.js setup instructions for every supported platform', () => {
+			const p = provider();
+			p._engineStatus = [];
+			p._dependencyStatus = {
+				docker: { installed: true }, noseyparker: { installed: true },
+				java: { installed: true }, bfg: { installed: true },
+				credentialLens: { installed: false, error: 'npm unavailable' },
+				npm: { installed: false, error: 'npm could not run: spawn npm ENOENT' }, missing: []
+			};
+			const html = p._getDependenciesSection();
+
+			assert.match(html, /How to install Node\.js and npm/);
+			assert.match(html, /winget install OpenJS\.NodeJS\.LTS/);
+			assert.match(html, /brew install node/);
+			assert.match(html, /nodejs\.org\/en\/download\/package-manager/);
+			assert.match(html, /node --version/);
+			assert.match(html, /npm --version/);
+		});
+
+		test('an older credential-lens runtime is upgraded to the pinned version', async () => {
+			const credentialInspect = require('../credential-inspect');
+			const ownership = require('../dependency-ownership');
+			const nodeFs = require('fs');
+			const nodeOs = require('os');
+			const nodePath = require('path');
+			const tempRoot = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-lens-update-'));
+			const installRoot = nodePath.join(tempRoot, 'credential-lens');
+			const original = {
+				packageVersion: credentialInspect.packageVersion,
+				describe: credentialInspect.describeCredentialLensStatus,
+				runtimeBase: credentialInspect.runtimeInstallBase,
+				runtimeRoot: credentialInspect.runtimeInstallRoot,
+				packageSpec: credentialInspect.packageSpec,
+				reset: credentialInspect._resetModuleCache,
+				readOwned: ownership.readOwned,
+				recordOwned: ownership.recordOwned
+			};
+			const statuses = [
+				{ installed: true, version: '0.2.0' },
+				{ installed: true, version: '0.3.0' }
+			];
+			const calls = [];
+			try {
+				credentialInspect.packageVersion = () => '0.3.0';
+				credentialInspect.describeCredentialLensStatus = async () => statuses.shift();
+				credentialInspect.runtimeInstallBase = () => tempRoot;
+				credentialInspect.runtimeInstallRoot = () => installRoot;
+				credentialInspect.packageSpec = () => '@nikolareljin/credential-lens@0.3.0';
+				credentialInspect._resetModuleCache = () => {};
+				ownership.readOwned = () => [{ id: 'credential-lens', kind: 'directory', path: tempRoot }];
+				ownership.recordOwned = entry => calls.push({ type: 'owned', entry });
+				const p = Object.create(LeakLockSidebarProvider.prototype);
+				p._runNpm = async args => { calls.push({ type: 'npm', args }); };
+
+				const result = await p._installCredentialLens();
+				assert.deepStrictEqual(result, { ok: true, alreadyPresent: false });
+				assert.ok(calls.some(call => call.type === 'npm' && call.args.includes('@nikolareljin/credential-lens@0.3.0')));
+				assert.ok(calls.some(call => call.type === 'owned' && call.entry.path === tempRoot),
+					'the stable parent owns every installed version for safe cleanup');
+			} finally {
+				credentialInspect.packageVersion = original.packageVersion;
+				credentialInspect.describeCredentialLensStatus = original.describe;
+				credentialInspect.runtimeInstallBase = original.runtimeBase;
+				credentialInspect.runtimeInstallRoot = original.runtimeRoot;
+				credentialInspect.packageSpec = original.packageSpec;
+				credentialInspect._resetModuleCache = original.reset;
+				ownership.readOwned = original.readOwned;
+				ownership.recordOwned = original.recordOwned;
+				nodeFs.rmSync(tempRoot, { recursive: true, force: true });
+			}
+		});
+
 		test('Nosey Parker is offered with its archived status attached', () => {
 			const p = provider();
 			p._engineStatus = [];
@@ -5666,10 +5772,12 @@ suite('PR #105 seventh review pass', () => {
 		// Re-fetching on every setup run overwrites a known-good copy with an identical
 		// one, and turns a working offline setup into a failing one.
 		const extDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'));
-		nodeFs.writeFileSync(nodePath.join(extDir, 'bfg.jar'), 'pretend jar bytes');
+		const bfgPath = nodePath.join(extDir, 'bfg.jar');
+		nodeFs.writeFileSync(bfgPath, 'pretend jar bytes');
 		const p = new LeakLockSidebarProvider(
 			vscode.Uri.file(extDir),
-			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-'))),
+			{ bfgPath }
 		);
 		p._hasJavaRuntime = async () => true;
 
@@ -5679,7 +5787,7 @@ suite('PR #105 seventh review pass', () => {
 			const result = await p._installBfg();
 			assert.strictEqual(result.ok, true);
 			assert.strictEqual(result.alreadyPresent, true);
-			assert.strictEqual(nodeFs.readFileSync(nodePath.join(extDir, 'bfg.jar'), 'utf8'), 'pretend jar bytes');
+			assert.strictEqual(nodeFs.readFileSync(bfgPath, 'utf8'), 'pretend jar bytes');
 		} finally {
 			globalThis.fetch = realFetch;
 			nodeFs.rmSync(extDir, { recursive: true, force: true });
@@ -5688,10 +5796,12 @@ suite('PR #105 seventh review pass', () => {
 
 	test('a truncated BFG jar is retried rather than trusted', async () => {
 		const extDir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-ext-'));
-		nodeFs.writeFileSync(nodePath.join(extDir, 'bfg.jar'), '');
+		const bfgPath = nodePath.join(extDir, 'bfg.jar');
+		nodeFs.writeFileSync(bfgPath, '');
 		const p = new LeakLockSidebarProvider(
 			vscode.Uri.file(extDir),
-			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-')))
+			vscode.Uri.file(nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'leaklock-storage-'))),
+			{ bfgPath }
 		);
 		p._hasJavaRuntime = async () => true;
 
@@ -5705,7 +5815,7 @@ suite('PR #105 seventh review pass', () => {
 			const result = await p._installBfg();
 			assert.strictEqual(result.ok, true);
 			assert.strictEqual(fetched, true, 'a zero-length file is a dead download, not an install');
-			assert.strictEqual(nodeFs.readFileSync(nodePath.join(extDir, 'bfg.jar'), 'utf8'), 'real jar');
+			assert.strictEqual(nodeFs.readFileSync(bfgPath, 'utf8'), 'real jar');
 		} finally {
 			globalThis.fetch = realFetch;
 			nodeFs.rmSync(extDir, { recursive: true, force: true });

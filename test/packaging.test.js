@@ -2,22 +2,18 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 
-// The unit tests import credential-lens from the source tree, which is present
-// whether or not it was packaged. Only this test can tell that a .vsix would
-// ship without it — the failure mode being an extension that loads fine and
-// throws on the first Secret click.
+// Source tests import credential-lens from node_modules, but a production VSIX
+// must not contain node_modules. Dependencies Setup installs the pinned package
+// into Leak Lock-owned user storage before it permits a scan.
 suite('packaging', () => {
 
-    test('.vscodeignore un-ignores the bundled credential-lens', () => {
+    test('.vscodeignore excludes every node_modules entry', () => {
         const ignore = fs.readFileSync(path.join(__dirname, '..', '.vscodeignore'), 'utf8');
         assert.ok(
-            /^!node_modules\/@nikolareljin\/credential-lens\/\*\*$/m.test(ignore),
-            '.vscodeignore must un-ignore node_modules/@nikolareljin/credential-lens/**'
+            /^node_modules\/\*\*$/m.test(ignore),
+            '.vscodeignore must exclude node_modules/**'
         );
-        assert.ok(
-            /^!node_modules\/@nikolareljin\/\*\*$/m.test(ignore),
-            'the scope directory itself must be un-ignored, or the nested rule never applies'
-        );
+        assert.ok(!/^!node_modules\//m.test(ignore), 'no node_modules path may be un-ignored');
     });
 
     // tools/release-notes.js writes .release-notes.md, and publish.yml writes it
@@ -32,9 +28,18 @@ suite('packaging', () => {
         );
     });
 
-    test('the dependency is pinned exactly, not to a range', () => {
+    test('the runtime dependency is pinned exactly, not to a range', () => {
         const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
         assert.strictEqual(pkg.dependencies['@nikolareljin/credential-lens'], '0.3.0');
+        assert.strictEqual(pkg.devDependencies['@nikolareljin/credential-lens'], undefined);
+        const lock = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package-lock.json'), 'utf8'));
+        assert.strictEqual(lock.packages['node_modules/@nikolareljin/credential-lens'].version,
+            pkg.dependencies['@nikolareljin/credential-lens']);
+    });
+
+    test('does not declare an uninstall script that VS Code will not run', () => {
+        const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+        assert.strictEqual(pkg.scripts['vscode:uninstall'], undefined);
     });
 
     test('the lockfile records the reviewed bytes, not just a reviewed version number', () => {
@@ -58,7 +63,7 @@ suite('packaging', () => {
         );
     });
 
-    test('the installed tree matches the integrity the lockfile recorded', () => {
+    test('the source-test tree matches the integrity the lockfile recorded', () => {
         // Guards the gap the lockfile alone leaves: the lockfile is a claim
         // about what should be on disk. This checks what IS on disk, so a
         // hand-edited or partially-installed node_modules fails here rather
@@ -91,7 +96,7 @@ suite('packaging', () => {
         }
     });
 
-    test('the package is actually present on disk and has its entry point', () => {
+    test('the package is available for source tests', () => {
         const entry = path.join(
             __dirname, '..', 'node_modules', '@nikolareljin', 'credential-lens', 'src', 'index.js'
         );

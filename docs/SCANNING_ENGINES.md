@@ -354,9 +354,10 @@ Every `openjdk*` keg Homebrew has installed is discovered by reading its `opt`
 directory, so a version newer than anything hard-coded here is still found, and
 `openjdk@8` is included because BFG is documented as needing Java 8+.
 
-The **Install git-filter-repo** button names the installer it will actually run --
-Homebrew on a Mac that has it, pip otherwise -- because both the label and the
-command come from the same call.
+The **Install git-filter-repo** button uses Homebrew on macOS when available. On Linux it
+uses pipx when available, otherwise a private Leak Lock virtual environment. The final
+fallback is a Python user install with `--break-system-packages`, only for Python builds
+that cannot create a virtual environment. This avoids PEP 668 system-Python writes.
 
 Override with `leakLock.java.path` when a specific JVM is wanted. There is no equivalent
 setting for git-filter-repo: it is invoked as `git filter-repo` when git can see it, and

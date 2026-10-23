@@ -20,17 +20,42 @@ const { execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 const { sniffCandidate } = require('./credential-sniff');
 const { repoRelativeCandidates } = require('./finding-paths');
+const { bfgPath } = require('./bfg-storage');
 
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const PACKAGE_ID = '@nikolareljin/credential-lens';
+const PACKAGE_VERSION = require('./package.json').dependencies[PACKAGE_ID];
+const LOCKED_PACKAGE = require('./package-lock.json').packages[`node_modules/${PACKAGE_ID}`];
 
 let modulePromise = null;
+
+function runtimeInstallBase() {
+    return path.join(path.dirname(bfgPath()), 'credential-lens');
+}
+
+function packageVersion() {
+    if (!LOCKED_PACKAGE || LOCKED_PACKAGE.version !== PACKAGE_VERSION) {
+        throw new Error(`package.json and package-lock.json disagree about ${PACKAGE_ID}`);
+    }
+    return LOCKED_PACKAGE.version;
+}
+
+function runtimeInstallRoot() {
+    // The ESM loader caches modules by their complete URL. Put each locked
+    // version below its own owned directory so an extension update cannot keep
+    // executing the previous runtime from the same on-disk path.
+    return path.join(runtimeInstallBase(), packageVersion());
+}
+
+function packageSpec() {
+    return `${PACKAGE_ID}@${packageVersion()}`;
+}
 
 function resolvePackagePath(request = PACKAGE_ID) {
     // VS Code runs an installed extension from its own directory. Resolve from that
     // directory explicitly instead of relying on the process working directory,
     // which can be a workspace on Windows and has no reason to contain this package.
-    return require.resolve(request, { paths: [__dirname] });
+    return require.resolve(request, { paths: [runtimeInstallRoot(), __dirname] });
 }
 
 function defaultImporter() {
@@ -61,20 +86,23 @@ async function loadLibraryInfo({ importer } = {}) {
         const pkg = require(resolvePackagePath(`${PACKAGE_ID}/package.json`));
         return { ok: true, version: pkg.version };
     } catch (error) {
-        return { ok: false, error: error && error.message ? error.message : String(error) };
+        const detail = error && error.message ? error.message : String(error);
+        return {
+            ok: false,
+            error: `${detail}. Run Dependencies Setup to install credential-lens before scanning.`
+        };
     }
 }
 
 /**
- * The Dependencies panel must not claim a bundled package is ready without
- * having loaded it — that would assert a fact it never checked, which is the
- * exact failure the packaging test exists to catch.
+ * The Dependencies panel must not claim a runtime package is ready without
+ * loading it. A completed npm command alone does not prove the extension can
+ * resolve the installed module.
  */
 async function describeCredentialLensStatus({ load = loadLibraryInfo } = {}) {
     const info = await load();
     return {
         installed: info.ok === true,
-        bundled: true,
         version: info.ok ? info.version : undefined,
         error: info.ok ? null : info.error
     };
@@ -229,5 +257,9 @@ module.exports = {
     describeCredentialLensStatus,
     inspectFinding,
     resolvePackagePath,
+    runtimeInstallBase,
+    runtimeInstallRoot,
+    packageVersion,
+    packageSpec,
     _resetModuleCache
 };

@@ -106,6 +106,31 @@ async function runTool(command, args, options = {}) {
     });
 }
 
+/**
+ * Add the directory containing an absolute executable to PATH.
+ *
+ * TruffleHog runs Git itself when scanning history. VS Code launched from the
+ * Windows shell does not reliably inherit Git for Windows' PATH entry, even
+ * when the extension has found the TruffleHog binary. Passing Git's directory
+ * to that child process keeps the two tools in the same executable environment.
+ */
+function withCommandDirOnPath(command, { env = process.env, platform = process.platform } = {}) {
+    const pathApi = platform === 'win32' ? path.win32 : path;
+    if (!command || !pathApi.isAbsolute(command)) {
+        return env;
+    }
+    const pathKey = platform === 'win32'
+        ? (Object.keys(env).find(key => key.toUpperCase() === 'PATH') || 'Path')
+        : 'PATH';
+    const separator = platform === 'win32' ? ';' : path.delimiter;
+    const existingPath = env[pathKey] || '';
+    const commandDir = pathApi.dirname(command);
+    return {
+        ...env,
+        [pathKey]: existingPath ? `${commandDir}${separator}${existingPath}` : commandDir
+    };
+}
+
 /* ------------------------------------------------------------------------- *
  * How an engine is invoked: native binary, or the project's container image.
  * ------------------------------------------------------------------------- */
@@ -193,7 +218,7 @@ async function resolveExecution(engine, options = {}) {
  * differ per runtime, and those come from `buildScanMounts` so a mount and its rewritten
  * path cannot drift apart.
  */
-async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform } = {}) {
+async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform, env } = {}) {
     if (execution.mode === 'docker') {
         // The resolved execution carries the command for both modes, so it is used for
         // both. Hard-coding 'docker' here would make `execution.command` a field that
@@ -202,10 +227,10 @@ async function invoke(execution, engineArgs, { mounts = [], timeoutMs, platform 
         return runTool(
             execution.command || resolveDockerCommand(),
             engineDocker.buildDockerRunArgs({ image: execution.image, mounts, args: engineArgs, platform }),
-            { timeoutMs }
+            { timeoutMs, env }
         );
     }
-    return runTool(execution.command, engineArgs, { timeoutMs });
+    return runTool(execution.command, engineArgs, { timeoutMs, env });
 }
 
 /**
@@ -732,10 +757,16 @@ const truffleHogEngine = {
             verify,
             results
         });
+        // `trufflehog git` launches Git itself. Resolve the Git executable through
+        // the same GUI-safe lookup used for engines, then expose its directory to
+        // TruffleHog's child environment. Without this, a VS Code process started
+        // from Explorer can run TruffleHog but fail every history scan because it
+        // cannot find git.exe.
+        const gitEnv = withCommandDirOnPath(resolveBinary('git'));
         const warnings = [];
         let stdout = '';
         try {
-            const output = await invoke(execution, args, { mounts, timeoutMs });
+            const output = await invoke(execution, args, { mounts, timeoutMs, env: gitEnv });
             stdout = output.stdout;
         } catch (error) {
             // TruffleHog exits non-zero when it finds secrets with --fail, and some
@@ -864,6 +895,7 @@ module.exports = {
     isDockerImagePresent,
     resolveExecution,
     invoke,
+    withCommandDirOnPath,
     detectGitleaksDialect,
     buildGitleaksArgs,
     mapGitleaksFinding,

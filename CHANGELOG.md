@@ -1,5 +1,16 @@
 # Change Log
 
+## 2026-10-21 - v0.11.1
+
+### Fixed
+- Install git-filter-repo on Linux without writing to the externally managed system Python.
+- Keep dependencies across extension reloads and offer a custom uninstall command with cleanup choices.
+- Keep credential-lens out of the VSIX. Dependencies Setup installs the pinned package into Leak Lock user storage before scanning.
+- Launch Windows npm.cmd launchers through Node.js, including Scoop shims.
+- Make Windows TruffleHog history scans find Git when VS Code does not inherit the Git for Windows PATH entry.
+- Show Windows, macOS, and Linux Node.js/npm installation instructions when credential-lens cannot run npm.
+- Upgrade credential-lens when the stored runtime version differs from the locked package version.
+
 ## 2026-10-20 - v0.11.0
 
 ### Added

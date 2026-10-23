@@ -38,9 +38,22 @@ const COMMON_BIN_DIRS = [
     '/usr/bin',
     '/opt/homebrew/bin',      // Apple silicon Homebrew
     '/home/linuxbrew/.linuxbrew/bin',
+    'C:\\Program Files\\nodejs',
+    'C:\\Program Files (x86)\\nodejs',
+    process.env.NVM_SYMLINK,
+    process.env.VOLTA_HOME ? path.join(process.env.VOLTA_HOME, 'bin') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Volta', 'bin') : '',
+    path.join(os.homedir(), 'scoop', 'shims'),
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'nodejs') : '',
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links') : '',
+    'C:\\Program Files\\Git\\cmd',
+    'C:\\Program Files\\Git\\bin',
+    'C:\\Program Files (x86)\\Git\\cmd',
+    'C:\\Program Files (x86)\\Git\\bin',
     'C:\\Program Files\\gitleaks',
     'C:\\ProgramData\\chocolatey\\bin'
-];
+].filter(Boolean);
 
 /**
  * Homebrew's `openjdk` is keg-only: `brew install openjdk` puts the JVM under
@@ -140,12 +153,18 @@ function addBinarySearchDir(dir) {
  * without either polluting `COMMON_BIN_DIRS` for every other tool or duplicating
  * the accessSync/.exe handling.
  */
-function findInDirs(name, dirs) {
+function findInDirs(name, dirs, platform = process.platform) {
     for (const dir of dirs) {
         if (!dir) {
             continue;
         }
-        for (const candidate of [path.join(dir, name), path.join(dir, `${name}.exe`)]) {
+        const candidates = platform === 'win32'
+            // Node.js ships an extensionless npm wrapper beside npm.cmd. It is a
+            // POSIX script, not a Windows executable, so execFile reports ENOENT
+            // when it wins this lookup. Prefer executable Windows launchers.
+            ? [path.join(dir, `${name}.exe`), path.join(dir, `${name}.cmd`), path.join(dir, name)]
+            : [path.join(dir, name), path.join(dir, `${name}.exe`)];
+        for (const candidate of candidates) {
             try {
                 fs.accessSync(candidate, fs.constants.X_OK);
                 return candidate;

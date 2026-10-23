@@ -14,6 +14,7 @@ tests
 test*.js
 .git/**
 node_modules/**
+!package-lock.json
 src/**
 .eslintrc.json
 tsconfig.json
@@ -58,9 +59,3 @@ CLAUDE.md
 .cursor/**
 .aider*
 .DS_Store
-
-# credential-lens is bundled, not runtime-installed: 41 KB, zero dependencies,
-# and it runs in-process. Removing these two lines produces an extension that
-# loads cleanly and throws the first time a user opens a credential report.
-!node_modules/@nikolareljin/**
-!node_modules/@nikolareljin/credential-lens/**

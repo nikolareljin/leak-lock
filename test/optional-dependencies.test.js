@@ -150,16 +150,16 @@ suite('optional dependencies', () => {
         } finally { p._restore(); }
     });
 
-    test('credential-lens alone never blocks a scan', () => {
-        // It enriches findings that already exist. A user with a working engine
-        // must not be stopped because an enrichment library failed to load.
+    test('credential-lens blocks a scan until Dependencies Setup installs it', () => {
+        // Installing before the scan keeps package download and sensitive scan
+        // handling separate. A working scan engine alone is not ready.
         const p = provider(
             { ...ALL_PRESENT, credentialLens: { installed: false, error: 'x' } },
             undefined, ['gitleaks']
         );
         try {
-            assert.deepStrictEqual(p._missingRequiredDependencies(), []);
-            assert.ok(p._missingOptionalDependencies().includes('credential-lens'));
+            assert.deepStrictEqual(p._missingRequiredDependencies(), ['credential-lens']);
+            assert.ok(!p._missingOptionalDependencies().includes('credential-lens'));
         } finally { p._restore(); }
     });
 

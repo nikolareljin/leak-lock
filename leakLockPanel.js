@@ -4,6 +4,8 @@ const vscode = require('vscode');
 const { spawn, execFile } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 const path = require('path');
+const bfgStorage = require('./bfg-storage');
+const ownership = require('./dependency-ownership');
 const fs = require('fs');
 const os = require('os');
 const gitRewrite = require('./git-rewrite');
@@ -2406,13 +2408,13 @@ class LeakLockPanel {
     }
 
     _buildBfgCommand(repoDir, targets, flavor = this._defaultScriptFlavor()) {
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const bfgJar = bfgStorage.bfgPath();
         if (flavor === 'ps1') {
             const args = this._buildBfgArgs(targets).map(a => gitRewrite.psQuote(a)).join(' ');
             return gitRewrite.buildRewriteScriptPs1({
                 repoDir,
                 rewriteLines: [
-                    `& java -jar ${gitRewrite.psQuote(bfgPath)} ${args} ${gitRewrite.psQuote(repoDir)}`
+                    `& java -jar ${gitRewrite.psQuote(bfgJar)} ${args} ${gitRewrite.psQuote(repoDir)}`
                 ],
                 verifyRegex: this._buildTargetVerifyRegex(targets)
             });
@@ -2421,7 +2423,7 @@ class LeakLockPanel {
         return gitRewrite.buildRewriteScript({
             repoDir,
             rewriteLines: [
-                `java -jar ${gitRewrite.shellQuote(bfgPath)} ${args} ${gitRewrite.shellQuote(repoDir)}`
+                `java -jar ${gitRewrite.shellQuote(bfgJar)} ${args} ${gitRewrite.shellQuote(repoDir)}`
             ],
             verifyRegex: this._buildTargetVerifyRegex(targets)
         });
@@ -2493,7 +2495,7 @@ class LeakLockPanel {
     }
 
     _buildIndividualBfgCommands(repoDir, targets, flavor = this._defaultScriptFlavor()) {
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const bfgPath = bfgStorage.bfgPath();
         if (flavor === 'ps1') {
             const rewriteLines = targets.map(t => {
                 const flag = t.type === 'directory' ? '--delete-folders' : '--delete-files';
@@ -2802,7 +2804,7 @@ class LeakLockPanel {
 
         const util = require('util');
         const execFileAsync = util.promisify(execFile);
-        const bfgPath = path.join(this._extensionUri.fsPath, 'bfg.jar');
+        const bfgPath = bfgStorage.bfgPath();
         const targets = this._removalState.targets;
         let report = null;
         try {
@@ -6798,9 +6800,25 @@ class LeakLockPanel {
      */
     async _pullNoseyParkerImage(settings) {
         const cfg = settings || this._getScanEngineSettings();
+        const docker = binaryLookup.resolveDockerCommand();
+        const execFileAsync = require('util').promisify(execFile);
+        let existed = false;
+        try {
+            await execFileAsync(docker, ['image', 'inspect', cfg.image], { timeout: 15000 });
+            existed = true;
+        } catch { /* A missing image is expected before Leak Lock pulls it. */ }
         return new Promise((resolve) => {
-            execFile(binaryLookup.resolveDockerCommand(), ['pull', cfg.image], { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
+            execFile(docker, ['pull', cfg.image], { timeout: DOCKER_PULL_TIMEOUT }, (error) => {
                 if (!error) {
+                    if (!existed) {
+                        ownership.recordOwned({
+                            id: `docker-image:${cfg.image}`,
+                            label: 'Nosey Parker Docker image',
+                            kind: 'docker-image',
+                            image: cfg.image,
+                            command: docker
+                        });
+                    }
                     resolve({ pulled: true, error: null });
                     return;
                 }
@@ -7124,7 +7142,13 @@ class LeakLockPanel {
         if (engineId === 'foxguard' && error && error.killed) {
             return `Stopped after ${Math.round(cfg.foxguardTimeoutMs / 1000)}s. Increase leakLock.foxguard.timeoutSeconds to scan longer.`;
         }
-        return `Scan failed: ${error ? error.message : 'unknown error'}`;
+        const message = error ? error.message : 'unknown error';
+        const stderr = error && error.stderr ? String(error.stderr).trim() : '';
+        // execFile's generic "Command failed" error omits the diagnostic that
+        // identifies a missing Git executable or a rejected repository URL.
+        return stderr && !message.includes(stderr)
+            ? `Scan failed: ${message}\n${stderr.slice(0, 2000)}`
+            : `Scan failed: ${message}`;
     }
 
     /**
@@ -8027,7 +8051,7 @@ class LeakLockPanel {
     }
 
     _buildScanBfgReplaceCommand(scanPath, replacements, flavor = this._defaultScriptFlavor()) {
-        const bfgPath = path.join(this._extensionUri.fsPath, "bfg.jar");
+        const bfgPath = bfgStorage.bfgPath();
         if (flavor === 'ps1') {
             const { replacementsContent } = this._buildReplacementScriptSetupPs1(replacements);
             return gitRewrite.buildRewriteScriptPs1({
@@ -9622,7 +9646,7 @@ class LeakLockPanel {
             }, async (progress) => {
 
                 progress.report({ increment: 10, message: "Preparing secure temporary replacement file..." });
-                const bfgPath = path.join(this._extensionUri.fsPath, "bfg.jar");
+                const bfgPath = bfgStorage.bfgPath();
                 const util = require("util");
                 const execFileAsync = util.promisify(execFile);
 

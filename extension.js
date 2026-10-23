@@ -19,6 +19,8 @@ const binaryLookup = require('./binary-lookup');
 // The downloader the engine installs already use: no shell, no curl dependency,
 // and a destination path containing spaces stays one value.
 const engineInstall = require('./engine-install');
+const bfgStorage = require('./bfg-storage');
+const ownership = require('./dependency-ownership');
 
 /**
  * The `java` and `docker` commands to probe with.
@@ -42,7 +44,6 @@ async function checkDependencies() {
 	const util = require('util');
 	const execFileAsync = util.promisify(execFile);
 	const fs = require('fs');
-	const path = require('path');
 	
 	const dependencies = {
 		docker: false,
@@ -76,7 +77,7 @@ async function checkDependencies() {
 	}
 	
 	// Check BFG tool
-	const bfgPath = path.join(__dirname, 'bfg.jar');
+	const bfgPath = bfgStorage.bfgPath();
 	if (fs.existsSync(bfgPath)) {
 		dependencies.bfg = true;
 	}
@@ -89,9 +90,9 @@ async function checkDependencies() {
  */
 async function installDependencies(forceReinstall = false) {
 	const { execFile } = require('child_process');
+	const fs = require('fs');
 	const util = require('util');
 	const execFileAsync = util.promisify(execFile);
-	const path = require('path');
 	
 	try {
 		// Check existing dependencies first
@@ -137,7 +138,8 @@ async function installDependencies(forceReinstall = false) {
 			progress.report({ increment: 20, message: "Downloading BFG tool..." });
 			
 			// Download BFG tool to extension directory
-			const bfgPath = path.join(__dirname, 'bfg.jar');
+			const bfgPath = bfgStorage.bfgPath();
+			fs.mkdirSync(require('path').dirname(bfgPath), { recursive: true, mode: 0o700 });
 			const bfgUrl = 'https://repo1.maven.org/maven2/com/madgag/bfg/1.14.0/bfg-1.14.0.jar';
 			
 			try {
@@ -291,22 +293,34 @@ function activate(context) {
 
 	// Register cleanup command for manual cleanup
 	const cleanupCommand = vscode.commands.registerCommand('leak-lock.cleanup', async function () {
-		const result = await vscode.window.showWarningMessage(
-			'This will remove all Leak Lock dependencies including Docker images and tools. Continue?',
-			{ modal: true },
-			'Yes, Clean Up'
-		);
-		
-		if (result === 'Yes, Clean Up') {
+		const selected = await selectOwnedDependencies('Remove Leak Lock dependencies');
+		if (selected) {
+			let failed = [];
 			await vscode.window.withProgress({
 				location: vscode.ProgressLocation.Notification,
 				title: "Cleaning up Leak Lock dependencies...",
 				cancellable: false
 			}, async () => {
-				await cleanupDependencies();
+				failed = await cleanupDependencies(selected);
 			});
-			vscode.window.showInformationMessage('Leak Lock cleanup completed!');
+			if (!failed.length) {
+				vscode.window.showInformationMessage('Leak Lock cleanup completed.');
+			}
 		}
+	});
+
+	const uninstallCommand = vscode.commands.registerCommand('leak-lock.uninstall', async function () {
+		const selected = await selectOwnedDependencies('Remove dependencies after uninstall');
+		if (!selected) return;
+		let result;
+		await vscode.window.withProgress({
+			location: vscode.ProgressLocation.Notification,
+			title: 'Removing selected Leak Lock dependencies...',
+			cancellable: false
+		}, async () => {
+			result = await uninstallAfterCleanup(selected);
+		});
+		if (!result.uninstalled) return;
 	});
 
 	// Make a call of project-scan.js for backward compatibility
@@ -325,6 +339,7 @@ function activate(context) {
 		updateRemoveFilesRepoCommand,
 		startScanCommand,
 		cleanupCommand,
+		uninstallCommand,
 		icon
 	);
 
@@ -357,98 +372,47 @@ function activate(context) {
 }
 
 // This method is called when your extension is deactivated
-async function deactivate() {
-	try {
-		await cleanupDependencies();
-	} catch (error) {
-		console.error('Error during extension cleanup:', error);
-	}
-}
+function deactivate() {}
 
 /**
- * Clean up all installed dependencies when extension is uninstalled
+ * Remove only selected dependencies that Leak Lock recorded as installing.
  */
-async function cleanupDependencies() {
-	const { execFile } = require('child_process');
-	const util = require('util');
-	const execFileAsync = util.promisify(execFile);
-	const fs = require('fs');
-	const path = require('path');
-	
-	console.log('Starting Leak Lock extension cleanup...');
-	
-	try {
-		// 1. Remove Nosey Parker Docker image
-		try {
-			console.log('Removing Nosey Parker Docker image...');
-			await execFileAsync(binaryLookup.resolveDockerCommand(), ['rmi', dockerImage]);
-			console.log('✓ Nosey Parker Docker image removed');
-		} catch {
-			console.log('Nosey Parker Docker image not found or already removed');
-		}
-		
-		// 2. Remove BFG tool
-		const bfgPath = path.join(__dirname, 'bfg.jar');
-		if (fs.existsSync(bfgPath)) {
-			try {
-				fs.unlinkSync(bfgPath);
-				console.log('✓ BFG tool removed');
-			} catch (error) {
-				console.log('Could not remove BFG tool:', error.message);
-			}
-		}
-		
-		// 3. Clean up temporary files and directories
-		const tempPaths = [
-			path.join(__dirname, 'temp'),
-			path.join(__dirname, 'scan-results'),
-			path.join(__dirname, 'replacements.txt'),
-			path.join(__dirname, '.noseyparker')
-		];
-		
-		for (const tempPath of tempPaths) {
-			if (fs.existsSync(tempPath)) {
-				try {
-					if (fs.statSync(tempPath).isDirectory()) {
-						fs.rmSync(tempPath, { recursive: true, force: true });
-					} else {
-						fs.unlinkSync(tempPath);
-					}
-					console.log(`✓ Cleaned up: ${tempPath}`);
-				} catch (error) {
-					console.log(`Could not clean up ${tempPath}:`, error.message);
-				}
-			}
-		}
-		
-		// 4. Remove any Docker volumes created by the extension
-		try {
-			const docker = binaryLookup.resolveDockerCommand();
-			const { stdout } = await execFileAsync(docker, ['volume', 'ls', '-q', '--filter', 'label=leak-lock']);
-			if (stdout.trim()) {
-				const volumes = stdout.trim().split('\n');
-				for (const volume of volumes) {
-					try {
-						await execFileAsync(docker, ['volume', 'rm', volume]);
-						console.log(`✓ Removed Docker volume: ${volume}`);
-					} catch (error) {
-						console.log(`Could not remove volume ${volume}:`, error.message);
-					}
-				}
-			}
-		} catch {
-			console.log('No Docker volumes to clean up or Docker not available');
-		}
-		
-		console.log('✅ Leak Lock extension cleanup completed');
-		
-	} catch (error) {
-		console.error('Error during cleanup:', error);
-		// Don't throw error to avoid breaking extension deactivation
+async function cleanupDependencies(ids) {
+	const results = await ownership.removeSelected(ids);
+	const failed = results.filter(result => !result.removed);
+	if (failed.length) {
+		vscode.window.showWarningMessage(`Could not remove: ${failed.map(result => result.id).join(', ')}. See the user guide for manual commands.`);
 	}
+	return failed;
+}
+
+async function uninstallAfterCleanup(ids, remove = cleanupDependencies, uninstallExtension = () =>
+	vscode.commands.executeCommand('workbench.extensions.uninstallExtension', 'nikolareljin.leak-lock')) {
+	const failed = await remove(ids);
+	if (failed.length) return { uninstalled: false, failed };
+	await uninstallExtension();
+	return { uninstalled: true, failed: [] };
+}
+
+async function selectOwnedDependencies(title) {
+	const owned = ownership.readOwned();
+	if (!owned.length) {
+		vscode.window.showInformationMessage('Leak Lock has no recorded dependencies to remove. Java and manually installed tools are never removed.');
+		return null;
+	}
+	const selected = await vscode.window.showQuickPick(
+		owned.map(entry => ({ label: entry.label, id: entry.id, picked: true })),
+		{
+			canPickMany: true,
+			title,
+			placeHolder: 'Only dependencies installed and recorded by Leak Lock are listed. Java is never listed.'
+		}
+	);
+	return selected ? selected.map(item => item.id) : null;
 }
 
 module.exports = {
 	activate,
-	deactivate
+	deactivate,
+	uninstallAfterCleanup
 }

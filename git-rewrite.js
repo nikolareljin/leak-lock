@@ -26,6 +26,17 @@ const DEFAULT_REMOTE = 'origin';
 // History rewrites on large repos produce a lot of output on stdout.
 const MAX_BUFFER = 64 * 1024 * 1024;
 
+function managedFilterRepoDir(env = process.env, home = os.homedir()) {
+    const dataHome = env.XDG_DATA_HOME || path.join(home, '.local', 'share');
+    return path.join(dataHome, 'leak-lock', 'git-filter-repo');
+}
+
+function managedFilterRepoLauncher(options = {}) {
+    const { platform = process.platform, env = process.env, home = os.homedir() } = options;
+    const executable = platform === 'win32' ? 'git-filter-repo.exe' : 'git-filter-repo';
+    return path.join(managedFilterRepoDir(env, home), platform === 'win32' ? 'Scripts' : 'bin', executable);
+}
+
 /**
  * Raised when local branches hold commits the remote does not have.
  * Materialising remote branches force-resets local branches, which would
@@ -197,7 +208,7 @@ function describeSandboxedFilterRepo(output, rulesPath) {
         'git-filter-repo is installed as a snap, and snaps are confined: this one cannot read',
         rulesPath ? `the replacement rule file (${rulesPath})` : 'the replacement rule file',
         'or any repository outside your home directory.',
-        'Install the unconfined tool instead: "python3 -m pip install --user git-filter-repo"',
+        'Install the unconfined tool with "pipx install git-filter-repo", or use Leak Lock Dependencies Setup.',
         '(optionally "sudo snap remove git-filter-repo" first), then restart VS Code so its',
         'PATH picks up the new binary.'
     ].join(' ');
@@ -273,6 +284,12 @@ async function findFilterRepoLauncher(options = {}) {
     // on Windows skipped them, so a launcher sitting in an already-searched common
     // directory -- Chocolatey's bin, for one -- stayed undetectable there while
     // being found everywhere else. findInDirs tries the `.exe` name too.
+    const managed = managedFilterRepoLauncher({ platform });
+    try {
+        fs.accessSync(managed, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+        return { path: managed, form: 'Leak Lock managed environment' };
+    } catch { /* not installed by Leak Lock */ }
+
     const known = binaryLookup.findInDirs('git-filter-repo', searchDirs);
     if (known) {
         return { path: known, form: 'off-PATH launcher' };
@@ -389,8 +406,8 @@ async function detectFilterRepo() {
 /**
  * The command that installs git-filter-repo, as argv rather than a shell string.
  *
- * `--user` keeps it out of a system prefix, so no elevation is needed and a
- * managed Python (Debian's PEP 668 marker) does not refuse the install.
+ * Linux is handled by the sidebar with pipx or a Leak Lock virtual environment.
+ * This builder covers macOS and Windows only.
  *
  * On macOS, Homebrew is preferred when present. Two reasons, both from issue #121:
  * Homebrew's own Python is externally managed, so `pip install --user` fails there
@@ -516,7 +533,7 @@ async function runGitFilterRepo(repoDir, args, options = {}) {
                 ? 'py -3 -m pip install --user git-filter-repo'
                 : process.platform === 'darwin'
                     ? 'brew install git-filter-repo'
-                    : 'python3 -m pip install --user git-filter-repo';
+                    : 'pipx install git-filter-repo (or use Leak Lock Dependencies Setup)';
             throw new Error(
                 `git-filter-repo is not installed or is not on PATH. Install it with "${installHint}", ` +
                 'then restart VS Code so its environment picks up the installation.'
@@ -1646,7 +1663,7 @@ function buildRewriteScript(options) {
                 '\t\tgit-filter-repo "$@"',
                 '\telse',
                 '\t\techo "git-filter-repo is not installed or is not on PATH." >&2',
-                '\t\techo "Install it with: python3 -m pip install --user git-filter-repo" >&2',
+                '\t\techo "Install it with: pipx install git-filter-repo, or use Leak Lock Dependencies Setup" >&2',
                 '\t\texit 1',
                 '\tfi',
                 '}',
@@ -1658,7 +1675,7 @@ function buildRewriteScript(options) {
                 'if ! git filter-repo --version >/dev/null 2>&1 \\',
                 '\t&& ! command -v git-filter-repo >/dev/null 2>&1; then',
                 '\techo "git-filter-repo is not installed or is not on PATH." >&2',
-                '\techo "Install it with: python3 -m pip install --user git-filter-repo" >&2',
+                '\techo "Install it with: pipx install git-filter-repo, or use Leak Lock Dependencies Setup" >&2',
                 '\texit 1',
                 'fi',
                 ''
@@ -2014,6 +2031,8 @@ async function runRewrite(options) {
 
 module.exports = {
     DEFAULT_REMOTE,
+    managedFilterRepoDir,
+    managedFilterRepoLauncher,
     AheadBranchesError,
     shellQuote,
     escapeRegex,
